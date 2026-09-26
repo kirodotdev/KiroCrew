@@ -10824,6 +10824,8 @@
       "this_session_is_not_a_chat_session": "\"{{title}}\" चैट में नहीं खोला जा सकता — यह चैट सत्र नहीं है।",
       "this_session_is_open_in_a_split_return_to_it": "यह सत्र स्प्लिट में खुला है — उस पर वापस जाएँ",
       "this_session_is_open_in_its_own_window_focus_it": "यह सत्र अपनी अलग विंडो में खुला है — उस पर फ़ोकस करें",
+      "new_session_mobile": "नया सत्र",
+      "new_session_in_folder_mobile": "इस फ़ोल्डर में नया सत्र",
       "toggle_sessions": "सत्र दिखाएँ/छिपाएँ",
       "tokens": "टोकन",
       "too_many_files_max_20": "बहुत ज़्यादा फ़ाइलें (अधिकतम 20)",

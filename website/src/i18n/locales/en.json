@@ -6552,6 +6552,8 @@
       "this_session_is_not_a_chat_session": "\"{{title}}\" can't be opened in chat — it isn't a chat session.",
       "this_session_is_open_in_a_split_return_to_it": "This session is open in a split — return to it",
       "this_session_is_open_in_its_own_window_focus_it": "This session is open in its own window — focus it",
+      "new_session_mobile": "New session",
+      "new_session_in_folder_mobile": "New session in this folder",
       "toggle_sessions": "Toggle sessions",
       "tokens": "tokens",
       "type_to_filter": "Type to filter…",

@@ -10673,6 +10673,8 @@
       "this_session_is_not_a_chat_session": "\"{{title}}\"无法在聊天中打开——它不是聊天会话。",
       "this_session_is_open_in_a_split_return_to_it": "此会话已在分屏中打开 — 返回到它",
       "this_session_is_open_in_its_own_window_focus_it": "此会话已在独立窗口中打开 — 聚焦它",
+      "new_session_mobile": "新建会话",
+      "new_session_in_folder_mobile": "在此文件夹中新建会话",
       "toggle_sessions": "切换会话列表",
       "tokens": "个令牌",
       "too_many_files_max_20": "文件过多（最多 20 个）",

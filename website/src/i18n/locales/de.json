@@ -10824,6 +10824,8 @@
       "this_session_is_not_a_chat_session": "„{{title}}“ kann nicht im Chat geöffnet werden — es ist keine Chat-Sitzung.",
       "this_session_is_open_in_a_split_return_to_it": "Diese Sitzung ist in einer geteilten Ansicht geöffnet — dorthin zurückkehren",
       "this_session_is_open_in_its_own_window_focus_it": "Diese Sitzung ist in einem eigenen Fenster geöffnet — dieses fokussieren",
+      "new_session_mobile": "Neue Sitzung",
+      "new_session_in_folder_mobile": "Neue Sitzung in diesem Ordner",
       "toggle_sessions": "Sitzungen umschalten",
       "tokens": "Tokens",
       "too_many_files_max_20": "Zu viele Dateien (max. 20)",

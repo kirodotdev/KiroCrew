@@ -336,10 +336,11 @@ import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSetti
 import { scaleContentWidth } from './chat/contentWidth'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
+import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, X } from 'lucide-react'
+import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, Plus, X } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
@@ -6717,6 +6718,48 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </button>
   )
 
+  // Mobile one-tap "new session here": creates a session in the SAME folder as
+  // the one on screen, so starting a sibling chat does not require opening the
+  // sessions drawer. Resolves agent and project exactly like the sidebar's
+  // folder "+" (createChatInFolderMutation): nearest folder default_agent, then
+  // the global default; nearest folder project_dir. An unfiled session creates
+  // an unfiled sibling, the same as the drawer's own New button.
+  const mobileNewSessionHere = () => {
+    const folderId = currentSlot?.folder_id || null
+    const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
+    const agent = folderId
+      ? resolveFolderAgent(chatFolders, folderId, defaultAgent)
+      : (defaultAgent || undefined)
+    const project = folderId ? resolveFolderProjectDir(chatFolders, folderId) : undefined
+    focusComposerAfter(dispatch(createSlot({
+      agent,
+      mode: effectiveMode,
+      ...(folderId ? { folder_id: folderId } : {}),
+      ...(project ? { project } : {}),
+    })).unwrap())
+  }
+  const mobileNewSessionLabel = currentSlot?.folder_id
+    ? i18nT('pages.chatPage.new_session_in_folder_mobile')
+    : i18nT('pages.chatPage.new_session_mobile')
+  const mobileNewSessionButton = (
+    <button
+      type="button"
+      data-testid="mobile-new-session-here"
+      className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto shrink-0"
+      onClick={mobileNewSessionHere}
+      aria-label={mobileNewSessionLabel}
+      title={mobileNewSessionLabel}
+    >
+      <Plus size={16} />
+    </button>
+  )
+  const mobileHeaderLeading = (
+    <>
+      {mobileSessionsToggle}
+      {mobileNewSessionButton}
+    </>
+  )
+
   // Unchanged from the inline WelcomeView handler; shared with the composer memory chip.
   const switchMemoryMode = async (newMode: MemoryMode) => {
     if (!activeSlot) return
@@ -7188,7 +7231,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 {!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && (
                   <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
                 )}
-                {embedMode !== 'chat' && isMobile && mobileSessionsToggle}
+                {embedMode !== 'chat' && isMobile && mobileHeaderLeading}
                 <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
                 <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
                 <ChatHeaderMenu

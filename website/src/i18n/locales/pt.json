@@ -10975,6 +10975,8 @@
       "this_session_is_not_a_chat_session": "\"{{title}}\" não pode ser aberto no chat — não é uma sessão de chat.",
       "this_session_is_open_in_a_split_return_to_it": "Esta sessão está aberta em uma divisão — volte para ela",
       "this_session_is_open_in_its_own_window_focus_it": "Esta sessão está aberta em sua própria janela — focar nela",
+      "new_session_mobile": "Nova sessão",
+      "new_session_in_folder_mobile": "Nova sessão nesta pasta",
       "toggle_sessions": "Alternar sessões",
       "tokens": "tokens",
       "too_many_files_max_20": "Arquivos demais (máx. 20)",

@@ -11126,6 +11126,8 @@
       "this_session_is_not_a_chat_session": "«{{title}}» нельзя открыть в чате — это не сеанс чата.",
       "this_session_is_open_in_a_split_return_to_it": "Эта сессия открыта в разделении — вернуться к ней",
       "this_session_is_open_in_its_own_window_focus_it": "Эта сессия открыта в отдельном окне — перейти к нему",
+      "new_session_mobile": "Новая сессия",
+      "new_session_in_folder_mobile": "Новая сессия в этой папке",
       "toggle_sessions": "Показать или скрыть сессии",
       "tokens": "токенов",
       "too_many_files_max_20": "Слишком много файлов (максимум 20)",

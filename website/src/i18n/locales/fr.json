@@ -10975,6 +10975,8 @@
       "this_session_is_not_a_chat_session": "« {{title}} » ne peut pas être ouvert dans le chat — ce n'est pas une session de chat.",
       "this_session_is_open_in_a_split_return_to_it": "Cette session est ouverte dans une vue divisée — y revenir",
       "this_session_is_open_in_its_own_window_focus_it": "Cette session est ouverte dans sa propre fenêtre — l'activer",
+      "new_session_mobile": "Nouvelle session",
+      "new_session_in_folder_mobile": "Nouvelle session dans ce dossier",
       "toggle_sessions": "Afficher/masquer les sessions",
       "tokens": "jetons",
       "too_many_files_max_20": "Trop de fichiers (max 20)",

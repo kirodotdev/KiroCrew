@@ -10673,6 +10673,8 @@
       "this_session_is_not_a_chat_session": "‘{{title}}’은(는) 채팅에서 열 수 없습니다 — 채팅 세션이 아닙니다.",
       "this_session_is_open_in_a_split_return_to_it": "이 세션은 분할 보기에서 열려 있습니다 — 그곳으로 이동",
       "this_session_is_open_in_its_own_window_focus_it": "이 세션은 별도 창에서 열려 있습니다 — 그 창으로 포커스 이동",
+      "new_session_mobile": "새 세션",
+      "new_session_in_folder_mobile": "이 폴더에 새 세션",
       "toggle_sessions": "세션 표시 전환",
       "tokens": "토큰",
       "too_many_files_max_20": "파일이 너무 많습니다 (최대 20)",

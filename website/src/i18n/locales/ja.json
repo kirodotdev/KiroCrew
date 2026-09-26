@@ -10673,6 +10673,8 @@
       "this_session_is_not_a_chat_session": "「{{title}}」はチャットでは開けません — チャットセッションではありません。",
       "this_session_is_open_in_a_split_return_to_it": "このセッションは分割表示で開いています — そこへ戻る",
       "this_session_is_open_in_its_own_window_focus_it": "このセッションは別ウィンドウで開いています — そこにフォーカス",
+      "new_session_mobile": "新しいセッション",
+      "new_session_in_folder_mobile": "このフォルダーに新しいセッション",
       "toggle_sessions": "セッション表示を切り替え",
       "tokens": "トークン",
       "too_many_files_max_20": "ファイルが多すぎます (最大 20)",

@@ -10824,6 +10824,8 @@
       "this_session_is_not_a_chat_session": "\"{{title}}\" চ্যাটে খোলা যাবে না — এটি চ্যাট সেশন নয়।",
       "this_session_is_open_in_a_split_return_to_it": "এই সেশনটি একটি স্প্লিটে খোলা আছে — সেখানে ফিরে যান",
       "this_session_is_open_in_its_own_window_focus_it": "এই সেশনটি আলাদা উইন্ডোতে খোলা আছে — সেটিতে ফোকাস করুন",
+      "new_session_mobile": "নতুন সেশন",
+      "new_session_in_folder_mobile": "এই ফোল্ডারে নতুন সেশন",
       "toggle_sessions": "সেশন দেখান/লুকান",
       "tokens": "টোকেন",
       "too_many_files_max_20": "অনেক বেশি ফাইল (সর্বোচ্চ 20)",
