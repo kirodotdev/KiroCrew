@@ -6497,6 +6497,7 @@
       "sessions": "Sessioni"
     },
     "errorBoundary": {
+      "lazy_page_load_failed": "Impossibile caricare questa pagina. Controlla la connessione al gateway e riprova.",
       "reload_page": "Ricarica la pagina",
       "something_went_wrong": "Si è verificato un problema",
       "try_again": "Riprova"

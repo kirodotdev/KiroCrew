@@ -6397,6 +6397,7 @@
       "sessions": "সেশন"
     },
     "errorBoundary": {
+      "lazy_page_load_failed": "এই পৃষ্ঠাটি লোড করা যায়নি। গেটওয়ের সংযোগ পরীক্ষা করে আবার চেষ্টা করো।",
       "reload_page": "পৃষ্ঠা রিলোড করুন",
       "something_went_wrong": "কিছু ভুল হয়েছে",
       "try_again": "আবার চেষ্টা করুন"

@@ -263,12 +263,11 @@ export const CHUNK_BUDGETS = {
   // Back to the ~5% convention over the measurement that includes this branch,
   // matching the `all` and `t` entries.
   // The memory-recall strip, its own record reader and the card's second switch
-  // add a further 5,492 B on top of that. A tree carrying all three surfaces
-  // measures 3,641,334 B, which is what the ceiling below is set against. It
-  // covers every part -- main's drift and each surface's own cost -- with the ~5%
-  // margin the lines above prescribe, so ordinary first-party growth does not
-  // re-trip this entry within days.
-  App: 3714 * KB, // measured 3,641,334 B with all three surfaces (4.25% headroom)
+  // add a further 5,492 B on top of that.
+  // Route-only pages (settings, capabilities, schedule, artifacts, apps, ...) load
+  // through React.lazy in their own chunks, so this chunk holds the shell and the
+  // chat route; the ceiling keeps the ~5% margin the lines above prescribe.
+  App: 1978 * KB, // measured 1,929,378 B with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
