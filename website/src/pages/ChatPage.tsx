@@ -6871,7 +6871,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         )}
       </AnimatePresence>
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
-        <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
+        <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [--folder-row-sticky-bg:var(--bg)] [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
             slots={filteredSlots}
             activeSlot={null}

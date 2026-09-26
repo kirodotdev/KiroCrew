@@ -188,6 +188,43 @@ describe('sessionRowNav', () => {
     expect(sessionRowsInScope(first).map(el => el.dataset.sessionRow)).toEqual(['a', 'c'])
     expect(siblingSessionRow(first, 1)?.dataset.sessionRow).toBe('c')
   })
+
+  /**
+   * A row in a folder carries `scroll-margin-top` for the pinned header stack
+   * above it. jsdom has no layout, so the row and lane rects are stubbed: the
+   * lane's top edge is at 100 and the row either sits under the headers (17px
+   * into a 56px margin) or clear of them (80px in).
+   */
+  function pinnedLaneDom(rowOffset: number, margin: string) {
+    const lane = document.createElement('div')
+    lane.style.overflowY = 'auto'
+    const from = mkRow('a', 'list')
+    const to = mkRow('b', 'list')
+    to.style.scrollMarginTop = margin
+    lane.append(to, from)
+    document.body.appendChild(lane)
+    lane.getBoundingClientRect = () => ({ top: 100 } as DOMRect)
+    to.getBoundingClientRect = () => ({ top: 100 + rowOffset } as DOMRect)
+    const scrolls: Array<ScrollIntoViewOptions | boolean | undefined> = []
+    to.scrollIntoView = (arg?: ScrollIntoViewOptions | boolean) => { scrolls.push(arg) }
+    return { from, scrolls }
+  }
+
+  it('re-aligns a row the pinned folder headers cover', () => {
+    const { from, scrolls } = pinnedLaneDom(17, '56px')
+    expect(focusSiblingSessionRow(from, -1)).toBe(true)
+    expect(scrolls).toEqual([{ block: 'nearest' }, { block: 'start' }])
+  })
+
+  it('leaves a row clear of the pinned headers, or with no margin, where nearest put it', () => {
+    const clear = pinnedLaneDom(80, '56px')
+    expect(focusSiblingSessionRow(clear.from, -1)).toBe(true)
+    expect(clear.scrolls).toEqual([{ block: 'nearest' }])
+    document.body.replaceChildren()
+    const unfiled = pinnedLaneDom(0, '')
+    expect(focusSiblingSessionRow(unfiled.from, -1)).toBe(true)
+    expect(unfiled.scrolls).toEqual([{ block: 'nearest' }])
+  })
 })
 
 describe('chat sidebar — session list arrow navigation', () => {
