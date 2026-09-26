@@ -348,6 +348,12 @@ class TestKasMemberProjection:
         # The dispatch loop's write verbs specifically — without these the loop
         # stalls on an approval prompt at its second step.
         assert "session_send" in rendered
+        # The fan-out write joins on session_send's own argument: a member's
+        # broadcast audience is read from the same `created_by` field the ownership
+        # fence reads, and every delivery re-runs that fence, so it reaches the
+        # worker sessions the member opened and nothing else. Gating it would cost
+        # one approval prompt per worker on an unattended cycle.
+        assert "session_broadcast" in rendered
         assert "session_stop" in rendered
 
     def test_spec_is_not_mutated(self):

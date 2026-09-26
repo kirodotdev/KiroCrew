@@ -23,16 +23,103 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
+| `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
+| `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 
-**One verb here writes into another session's conversation: `session_send`.**
-Reading returns a transcript tail, stopping cancels a turn the way the Stop button
-does, creating opens an empty session, and sending delivers a message that the
-target runs as its next turn. Delivery is the sharpest verb and is bounded
-accordingly: the body is redacted through `sanitize_outbound` before it is
-persisted, it is prefixed with a `[sent by session <caller> via session_send]`
-envelope so the target's transcript can never render it as something the person
-typed, and channel agents are blocked from it outright.
+**Two verbs here write into another session's conversation: `session_send` and
+`session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
+the way the Stop button does, creating opens an empty session, and sending
+delivers a message that the target runs as its next turn. Delivery is the
+sharpest verb and is bounded accordingly: the body is redacted through
+`sanitize_outbound` before it is persisted, it is prefixed with a `[sent by
+session <caller> via <verb>]` envelope so the target's transcript can never
+render it as something the person typed, and channel agents are blocked from it
+outright.
+
+`session_broadcast` is not a second delivery path. It resolves an audience and
+then calls `send_to_target` once per target, so every bound above holds per
+delivery unchanged — the same gate, the same containment snapshot, the same
+queue-drain re-check — and a broadcast can reach nothing a sequence of
+`session_send` calls could not. What it adds is the audience rule and the
+reporting contract: the default audience is the caller's OWN created sessions
+(`broadcast_audience` reads the same `_created_by` field the ownership fence
+reads, so it is a subset of what the fence admits by construction), deliveries
+are SEQUENTIAL rather than gathered, one target's refusal is COLLECTED as a row
+instead of aborting the rest, and the audience is capped at
+`MAX_BROADCAST_TARGETS` (32) with an over-cap request refused rather than
+truncated — a silently-cut broadcast is one the caller believes reached everyone.
+The `mode` argument (`queue` | `steer`) is required with no default, because the
+two are different instructions and defaulting either way silently substitutes one
+for the other across a whole fleet.
+
+Sequential delivery is what makes a per-delivery bound part of the contract
+rather than a refinement of it: one target that never answers is one target that
+starves every target behind it, and the steer arm suspends on the kiro-cli RPC
+with no ceiling beneath it, so a wedged session can outlast any request budget.
+Each delivery therefore runs under `BROADCAST_TARGET_ALLOWANCE_SECS` and is
+cancelled on expiry, yielding a `delivery_timeout` row and continuing.
+
+The bound wraps the whole `send_to_target` call. Cancellation can therefore land
+at `await asyncio.to_thread(sel)` or `await prewarm_enabled_check()` before
+`authorize_target`, as well as at the steer RPC after the text was registered.
+The delivery records its own progress across the cancellation boundary: it
+marks entry into the steer await and marks that await's return before any later
+await can run. The timeout handler combines those facts with the original slot:
+
+- Cancellation before authorization reaches neither marker, so the delivery
+  provably did not reach hand-over and re-sending the same text is safe.
+- Cancellation inside the steer await is ambiguous. Cancellation after it returns
+  is post-hand-over. Both rows say the outcome is unknown and warn that re-sending
+  could execute the instruction twice.
+- A matching `_pending_steers` or queue entry remains useful evidence that the text
+  may still run, but empty containers cannot distinguish a never-started delivery
+  from one whose consumed state was cleared as it progressed.
+- A missing or replaced original slot cannot be inspected safely. The row says
+  the outcome is unknown and gives no re-send advice.
+
+No timeout row claims that the message was delivered or that it certainly ran.
+The target-level `cancelled` audit remains limited to an authorized delivery;
+cancellation at either earlier await records no target permission decision.
+
+A cancelled delivery leaves the pre-RPC audience fence on the slot unpopped,
+which withholds that turn's cross-surface reply legs for its remainder:
+fail-closed, and the correct
+direction for a delivery whose authorization stopped being re-checkable. The
+bound's value tracks the per-target allowance the MCP client spends on the same
+call (`BROADCAST_TARGET_ALLOWANCE_SECS`), since a per-delivery ceiling above the
+client's per-target share would let a full audience expire the one HTTP request
+and discard the per-target report the verb exists to produce.
+
+`session_status` is read-only and is the roster half of the same picture. It
+answers a question no source can answer alone: live slots know what is RUNNING
+but forget a session the moment it is closed or lost with its process; the crew
+log's session tree (`session_tree_projection`, an in-memory fold, no I/O) is
+DURABLE and gateway-attested but receives its creator edge only when the first
+turn opens; persisted transcript metadata records `created_by` at birth, before
+that edge can exist, but is a weaker, agent-editable source. The union is the
+answer, and every row names the sources that placed it (`crew_log`, `history`,
+`live`, joined with `+`).
+
+The row's `status` separates `working` / `queued` / `idle` / `gone` /
+`unknown`. A tree-backed row absent from the dashboard is `gone`, preserving the
+existing meaning. A history-only row is `unknown`: its metadata proves the
+session was created, but does not claim whether it finished or was lost. This
+does not add another completed-versus-lost conflation to `gone` (tracked in issue
+#14213). The persisted field is already read by the member ownership boundary in
+session-control authorization, so using it for an informational roster row asks
+no more trust of it than the existing fence. It does not become crew-log lineage,
+and its distinct `source` keeps that visible.
+
+The response reports each durable read independently. `tree` is only the crew-log
+fold's quality (`readable` / `incomplete` / `unreadable`); `history` is the
+transcript metadata scan's quality under the same three values. Neither field
+claims the combined roster is complete when the other source is degraded. An
+`incomplete` scan makes its contribution a floor, while `unreadable` means it
+contributed no rows. The ownership fence applies to all rows and not merely to
+the verb: a history candidate is admitted only when its persisted `created_by`
+exactly equals the caller, and the workspace boundary is re-applied before its
+title is exposed. A session created by another caller is absent.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
 runs the prompt immediately, under the authorization that admitted it. A busy
@@ -156,8 +243,11 @@ window and replaces it with a narrower one: the steer RPC suspends on
   an authorization that was never about it.
 - **Provenance.** Both arms hand over the same text: redacted through
   `sanitize_outbound` and prefixed with the
-  `[sent by session <caller> via session_send]` envelope. So an injected steer
-  can no more pose as human typing than a queued delivery can. This is the
+  `[sent by session <caller> via <verb>]` envelope, where `<verb>` is the tool
+  that sent it. So an injected steer can no more pose as human typing than a
+  queued delivery can, and a worker can tell a fleet-wide instruction from one
+  aimed at it alone -- the same sentence means different things in those two
+  cases. This is the
   property the composer's own gate protects by keeping app-authenticated sends
   off the steer path; here an explicit envelope answers it.
 

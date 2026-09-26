@@ -92,6 +92,8 @@ from kiro_crew.mcp_core import (
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
+    BROADCAST_RESPONSE_MARGIN_SECS,
+    BROADCAST_TARGET_ALLOWANCE_SECS,
     CHAT_FOLDER_CREATE_SCHEMA,
     CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
@@ -101,14 +103,17 @@ from kiro_crew.validation import (
     CHAT_TAG_CREATE_SCHEMA,
     CHAT_TAG_LIST_SCHEMA,
     CHAT_TAG_UPDATE_SCHEMA,
+    MAX_BROADCAST_TARGETS,
     MCP_DASHBOARD_SCHEMAS,
     SESSION_ADOPT_SCHEMA,
+    SESSION_BROADCAST_SCHEMA,
     SESSION_CLOSE_SCHEMA,
     SESSION_CREATE_SCHEMA,
     SESSION_FORK_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_SEND_SCHEMA,
+    SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
     validate_tool_args,
 )
@@ -130,6 +135,8 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_stop",
     "session_close",
     "session_send",
+    "session_broadcast",
+    "session_status",
     "session_adopt",
     "session_release",
     "session_read_message",
@@ -620,6 +627,89 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 "required": ["target", "message"],
             },
+        },
+        {
+            "name": "session_broadcast",
+            "description": (
+                "Send ONE message to several peer sessions at once — the fan-out "
+                "counterpart of session_send, for when the thing you have to say "
+                "is true of every worker rather than of one. Omit `targets` and it "
+                "goes to every session YOU created, which is the usual case for a "
+                "conductor; name them to reach a subset. `mode` picks the delivery "
+                "and is required, because the two are different instructions: "
+                "`queue` waits for each target's current turn to end (use it for "
+                "'the base moved, rebase before you push'), while `steer` cuts "
+                "into every running turn so each target reads it mid-work (use it "
+                "for 'stop, that issue is already fixed'). Every target is checked "
+                "the same way a single session_send is, so this can reach nothing "
+                "a session_send could not. PARTIAL DELIVERY IS NORMAL and the "
+                "result says so per target: a session that was closed, went "
+                "incognito, or belongs to an app is one refused row and the rest "
+                "still get the message — read the rows rather than assuming all or "
+                "nothing. Poll the targets afterwards with session_read_message, "
+                "or take the roster with session_status."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "The message every target receives. It becomes each "
+                            "one's next user-role turn and is tagged as a "
+                            "broadcast in their transcripts, so a worker can tell "
+                            "an instruction its siblings also got from one aimed "
+                            "at it alone. Write it so it is true for all of them."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["queue", "steer"],
+                        "description": (
+                            "`queue`: each target runs the message when its "
+                            "current turn ends (an idle one starts immediately). "
+                            "`steer`: cut into the turn already running so the "
+                            "target reads it mid-work; on an idle target it starts "
+                            "a turn either way, and where mid-turn injection is "
+                            "unavailable that target falls back to its queue "
+                            "rather than being dropped. No default — say which."
+                        ),
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Session keys or exact titles, as session_send takes "
+                            "them. Omit to reach every session you created. A "
+                            "repeated target is delivered to once."
+                        ),
+                    },
+                },
+                "required": ["message", "mode"],
+            },
+        },
+        {
+            "name": "session_status",
+            "description": (
+                "List the sessions YOU stood up and what each one is doing right "
+                "now — the roster a conductor patrols. Each row is `working` (a "
+                "turn is in flight, wait), `queued` (idle with messages waiting), "
+                "`idle` (open and doing nothing — this is the one that needs a "
+                "decision), or `gone` (the crew log remembers the session and the "
+                "dashboard no longer holds it: closed, archived, or lost with the "
+                "process that ran it — re-dispatch it or drop it, there is nothing "
+                "left to message). `gone` is the reason to use this instead of "
+                "reading sessions one at a time: a worker that vanished is absent "
+                "from any live list, so a live list cannot tell a worker that died "
+                "from one you never dispatched. Read both quality fields before "
+                "trusting the count: `tree` describes the crew-log roster and "
+                "`history` describes transcript birth metadata. For either one, "
+                "`readable` means that source was read completely, `incomplete` "
+                "means its rows may be missing, and `unreadable` means that "
+                "durable source was unavailable. The result caveats each gap "
+                "under its own source name. READ-only."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "session_adopt",
@@ -1754,6 +1844,130 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
             f"when the current turn ends.{queued_note} Poll with session_read_message."
         )
+
+    if name == "session_broadcast":
+        args = validate_tool_args(args, SESSION_BROADCAST_SCHEMA)
+        payload = {"message": args["message"], "mode": args["mode"]}
+        # The VALUE decides, not the key: the validator keeps an explicit JSON
+        # `null` as the field's `None` default, so a presence test would send
+        # `None` into `list()`. `None` and omission both select the default
+        # audience, while an explicitly empty list is still forwarded for the
+        # backend to refuse rather than widened to that audience here.
+        if args.get("targets") is not None:
+            payload["targets"] = list(args["targets"])
+        resp = _post(
+            "/api/session-control/broadcast",
+            payload,
+            # The backend delivers SEQUENTIALLY, so one request covers up to
+            # `MAX_BROADCAST_TARGETS` deliveries and the 30-second default would
+            # expire mid-fleet: the client then reports a failure for a broadcast
+            # the server went on to deliver, discarding the per-target report that
+            # is this verb's whole contract, and the caller's natural retry
+            # delivers the whole message twice.
+            #
+            # The same per-target allowance the backend ENFORCES per delivery, read
+            # from one name so the two cannot drift. Multiplied by the cap because
+            # the deliveries are sequential, then given the shared response margin:
+            # the client budget must EXCEED the backend's worst-case delivery time,
+            # never merely equal it, or the per-target report can still be lost.
+            timeout=(
+                MAX_BROADCAST_TARGETS * BROADCAST_TARGET_ALLOWANCE_SECS
+                + BROADCAST_RESPONSE_MARGIN_SECS
+            ),
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not broadcast: {resp['error']}"
+        rows = resp.get("results") or []
+        requested = int(resp.get("requested", len(rows)) or 0)
+        delivered = int(resp.get("delivered", 0) or 0)
+        mode = str(resp.get("mode", args["mode"]))
+        if resp.get("audience_empty"):
+            # Not an error, and said plainly: a conductor before its first dispatch
+            # is in this state, and "delivered to 0 of 0" reads like a failure.
+            return (
+                "\U0001f4e3 Nothing to broadcast to — you have not created any "
+                "session that is still open. Name `targets` to reach a session you "
+                "did not create, or open one with session_create."
+            )
+        verb = "Steered" if mode == "steer" else "Queued for"
+        lines = [f"\U0001f4e3 {verb} {delivered}/{requested} session(s):"]
+        for row in rows:
+            target = str(row.get("target", ""))
+            if not row.get("ok"):
+                lines.append(
+                    f"  \u274c `{target}` — {row.get('error', 'refused')} "
+                    f"({row.get('code', 'unknown')})"
+                )
+            elif row.get("steered"):
+                lines.append(f"  \u2705 `{target}` — cut into its running turn")
+            elif row.get("started"):
+                lines.append(f"  \u2705 `{target}` — started a turn on it")
+            else:
+                # A steer that could not be injected lands here, for the reason
+                # session_send spells out: reporting a plain queue would leave the
+                # caller believing that target was interrupted.
+                fell_back = " (steer fell back to the queue)" if mode == "steer" else ""
+                lines.append(f"  \u2705 `{target}` — queued until its turn ends{fell_back}")
+        if delivered < requested:
+            lines.append(
+                "Some targets were not reached — the rows above say which and why. "
+                "Nothing retries them for you."
+            )
+        return redact("\n".join(lines))
+
+    if name == "session_status":
+        validate_tool_args(args, SESSION_STATUS_SCHEMA)
+        resp = _get("/api/session-control/status", caller_key)
+        if resp.get("error"):
+            return f"Error: could not read your session roster: {resp['error']}"
+        rows = resp.get("sessions") or []
+        tree = str(resp.get("tree", "unreadable"))
+        history = str(resp.get("history", "readable"))
+        quality_notes: list[str] = []
+        if tree == "incomplete":
+            quality_notes.append(
+                "The crew-log roster read was INCOMPLETE, so this count is a floor: "
+                "a session you created may be missing from it."
+            )
+        elif tree == "unreadable":
+            quality_notes.append(
+                "The crew-log roster was unreadable (crew log off, or not seeded "
+                "yet), so this lists only sessions that are still open — a worker "
+                "that was lost would not appear."
+            )
+        if history == "incomplete":
+            quality_notes.append(
+                "The transcript-metadata roster read was INCOMPLETE, so a session "
+                "created before its first crew-log edge may be missing."
+            )
+        elif history == "unreadable":
+            quality_notes.append(
+                "The transcript-metadata roster was unreadable, so archived birth "
+                "records could not complete this answer."
+            )
+        if not rows:
+            empty = "\U0001f4cb You have no sessions open or on record."
+            if quality_notes:
+                empty += " " + " ".join(quality_notes)
+            return empty
+        status_lines = [f"\U0001f4cb {len(rows)} session(s) you stood up:"]
+        for row in rows:
+            target = str(row.get("target", ""))
+            status = str(row.get("status", ""))
+            if status == "gone":
+                status_lines.append(
+                    f"  \U0001faa6 `{target}` — gone (the crew log has it, the "
+                    "dashboard does not: closed, archived, or lost)"
+                )
+                continue
+            title = str(row.get("title", ""))
+            depth = int(row.get("queue_depth", 0) or 0)
+            queued = f", {depth} queued" if depth else ""
+            mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+            status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
+        status_lines.extend(quality_notes)
+        return redact("\n".join(status_lines))
 
     if name == "session_adopt":
         args = validate_tool_args(args, SESSION_ADOPT_SCHEMA)

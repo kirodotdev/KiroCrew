@@ -8169,6 +8169,17 @@ handle immediately.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
+#: * ``session_broadcast`` — WITHHELD, on ``session_send``'s reason multiplied by
+#:   the fleet: one call runs ingested text as a user-role turn in every session
+#:   this agent created. Nothing about the fan-out narrows what is sent, so the
+#:   verb inherits the withholding rather than earning its own argument.
+#: * ``session_status`` — GRANTED (below). A pure READ, and a narrower one than
+#:   ``session_read_message``, which is already granted: it returns the caller's own
+#:   children with a liveness word each and no transcript content at all. The
+#:   patrol cycle is exactly where it is needed — the cycle runs unattended, and its
+#:   first question every round is which workers are still alive — so gating it
+#:   would put an approval prompt in the loop with nobody at the keyboard, which is
+#:   the cost this list exists to avoid.
 #: * ``session_adopt`` — WITHHELD, on the invariant rather than on a judgement about
 #:   how bad it would be. It MUTATES workspace state that already exists and is not
 #:   the caller's own: where another session hangs in the tree, which is what the
@@ -8201,6 +8212,7 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/chat_folder_file_self",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
+    "@kirocrew-dashboard/session_status",
 )
 
 #: The dashboard verbs a CREW MEMBER's DM session may call without an approval
@@ -8214,8 +8226,17 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: these two the dispatch loop this feature exists for (create → seed → patrol
 #: → stop) stalls on an approval prompt at its second step with nobody at the
 #: keyboard.
+#: ``session_broadcast`` joins on exactly ``session_send``'s argument rather than a
+#: new one, and the fan-out does not widen it: the verb's DEFAULT audience is read
+#: from the same ``created_by`` field the ownership fence reads, and every delivery
+#: re-runs that fence per target, so a member's broadcast reaches the worker
+#: sessions it opened and nothing else — the same confinement, applied to each of
+#: several targets instead of one. A member telling its whole fleet "the base moved"
+#: is the ordinary case of the dispatch loop these grants exist for, and the
+#: alternative is one approval prompt per worker on an unattended cycle.
 _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
     "@kirocrew-dashboard/session_send",
+    "@kirocrew-dashboard/session_broadcast",
     "@kirocrew-dashboard/session_stop",
 )
 
@@ -9244,11 +9265,17 @@ _PIPELINE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
 #: the operator arming the conductor's own session in trust mode (the same
 #: explicit, session-scoped human grant the worker sessions already require),
 #: not via a standing spec-level bypass.
+#: ``session_status`` rides along for the reason the goal conductor holds it: a pure
+#: read of the caller's own children, narrower than the ``session_read_message`` grant
+#: beside it, and asked on every unattended cycle. ``session_broadcast`` does NOT,
+#: on ``session_send``'s withholding — the fan-out changes how many sessions ingested
+#: text reaches, not whether anything bounds it.
 _PIPELINE_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
     "@kirocrew-dashboard/chat_folder_tree",
     "@kirocrew-dashboard/chat_folder_create",
     "@kirocrew-dashboard/session_create",
     "@kirocrew-dashboard/session_read_message",
+    "@kirocrew-dashboard/session_status",
 )
 
 #: The security conductor's dashboard grants: the pipeline conductor's plus
