@@ -69,6 +69,7 @@ vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
 vi.mock('../pages/chat/SidePanel', () => ({
   default: () => null,
   CHAT_PANE_MIN_W: 480,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => 480,
 }))
 vi.mock('../pages/chat', () => ({

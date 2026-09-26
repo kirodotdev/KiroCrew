@@ -315,7 +315,7 @@ import { useChatNavigation } from '../hooks/useChatNavigation'
 import { useChatPins } from '../hooks/useChatPins'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
-import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
+import SidePanel, { CHAT_PANE_MIN_W, SIDE_PANEL_MIN_W } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { createTurnGrouper, applyRunningState, isTurnEnd, REASONING_ROLES, TURN_OPENER_ROLES, stripAppEnvelope } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
@@ -4105,10 +4105,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // not the reason the list is hidden (the user owns the state).
   const sidebarAutoHidden = useRef<boolean | null>(null)
   const [sidePanelDock] = useSidePanelDock()
-  // Recomputed on every dock flip: the wrapper keeps one React key across the
-  // flip, so both axes have to stay named or the flipped-away one gets driven
-  // back to its base (see sidePanelDockMotion).
-  const sidePanelDockAnim = useMemo(() => sidePanelDockMotion(sidePanelDock), [sidePanelDock])
+  // Motion follows the EFFECTIVE dock, not the raw persisted one: bottom dock is
+  // a desktop, non-embedded capability (see bottomDockActive below), so an
+  // embedded/mobile host with a persisted `bottom` is forced to the right dock
+  // and must get RIGHT motion — otherwise sidePanelDockMotion('bottom') feeds
+  // width:'100%' into a right-forced panel. Recomputed on every flip: the
+  // wrapper keeps one React key across the flip, so both axes stay named or the
+  // flipped-away one gets driven back to its base (see sidePanelDockMotion).
+  const effectiveSidePanelDock = !isMobile && !embedded && sidePanelDock === 'bottom' ? 'bottom' : 'right'
+  const sidePanelDockAnim = useMemo(() => sidePanelDockMotion(effectiveSidePanelDock), [effectiveSidePanelDock])
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
     return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
@@ -6318,47 +6323,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   useEffect(() => {
     const el = chatContainerRef.current
     if (!el) return
-    const measure = () => setContainerH(el.clientHeight)
+    const measure = () => { setContainerH(el.clientHeight) }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  // Full-height activity bar slot in the App shell grid (desktop dashboard
-  // only): the Activity panel portals into it so it spans the window
-  // top-to-bottom. The header row ends at the slot's left edge,
-  // so the top-bar right cluster (capsule, terminal, bell, gear) shifts left
-  // when the panel opens. Null on mobile / embed frames -> inline fallback.
-  //
-  // Seed the portal slot SYNCHRONOUSLY so the very first render after a
-  // ChatPage remount (e.g. switching back to /chat) already targets the
-  // full-height actbar grid column. An effect-only seed leaves activitySlot
-  // null for render 1, which falls back to the inline panel (rendered below
-  // the header) and then flashes: below-header -> disappear -> portal opens.
-  // The App shell (and its #activity-bar-slot) lives outside the router, so on
-  // route-nav back it's already in the DOM. The effect below stays as the
-  // fallback for cold load / mobile->desktop crossings where it isn't yet.
-  const [activitySlot, setActivitySlot] = useState<HTMLElement | null>(
-    () => (isMobile || embedMode) ? null : document.getElementById('activity-bar-slot'),
-  )
-  useEffect(() => {
-    if (isMobile || embedMode) { setActivitySlot(null); return }
-    const el = document.getElementById('activity-bar-slot')
-    if (el) { setActivitySlot(el); return }
-    // Slot not in the DOM yet. On a mobile -> desktop crossing, this
-    // component's media-query subscription can flush (and run this effect)
-    // before the App shell re-renders the slot div -- a one-shot lookup here
-    // would miss it forever and strand the panel on the inline fallback
-    // (rendering below the header instead of in the full-height column).
-    // Watch the DOM until the slot appears, then latch it and stop.
-    setActivitySlot(null)
-    const mo = new MutationObserver(() => {
-      const found = document.getElementById('activity-bar-slot')
-      if (found) { setActivitySlot(found); mo.disconnect() }
-    })
-    mo.observe(document.body, { childList: true, subtree: true })
-    return () => mo.disconnect()
-  }, [isMobile, embedMode])
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and the render below so the two cannot disagree. */
   const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
@@ -6417,7 +6387,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    *  re-deriving them from `activityOpen`, which is only one of their inputs (a
    *  live app or browser tab keeps the panel mounted through a close, and the
    *  find pane hides it while owning the dock). */
-  const inlineSidePanelShowing = !activitySlot
+  const inlineSidePanelShowing = isMobile
     && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
     && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
   // ONE binding per panel, each covering both of ITS directions: a rightward
@@ -6480,7 +6450,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // there the store's mount predicate refuses to keep the panel open, so a
   // committed drag would be undone by the effect above on the next render.
   useDrawerSwipe(chatContainerRef, {
-    enabled: isMobile && !embedded && !activitySlot && !search.isOpen && drawerPhase !== 'open',
+    enabled: isMobile && !embedded && !search.isOpen && drawerPhase !== 'open',
     side: 'right',
     open: sideOverlayPhase === 'open',
     x: sideOverlayX,
@@ -6689,22 +6659,94 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // few hundred px in a state the user asked for by reopening the list.
   const panelMaximized = previewExpanded && !sidebarOpen
 
-  // FILL vs BESIDE for the activity panel, decided from the width left for the
-  // CHAT once the shell's hideable chrome is subtracted — the nav rail track and
-  // the session sidebar (a shrink-0 flex sibling of exactly sidebarWidth; on
-  // mobile its drawer is fixed-position and consumes no row width). Undefined =
-  // beside. A px width = fill the chat column, squeezing the chat pane to zero
-  // while the rail and sidebar stay exactly where they are.
-  //
-  // The panel's render PATH is unchanged either way, so crossing the threshold
-  // never remounts it (no terminal re-attach, no Virtuoso churn) — only its
-  // width changes. See sidePanelFillWidth for why this is loop-free.
-  const panelFillWidth = sidePanelFillWidth({
-    winW,
-    railW: railWidth,
-    sidebarW: !isMobile && sidebarOpen ? effectiveSidebarWidth : 0,
-    isMobile,
-  })
+  // Panel width contract, matching MembersPage (`panelFillWidth` there): on
+  // MOBILE the panel is a full-screen overlay, so it is handed the window width
+  // to fill its scrim; on DESKTOP it is `undefined` and the panel keeps its own
+  // resizable, persisted width. The desktop panel wrapper is `shrink-0` and the
+  // chat pane is `flex-1 min-w-0`, so as the row narrows (a right-docked
+  // terminal, a reopened session list) the CHAT PANE absorbs the squeeze down to
+  // its min while the panel holds — instead of the panel filling and crushing the
+  // chat to nothing. This is the same flex contract that keeps MembersPage's
+  // thread alive beside its panel and the terminal.
+  const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
+
+  // BESIDE vs OVERLAY for the (inline, session-scoped) activity panel, decided
+  // from the WINDOW width — deliberately blind to the app-wide bottom terminal,
+  // exactly like MembersPage's `panelSitsBeside` (which decides from `winW`, not
+  // its measured row). The app-wide terminal is a sibling of <main> in the shell;
+  // when it right-docks it shrinks <main>, but the session page must NOT flip to
+  // overlay just because the terminal opened — otherwise the panel toggles
+  // beside/overlay every time the terminal is opened or closed. Instead the
+  // terminal's squeeze is absorbed by the flex row itself: the panel wrapper is
+  // `shrink-0` and the chat pane is `flex-1 min-w-0`, so the CHAT PANE gives up
+  // width down to its min while the docked panel holds — MembersPage's thread
+  // behaviour. Overlay is reserved for when the WINDOW is genuinely too narrow to
+  // seat a usable chat pane beside the panel (after the nav rail + session
+  // sidebar), matching MembersPage. Mobile keeps its own overlay path.
+  // Embedded (artifact companion, popout, app-SDK panel) renders NEITHER the nav
+  // rail NOR the sessions sidebar, so the whole window width is the row's — the
+  // rail + sidebar terms would subtract width that is not there and flip the
+  // panel to overlay on a window wide enough to seat it beside.
+  const sidePanelRowAvail = embedded
+    ? winW
+    : winW - railWidth - (!isMobile && sidebarOpen ? effectiveSidebarWidth : 0)
+  const sidePanelBeside = isMobile
+    || sidePanelRowAvail >= CHAT_PANE_MIN_W + SIDE_PANEL_MIN_W
+  // Bottom dock is a desktop, non-embedded capability only: an embedded ChatPage
+  // (artifact companion, popout, app-SDK panel) has no room for a full-width
+  // dock row and no toggle to offer, so a persisted `mc-side-panel-dock=bottom`
+  // must NOT switch the layout or expose the control there — it falls back to
+  // the right dock. This one flag gates the host layout AND `canDockBottom`.
+  const bottomDockActive = effectiveSidePanelDock === 'bottom'
+  // Overlay is a RIGHT-DOCK-only fallback: a bottom-docked panel is a full-width
+  // row BELOW the chat, so it never competes for horizontal room and must stay
+  // below (never float as an overlay) no matter how narrow the window gets.
+  // Overlay is also non-embedded only: an embedded ChatPage has no scrim layer
+  // of its own to dim and no nav/session chrome to seat the panel beside, so a
+  // narrow embed keeps the docked column rather than floating a fixed sheet over
+  // its host.
+  const sidePanelOverlay = !isMobile && !embedded && !bottomDockActive && !sidePanelBeside
+  // The (non-mobile) side-panel wrapper element, so the overlay Escape handler
+  // can tell an Escape aimed inside the panel from one aimed at the scrim.
+  const sidePanelWrapRef = useRef<HTMLDivElement | null>(null)
+  // Overlay motion (narrow, non-embedded fallback), mirroring MembersPage's
+  // non-`beside` branch: the OUTER element is a full-bleed scrim that only fades
+  // (constant width:'auto', so it never sweeps in from the left the way the
+  // docked width-reveal would), and an INNER wrapper slides the panel in from the
+  // right edge (x:'100%'->0). Docked and bottom placements keep the single
+  // `sidePanelDockAnim` element and the inner wrapper is inert there.
+  const sidePanelOuterMotion = sidePanelOverlay
+    ? {
+        initial: { opacity: 0, width: 'auto', height: '100%' },
+        animate: { opacity: 1, width: 'auto', height: '100%' },
+        exit: { opacity: 0, width: 'auto', height: '100%' },
+      }
+    : sidePanelDockAnim
+  const sidePanelInnerMotion = sidePanelOverlay
+    ? { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } }
+    : { initial: { x: 0 }, animate: { x: 0 }, exit: { x: 0 } }
+  // Keyboard dismissal for the scrimmed overlay: the dimmed scrim closes on
+  // click, but a click target is not reachable by keyboard, so Escape must also
+  // dismiss it (a11y — matches how every other modal/scrim in the app closes).
+  // Bound only while the overlay is actually showing, and closed via the same
+  // toggleAct the scrim and the panel's own close control use.
+  useEffect(() => {
+    if (!sidePanelOverlay || !sidePanelWantsMount) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // Another handler (an open menu, a text-field editor inside the panel)
+      // already claimed this Escape — do not also close the overlay, or one
+      // keypress collapses two layers.
+      if (e.defaultPrevented) return
+      // An Escape aimed at something INSIDE the panel (dismissing a popover,
+      // clearing a field) is that control's, not the overlay's.
+      const t = e.target as Node | null
+      if (t && sidePanelWrapRef.current?.contains(t)) return
+      toggleAct()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [sidePanelOverlay, sidePanelWantsMount, toggleAct])
 
   // The mobile sessions toggle, rendered inline by whichever header owns the
   // surface's top-left: the single-chat title row, or in split view the grid's
@@ -6777,7 +6819,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
          desktop claim suppresses nothing, and adding the term would imply this
          attribute carries a guarantee about a case it cannot affect. */
       data-owns-swipe={embedded ? undefined : 'left right'}
-      className="flex flex-1 min-h-0 h-full overflow-hidden relative"
+      className={`flex flex-1 min-h-0 h-full overflow-hidden relative ${bottomDockActive ? 'flex-col' : 'flex-row'}`}
       /* Published here, not on the chat pane, because the side panel (Activity,
          Browser, SideChat's composer and follow-up chips) is this element's
          child and the chat pane's SIBLING. Anything that reads the setting via
@@ -6787,6 +6829,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
          panel has its own. */
       style={{ '--mc-message-font-size': `${chatConfig.messageFontSize}px` } as React.CSSProperties}
     >
+      {/* Bottom-dock host: when the side panel docks to the bottom, the sessions
+          list + chat pane share the TOP row and the panel spans full width BELOW
+          them (matching the original shell `actbar` row — but hosted INSIDE this
+          page now, not portaled into App's grid). The inner wrapper below holds
+          the horizontal row; the bottom panel renders as this column's 2nd child.
+          For right-dock / overlay / mobile the container stays a plain flex-row
+          and the panel renders inline within the row (its original inline spot).
+          The app-wide terminal is a sibling of <main> in the shell, so it always
+          keeps its own column and is never spanned by this bottom row. */}
+      <div className={bottomDockActive ? 'flex flex-row flex-1 min-h-0 min-w-0 overflow-hidden relative' : 'contents'}>
       <AnimatePresence>
         {isMobile && drawerMounted && (
           <motion.div
@@ -6935,7 +6987,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${activityOpen || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}
@@ -7235,10 +7287,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   corner — where Windows and frameless Linux paint their caption
                   controls — whenever the side panel is not holding that edge, i.e.
                   while it is closed (the state that renders the reopen toggle
-                  below) or docked at the bottom. Right-docked and showing, the
-                  panel is at that edge instead and carries the reserve itself, so
-                  reserving here too would indent these controls for nothing. */}
-              <div className={`ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none${!sidePanelWantsMount || sidePanelDock === 'bottom' ? ' focus-caption-reserve' : ''}`}>
+                  below). Right-docked and showing, the panel is at that edge
+                  instead and carries the reserve itself, so reserving here too
+                  would indent these controls for nothing. Bottom-docked, the panel
+                  sits in a full-width row BELOW the chat and does NOT hold that
+                  edge, so the reserve stays on this group (the `bottomDockActive`
+                  term below). Overlay: the panel is a fixed sheet ABOVE the title
+                  row, not a column at the edge, so the row still owns that corner
+                  and keeps the reserve (the `sidePanelOverlay` term). */}
+              <div className={`ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none${!sidePanelWantsMount || bottomDockActive || sidePanelOverlay ? ' focus-caption-reserve' : ''}`}>
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -8294,14 +8351,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             it re-laid-out the panel AND the squeezed chat pane every frame.
             Mount is held through 'closing' so the slide-out is not cut short.
             Embed frames keep the width reveal — they have no overlay chrome. */}
-        {(isMobile
+        {isMobile
           // `hasLiveAppTab` keeps a closed-but-alive panel MOUNTED (display:none
           // below) so its iframe — and the drawing inside it — survives the
           // close, exactly as the width-reveal branch always did.
-          ? (sideOverlayPhase !== 'closed'
+          && (sideOverlayPhase !== 'closed'
               || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
-                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }))) && !activitySlot
-          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && !activitySlot) && (
+                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }))) && (
           <motion.div
             key="side-panel-inline"
             ref={isMobile ? sideOverlayPanelRef : undefined}
@@ -8348,25 +8404,96 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           </motion.div>
         )}
       </AnimatePresence>
-      {/* Full-height tabbed side panel: portaled into the App shell's
-          'actbar' grid column so it spans the window top-to-bottom; the header
-          row ends at its left edge, shifting the top-bar buttons left.
-          The motion wrapper animates the column width 0 -> auto: the actbar
-          grid column tracks it frame-by-frame, so the chat pane slides left in
-          sync while the panel (right-anchored via justify-end) slides out from
-          the window edge — both sides move together instead of snapping. */}
-      {activitySlot && createPortal(
-        <AnimatePresence initial={false}>
-          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
+      {/* /bottom-dock host inner row — closes here so the desktop panel below
+          becomes the container COLUMN's 2nd child when bottom-docked (full-width
+          row under sessions+chat). In right-dock/overlay/mobile the wrapper is
+          `display:contents`, so closing it is a no-op and the panel stays inline
+          in the row exactly as before. */}
+      </div>
+      {/* Full-height tabbed side panel: rendered INLINE inside chatContainerRef
+          (never portaled to App's shell grid — that de-portal is this refactor's
+          point). Right-dock: a shrink-0 column to the right of the chat, sharing
+          the flex row. Bottom-dock: a full-width row BELOW the sessions+chat row
+          (the container is flex-col and this is its 2nd child). Overlay (narrow):
+          a fixed dimmed sheet over the content. The mobile overlay path above is
+          unchanged. */}
+      <AnimatePresence initial={false}>
+          {!isMobile && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
-              initial={sidePanelDockAnim.initial}
-              animate={sidePanelDockAnim.animate}
-              exit={sidePanelDockAnim.exit}
+              initial={sidePanelOuterMotion.initial}
+              animate={sidePanelOuterMotion.animate}
+              exit={sidePanelOuterMotion.exit}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-              className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
+              className={sidePanelOverlay
+                /* Row too narrow to seat chat + panel (e.g. app-wide terminal
+                   right-docked): overlay the panel over the content area (below
+                   the 42px topbar), dimmed, dismissable by scrim click or the
+                   panel's own close control. Mirrors MembersPage's non-`beside`
+                   branch; keeps the chat pane alive instead of crushing it.
+
+                   z-[48], NOT MembersPage's z-40: this page paints a title row
+                   (z-[45] at rest, z-[47] while its rename editor is open) and
+                   composer status bars (z-[46]) that MembersPage has no analogue
+                   of. At z-40 the scrim sat UNDER all of them, so the title row +
+                   pop-out icon painted over the panel's close/tab strip and the
+                   scrim failed to dim the chrome — the user had no visible way to
+                   dismiss the overlay (the UX-review blocker). z-[48] clears the
+                   whole title-row band (max z-[47]) and the status bars, so the
+                   scrim dims every chrome layer and the close strip is on top.
+
+                   `pointer-events-auto` is REQUIRED, not cosmetic: this subtree
+                   inherits `pointer-events:none` from an ancestor, so without it
+                   the scrim paints but is click-through — the scrim's own
+                   dismiss handler never fires and a click lands on the dimmed
+                   title-row controls beneath, which is the blocker in its other
+                   half. Re-enabling it here makes the scrim a real modal layer
+                   (captures the dismiss click, blocks the chrome under it); the
+                   panel's interactive children set their own pointer-events.
+
+                   This OUTER element is the scrim/positioning + fade shell only.
+                   The placement contract (`data-placement`, `overflow-visible`,
+                   the escape-scope ref) lives on the INNER wrapper below, which
+                   is the panel's DIRECT parent — the unit tests assert against
+                   `panel.parentElement`, and the panel must keep the same DOM
+                   node across a docked<->overlay resize (live PTYs must not
+                   remount), so that node is a stable, always-present wrapper. */
+                ? 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-[48] flex justify-end bg-bg/60 backdrop-blur-xs pointer-events-auto'
+                : bottomDockActive
+                  /* Bottom dock: a full-width row BELOW the sessions+chat row,
+                     hosted inline as the container-column's 2nd child (matching
+                     the original shell `actbar` row, now inside this page). The
+                     app-wide terminal keeps its own column in the shell and is
+                     never spanned by this row. */
+                  ? 'w-full overflow-visible flex flex-col justify-end shrink-0'
+                  /* Right dock: a right-anchored, full-height shrink-0 column. */
+                  : 'h-full overflow-visible flex justify-end shrink-0'}
+              onClick={sidePanelOverlay ? (e) => { if (e.target === e.currentTarget) toggleAct() } : undefined}
               style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
+              {/* Inner wrapper: the panel's DIRECT parent, and the element the
+                  responsive-panel unit tests assert against (`panel.parentElement`).
+                  It carries `data-placement`, the `overflow-visible` motion-column
+                  class, and the escape-scope ref, and it stays the same `motion.div`
+                  in the same tree position whether docked or overlaid — so the
+                  panel below it is never remounted when the mode flips on resize
+                  (live PTY / iframe survival). In overlay it also runs the
+                  x:100%->0 slide so the panel enters from the right while the outer
+                  scrim only fades in place; docked/bottom hold x:0 (inert slide)
+                  and the outer element runs the width/height dock reveal. */}
+              <motion.div
+                ref={sidePanelWrapRef}
+                initial={sidePanelInnerMotion.initial}
+                animate={sidePanelInnerMotion.animate}
+                exit={sidePanelInnerMotion.exit}
+                transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                data-placement={sidePanelOverlay ? 'overlay' : 'docked'}
+                className={sidePanelOverlay
+                  ? 'h-full flex justify-end max-w-full relative overflow-visible'
+                  : bottomDockActive
+                    ? 'w-full overflow-visible flex flex-col justify-end shrink-0'
+                    : 'h-full overflow-visible flex justify-end shrink-0'}
+              >
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
@@ -8384,12 +8511,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
                 extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
+                canDockBottom={!embedded}
               />
+              </motion.div>
             </motion.div>
           )}
-        </AnimatePresence>,
-        activitySlot
-      )}
+        </AnimatePresence>
     </div>
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>

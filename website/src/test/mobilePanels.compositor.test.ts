@@ -155,11 +155,13 @@ describe('both mobile chat panels — one element, two gestures', () => {
 
   it('the right gesture stays out of surfaces that would undo it', () => {
     const right = bindings.find(b => b.includes('x: sideOverlayX')) as string
-    // The actbar column owns the panel on desktop, and the find pane holds the
-    // dock exclusively — in both the store's mount predicate refuses to keep
-    // the panel open, so a committed drag would be reverted on the next render.
-    expect(right).toMatch(/enabled:.*!activitySlot/)
+    // The find pane holds the dock exclusively, so the store's mount predicate
+    // refuses to keep the panel open there and a committed drag would be
+    // reverted on the next render. (The desktop actbar portal that also gated
+    // this gesture was removed when the panel moved inline; the gesture is now
+    // scoped to mobile, so the old `!activitySlot` term is gone.)
     expect(right).toMatch(/enabled:.*!search\.isOpen/)
+    expect(right).toMatch(/enabled:.*isMobile/)
   })
 })
 

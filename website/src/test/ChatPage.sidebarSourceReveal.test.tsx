@@ -60,6 +60,7 @@ vi.mock('../pages/chat/SidePanel', () => ({
     return <div data-testid="side-panel" />
   },
   CHAT_PANE_MIN_W: 360,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => false,
   shouldMountSidePanel: ({ activityOpen }: { activityOpen: boolean }) => activityOpen,
 }))

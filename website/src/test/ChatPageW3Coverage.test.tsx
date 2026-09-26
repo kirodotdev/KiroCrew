@@ -113,6 +113,7 @@ let sidePanelProps: SidePanelProps | null = null
 vi.mock('../pages/chat/SidePanel', () => ({
   default: (props: SidePanelProps) => { sidePanelProps = props; return null },
   CHAT_PANE_MIN_W: 420,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => false,
 }))
 

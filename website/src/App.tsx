@@ -28,7 +28,6 @@ import { useTheme } from './hooks/useTheme'
 import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
-import { useSidePanelDock } from './hooks/useSidePanelDock'
 import { useDndSensors } from './hooks/useDndSensors'
 import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
@@ -2120,11 +2119,6 @@ export default function App() {
     const api = window.electronAPI
     api?.setFocusModeChrome?.(true)
   }, [])
-  const [sidePanelDock] = useSidePanelDock()
-  // Side panel docked to the bottom (desktop only) swaps the shell from a
-  // 3-column grid with a full-height right rail to a 2-column grid with an
-  // extra bottom row that the panel fills.
-  const bottomDock = sidePanelDock === 'bottom' && !isMobile
   // Multi-instance: which instance fills the pane below the tab bar. null = Local
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
@@ -3576,7 +3570,7 @@ export default function App() {
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       // Retire the entrance animation once it has played, so re-showing this
       // pane cannot replay it. Guarded on BOTH the keyframe name and the event
       // target: `animationend` bubbles, and descendants (banners, cards) use
@@ -3586,14 +3580,12 @@ export default function App() {
         if (e.target === e.currentTarget && e.animationName === 'rise') setShellEntered(true)
       }}
       style={{
-        gridTemplateAreas: isMobile ? '"topbar" "content"' : bottomDock ? '"topbar topbar" "nav content" "nav actbar"' : '"topbar topbar topbar" "nav content actbar"',
+        gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar" "nav content"',
         ...(!isMobile && {
-          gridTemplateColumns: bottomDock
-            ? `${focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr)`
-            : `${focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr) auto`,
+          gridTemplateColumns: `${focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr)`,
           // Transition fires only when the template string itself changes (the
-          // collapse toggle) — content-driven resizes of the auto track (e.g.
-          // the Activity panel opening) don't alter the value, so keeping this
+          // collapse toggle) — content-driven resizes (e.g. the inline activity
+          // panel opening inside <main>) don't alter the value, so keeping this
           // unconditional is safe and avoids the gated-pulse snap regression.
           transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
         }),
@@ -3601,9 +3593,7 @@ export default function App() {
         // `grid-rows-[42px_...]` class rather than having to fight it there, and
         // so the one platform that needs a gutter (see FOCUS_INSET) can keep it.
         ...(focusActive && {
-          gridTemplateRows: bottomDock
-            ? `${FOCUS_INSET}px minmax(0,1fr) auto`
-            : `${FOCUS_INSET}px minmax(0,1fr)`,
+          gridTemplateRows: `${FOCUS_INSET}px minmax(0,1fr)`,
         }),
       }}
     >
@@ -3623,12 +3613,6 @@ export default function App() {
         className="fixed inset-0 pointer-events-none"
         style={{ zIndex: OVERLAY_Z_MAX }}
       />
-
-      {/* Full-height activity bar slot: ChatPage portals its
-          Activity panel here on desktop so it spans the window top-to-bottom
-          instead of sitting below the header row. Empty (0 width) when the
-          panel is closed or on non-chat routes. */}
-      {!isMobile && <div id="activity-bar-slot" className="h-full min-h-0 min-w-0" style={{ gridArea: 'actbar' }} />}
 
       {/* Skip to content — visible only on focus for keyboard users */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">{i18nT('app.skip_to_content')}</a>
