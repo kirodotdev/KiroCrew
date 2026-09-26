@@ -7323,15 +7323,22 @@ async def install_from_registry(
                 name,
                 _strip_git_target_userinfo(repo),
             )
-            try:
-                sel().log_api_access(
-                    caller="registry",
-                    operation="app_install_script",
-                    outcome="started",
-                    resources=f"{name} repo={_strip_git_target_userinfo(repo)}",
-                )
-            except Exception as exc:
-                logger.debug("SEL audit failed for app %s install: %s", name, exc)
+
+            def _audit_script(result: str, exit_code: object = None) -> None:
+                resources = f"{name} repo={_strip_git_target_userinfo(repo)}"
+                if exit_code is not None:
+                    resources += f" exit={exit_code}"
+                try:
+                    sel().log_api_access(
+                        caller="registry",
+                        operation="app_install_script",
+                        outcome=result,
+                        resources=resources,
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for app %s install: %s", name, exc)
+
+            _audit_script("started")
             # Wrap with safe defaults:
             #   set -e  — exit on first error
             #   set -u  — treat unset variables as errors (prevents rm -rf $EMPTY/)
@@ -7358,6 +7365,7 @@ async def install_from_registry(
                 # Kill the entire process group (shell + children), reap the
                 # child, and escalate SIGTERM -> SIGKILL if it ignores the term.
                 await _kill_process_group(proc)
+                _audit_script("timed_out", proc.returncode)
                 # Retained-stale reporting and restorable-stale restoration are
                 # owned by the `finally` below (it re-stamps outcome["log"]).
                 outcome = {
@@ -7374,6 +7382,7 @@ async def install_from_registry(
             else:
                 log_lines.extend(lines)
 
+            _audit_script("completed" if proc.returncode == 0 else "failed", proc.returncode)
             if proc.returncode != 0:
                 # Retained-stale reporting and restorable-stale restoration are
                 # owned by the `finally` below (it re-stamps outcome["log"]).

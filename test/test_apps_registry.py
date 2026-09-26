@@ -487,6 +487,74 @@ async def test_install_script_timeout_routes_through_kill_process_group(monkeypa
     assert kpg_calls == [proc]
 
 
+class _ExitProc:
+    """Fake subprocess that exits at once with a fixed return code."""
+
+    def __init__(self, code: int) -> None:
+        self.pid = None  # skips the post-exit straggler reap
+        self.returncode: int | None = None
+        self._code = code
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        self.returncode = self._code
+        return b"secret-output", b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_proc", "expected"),
+    [
+        (_TimeoutProc, ("timed_out", " exit=-9")),
+        (lambda: _ExitProc(3), ("failed", " exit=3")),
+        (lambda: _ExitProc(0), ("completed", " exit=0")),
+    ],
+)
+async def test_install_script_emits_terminal_sel_event(monkeypatch, tmp_path, make_proc, expected):
+    """Every onInstall exit records a terminal SEL event after `started`."""
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
+
+    async def _fake_manifest(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(registry, "_fetch_app_manifest", _fake_manifest)
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    audit = MagicMock()
+    monkeypatch.setattr(registry, "sel", lambda: audit)
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "demoapp", "setup": {"onInstall": "true"}}), encoding="utf-8"
+    )
+
+    async def _fake_build(git_url, name, log_lines, branch="main", **kwargs):
+        return {"ok": True, "pkg_dir": tmp_path}
+
+    monkeypatch.setattr(registry, "_clone_build_app", _fake_build)
+
+    async def _fake_kpg(proc):
+        proc.returncode = -9
+
+    monkeypatch.setattr(registry, "_kill_process_group", _fake_kpg)
+    proc = make_proc()
+
+    async def _fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    await registry.install_from_registry("demoapp")
+
+    events = [
+        c.kwargs
+        for c in audit.log_api_access.call_args_list
+        if c.kwargs.get("operation") == "app_install_script"
+    ]
+    assert [e["outcome"] for e in events] == ["started", expected[0]]
+    assert events[1]["resources"].endswith(expected[1])
+    # Script output is never written into the audit record.
+    assert all("secret-output" not in str(e) for e in events)
+
+
 # --------------------------------------------------------------------------
 # Identity-refusal cleanup + provenance-signer freshness
 # --------------------------------------------------------------------------
