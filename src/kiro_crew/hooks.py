@@ -5317,6 +5317,7 @@ class ScriptHookStore:
         hook_continuation_count: int = 0,
         extra_hooks: Sequence[ScriptHook] = (),
         extra_hooks_cwd: str | None = None,
+        extra_hooks_tool_names: Sequence[str] | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -5327,7 +5328,14 @@ class ScriptHookStore:
         ``extra_hooks_cwd`` -- the session's workspace, where the harness that
         would otherwise run them runs them -- and their payload's ``cwd`` says so.
 
-        For PreToolUse/PostToolUse, matcher filters by tool name.
+        For PreToolUse/PostToolUse, matcher filters by tool name. When
+        ``extra_hooks_tool_names`` is given, an extra hook's tool matcher is
+        compared with those names instead: the tool's identity in the vocabulary
+        the extra hooks were written in, which ``tool_name`` (the call's title)
+        does not carry. It matches when any name does, and an empty sequence
+        leaves only an unscoped (``*``) extra hook matching. The first name is
+        also the ``tool_name`` an extra hook's stdin payload reports, so a script
+        that branches on it reads the same vocabulary its matcher is written in.
         For AgentSpawn/UserPromptSubmit/Stop, all hooks for that event fire.
 
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
@@ -5376,13 +5384,25 @@ class ScriptHookStore:
             hook_event["agent_role"] = agent_role
 
         extra_ids = {id(h) for h in extra_hooks}
+        # The extra hooks' own payload: their workspace as ``cwd``, and on a tool
+        # event the tool named in their vocabulary rather than the call's title.
+        extra_event = dict(hook_event)
+        if extra_hooks_cwd:
+            extra_event["cwd"] = extra_hooks_cwd
+        if extra_hooks_tool_names:
+            extra_event["tool_name"] = extra_hooks_tool_names[0]
         for hook in [*self._hooks.values(), *extra_hooks]:
             if not hook.enabled or hook.event != event:
                 continue
             # Matcher filtering: for tool hooks, match tool name; for others, match context
             if hook.matcher:
                 if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
-                    if not _tool_matches(hook.matcher, tool_name):
+                    if extra_hooks_tool_names is not None and id(hook) in extra_ids:
+                        if hook.matcher != "*" and not any(
+                            _tool_matches(hook.matcher, name) for name in extra_hooks_tool_names
+                        ):
+                            continue
+                    elif not _tool_matches(hook.matcher, tool_name):
                         continue
                 elif context:
                     # Offload to a thread: regex mode spawns a bounded subprocess
@@ -5455,9 +5475,9 @@ class ScriptHookStore:
                 )
                 continue
             if id(hook) in extra_ids and extra_hooks_cwd:
-                result = await run_script_hook(
-                    hook, context, {**hook_event, "cwd": extra_hooks_cwd}, cwd=extra_hooks_cwd
-                )
+                result = await run_script_hook(hook, context, extra_event, cwd=extra_hooks_cwd)
+            elif id(hook) in extra_ids:
+                result = await run_script_hook(hook, context, extra_event)
             else:
                 result = await run_script_hook(hook, context, hook_event)
             results.append(result)

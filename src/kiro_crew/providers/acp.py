@@ -2073,6 +2073,9 @@ class AcpProvider(LLMProvider):
             runtime_global=e.runtime_global,
             sub_session_id=e.sub_session_id,
             is_shell=e.is_shell,
+            # The harness's own tool id for a permission request. Dropping it
+            # leaves every KAS call unnamed, so no tool-scoped spec hook fires.
+            harness_tool_id=e.harness_tool_id,
             # Canonical, non-model-authored tool identity (_meta.kiro). The
             # session-directive forgery gate in chat_runner keys on THESE, so
             # dropping them here silently discards every session-bound tool's

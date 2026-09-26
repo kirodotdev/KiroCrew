@@ -311,6 +311,7 @@
     "action": "permission",
     "events": [
       {
+        "harness_tool_id": "run_command",
         "is_shell": true,
         "kind": "permission_request",
         "mcp_identity_trusted": true,

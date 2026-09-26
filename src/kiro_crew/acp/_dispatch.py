@@ -1307,6 +1307,32 @@ def kas_consent_tool(params: object) -> tuple[str, str]:
     return crew_name, target.strip()
 
 
+#: Bound on a harness tool id. KAS's are short snake_case names; anything longer
+#: is not one and is dropped rather than cut.
+_MAX_HARNESS_TOOL_ID_LEN = 128
+
+_HARNESS_TOOL_ID_RE = re.compile(r"[A-Za-z0-9_.\-/@:]+")
+
+
+def _permission_tool_id(params: dict[str, Any]) -> str:
+    """``_meta.kiro.toolId`` of a permission request, or "" when absent or malformed.
+
+    Only an identifier is kept: word characters, ``.``, ``-`` and the ``/``, ``@``
+    and ``:`` separators an MCP tool's spelling uses. No glob metacharacter or
+    whitespace survives, so the value is matched as a name and logged unescaped.
+    """
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    tool_id = kiro.get("toolId") if isinstance(kiro, dict) else None
+    if (
+        not isinstance(tool_id, str)
+        or len(tool_id) > _MAX_HARNESS_TOOL_ID_LEN
+        or not _HARNESS_TOOL_ID_RE.fullmatch(tool_id)
+    ):
+        return ""
+    return tool_id
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -1591,6 +1617,11 @@ def build_permission_event(
         (diff_path_cache.get(_ck) or "") if (diff_path_cache is not None and tool_call_id) else ""
     )
 
+    # The engine's own id for the tool it asks about (KAS writes it into
+    # ``_meta.kiro.toolId``). Not read under a gate envelope: the frame's _meta
+    # then describes the dialog, not the call the envelope names.
+    _harness_tool_id = _permission_tool_id(params) if envelope is None else ""
+
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id=request_id,
@@ -1609,6 +1640,7 @@ def build_permission_event(
         mcp_identity_trusted=_mcp_identity_trusted,
         diff_path=_diff_path,
         spawn_target=_spawn_target,
+        harness_tool_id=_harness_tool_id,
     )
     return event, recorded
 
