@@ -494,6 +494,54 @@ def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkey
     )
 
 
+def test_kiro_identity_projection_reads_global_restrictions_after_workspace_retry(
+    tmp_path, monkeypatch
+):
+    """A tool disabled during a workspace retry must not reach the session element."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import hooks
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    spec = {
+        "tools": ["@kirocrew-core"],
+        "mcpServers": {"kirocrew-core": dict(managed)},
+    }
+    global_path = tmp_path / "global-mcp.json"
+    global_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    workspace_path = tmp_path / ".kiro" / "settings" / "mcp.json"
+    workspace_path.parent.mkdir(parents=True)
+    workspace_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+
+    real_safe_read = hooks.safe_read_file_bytes
+    workspace_retry_paused = False
+
+    def refuse_workspace_until_retry(path):
+        if Path(path) == workspace_path and not workspace_retry_paused:
+            return None
+        return real_safe_read(path)
+
+    def disable_workflow_run(_pause):
+        nonlocal workspace_retry_paused
+        workspace_retry_paused = True
+        global_path.write_text(
+            json.dumps({"mcpServers": {"kirocrew-core": {"disabledTools": ["workflow_run"]}}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", global_path)
+    monkeypatch.setattr(hooks, "safe_read_file_bytes", refuse_workspace_until_retry)
+    monkeypatch.setattr(session_mcp, "_sleep", disable_workflow_run)
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: managed)
+
+    elements = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
+
+    assert workspace_retry_paused
+    assert elements == []
+
+
 @pytest.mark.parametrize(
     "declared",
     [
@@ -848,3 +896,283 @@ class TestSweep:
         with patch.object(session_pid, "config_dir", return_value=tmp_path):
             assert session_pid._prune_stale_session_token_files() == 0
         assert other.exists()
+
+
+class TestSettingsReadRaceKeepsIdentity:
+    """A transiently refused settings read must not cost a kiro session its identity.
+
+    The gated read of ``~/.kiro/settings/mcp.json`` fails transiently in two ways:
+    another tool renames a new file over the one we opened (the descriptor check
+    then names the unlinked inode), and the sensitive-path resolver pool misses its
+    budget under load and refuses fail-closed. Without a retry, either one makes
+    ``kiro_control_plane_servers`` return ``[]``. kiro-cli then mounts Crew's
+    servers from the spec with no session token, and every Crew tool call is
+    refused ``identity_unattested`` for the life of the session.
+    """
+
+    def test_a_refused_read_that_succeeds_on_retry_returns_the_settings(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        real = hooks.safe_read_file_bytes
+        calls = []
+
+        def racy(raw):
+            calls.append(raw)
+            # First read loses the race exactly the way a rename-over does.
+            return None if len(calls) == 1 else real(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", racy)
+        assert session_mcp._read_mcp_settings(path) == {"mcpServers": {}}
+        assert len(calls) == 2
+
+    def test_a_read_that_never_succeeds_still_raises(self, tmp_path, monkeypatch):
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        calls = []
+        slept = []
+
+        def refused(raw):
+            calls.append(raw)
+            return None
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", refused)
+        monkeypatch.setattr(session_mcp, "_sleep", slept.append)
+        with pytest.raises(ValueError, match="could not be safely read"):
+            session_mcp._read_mcp_settings(path)
+        # Off the loop: the first attempt, the immediate re-check, one pause, the
+        # final attempt. Nothing else is bought for a refusal that never changes.
+        assert len(calls) == 3
+        assert slept == [session_mcp._SETTINGS_READ_BACKOFF_SECS[-1]]
+
+    def test_a_refusal_that_clears_after_the_pause_returns_the_settings(
+        self, tmp_path, monkeypatch
+    ):
+        # A saturated resolver pool refuses the first attempt AND the immediate
+        # re-check; only the paused final attempt finds a worker free.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        real = hooks.safe_read_file_bytes
+        calls = []
+        slept = []
+
+        def saturated_twice(raw):
+            calls.append(raw)
+            return None if len(calls) <= 2 else real(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", saturated_twice)
+        monkeypatch.setattr(session_mcp, "_sleep", slept.append)
+        assert session_mcp._read_mcp_settings(path) == {"mcpServers": {}}
+        assert len(calls) == 3
+        assert slept == [2.0]
+
+    def test_a_resolver_stall_on_the_path_screen_is_retried(self, tmp_path, monkeypatch):
+        # The sensitive-path resolver refuses fail-closed when its pool misses the
+        # budget under load; the screen then answers None for a path that is fine.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        real = hooks.validate_file_path
+        calls = []
+
+        def stalls_once(raw):
+            calls.append(raw)
+            return None if len(calls) == 1 else real(raw)
+
+        monkeypatch.setattr(hooks, "validate_file_path", stalls_once)
+        assert session_mcp._read_mcp_settings(path) == {"mcpServers": {}}
+
+    def test_a_path_that_stays_refused_still_raises(self, tmp_path, monkeypatch):
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setattr(session_mcp, "_sleep", lambda secs: None)
+        monkeypatch.setattr(hooks, "validate_file_path", lambda raw: None)
+        with pytest.raises(ValueError, match="path was refused"):
+            session_mcp._read_mcp_settings(path)
+
+    def test_off_the_loop_the_schedule_is_one_recheck_and_one_pause(self, tmp_path, monkeypatch):
+        # The spawn path warms the cache off the loop; there a saturated resolver
+        # pool is worth one pause sized to the resolver's 2 s candidate budget,
+        # after the immediate re-check that clears a rename-over. Only
+        # ``session_mcp._sleep`` is replaced, never the shared ``time`` module.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        calls = []
+        slept = []
+
+        def refused(raw):
+            calls.append(raw)
+            return None
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", refused)
+        monkeypatch.setattr(session_mcp, "_sleep", slept.append)
+        assert time.sleep is not slept.append
+        with pytest.raises(ValueError, match="could not be safely read"):
+            session_mcp._read_mcp_settings(path)
+        assert session_mcp._SETTINGS_READ_BACKOFF_SECS == (0.0, 2.0)
+        assert len(calls) == 3
+        assert slept == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_on_the_loop_a_failing_read_never_sleeps_and_still_raises(
+        self, tmp_path, monkeypatch
+    ):
+        # ``AcpClient._session_mcp_servers`` resolves a cold cache inline on the
+        # loop, and the non-strict ``_global_settings`` readers can run there too.
+        # Each attempt is two to three bounded path resolutions that can block the
+        # loop for the resolver's whole per-thread allowance, so on a loop thread
+        # the read makes exactly one attempt, never pauses, and fails closed.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        calls = []
+        screens = []
+        real_screen = hooks.validate_file_path
+
+        def refused(raw):
+            calls.append(raw)
+            return None
+
+        def counted_screen(raw):
+            screens.append(raw)
+            return real_screen(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", refused)
+        monkeypatch.setattr(hooks, "validate_file_path", counted_screen)
+
+        def must_not_sleep(secs):
+            raise AssertionError(f"time.sleep({secs}) on the event loop thread")
+
+        # Patched on the module's own seam only: the shared ``time`` module is what
+        # pytest and logging read, so ``time.sleep`` itself is never touched.
+        monkeypatch.setattr(session_mcp, "_sleep", must_not_sleep)
+        assert time.sleep is not must_not_sleep
+        with pytest.raises(ValueError, match="could not be safely read"):
+            session_mcp._read_mcp_settings(path)
+        # Exactly the one gated read the caller made before retries existed,
+        # whatever the paced schedule off the loop is.
+        assert len(calls) == 1
+        assert len(screens) == 1
+        assert len(session_mcp._SETTINGS_READ_BACKOFF_SECS) > 1
+
+    @pytest.mark.asyncio
+    async def test_on_the_loop_a_rename_race_is_not_retried(self, tmp_path, monkeypatch):
+        # A read that WOULD succeed on a re-check is still not re-checked on the
+        # loop thread: the re-check costs the loop another two to three bounded
+        # resolutions, so the stall is left to the fail-closed contract there.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        real = hooks.safe_read_file_bytes
+        calls = []
+
+        def racy(raw):
+            calls.append(raw)
+            return None if len(calls) == 1 else real(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", racy)
+        monkeypatch.setattr(
+            session_mcp,
+            "_sleep",
+            lambda secs: pytest.fail(f"time.sleep({secs}) on the event loop thread"),
+        )
+        with pytest.raises(ValueError, match="could not be safely read"):
+            session_mcp._read_mcp_settings(path)
+        assert len(calls) == 1
+
+    def test_off_the_loop_the_rename_race_recovers_without_a_pause(self, tmp_path, monkeypatch):
+        # The immediate re-check is what clears a rename-over; it costs no pause.
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_mcp
+
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {}}))
+        real = hooks.safe_read_file_bytes
+        calls = []
+
+        def racy(raw):
+            calls.append(raw)
+            return None if len(calls) == 1 else real(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", racy)
+        monkeypatch.setattr(
+            session_mcp, "_sleep", lambda secs: pytest.fail(f"paused {secs}s for a re-check")
+        )
+        assert session_mcp._read_mcp_settings(path) == {"mcpServers": {}}
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_session_new_carries_the_token_while_settings_are_being_replaced(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        from test_acp_runtime import _make_runtime
+
+        from kiro_crew import agent as agent_mod
+        from kiro_crew import hooks
+        from kiro_crew.acp import session_handle, session_mcp
+        from kiro_crew.acp.types import METHOD_SESSION_NEW
+
+        settings = tmp_path / "settings-mcp.json"
+        body = json.dumps({"mcpServers": {"other": {"command": "true"}}})
+        settings.write_text(body)
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", settings)
+        # A rename-over can make the guarded reader refuse the descriptor it
+        # opened. Inject that observable outcome so recovery is tested on every
+        # platform while the real create_session path remains under test. The
+        # strict control-plane read runs under ``asyncio.to_thread`` (see
+        # ``_unpooled_control_planes``), which is the only place the re-check runs.
+        real_read = hooks.safe_read_file_bytes
+        refused = []
+
+        def refuse_settings_once(raw):
+            if not refused and Path(raw) == settings:
+                refused.append(session_mcp._on_loop_thread())
+                return None
+            return real_read(raw)
+
+        monkeypatch.setattr(hooks, "safe_read_file_bytes", refuse_settings_once)
+        entry = {"command": "test-crew", "args": ["mcp"], "env": {}}
+        spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+        monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+        monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+        monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: entry)
+        monkeypatch.setattr(session_handle, "_MCP_DRAIN_NO_REPORT_CEILING", 0)
+        runtime, _, _ = _make_runtime()
+        sent = []
+
+        async def send(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                sent.append(params)
+            return {"sessionId": "sid-race", "modes": {"currentModeId": "kirocrew"}}
+
+        monkeypatch.setattr(runtime, "_send_and_await", send)
+        await runtime.create_session(session_key=LIVE_KEY)
+
+        assert refused == [False], "the guarded settings read was not refused off the loop"
+        servers = {item["name"]: item for item in sent[0]["mcpServers"]}
+        assert "kirocrew-core" in servers
+        env = {item["name"]: item["value"] for item in servers["kirocrew-core"]["env"]}
+        monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, env[STUB_SESSION_TOKEN_ENV])
+        assert mcp_core._resolve_session_key_strict() == LIVE_KEY

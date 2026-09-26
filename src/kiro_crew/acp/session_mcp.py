@@ -73,8 +73,10 @@ otherwise easy to argue backwards:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -224,23 +226,106 @@ class _Unread:
 _UNREAD = _Unread()
 
 
+#: Pauses before the retries of the gated read in :func:`_read_mcp_settings`, in
+#: seconds; the first attempt runs before any of them. Only used off the loop:
+#: on a loop thread there is exactly one attempt (see :func:`_read_mcp_settings`).
+#: The read fails transiently in two ways, both seen on a live host: a writer
+#: renames a new file over the one we opened (the descriptor check then names
+#: the unlinked inode), and the sensitive-path resolver pool is saturated so a
+#: resolution never starts inside its budget and the gate refuses fail-closed.
+#: The first clears on an immediate re-check (``0.0``). The second clears once
+#: the pool drains, and the pool drains at the pace of its own budget: a
+#: candidate resolution that has not finished within
+#: ``security.paths._PATH_RESOLVE_TIMEOUT_SECS`` (2.0 s) is refused and its
+#: worker classed wedged, so a 2.0 s pause is the longest a healthy in-flight
+#: job can hold a worker before the queue moves. One pause of that size, then a
+#: final attempt. No other refusal changes with time inside this call: a
+#: stall-prefix cooldown holds for 30-1800 s without touching the filesystem,
+#: and a non-regular, missing-permission or oversized file fails identically
+#: every time, so more pauses would only delay the fail-closed answer. Losing
+#: this read withholds every identity element from a kiro session for its whole
+#: life (see :func:`kiro_control_plane_servers`), which is why the one pause is
+#: worth 2 s of an off-loop thread.
+_SETTINGS_READ_BACKOFF_SECS: tuple[float, ...] = (0.0, 2.0)
+
+#: The pause primitive :func:`_read_mcp_settings` uses, held as a module attribute
+#: so a test can replace it without touching the shared ``time`` module that
+#: pytest and logging read from.
+_sleep = time.sleep
+
+
+def _on_loop_thread() -> bool:
+    """True when the calling thread is running an asyncio event loop.
+
+    :func:`_read_mcp_settings` is reached from both kinds of thread: the spawn
+    path warms ``AcpClient._session_mcp_cache`` off the loop, but a cold cache is
+    resolved inline on the loop by ``_session_mcp_servers``, and the non-strict
+    :func:`_global_settings` readers sit on synchronous paths that may run on
+    either. A ``time.sleep`` on the loop thread stalls every session the gateway
+    serves, under exactly the load that makes the read fail, so the pauses are
+    conditional on this answer rather than on a claim about the call graph.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _read_mcp_settings(path: Path) -> dict[str, Any]:
-    """Read settings through the credential gate; only absence means no restrictions."""
+    """Read settings through the credential gate; only absence means no restrictions.
+
+    Off the event loop, a gated read that fails transiently is retried (see
+    :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
+    re-check, one pause, one final attempt. Each retry re-runs the whole gate,
+    so a path that is really refused stays refused, and a read that keeps
+    failing still raises: the caller's fail-closed reading of "unreadable" is
+    unchanged.
+
+    On a thread running an event loop, exactly ONE attempt runs, with no re-check
+    and no pause: the same single gated read the caller made before retries
+    existed. Every attempt is two to three bounded sensitive-path resolutions
+    (``validate_file_path``, ``safe_read_file_bytes``'s own ``validate_file_path``,
+    then the descriptor check's ``is_sensitive_path``), and each resolution can
+    block the calling thread for its 2 s budget plus up to 3 s of grace. The
+    resolver caps one thread's waits at 12 s per 25 s window and refuses
+    fail-closed for the rest of the window once that is spent, so one failing
+    attempt already prices at up to 12 s of blocked loop, and a second attempt
+    there would only add refusals to a thread that has just exhausted its
+    allowance while every session the gateway serves waits. Off the loop the
+    same cap bounds the three attempts at 12 s of waits plus the 2 s pause; the
+    rename-over race is cleared by the re-check, and a saturated pool by the
+    pause. A stall that reaches the loop thread is left to the fail-closed
+    contract rather than bought with a blocked loop.
+    """
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, validate_file_path
 
-    # Screen before even probing existence: a Windows link can name an untrusted share.
-    if validate_file_path(str(path)) is None:
-        raise ValueError("MCP settings path was refused")
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return {}
-    try:
-        raw = safe_read_file_bytes(str(path))
-    except FileTooLargeError as exc:
-        raise ValueError("MCP settings exceed the safe read limit") from exc
-    if raw is None:
-        raise ValueError("MCP settings could not be safely read")
+    refusal = "MCP settings could not be safely read"
+    if _on_loop_thread():
+        # One attempt, never a re-check or a pause: see the docstring.
+        schedule: tuple[float, ...] = (0.0,)
+    else:
+        schedule = (0.0, *_SETTINGS_READ_BACKOFF_SECS)
+    for pause in schedule:
+        if pause:
+            _sleep(pause)
+        # Screen before even probing existence: a Windows link can name an untrusted share.
+        if validate_file_path(str(path)) is None:
+            refusal = "MCP settings path was refused"
+            continue
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return {}
+        try:
+            raw = safe_read_file_bytes(str(path))
+        except FileTooLargeError as exc:
+            raise ValueError("MCP settings exceed the safe read limit") from exc
+        if raw is not None:
+            break
+        refusal = "MCP settings could not be safely read"
+    else:
+        raise ValueError(refusal)
     try:
         settings = json.loads(raw.decode("utf-8"))
     except RecursionError as exc:
@@ -988,11 +1073,26 @@ def kiro_control_plane_servers(
         return []
     allow = _tools_allowlist(spec)
     try:
-        settings = [_global_settings(strict=True)]
+        workspace_settings = None
         if work_dir:
-            settings.append(_read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json"))
-    except (OSError, ValueError):
-        logger.debug("session MCP: withholding Kiro overrides because settings are unreadable")
+            workspace_settings = _read_mcp_settings(
+                Path(work_dir) / ".kiro" / "settings" / "mcp.json"
+            )
+        settings = [_global_settings(strict=True)]
+        if workspace_settings is not None:
+            settings.append(workspace_settings)
+    except (OSError, ValueError) as exc:
+        # Withholding is the right direction (a native restriction we cannot read
+        # must stay authoritative), but unpooled Crew servers that kiro-cli mounts
+        # from the spec lose their session identity element, so their calls are
+        # refused ``identity_unattested``. Pooled broker stubs keep their token.
+        logger.warning(
+            "session MCP: MCP settings unreadable (%s); agent %r gets no identity"
+            " elements for unpooled Kiro Crew servers mounted from its spec, so their"
+            " calls will refuse identity_unattested",
+            exc,
+            agent,
+        )
         return []
     supported = {"command", "args", "env", "type", "autoApprove", "disabled", "disabledTools"}
     out = []
