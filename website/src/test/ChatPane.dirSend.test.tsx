@@ -569,9 +569,10 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
 })
 
 /* #10634: a NATIVE AskUserQuestion card is raised WHILE its own turn is still
- * running and waiting on the answer, and it carries neither `ask_id` (the
- * blocking backend card) nor `card_id` (the non-blocking `ask_question` MCP
- * card). Answering it must STEER into the live turn, not queue behind it — the
+ * running and waiting on the answer. It is server-owned like every card (a
+ * `card_id`) and the server marks it `native` on the frame — the one
+ * thing that tells it apart from the non-blocking `ask_question` MCP card.
+ * Answering it must STEER into the live turn, not queue behind it — the
  * queue path is what left the question unanswered until timeout. When the turn
  * has ended, the same card answer starts an ordinary next turn, exactly as the
  * non-blocking card always does. */
@@ -613,11 +614,13 @@ describe('ChatPane native question card (#10634) — steer while the turn is liv
   }
 
   function seedNativeCard(store: ReturnType<typeof nativeStore>, slot: string) {
-    // No ask_id AND no card_id — the native card shape (chat_runner.py broadcasts
-    // { slot, questions } only). setQuestionCard with neither id reproduces it.
+    // The native card shape: a server `card_id` plus the `native` mark
+    // (chat_runner.py posts it through post_question_card(native=True)).
     act(() => {
       store.dispatch(setQuestionCard({
         slot,
+        card_id: 'card-native',
+        native: true,
         questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
       }))
     })

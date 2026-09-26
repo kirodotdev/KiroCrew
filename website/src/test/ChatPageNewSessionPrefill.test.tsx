@@ -26,7 +26,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { switchSlot, endLocalTurn, setQuestionCard, setQuestionDraft, setFolderSuggestion, pendingQuestionFor } from '../store/chatSlice'
+import chatReducer, { switchSlot, endLocalTurn, setQuestionCard, setQuestionDraft, setFolderSuggestion, pendingQuestionFor, resolveQuestionCard } from '../store/chatSlice'
 import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
@@ -314,7 +314,7 @@ describe('App SDK chat launch intent', () => {
     vi.spyOn(singletonStore, 'getState').mockImplementation(store.getState)
     const questions = [{ question: 'Which task should run?', options: [{ label: 'Keep waiting' }] }]
     await act(async () => {
-      store.dispatch(setQuestionCard({ slot, questions, ...(kind === 'blocking' ? { ask_id: 'ask-human' } : {}) }))
+      store.dispatch(setQuestionCard({ slot, questions, ...(kind === 'blocking' ? { ask_id: 'ask-human' } : { card_id: 'card-human' }) }))
       store.dispatch(setFolderSuggestion({ slot, folderId: 'folder-notes', folderName: 'Notes', breadcrumb: 'Notes', ts: 100 }))
       if (kind === 'stateless-draft') store.dispatch(setQuestionDraft({ slot, active: true }))
     })
@@ -334,8 +334,20 @@ describe('App SDK chat launch intent', () => {
       expect(answerQuestion).not.toHaveBeenCalled()
       expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toEqual(card)
       expect(store.getState().chat.folderSuggestions[slot]).toEqual(folder)
+    } else if (kind === 'blocking') {
+      expect(answerQuestion).toHaveBeenCalledWith('ask-human')
+      expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toBeNull()
+      expect(store.getState().chat.folderSuggestions[slot]?.turns).toBe(queued ? 0 : 1)
     } else {
-      if (kind === 'blocking') expect(answerQuestion).toHaveBeenCalledWith('ask-human')
+      // A stateless card is server-owned: the send itself does not
+      // retire it. The server retires the record when the user row lands and
+      // announces it with `question_card_resolved`, which is what takes the
+      // card off screen (the mounted card reports no typed answer here, so the
+      // draft flag set above was already cleared on mount; draft sparing is
+      // pinned in chatSlice.questionCard.test.ts).
+      expect(answerQuestion).not.toHaveBeenCalled()
+      expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toEqual(card)
+      await act(async () => { store.dispatch(resolveQuestionCard({ card_id: 'card-human' })) })
       expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toBeNull()
       expect(store.getState().chat.folderSuggestions[slot]?.turns).toBe(queued ? 0 : 1)
     }
@@ -347,7 +359,7 @@ describe('App SDK chat launch intent', () => {
     vi.spyOn(singletonStore, 'getState').mockImplementation(store.getState)
     const questions = [{ question: 'Which task?', options: [{ label: 'Wait' }] }]
     await act(async () => {
-      store.dispatch(setQuestionCard({ slot: 'chat-old', questions, ...(kind === 'blocking' ? { ask_id: 'ask-old' } : {}) }))
+      store.dispatch(setQuestionCard({ slot: 'chat-old', questions, ...(kind === 'blocking' ? { ask_id: 'ask-old' } : { card_id: 'card-old' }) }))
     })
     let settle!: (response: unknown) => void
     sendChat.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
@@ -355,7 +367,7 @@ describe('App SDK chat launch intent', () => {
     await act(async () => { navigateInTest('/chat?sid=chat-old') })
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
     await act(async () => {
-      store.dispatch(setQuestionCard({ slot: 'chat-old', questions, fresh: true, ...(kind === 'blocking' ? { ask_id: 'ask-replacement' } : {}) }))
+      store.dispatch(setQuestionCard({ slot: 'chat-old', questions, ...(kind === 'blocking' ? { ask_id: 'ask-replacement' } : { card_id: 'card-replacement' }) }))
       await store.dispatch(switchSlot('chat-other'))
       store.dispatch(setQuestionCard({ slot: 'chat-other', questions, ask_id: 'ask-other' }))
     })

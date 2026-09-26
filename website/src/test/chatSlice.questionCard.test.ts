@@ -5,12 +5,15 @@
  * ask_question in different slots would evict each other, and the loser blocked
  * until its timeout with no card ever rendered.
  *
- * `question_card_resolved` arrives whenever a pending question stops waiting —
- * answered, timed out, or cancelled. It carries the ask_id so a LATE resolved
+ * Every card carries its SERVER identity: `ask_id` for a blocking ask, `card_id`
+ * for a stateless card (the MCP `ask_question` card and kiro-cli's native
+ * `AskUserQuestion` card alike). `question_card_resolved` arrives whenever
+ * a pending question stops waiting — answered, timed out, cancelled, or retired
+ * by the user's next message — and carries that identity, so a LATE resolved
  * event from an earlier question cannot wipe a newer card.
  */
 import { describe, it, expect } from 'vitest'
-import reducer, { setQuestionCard, setQuestionDraft, retireStatelessQuestion, captureStatelessCard, resolveQuestionCard, clearQuestionCard, sseChatMessage, appendMessage, appendSlotMessage, appendQueuedMessage, removeQueuedMessage, cancelQueuedMessage } from '../store/chatSlice'
+import reducer, { setQuestionCard, setQuestionDraft, resolveQuestionCard, clearQuestionCard, sseChatMessage, appendMessage, appendSlotMessage, appendQueuedMessage, removeQueuedMessage, cancelQueuedMessage } from '../store/chatSlice'
 import { reconcileQuestions } from '../hooks/useWebSocket'
 
 const initial = reducer(undefined, { type: '@@INIT' })
@@ -21,6 +24,11 @@ const QUESTIONS = [
 
 function withCard(slot: string, askId?: string, state = initial) {
   return reducer(state, setQuestionCard({ slot, ask_id: askId, questions: QUESTIONS }))
+}
+
+/** A STATELESS card as the server delivers it: a `card_id`, no `ask_id`. */
+function stateless(slot: string, cardId = 'card-1', state = initial) {
+  return reducer(state, setQuestionCard({ slot, card_id: cardId, questions: QUESTIONS }))
 }
 
 describe('question card state', () => {
@@ -57,10 +65,37 @@ describe('question card state', () => {
     expect(state.pendingQuestions).toEqual({})
   })
 
-  it('legacy cards without an ask_id are unaffected by resolve', () => {
-    // The pre-existing AskUserQuestion sniff path broadcasts no ask_id.
-    const state = reducer(withCard('chat-1', undefined), resolveQuestionCard({ ask_id: 'abc' }))
+  it('a stateless card is unaffected by a blocking-ask resolve', () => {
+    // The two identities are disjoint: an `ask_id` never names a `card_id` card.
+    const state = reducer(stateless('chat-1'), resolveQuestionCard({ ask_id: 'abc' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
+  })
+
+  it('resolveQuestionCard clears a stateless card by its card_id', () => {
+    let state = stateless('chat-1', 'card-a')
+    state = stateless('chat-2', 'card-b', state)
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-a' }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
+    expect(state.pendingQuestions['chat-2']?.serverCardId).toBe('card-b')
+  })
+
+  it('a stale card_id resolution leaves a newer card in the same slot intact', () => {
+    // Card A was superseded by card B; A's retirement arrives late.
+    let state = stateless('chat-1', 'card-a')
+    state = stateless('chat-1', 'card-b', state)
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-a' }))
+    expect(state.pendingQuestions['chat-1']?.serverCardId).toBe('card-b')
+  })
+
+  it('records the native mark only when the server sets it', () => {
+    // The mark is what routes a native card's answer as a steer into the live
+    // turn; the MCP card must never acquire it.
+    let state = reducer(initial, setQuestionCard({ slot: 'chat-1', card_id: 'card-n', native: true, questions: QUESTIONS }))
+    expect(state.pendingQuestions['chat-1']?.native).toBe(true)
+    state = reducer(initial, setQuestionCard({ slot: 'chat-1', card_id: 'card-m', native: false, questions: QUESTIONS }))
+    expect(state.pendingQuestions['chat-1']).not.toHaveProperty('native')
+    state = stateless('chat-1', 'card-p')
+    expect(state.pendingQuestions['chat-1']).not.toHaveProperty('native')
   })
 
   it('clearQuestionCard clears just that slot', () => {
@@ -83,6 +118,7 @@ describe('question card state', () => {
   })
 })
 
+
 /**
  * A STATELESS card (no ask_id — `post_question_card`, the agent ended its turn
  * on it) is answered by "the next message the USER sends". So a `user` frame is
@@ -95,12 +131,16 @@ describe('question card state', () => {
  * unanswered card is retired by the user answering it or by Dismiss — nothing
  * else.
  *
- * Server-owned cards (ask_id) are exempt from this path entirely: their
- * lifecycle is the `question_card_resolved` broadcast, and clearing one on a
- * mid-turn steer frame would strand the blocked tool call with no card.
+ * Blocking cards (ask_id) are exempt from this path entirely: their lifecycle
+ * is the `question_card_resolved` broadcast, and clearing one on a mid-turn
+ * steer frame would strand the blocked tool call with no card.
+ *
+ * The server owns the stateless card's lifecycle too and announces its
+ * retirement with `question_card_resolved`; this local drop is defense in depth
+ * for the frame that arrives before that broadcast.
  */
 describe('stateless card staleness on turn-consuming frames', () => {
-  const legacy = (slot: string, state = initial) => withCard(slot, undefined, state)
+  const legacy = (slot: string, state = initial) => stateless(slot, 'card-1', state)
 
   it('a user frame on the slot drops its stateless card (active path)', () => {
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
@@ -162,18 +202,17 @@ describe('stateless card staleness on turn-consuming frames', () => {
     let state = { ...initial, activeSlot: 'chat-1' }
     const frame = { slot: 'chat-1', role: 'user', content: 'earlier turn', meta: { mid: 'm-1' } }
     state = reducer(state, sseChatMessage(frame))
-    state = reducer(state, setQuestionCard({ slot: 'chat-1', questions: QUESTIONS }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-1', questions: QUESTIONS }))
     state = reducer(state, sseChatMessage(frame)) // replay of the SAME mid
     expect(state.pendingQuestions['chat-1']).toBeDefined()
   })
 
-  // The sender's own user frame is NEVER echoed over the wire (slot.append
-  // skips the broadcast for `user` rows the composer already rendered
-  // optimistically), so the SEND PATH retires the card — but only after the
-  // server confirms delivery (retireStatelessQuestion, dispatched on ok or
-  // queued). The optimistic appends themselves must NOT retire: a failed
-  // send (offline, 5xx) leaves the session unchanged, and deleting the card
-  // then would strand a question the agent is still inviting an answer to.
+  // The optimistic appends must NOT retire the card: a failed send (offline,
+  // 5xx) leaves the session unchanged, and deleting the card then would strand
+  // a question the agent is still inviting an answer to. The server retires the
+  // card when the user row actually lands and announces it with
+  // `question_card_resolved` (tested below), to every window including the one
+  // that sent the answer.
   it('an optimistic composer append leaves the stateless card in place (appendMessage)', () => {
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     state = reducer(state, appendMessage({ role: 'user', content: 'answering in the composer', cls: 'msg msg-u' }))
@@ -186,72 +225,72 @@ describe('stateless card staleness on turn-consuming frames', () => {
     expect(state.pendingQuestions['chat-1']).toBeDefined()
   })
 
-  it('confirmed delivery retires the stateless card (retireStatelessQuestion)', () => {
+
+  it('the server retirement broadcast retires the stateless card (question_card_resolved)', () => {
+    // What the composer send path relies on: the user row lands on the server,
+    // which clears the record and announces its card_id.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
-    const captured = captureStatelessCard(state.pendingQuestions, 'chat-1')
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: captured! }))
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  it('a stale send completion cannot retire a newer card (identity mismatch)', () => {
-    // Race: send starts while card A is pending → a new turn replaces it with
-    // card B → the slow completion for A must not delete B.
+  it('a stale retirement cannot retire a newer card (identity mismatch)', () => {
+    // Race: the answer to card A is sent → a new turn replaces it with card B →
+    // A's retirement broadcast arrives after B was rendered and must not delete B.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
-    const capturedAtSend = captureStatelessCard(state.pendingQuestions, 'chat-1') // card A
     state = reducer(state, setQuestionCard({
       slot: 'chat-1',
+      card_id: 'card-2',
       questions: [{ question: 'A newer ask?', options: [{ label: 'Yes' }] }],
     }))
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: capturedAtSend! }))
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']?.questions[0].question).toBe('A newer ask?')
   })
 
-  it('a stale completion cannot retire a newer IDENTICAL question (fresh delivery identity)', () => {
-    // GPT round-5 race: the agent repeats the exact same question. Payload
-    // comparison cannot tell the two cards apart — the per-delivery cardId
-    // (minted per fresh `question_card` broadcast) can.
+  it('a stale retirement cannot retire a newer IDENTICAL question (server identity)', () => {
+    // The agent repeats the exact same question. Payload comparison cannot tell
+    // the two cards apart — the server's card_id, minted per ask, can.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
-    const capturedAtSend = captureStatelessCard(state.pendingQuestions, 'chat-1') // card A
-    // Live broadcast of a NEW ask with the identical payload (fresh: true).
-    state = reducer(state, setQuestionCard({ slot: 'chat-1', questions: JSON.parse(JSON.stringify(QUESTIONS)), fresh: true }))
-    const newId = captureStatelessCard(state.pendingQuestions, 'chat-1')
-    expect(newId).not.toBe(capturedAtSend)
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: capturedAtSend! }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-2', questions: JSON.parse(JSON.stringify(QUESTIONS)) }))
+    expect(state.pendingQuestions['chat-1'].serverCardId).toBe('card-2')
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
     // The live card is still retirable under its own identity.
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: newId! }))
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-2' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  it('confirmed delivery leaves a server-owned (ask_id) card alone', () => {
+  it('a card_id retirement leaves a blocking (ask_id) card alone', () => {
     let state = { ...withCard('chat-1', 'blocked-ask'), activeSlot: 'chat-1' }
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: state.pendingQuestions['chat-1']!.cardId! }))
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']?.ask_id).toBe('blocked-ask')
   })
 
-  it('confirmed delivery on another slot leaves the card alone', () => {
+  it('an identity-guarded clear (dismiss) takes only the card it names', () => {
+    // PendingQuestionCard.dismissStateless clears after the server confirmed the
+    // dismissal; a newer card that replaced the dismissed one mid-flight stays.
     let state = legacy('chat-1')
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-2', expected: state.pendingQuestions['chat-1']!.cardId! }))
+    state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-stale' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
+    state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-1' }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  // The send sites must call this at ENTRY, before their first await — the
-  // helper pins what gets captured: only a stateless card yields an identity.
-  it('captureStatelessCard returns the stateless card identity and nothing else', () => {
-    const captured = captureStatelessCard(legacy('chat-1').pendingQuestions, 'chat-1')
-    expect(captured).toMatch(/^card-/)
-    expect(captureStatelessCard(withCard('chat-1', 'blocked-ask').pendingQuestions, 'chat-1')).toBeNull()
-    expect(captureStatelessCard(initial.pendingQuestions, 'chat-1')).toBeNull()
-    expect(captureStatelessCard(legacy('chat-1').pendingQuestions, null)).toBeNull()
+  it('an explicit clear (dismiss) does not spare a draft in progress', () => {
+    // Unlike the server's retirement broadcast, Dismiss is the user's own
+    // decision about this card, typed text included.
+    let state = legacy('chat-1')
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-1' }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  it('capture → clear (card submit) → confirmed completion is a no-op', () => {
-    // The stateless submit flow clears the card itself while the answer send
-    // is in flight; the completion must not resurrect or double-delete.
+  it('card submit clears the card; the later retirement broadcast is a no-op', () => {
+    // The stateless submit flow clears the card itself while the answer send is
+    // in flight; the server's retirement must not resurrect or double-delete.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
-    const captured = captureStatelessCard(state.pendingQuestions, 'chat-1')
     state = reducer(state, clearQuestionCard({ slot: 'chat-1' }))
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: captured! }))
+    state = reducer(state, resolveQuestionCard({ card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
@@ -260,8 +299,9 @@ describe('stateless card staleness on turn-consuming frames', () => {
     // rounds each found a way sender-side queued retirement deletes the wrong
     // card (cancellable acceptance, indistinguishable hydrated system items,
     // duplicate rows from the hydration race, and a newer card arriving before
-    // the pop). The queued answer's card retires like every other device's:
-    // at the popped turn's next turn-consuming frame, via the frame applier.
+    // the pop). The server owns the retirement: the popped entry lands there as
+    // a live user row, which retires the record and broadcasts
+    // `question_card_resolved` by identity.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'my queued answer', ts: 't1', queue_id: 'q-1' }))
     // Cancel path: card must survive.
@@ -330,49 +370,78 @@ describe('stateless card staleness on turn-consuming frames', () => {
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  it('a fresh, structurally identical replacement preserves draft protection', () => {
-    // GPT round-11: a fresh identical card keeps the mounted component (keyed
-    // by payload), so the user's local draft SURVIVES the swap — resetting
-    // draftActive here would let the next user frame silently destroy it. A
-    // fresh DIFFERENT payload remounts (draft genuinely gone), so it starts
-    // clean.
+
+  it('a same-id re-delivery preserves draft protection', () => {
+    // A reconnect re-lists the SAME card (/pending) while the user is typing a
+    // custom answer: the entry — and its draftActive — must survive untouched,
+    // or the next user frame silently destroys the draft.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     const questions = state.pendingQuestions['chat-1'].questions
     state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
-    // Fresh delivery of the IDENTICAL payload (e.g. the agent re-asks).
-    state = reducer(state, setQuestionCard({ slot: 'chat-1', questions, fresh: true }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-1', questions: JSON.parse(JSON.stringify(questions)) }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBe(true)
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'unrelated send' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
-    // Fresh delivery of a DIFFERENT payload remounts the card: clean slate.
+  })
+
+  it('a new-id but identical replacement preserves draft protection; a different payload starts clean', () => {
+    // The agent re-asks the identical question under a fresh card_id while the
+    // user is typing. The component stays mounted (keyed by slot, and
+    // QuestionCard resets only on a payload change), so the typed text
+    // SURVIVES — the store must keep saying so, or the next user frame retires
+    // a card that still holds unsent work. A different payload resets the
+    // component (draft genuinely gone), so its entry starts clean.
+    let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
+    const questions = state.pendingQuestions['chat-1'].questions
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-2', questions: JSON.parse(JSON.stringify(questions)) }))
+    expect(state.pendingQuestions['chat-1'].serverCardId).toBe('card-2')
+    expect(state.pendingQuestions['chat-1'].draftActive).toBe(true)
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'unrelated send' }))
+    expect(state.pendingQuestions['chat-1']?.serverCardId).toBe('card-2')
+    // Different payload: clean slate.
     const other = [{ question: 'Different?', options: [{ label: 'Yes' }] }]
-    state = reducer(state, setQuestionCard({ slot: 'chat-1', questions: other, fresh: true }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-3', questions: other }))
+    expect(state.pendingQuestions['chat-1'].draftActive).toBeUndefined()
+    // A draft that was already cleared is not resurrected by an identical re-ask.
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: false }))
+    state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-4', questions: other }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBeUndefined()
   })
 })
 
+
 /**
  * Card replacement semantics in setQuestionCard: a websocket reconnect
- * re-dispatches the SAME still-pending card with a freshly parsed (structurally
- * equal, referentially new) questions payload — that is not a new ask and must
- * not churn the entry. A genuinely different ask replaces the card.
+ * re-dispatches the SAME still-pending card (same server identity, freshly
+ * parsed questions payload) — that is not a new ask and must not churn the
+ * entry. A card with a different identity replaces it.
  */
 describe('card re-dispatch vs replacement', () => {
   it('a reconnect re-dispatch of the same card keeps the entry unchanged', () => {
-    const state = withCard('chat-1')
-    const state2 = reducer(state, setQuestionCard({ slot: 'chat-1', questions: JSON.parse(JSON.stringify(QUESTIONS)) }))
+    const state = stateless('chat-1', 'card-a')
+    const state2 = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-a', questions: JSON.parse(JSON.stringify(QUESTIONS)) }))
+    expect(state2.pendingQuestions['chat-1']).toBe(state.pendingQuestions['chat-1'])
+  })
+
+  it('the same holds for a blocking ask re-listed by its ask_id', () => {
+    const state = withCard('chat-1', 'ask-a')
+    const state2 = reducer(state, setQuestionCard({ slot: 'chat-1', ask_id: 'ask-a', questions: JSON.parse(JSON.stringify(QUESTIONS)) }))
     expect(state2.pendingQuestions['chat-1']).toBe(state.pendingQuestions['chat-1'])
   })
 
   it('a genuinely different ask replaces the card', () => {
-    let state = withCard('chat-1')
+    let state = stateless('chat-1', 'card-a')
     state = reducer(state, setQuestionCard({
       slot: 'chat-1',
+      card_id: 'card-b',
       questions: [{ question: 'A different ask?', options: [{ label: 'Yes' }] }],
     }))
     expect(state.pendingQuestions['chat-1']?.questions[0].question).toBe('A different ask?')
+    expect(state.pendingQuestions['chat-1']?.serverCardId).toBe('card-b')
   })
 })
+
 
 /**
  * The reported defect, end to end: a monitored conductor session called
@@ -412,7 +481,7 @@ describe('an unanswered stateless card survives later turns and a reload', () =>
   }
 
   it('survives ten nudge cycles and the assistant turns between them', () => {
-    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    let state = { ...stateless('chat-1', 'card-a'), activeSlot: 'chat-1' }
     for (let cycle = 1; cycle <= 10; cycle++) {
       state = reducer(state, sseChatMessage({
         slot: 'chat-1', role: 'nudge', content: `[auto-nudge cycle ${cycle}]\ncheck the PR`,
@@ -438,7 +507,7 @@ describe('an unanswered stateless card survives later turns and a reload', () =>
   it('stays after a reload that lands mid-nudge-loop', () => {
     // The exact sequence the user hit: ask, nudges, switch away (reload of the
     // pane state), come back — and then more nudges.
-    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    let state = { ...stateless('chat-1', 'card-a'), activeSlot: 'chat-1' }
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo', meta: { mid: 'n-1' } }))
     state = rehydrateFromPending('chat-1', 'card-a', { ...initial, activeSlot: 'chat-1' })
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 2]\ngo', meta: { mid: 'n-2' } }))
@@ -448,7 +517,7 @@ describe('an unanswered stateless card survives later turns and a reload', () =>
   it('is still retired by the user answering it', () => {
     // The fix must not turn the card into something that never goes away: the
     // user's own next message is exactly what it was waiting for.
-    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    let state = { ...stateless('chat-1', 'card-a'), activeSlot: 'chat-1' }
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo' }))
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'use the assets branch' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
@@ -457,10 +526,9 @@ describe('an unanswered stateless card survives later turns and a reload', () =>
   it('is still retired by an explicit dismiss after nudges', () => {
     // Dismiss (PendingQuestionCard.dismissStateless) is the other exit, and the
     // one that now carries the "stale card" case the nudge retirement covered.
-    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    let state = { ...stateless('chat-1', 'card-a'), activeSlot: 'chat-1' }
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo' }))
-    const delivery = state.pendingQuestions['chat-1'].cardId!
-    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: delivery }))
+    state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-a' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 })

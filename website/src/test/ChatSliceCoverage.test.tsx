@@ -15,7 +15,6 @@ import chatReducer, {
   appendMessage,
   appendQueuedMessage,
   appendSlotMessage,
-  captureStatelessCard,
   capturePendingAskId,
   shouldResolveAskOnSend,
   clearFolderSuggestion,
@@ -40,7 +39,6 @@ import chatReducer, {
   requestStop,
   resolveQuestionCard,
   resumeFromHistory,
-  retireStatelessQuestion,
   selectComposerBusy,
   selectContinuable,
   selectSlotPendingApproval,
@@ -163,30 +161,21 @@ describe('chatSlice exported helpers', () => {
   })
 
   it('reads a pending question card fail-closed', () => {
-    const map = { real: { slot: 'real', questions: [], cardId: 'card-1' } }
-    expect(pendingQuestionFor(map, 'real')?.cardId).toBe('card-1')
+    const map = { real: { slot: 'real', questions: [], serverCardId: 'card-1' } }
+    expect(pendingQuestionFor(map, 'real')?.serverCardId).toBe('card-1')
     expect(pendingQuestionFor(map, 'absent')).toBeNull()
     expect(pendingQuestionFor(undefined, 'real')).toBeNull()
     expect(pendingQuestionFor(map, null)).toBeNull()
     for (const bad of POISON) expect(pendingQuestionFor(map, bad)).toBeNull()
   })
 
-  it('captures a stateless card identity but never a server-owned one', () => {
-    const stateless = { s: { slot: 's', questions: [], cardId: 'card-7' } }
-    expect(captureStatelessCard(stateless, 's')).toBe('card-7')
-    const serverOwned = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7' } }
-    expect(captureStatelessCard(serverOwned, 's')).toBeNull()
-    expect(captureStatelessCard(stateless, 'absent')).toBeNull()
-    const unminted = { s: { slot: 's', questions: [] } }
-    expect(captureStatelessCard(unminted, 's')).toBeNull()
-  })
-
-  // The mirror capture for blocking cards, which the send path resolves over the
-  // network because an agent is parked on the request.
+  // The send-time capture for blocking cards, which the send path resolves over
+  // the network because an agent is parked on the request. (A stateless card
+  // has no send-time capture: the server retires it on the user row.)
   it('captures a blocking card ask_id but never a stateless one', () => {
-    const blocking = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7' } }
+    const blocking = { s: { slot: 's', ask_id: 'ask-1', questions: [] } }
     expect(capturePendingAskId(blocking, 's')).toBe('ask-1')
-    const stateless = { s: { slot: 's', questions: [], cardId: 'card-7' } }
+    const stateless = { s: { slot: 's', questions: [] } }
     expect(capturePendingAskId(stateless, 's')).toBeNull()
     expect(capturePendingAskId(blocking, 'absent')).toBeNull()
     expect(capturePendingAskId(undefined, 's')).toBeNull()
@@ -198,9 +187,9 @@ describe('chatSlice exported helpers', () => {
   // selection lives only in the component — the same work-in-progress invariant
   // the stateless path keeps.
   it('declines to capture a blocking card that holds an answer in progress', () => {
-    const drafting = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: true } }
+    const drafting = { s: { slot: 's', ask_id: 'ask-1', questions: [], draftActive: true } }
     expect(capturePendingAskId(drafting, 's')).toBeNull()
-    const settled = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: false } }
+    const settled = { s: { slot: 's', ask_id: 'ask-1', questions: [], draftActive: false } }
     expect(capturePendingAskId(settled, 's')).toBe('ask-1')
   })
 
@@ -284,7 +273,6 @@ describe('chatSlice prototype-pollution guards', () => {
     for (const bad of POISON) {
       store.dispatch(setQuestionCard({ slot: bad, questions: [{ question: 'q', options: [] }] }))
       store.dispatch(setQuestionDraft({ slot: bad, active: true }))
-      store.dispatch(retireStatelessQuestion({ slot: bad, expected: 'card-1' }))
       store.dispatch(clearQuestionCard({ slot: bad }))
       store.dispatch(setFollowupCard({ slot: bad, items: [{ title: 't', description: 'd', prompt: 'p' }] }))
       store.dispatch(clearFollowupCard({ slot: bad }))
@@ -496,36 +484,28 @@ describe('chatSlice bounded retention', () => {
 })
 
 describe('chatSlice question cards', () => {
-  it('keeps one card per re-delivered ask but re-mints identity for a fresh one', () => {
+  it('keeps one entry per re-delivered server identity and replaces on a new one', () => {
     const store = makeStore()
     const questions = [{ question: 'Ship it?', options: [{ label: 'Yes' }] }]
     store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-1', questions }))
-    const first = chat(store).pendingQuestions.front.cardId
-    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-1', questions }))
-    expect(chat(store).pendingQuestions.front.cardId).toBe(first)
-    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-1', questions, fresh: true }))
-    expect(chat(store).pendingQuestions.front.cardId).not.toBe(first)
+    const first = chat(store).pendingQuestions.front
+    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-1', questions: [...questions] }))
+    expect(chat(store).pendingQuestions.front).toBe(first)
+    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-2', questions }))
+    expect(chat(store).pendingQuestions.front).not.toBe(first)
+    expect(chat(store).pendingQuestions.front.ask_id).toBe('ask-2')
   })
 
-  it('retires a stateless card only for the identity the send captured', () => {
+  it('clears a stateless card only for the server identity the dismiss named', () => {
     const store = makeStore()
-    store.dispatch(setQuestionCard({ slot: 'front', questions: [{ question: 'q', options: [] }] }))
-    const captured = captureStatelessCard(chat(store).pendingQuestions, 'front')
-    store.dispatch(retireStatelessQuestion({ slot: 'front', expected: 'card-stale' }))
+    store.dispatch(setQuestionCard({ slot: 'front', card_id: 'card-1', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(clearQuestionCard({ slot: 'front', card_id: 'card-stale' }))
     expect(chat(store).pendingQuestions.front).toBeDefined()
-    store.dispatch(retireStatelessQuestion({ slot: 'front', expected: captured as string }))
+    store.dispatch(clearQuestionCard({ slot: 'front', card_id: 'card-1' }))
     expect(chat(store).pendingQuestions.front).toBeUndefined()
-    // A retire against an empty slot is a no-op rather than a throw.
-    store.dispatch(retireStatelessQuestion({ slot: 'front', expected: 'card-1' }))
+    // A clear against an empty slot is a no-op rather than a throw.
+    store.dispatch(clearQuestionCard({ slot: 'front', card_id: 'card-1' }))
     expect(chat(store).pendingQuestions.front).toBeUndefined()
-  })
-
-  it('never retires a server-owned card through the stateless path', () => {
-    const store = makeStore()
-    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-1', questions: [{ question: 'q', options: [] }] }))
-    const cardId = chat(store).pendingQuestions.front.cardId as string
-    store.dispatch(retireStatelessQuestion({ slot: 'front', expected: cardId }))
-    expect(chat(store).pendingQuestions.front).toBeDefined()
   })
 
   it('clears a server-owned card by ask id across slots', () => {
