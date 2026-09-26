@@ -131,6 +131,15 @@ const isSlotOnScreen = (slot: string): boolean =>
 const isSlotRenderedVisibly = (slot: string): boolean =>
   isChatSurfaceVisible() || slot === getViewedThreadSlot()
 const WORKFLOW_HEAL_MS = 15000
+/** A socket that has delivered nothing for this long while the page is visible
+ *  is treated as dead, even when its `readyState` still reads OPEN. The gateway
+ *  pushes a `dashboard` status frame on every socket every 5s
+ *  (`_WS_STATUS_INTERVAL` in `dashboard/ws.py`), so this is four missed ticks. */
+export const WS_SILENCE_MS = 20_000
+/** How often the silence check runs: the status frame's own cadence. */
+export const WS_SILENCE_CHECK_MS = 5_000
+/** Ceiling for the silence window after repeated silent reconnects. */
+export const WS_SILENCE_MAX_MS = 300_000
 const LEGACY_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'legacy'] as const
 const STRUCTURED_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'structured'] as const
 
@@ -409,6 +418,16 @@ export function useWebSocket() {
   const logCbRef = useRef<LogCallback>(null)
   const subagentSubRef = useRef(false)
   const reconnectRef = useRef(1000)
+  // Silence watchdog state (see WS_SILENCE_MS), kept in visible time: when the
+  // current socket last delivered a frame, when its silence clock started (at
+  // open), when the page was hidden (0 while visible), until when a socket
+  // thawed by a return is spared, and how many silent sockets in a row the
+  // watchdog has replaced.
+  const lastFrameAtRef = useRef(0)
+  const silenceClockStartedAtRef = useRef(0)
+  const hiddenAtRef = useRef(0)
+  const graceUntilRef = useRef(0)
+  const silentReconnectsRef = useRef(0)
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const lastVersionRef = useRef<string | null>(null)
@@ -497,6 +516,15 @@ export function useWebSocket() {
     voicePlayingRef.current = false
     dispatch(setVoicePlaying(false))
   }, [dispatch])
+
+  const releaseVoiceOnSocketLoss = useCallback(() => {
+    if (!voiceRequestsRef.current.size && !voicePlayingRef.current && !store.getState().chat.voicePlaying) return
+    reportVoiceFailure({
+      slot: store.getState().chat.activeSlot, code: 'voice_playback_failed',
+    })
+    // Audio frames have no reconnect replay, so release the incomplete stream.
+    stopVoice()
+  }, [stopVoice])
 
   const getPcmPlayer = useCallback(() => {
     pcmPlayerRef.current ??= new VoicePcmPlayer(
@@ -1222,6 +1250,8 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       reconnectRef.current = 1000
+      silenceClockStartedAtRef.current = Date.now()
+      lastFrameAtRef.current = silenceClockStartedAtRef.current
       // Forget the last-seen allowlist generation: it is process-local to the
       // gateway, so after a restart an equal number can mean a different
       // allowlist. Clearing it makes the next generation frame refetch.
@@ -1459,6 +1489,7 @@ export function useWebSocket() {
     }
 
     ws.onmessage = (e) => {
+      if (wsRef.current === ws) lastFrameAtRef.current = Date.now()
       try {
         const msg = JSON.parse(e.data)
         const { type, data } = msg
@@ -2815,21 +2846,14 @@ export function useWebSocket() {
       wsRef.current = null
 
       if (closingRef.current) return
-      if (voiceRequestsRef.current.size || voicePlayingRef.current || store.getState().chat.voicePlaying) {
-        reportVoiceFailure({
-          slot: store.getState().chat.activeSlot, code: 'voice_playback_failed',
-        })
-        // Audio frames have no reconnect replay. Retrying the connection cannot
-        // recover the missing samples, so release the pending stream explicitly.
-        stopVoice()
-      }
+      releaseVoiceOnSocketLoss()
       const delay = reconnectRef.current
       reconnectRef.current = Math.min(delay * 2, 10000)
       reconnectTimerRef.current = setTimeout(connect, delay)
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, flushVoiceTail, queryClient, stopVoice, getPcmPlayer, syncPendingApprovals, syncPendingQuestions, syncWorkflowRuns, seedAutomations, recordRetiredId, retireApproval])
+  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, flushVoiceTail, queryClient, stopVoice, releaseVoiceOnSocketLoss, getPcmPlayer, syncPendingApprovals, syncPendingQuestions, syncWorkflowRuns, seedAutomations, recordRetiredId, retireApproval])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes
@@ -2846,6 +2870,7 @@ export function useWebSocket() {
     reconnectRef.current = 1000  // reset backoff window
     const ws = wsRef.current
     if (ws && ws.readyState !== WebSocket.CLOSED) {
+      releaseVoiceOnSocketLoss()
       // Detach handlers BEFORE close() so the onclose handler doesn't fire
       // asynchronously and schedule a redundant reconnect on top of our 0ms
       // timer below — that race would briefly create two parallel WebSocket
@@ -2860,7 +2885,78 @@ export function useWebSocket() {
     }
     wsRef.current = null
     reconnectTimerRef.current = setTimeout(connect, 0)
-  }, [connect])
+  }, [connect, releaseVoiceOnSocketLoss])
+
+  /** Replace a socket that is OPEN but has stopped delivering.
+   *
+   *  A browser can keep a WebSocket whose transport is gone -- a phone that
+   *  changed networks, or a tab resumed after the OS froze it -- without ever
+   *  firing `onclose`. Nothing else notices: the reconnect catch-up only runs on
+   *  close, and the health probe only polls while `connected` is false. Every
+   *  one-shot frame is then lost until a manual reload; an agent-armed
+   *  `autonudge_state` is the visible case, since no local mutation writes that
+   *  record. The gateway's 5s `dashboard` frame is the liveness signal: while the
+   *  page is visible, a socket silent for WS_SILENCE_MS is torn down through
+   *  `forceReconnect`, whose catch-up re-reads every frame family.
+   *
+   *  Silence is measured in visible time only. Hidden pages are skipped (timers
+   *  are throttled there, and a suspended tab processed nothing); on the return
+   *  every stamp moves past the hidden interval, so silence adds up across tab
+   *  switches while a frame that arrived in the background counts as arriving
+   *  at the return. A thawed socket then gets two checks to deliver its next
+   *  status frame before it can be replaced -- unless its visible silence had
+   *  already passed the window when the page came back, in which case the
+   *  first check replaces it, so a dead socket cannot outlive a run of glances
+   *  each shorter than that grace. Each consecutive silent replacement doubles
+   *  the window up to WS_SILENCE_MAX_MS, so a gateway that stopped sending
+   *  status on a live socket costs one reconnect per window rather than one
+   *  every 20s; a socket observed live for a whole window of visible time since
+   *  it opened resets the count. */
+  useEffect(() => {
+    const silenceWindowMs = () => Math.min(
+      WS_SILENCE_MS * 2 ** silentReconnectsRef.current,
+      WS_SILENCE_MAX_MS,
+    )
+    const check = () => {
+      if (document.hidden) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      const now = Date.now()
+      const silenceMs = silenceWindowMs()
+      if (now - lastFrameAtRef.current <= silenceMs) {
+        if (now - silenceClockStartedAtRef.current > silenceMs) silentReconnectsRef.current = 0
+        return
+      }
+      if (now < graceUntilRef.current) return
+      silentReconnectsRef.current += 1
+      forceReconnect()
+    }
+    const onVisibility = () => {
+      const now = Date.now()
+      if (document.hidden) {
+        hiddenAtRef.current = now
+        return
+      }
+      // Move each stamp past only the hidden time after it, and never past
+      // now: a stamp from before the hide keeps its visible age, and a frame
+      // that arrived while hidden counts as arriving at the return.
+      const skipHidden = (stamp: number) => stamp + now - Math.max(hiddenAtRef.current, stamp)
+      lastFrameAtRef.current = skipHidden(lastFrameAtRef.current)
+      silenceClockStartedAtRef.current = skipHidden(silenceClockStartedAtRef.current)
+      hiddenAtRef.current = 0
+      // Two checks of grace for a thawed socket, none for one whose visible
+      // silence had already passed the window before it was hidden.
+      graceUntilRef.current = now - lastFrameAtRef.current > silenceWindowMs()
+        ? 0
+        : now + WS_SILENCE_CHECK_MS * 2
+    }
+    const timer = setInterval(check, WS_SILENCE_CHECK_MS)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [forceReconnect])
 
   useEffect(() => {
     closingRef.current = false  // reset for StrictMode re-mount
