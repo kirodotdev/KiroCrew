@@ -116,3 +116,46 @@ class TestOccurrenceWalkStaysLinear:
             assert suffix == ""
 
         assert_rejected_without_backtracking(untouched, lambda n: "x[OPTIONSz" * n)
+
+
+class TestAnImpossibleNestedHeadIsNotHeldBack:
+    """A nested head sits at a position already in the buffer, so no later byte
+    can rescue it -- the finished body refuses it forever. A probe tempering
+    against only its OWN head held such a fragment as still-streaming, and the
+    detach walk withheld it from the visible cut. On WhatsApp the final render
+    discards that suffix and never re-renders, so the text was lost silently.
+    Both probes must refuse exactly what ``_MARKER_BODY_TEMPER`` refuses.
+    """
+
+    def test_an_action_label_nesting_the_singular_head_stays_visible(self):
+        text = "Answer [OPTION-ACTIONS: close=x [OPTION:"
+        assert split_trailing_protocol_suffix(text) == (text, "")
+
+    def test_an_options_label_nesting_the_singular_head_stays_visible(self):
+        text = "Answer [OPTIONS: see [OPTION:"
+        assert split_trailing_protocol_suffix(text) == (text, "")
+
+    def test_the_inner_completable_prefix_is_still_held(self):
+        """CONTROL: only the impossible OUTER fragment stays visible. The inner
+        ``[OPTIONS: menu`` can still finish with ``| x]``, so it is withheld."""
+        visible, suffix = split_trailing_protocol_suffix(
+            "Answer [OPTION-ACTIONS: close=Return to [OPTIONS: menu"
+        )
+        assert visible == "Answer [OPTION-ACTIONS: close=Return to "
+        assert suffix == "[OPTIONS: menu"
+
+    def test_control_ordinary_bracket_nesting_is_still_held(self):
+        """CONTROL against over-tightening: ``arr[0`` opens no head, so the
+        temper admits it and the fragment must remain a streaming candidate."""
+        visible, suffix = split_trailing_protocol_suffix("body [OPTIONS: check arr[0")
+        assert visible == "body "
+        assert suffix == "[OPTIONS: check arr[0"
+
+    def test_control_a_headless_bracket_word_is_still_held(self):
+        """CONTROL: ``[OPTIONS`` with no colon is not a head, so the existing
+        detach behaviour for it is unchanged by the widened temper."""
+        visible, suffix = split_trailing_protocol_suffix(
+            "prose [OPTIONS: mention [OPTIONS in a label"
+        )
+        assert visible == "prose "
+        assert suffix == "[OPTIONS: mention [OPTIONS in a label"
