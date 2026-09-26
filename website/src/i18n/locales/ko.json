@@ -7361,6 +7361,8 @@
       "project_directory_path": "프로젝트 디렉터리 경로",
       "recent": "최근",
       "recent_projects": "최근 프로젝트",
+      "recent_unavailable": "최근 프로젝트를 사용할 수 없음",
+      "retry": "다시 시도",
       "search_recent_projects": "최근 프로젝트 검색",
       "search_recent_projects_2": "최근 프로젝트 검색…",
       "select": "선택",

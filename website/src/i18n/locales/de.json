@@ -7471,6 +7471,8 @@
       "project_directory_path": "Pfad des Projektverzeichnisses",
       "recent": "Kürzlich",
       "recent_projects": "Kürzliche Projekte",
+      "recent_unavailable": "Zuletzt verwendete Projekte nicht verfügbar",
+      "retry": "Wiederholen",
       "search_recent_projects": "Kürzliche Projekte suchen",
       "search_recent_projects_2": "Kürzliche Projekte suchen…",
       "select": "Auswählen",

@@ -4963,6 +4963,8 @@
       "project_directory_path": "Project directory path",
       "recent": "Recent",
       "recent_projects": "Recent projects",
+      "recent_unavailable": "Recent projects unavailable",
+      "retry": "Retry",
       "search_recent_projects": "Search recent projects",
       "search_recent_projects_2": "Search recent projects…",
       "select": "Select",

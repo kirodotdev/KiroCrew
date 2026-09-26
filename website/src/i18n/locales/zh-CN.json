@@ -7361,6 +7361,8 @@
       "project_directory_path": "项目目录路径",
       "recent": "最近",
       "recent_projects": "最近项目",
+      "recent_unavailable": "最近项目不可用",
+      "retry": "重试",
       "search_recent_projects": "搜索最近项目",
       "search_recent_projects_2": "搜索最近项目…",
       "select": "选择",
