@@ -19,6 +19,7 @@ from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
     effort_config_option_id,
     effort_config_option_value,
+    resolve_selected_backend,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
@@ -164,6 +165,16 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
 
 
+def _get_acp_backend(config: Optional[dict] = None) -> str:
+    """Configured ``agent.acp_backend``, through the one selection gate (H3).
+
+    The pool reads raw ``config.json``, which never passed the loader's
+    normalizer, so an unselectable or malformed value degrades to Kiro here.
+    """
+    data = _read_config() if config is None else config
+    return resolve_selected_backend(_section(data, "agent").get("acp_backend"))
+
+
 def _get_idle_ttl(config: Optional[dict] = None) -> float:
     """Seconds the pool may sit fully idle before scaling to zero.
 
@@ -277,11 +288,13 @@ class AcpWorker(Worker):
         *,
         sandbox_mode: Optional[str] = None,
         effort: Optional[str] = None,
+        acp_backend: Optional[str] = None,
     ) -> None:
         self._client: Optional[AcpClient] = None
         # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
         # lazily in ``start`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
+        self._acp_backend = acp_backend
         self._effort = _normalize_effort(effort)
         self._effective_effort: Optional[str] = None
         # PID currently shielded from the gateway orphan sweep (see module note).
@@ -312,9 +325,17 @@ class AcpWorker(Worker):
             if self._sandbox_mode is not None
             else await asyncio.to_thread(_get_sandbox_mode)
         )
-        logger.info("AcpWorker: starting with agent=%s", AGENT_NAME)
+        acp_backend = (
+            self._acp_backend
+            if self._acp_backend is not None
+            else await asyncio.to_thread(_get_acp_backend)
+        )
+        logger.info("AcpWorker: starting with agent=%s backend=%s", AGENT_NAME, acp_backend)
         self._client = AcpClient(
-            agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
+            agent=AGENT_NAME,
+            sandbox_mode=sandbox_mode,
+            acp_backend=acp_backend,
+            audit_source="subagent",
         )
         self._effective_effort = None
         await self._client.ensure_ready()
@@ -847,6 +868,7 @@ class LLMPool:
             worker = AcpWorker(
                 sandbox_mode=sandbox_mode,
                 effort=self._effort,
+                acp_backend=await asyncio.to_thread(_get_acp_backend),
             )
         await worker.start()
         return worker
