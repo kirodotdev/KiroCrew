@@ -1218,6 +1218,78 @@ async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_o
 
 
 @pytest.mark.asyncio
+async def test_a_refused_floor_fire_then_a_restart_delivers_exactly_one_turn(tmp_path, monkeypatch):
+    """Two credits for one owed turn must not each buy a turn.
+
+    A refused fire grants the post-wake allowance so the NEXT tick retries the
+    delivery, and the floor debt records that the delivery is still owed. Both
+    survive a restart while the in-process claim does not, so a debt served behind
+    the allowance is served twice: the bypass fires with no claim to charge, then the
+    debt fires on the tick after. The debt is therefore served first and consumes the
+    allowance it duplicates.
+    """
+    fired: list[str] = []
+    outcomes = [False, True]
+
+    async def on_fire(loop):
+        fired.append(loop.id)
+        return outcomes.pop(0) if outcomes else True
+
+    def _calm(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing yet", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _calm)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.quiet_streak = _an._MAX_QUIET_STREAK - 1
+    loop = NudgeLoop(
+        id="monitor50",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # The floor trips and the slot refuses the turn, so both credits stand.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.floor_fire_pending is True
+        assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
+        assert fired == [loop.id], "the refused fire is the only one so far"
+        await asyncio.gather(*tuple(service._inflight_adds))
+    finally:
+        service.stop()
+
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    restarted._load()
+    try:
+        revived = restarted._loops["monitor50"]
+        assert revived.monitor is not None
+        assert revived.monitor.floor_fire_pending is True, "the debt crossed the restart"
+        assert revived.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS, "so did the allowance"
+
+        fired.clear()
+        assert await restarted._monitor_tick_is_quiet(revived) is False, "the debt fires"
+        assert revived.id in restarted._pending_floor_tick, "and this fire carries the claim"
+        assert revived.monitor.followup_ticks == 0, "the duplicate allowance is consumed"
+        await restarted._run_fire_cycle(revived)
+        assert fired == [revived.id], "one turn, not two"
+        assert revived.monitor.floor_ticks == 1
+        assert revived.monitor.floor_fire_pending is False
+
+        # The next tick observes instead of spending a second uncharged bypass.
+        assert await restarted._monitor_tick_is_quiet(revived) is True
+        assert fired == [revived.id], "still one turn for one owed delivery"
+        assert revived.monitor.quiet_streak == 1
+    finally:
+        restarted.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_delivered_floor_turn_stops_owing_and_lets_observation_resume(
     tmp_path, monkeypatch
 ):

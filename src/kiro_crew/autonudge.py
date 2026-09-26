@@ -6009,6 +6009,37 @@ class AutoNudgeService:
             # which is exactly the harm the opt-out exists to prevent. The stored
             # decision wins over the presence of the object.
             return False
+        if monitor.floor_fire_pending:
+            # A floor delivery was decided on an earlier tick and has not been
+            # confirmed. Deliver it WITHOUT observing: the streak that earned it is
+            # already reset on disk, so a fresh probe reads an unchanged subject,
+            # answers quiet, and would suppress the very turn that is owed -- the
+            # same reasoning the judge's own owed wake is delivered on.
+            #
+            # AHEAD of the follow-up allowance below, because a refused floor fire
+            # leaves TWO credits standing for ONE owed turn: the allowance, granted so
+            # the next tick retries the delivery, and this debt, recording that the
+            # delivery is still owed. Behind the allowance a restart spends the bypass
+            # with no claim to charge, then spends the debt on the tick after -- two
+            # turns for one owed delivery. So the debt is served first and the
+            # allowance it duplicates is consumed with it: the retry that allowance
+            # exists for IS this fire. Decremented rather than zeroed, so a credit
+            # this debt did not create is left to be spent on its own tick.
+            #
+            # The in-process claim is re-taken because a restart starts with an empty
+            # claim set while this flag survives, and the claim is what makes the fire
+            # cycle charge the delivery and discharge the debt. Re-taking is
+            # idempotent: it is a set, and the fire cycle is the only release.
+            if monitor.followup_ticks > 0:
+                monitor.followup_ticks -= 1
+            self._pending_floor_tick.add(loop.id)
+            self._persist_soon()
+            logger.info(
+                "AutoNudge: loop %s owes a floor delivery -- firing it rather than "
+                "re-observing a subject its own reset reads as calm",
+                loop.id,
+            )
+            return False
         # A wake buys the agent one more turn, unconditionally and BEFORE any
         # observation. The probe watches the subject, not the agent: a turn that
         # was woken and has not pushed yet leaves the subject unchanged, so
@@ -6090,24 +6121,6 @@ class AutoNudgeService:
             logger.info(
                 "AutoNudge: loop %s had a poll interrupted -- firing rather than "
                 "trusting a fresh observation of the same state",
-                loop.id,
-            )
-            return False
-        if monitor.floor_fire_pending:
-            # A floor delivery was decided on an earlier tick and has not been
-            # confirmed. Deliver it WITHOUT observing: the streak that earned it is
-            # already reset on disk, so a fresh probe reads an unchanged subject,
-            # answers quiet, and would suppress the very turn that is owed -- the
-            # same reasoning the judge's own owed wake is delivered on.
-            #
-            # The in-process claim is re-taken here because a restart starts with an
-            # empty claim set while this flag survives, and the claim is what makes
-            # the fire cycle charge the delivery and discharge the debt. Re-taking is
-            # idempotent: it is a set, and the fire cycle is the only release.
-            self._pending_floor_tick.add(loop.id)
-            logger.info(
-                "AutoNudge: loop %s owes a floor delivery -- firing it rather than "
-                "re-observing a subject its own reset reads as calm",
                 loop.id,
             )
             return False
@@ -6444,8 +6457,10 @@ class AutoNudgeService:
                 # landing keeps the reset, so the next tick reads the subject as calm
                 # and the forced delivery is gone with nothing recording it was due.
                 # Set BEFORE either write below, so the debt and the reset that hides
-                # it ride ONE snapshot -- they land together or neither lands, and a
-                # lost write leaves the streak at the floor for the next tick to trip.
+                # it ride ONE snapshot -- they land together or neither lands. A lost
+                # write is the converging case: the increment above is memory-only, so
+                # the store keeps the pre-increment streak and the next quiet tick
+                # reaches the floor again.
                 monitor.floor_fire_pending = True
                 logger.info(
                     "AutoNudge: loop %s hit the quiet-streak floor after %d quiet ticks",

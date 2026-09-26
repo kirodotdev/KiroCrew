@@ -61,6 +61,14 @@ discharged at the single point delivery is confirmed -- the same point that char
 delivery is charged once. `followup_ticks` is not that backstop: it answers a fire
 the slot refused, and a process that stopped refuses nothing.
 
+The debt is served **ahead of** the `followup_ticks` allowance, and consumes one of
+its credits when it fires. A refused floor fire leaves both standing for ONE owed
+turn -- the allowance so the next tick retries the delivery, the debt recording that
+the delivery is still owed -- and both survive a restart while the in-process claim
+does not. Behind the allowance, a restart spends the bypass with no claim to charge
+and then spends the debt on the tick after, so one owed delivery buys two turns. The
+retry the allowance exists for IS the debt's own fire.
+
 Every uncertain path -- no probe, no inferable target, a probe defect, a kernel that
 reached no verdict -- fires as before, because a wrongly-quiet tick is silence with
 half-finished work behind it while a wrongly-spent tick costs what every tick costs
