@@ -10738,10 +10738,7 @@
       "goal_loop_cycle": "ゴールループ · サイクル {{count}}/{{total}}",
       "goal_loop_cycle_no_cap": "ゴールループ · サイクル {{count}}（上限なし）",
       "goal_loop_interrupted_title": "ゴールループ待機中 — 前のターンが中断されました。チャットを再開するか、次のサイクルをお待ちください",
-      "hidden": "非表示",
       "hidden_because_parent_hidden": "上位フォルダーが非表示のため {{name}} も非表示です",
-      "hidden_folder": "非表示フォルダー",
-      "hidden_folders": "非表示フォルダー",
       "hide": "非表示",
       "hide_folder": "フォルダーを非表示",
       "hide_when_empty": "空の場合は非表示",
@@ -10906,7 +10903,10 @@
       "opens_here_runs_on_instance": "このセッションをここで開きます — 実行は {{name}} で続きます",
       "opens_on_crew_switches_there": "{{name}} で開きます — その Crew に切り替わり、ここでは開きません",
       "remote_instances_list_unavailable": "リモートクルーを一覧取得できなかったため、それらのセッションは表示されません。",
-      "model_list_failed": "モデル一覧を読み込めませんでした。表示中の内容は不完全または古い可能性があります。"
+      "model_list_failed": "モデル一覧を読み込めませんでした。表示中の内容は不完全または古い可能性があります。",
+      "hidden_folder_count_other": "非表示フォルダー {{count}} 件",
+      "sort_filter_sessions_hidden_other": "セッションの並べ替えと絞り込み — 非表示フォルダー {{count}} 件は表示されません",
+      "show_hidden_folders_from_board_other": "非表示フォルダー {{count}} 件は表示されません。並べ替えと絞り込みから元に戻せます。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

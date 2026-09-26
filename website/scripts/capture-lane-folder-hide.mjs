@@ -55,6 +55,15 @@ page.on('pageerror', e => { console.log(`FAIL pageerror -- ${e.message}`); faile
 // Which lane the next navigation is for: the board lane is the only one that needs a
 // column, and handing every lane one would preempt the three that are not it.
 let wantColumns = false
+/**
+ * Which mode the NEXT navigation's theme boot answers.
+ *
+ * The boot read is the source of truth for the theme -- localStorage is a render cache the
+ * effect overwrites -- so pinning the stub to one mode pins every frame to it whatever the
+ * page seeds. A frame that must be photographed in both themes therefore has to move this,
+ * not just the query string.
+ */
+let wantTheme = 'dark'
 await stubDashboardApi(page, {
   theme: 'dark',
   folders: FOLDERS,
@@ -62,6 +71,10 @@ await stubDashboardApi(page, {
   // answering that with JSON serves the browser JSON where it requires JavaScript and
   // the page never mounts. Source paths pass through, gateway paths do not.
   extra: async (path, route) => {
+    if (path === '/api/theme/boot') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ mode: wantTheme, theme: '' }) })
+      return true
+    }
     if (path === '/api/chat/tag-columns') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(wantColumns ? COLUMNS : []) })
       return true
@@ -126,16 +139,17 @@ async function settledTheme() {
  * must never drift apart: a frame named for a hide that photographs the unhidden lane is
  * exactly the evidence this harness exists to make impossible.
  */
-async function frame(lane, hide, name) {
+async function frame(lane, hide, name, theme = 'dark') {
   wantColumns = lane.startsWith('board')
+  wantTheme = theme
   const concealed = CONCEALS[hide]
   const expected = ALL_KEYS.filter(k => k !== concealed)
-  await page.goto(`${BASE}/capture/lane-folder-hide.html?lane=${lane}&hide=${hide}&theme=dark`)
+  await page.goto(`${BASE}/capture/lane-folder-hide.html?lane=${lane}&hide=${hide}&theme=${theme}`)
   await page.waitForSelector('[data-capture-ready]')
   await page.waitForSelector('[data-slot-key]')
-  const theme = await settledTheme()
+  const settled = await settledTheme()
   const label = `${name}`
-  check(`${label}: pinned Kiro dark`, theme === 'kiro-dark', String(theme))
+  check(`${label}: pinned Kiro ${theme}`, settled === `kiro-${theme}`, String(settled))
 
   const unpainted = await paintedRows(expected)
   check(`${label}: every row a reader must see is painted`, unpainted === null,
@@ -167,6 +181,7 @@ for (const lane of ['conductor', 'board', 'board-flat', 'tree', 'flat']) {
  */
 {
   wantColumns = true
+  wantTheme = 'dark'
   const name = `${pad()}-board-filter-menu-open`
   // The menu is taller than the sidebar's own frame: FILTER and SORT BY come first and
   // the Folders section is last on purpose (it grows with the folder count). A frame at
@@ -201,6 +216,100 @@ for (const lane of ['conductor', 'board', 'board-flat', 'tree', 'flat']) {
   // queryable catches it translucent over the rows behind it.
   await page.waitForTimeout(400)
   await page.screenshot({ path: `${OUT}/${name}.png` })
+  console.log(`     ${name}.png`)
+}
+
+/**
+ * The count, on screen, in both themes and in both grammatical numbers.
+ *
+ * A board column draws no folder header, so the announcement the other three lanes hang
+ * off a container sits at the LANE level here. These frames are what show it is CONTENT:
+ * the assertions read the row's rendered text rather than an attribute, because a count
+ * that lives in a hover `title` is unreachable on a touch device and unspoken by a screen
+ * reader, which is the gap the tint alone left.
+ *
+ * Both themes, because the row is tinted from `--warn` / `--warn-subtle`: a literal colour
+ * would be legible in whichever theme it was chosen against and wrong in the other.
+ */
+for (const theme of ['dark', 'light']) {
+  for (const [hide, number, expected] of [
+    [ROOT_HIDE, 'singular', /1 hidden folder(?!s)/],
+    [`${ROOT_HIDE},${NESTED_HIDE}`, 'plural', /2 hidden folders/],
+  ]) {
+    wantColumns = true
+    wantTheme = theme
+    const name = `${pad()}-board-hidden-count-${number}-${theme}`
+    await page.setViewportSize({ width: 560, height: 620 })
+    await page.goto(`${BASE}/capture/lane-folder-hide.html?lane=board&hide=${hide}&theme=${theme}`)
+    await page.waitForSelector('[data-capture-ready]')
+    const settled = await settledTheme()
+    check(`${name}: pinned Kiro ${theme}`, settled === `kiro-${theme}`, String(settled))
+
+    const row = page.locator('[data-testid="board-hidden-folders"]')
+    const found = await row.count()
+    check(`${name}: the lane draws a hidden-folder row`, found === 1, `${found} row(s)`)
+    if (found === 1) {
+      // Painted, not merely present: a row at zero height or full transparency satisfies
+      // a selector wait and photographs as empty space above the columns.
+      const box = await row.boundingBox()
+      check(`${name}: the row is painted`, box != null && box.width > 2 && box.height > 2,
+        box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'no box')
+      const text = (await row.textContent() || '').trim()
+      check(`${name}: the count is in the row's own text`, expected.test(text), JSON.stringify(text))
+      // The ACTION, on screen too. A count plus a glyph leaves a sighted reader with no
+      // pointer to guess the row is tappable -- the same hover-only gap as the count.
+      const action = (await row.locator('[data-testid="board-hidden-folders-action"]').textContent() || '').trim()
+      check(`${name}: the way back is a visible word, not only a name`, action.length > 0, JSON.stringify(action))
+      const actionBox = await row.locator('[data-testid="board-hidden-folders-action"]').boundingBox()
+      check(`${name}: that word is painted`, actionBox != null && actionBox.width > 2 && actionBox.height > 2,
+        actionBox ? `${Math.round(actionBox.width)}x${Math.round(actionBox.height)}` : 'no box')
+      const label = await row.getAttribute('aria-label')
+      check(`${name}: the row is named for a screen reader`, !!label && expected.test(label), String(label))
+      // The funnel must agree with it: two numbers for one hide, side by side, is the
+      // defect a single derived count exists to prevent.
+      const marked = await page.locator('[data-folder-hide-active]').getAttribute('data-folder-hide-active')
+      check(`${name}: the funnel reports the same number`,
+        marked === (number === 'plural' ? '2' : '1'), String(marked))
+    }
+    await page.locator('[data-capture-ready]').screenshot({ path: `${OUT}/${name}.png` })
+    console.log(`     ${name}.png`)
+  }
+}
+
+/**
+ * The citation glyph, named.
+ *
+ * A concealed conductor with a visible child puts a bent arrow on that child's row: the
+ * creator is open and running, the lane simply is not nesting under a row it cannot draw.
+ * The arrow alone is a shape a reader reported as meaningless, so the frame's assertions
+ * are about its NAME -- carried on an element whose role admits one, with the drawing
+ * inside marked decorative so the name is not announced twice.
+ */
+{
+  wantColumns = false
+  wantTheme = 'dark'
+  const name = `${pad()}-conductor-citation-named`
+  await page.setViewportSize({ width: 560, height: 620 })
+  await page.goto(`${BASE}/capture/lane-folder-hide.html?lane=conductor&hide=${ROOT_HIDE}&theme=dark`)
+  await page.waitForSelector('[data-capture-ready]')
+  await page.waitForSelector('[data-slot-key]')
+  const settled = await settledTheme()
+  check(`${name}: pinned Kiro dark`, settled === 'kiro-dark', String(settled))
+
+  const glyph = page.locator('[data-cites-parent]')
+  const found = await glyph.count()
+  check(`${name}: a row carries an open-creator citation`, found >= 1, `${found} glyph(s)`)
+  if (found >= 1) {
+    const first = glyph.first()
+    check(`${name}: the name sits on a role that admits one`,
+      await first.getAttribute('role') === 'img', String(await first.getAttribute('role')))
+    const label = await first.getAttribute('aria-label') || ''
+    check(`${name}: the name says who opened this session`, /Opened by/i.test(label), JSON.stringify(label))
+    check(`${name}: the name identifies the creator`, label.includes('k-hidden-conductor'), JSON.stringify(label))
+    const svgHidden = await first.locator('svg').first().getAttribute('aria-hidden')
+    check(`${name}: the drawing itself is decorative`, svgHidden === 'true', String(svgHidden))
+  }
+  await page.locator('[data-capture-ready]').screenshot({ path: `${OUT}/${name}.png` })
   console.log(`     ${name}.png`)
 }
 

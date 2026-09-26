@@ -10739,10 +10739,7 @@
       "goal_loop_cycle": "目标循环 · 第 {{count}} 轮，共 {{total}} 轮",
       "goal_loop_cycle_no_cap": "目标循环 · 第 {{count}} 轮（无上限）",
       "goal_loop_interrupted_title": "目标循环待命 — 上一轮被中断；恢复聊天或等待下一轮",
-      "hidden": "已隐藏",
       "hidden_because_parent_hidden": "{{name}} 已隐藏，因为上级文件夹处于隐藏状态",
-      "hidden_folder": "个隐藏的文件夹",
-      "hidden_folders": "个隐藏的文件夹",
       "hide": "隐藏",
       "hide_folder": "隐藏文件夹",
       "hide_when_empty": "为空时隐藏",
@@ -10906,7 +10903,10 @@
       "opens_here_runs_on_instance": "在此处打开该会话——它的执行仍在 {{name}} 上进行",
       "opens_on_crew_switches_there": "在 {{name}} 上打开 —— 切换到该 Crew，而不是在此处",
       "remote_instances_list_unavailable": "无法列出远程 Crew，因此不显示其会话。",
-      "model_list_failed": "无法加载模型列表。当前显示的内容可能不完整或已过期。"
+      "model_list_failed": "无法加载模型列表。当前显示的内容可能不完整或已过期。",
+      "hidden_folder_count_other": "{{count}} 个隐藏的文件夹",
+      "sort_filter_sessions_hidden_other": "排序和筛选会话 — {{count}} 个隐藏的文件夹未显示",
+      "show_hidden_folders_from_board_other": "{{count}} 个隐藏的文件夹未显示，可在排序和筛选中恢复。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

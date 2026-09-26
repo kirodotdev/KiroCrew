@@ -10891,10 +10891,7 @@
       "goal_loop_cycle": "Zielschleife · Zyklus {{count}} von {{total}}",
       "goal_loop_cycle_no_cap": "Zielschleife · Zyklus {{count}} (unbegrenzt)",
       "goal_loop_interrupted_title": "Zielschleife bereit – letzter Zug wurde unterbrochen; Chat fortsetzen oder auf den nächsten Zyklus warten",
-      "hidden": "verborgen",
       "hidden_because_parent_hidden": "{{name}} ist ausgeblendet, weil ein übergeordneter Ordner ausgeblendet ist",
-      "hidden_folder": "ausgeblendeter Ordner",
-      "hidden_folders": "ausgeblendete Ordner",
       "hide": "Ausblenden",
       "hide_folder": "Ordner ausblenden",
       "hide_when_empty": "Ausblenden, wenn leer",
@@ -11070,7 +11067,13 @@
       "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
       "opens_on_crew_switches_there": "Öffnet auf {{name}} — wechselt zu dieser Crew, nicht hier",
       "remote_instances_list_unavailable": "Remote-Crews konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt.",
-      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet."
+      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet.",
+      "hidden_folder_count_one": "{{count}} ausgeblendeter Ordner",
+      "hidden_folder_count_other": "{{count}} ausgeblendete Ordner",
+      "sort_filter_sessions_hidden_one": "Sitzungen sortieren & filtern — {{count}} ausgeblendeter Ordner wird nicht angezeigt",
+      "sort_filter_sessions_hidden_other": "Sitzungen sortieren & filtern — {{count}} ausgeblendete Ordner werden nicht angezeigt",
+      "show_hidden_folders_from_board_one": "{{count}} ausgeblendeter Ordner wird nicht angezeigt — über Sortieren & Filtern zurückholen.",
+      "show_hidden_folders_from_board_other": "{{count}} ausgeblendete Ordner werden nicht angezeigt — über Sortieren & Filtern zurückholen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
