@@ -7,13 +7,14 @@
 
 ## File Layout
 
-```
-test/
-├── test_acp_types.py     # ACP type dataclasses
-├── test_acp_client.py    # ACP client (mocked subprocess)
-├── test_config.py        # Config loader
-└── test_cli.py           # CLI commands
-```
+Backend tests live under the roots `setup.cfg` pins in `testpaths`
+(`test` plus `src/kiro_crew/apps/builtins`): a backend leaf is
+`test/test_<module>.py`, with helper subdirectories beneath `test/`
+(metrics, workflows fixtures) that never hold collectable leaves
+themselves. Placement is enforced by the `testpaths-coverage` gate
+(`scripts/check_testpaths_coverage.py`), and the leaf scope the CI
+fast path reuses is defined in `scripts/leaf_test_scope.py`. A file
+outside those roots is never collected, so it stays green by omission.
 
 ## Patterns
 
