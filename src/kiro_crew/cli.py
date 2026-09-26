@@ -2918,6 +2918,7 @@ Examples:
   kirocrew app list
   kirocrew app enable oncall-watchtower
   kirocrew app disable oncall-watchtower
+  kirocrew app update oncall-watchtower          # what the App Store's Sync does
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
 """,
@@ -2949,6 +2950,18 @@ Examples:
     app_enable.add_argument("name", help="App name to enable")
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
+    app_update = app_sub.add_parser(
+        "update",
+        help=(
+            "Update an installed app from its source through the running gateway "
+            "(the App Store's Sync); exits 3 with nothing changed when no gateway answers"
+        ),
+    )
+    app_update.add_argument("name", help="App name to update")
+    app_update.add_argument(
+        "--source",
+        help="Local app directory to update from (default: the source it was installed from)",
+    )
     app_mcp = app_sub.add_parser(
         "mcp",
         help="Run an app's MCP server on stdio (spawned by kiro-cli, not for humans)",

@@ -1169,6 +1169,8 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post("/api/apps/ghost/update")
             assert resp.status == 404
+            # ``kirocrew app update`` exits 5 on this code, never on the prose.
+            assert (await resp.json())["code"] == "app_not_installed"
 
     @pytest.mark.asyncio
     async def test_self_managed_lifecycle_is_refused(
@@ -1181,7 +1183,9 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post("/api/apps/ext-app/update")
             assert resp.status == 400
-            assert "lifecycle='app'" in (await resp.json())["error"]
+            body = await resp.json()
+            assert "lifecycle='app'" in body["error"]
+            assert body["code"] == "app_lifecycle_not_gateway"
 
     @pytest.mark.asyncio
     async def test_missing_source_is_400(
@@ -1402,6 +1406,103 @@ class TestUpdateApp:
             data = await resp.json()
         assert data["ok"] is True
         assert "registration" in data
+
+    @pytest.mark.asyncio
+    async def test_local_update_reports_the_version_transition_and_keeps_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The response names old -> new as fields, and ``data/`` survives the swap.
+
+        ``kirocrew app update`` prints ``previousVersion`` / ``version`` rather than
+        parsing them back out of the prose ``message``; both must be the installed
+        record's values, not the request's.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        from kiro_crew.apps.manager import app_data_dir, get_app
+
+        (app_data_dir(APP) / "notes.txt").write_text("keep me", encoding="utf-8")
+        newer = _make_app_source(tmp_path / "newer", version="1.1.0")
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={"source": str(newer)})
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["ok"] is True
+        assert data["previousVersion"] == "1.0.0"
+        assert data["version"] == "1.1.0"
+        assert "registration" in data
+        installed = get_app(APP)
+        assert installed is not None and installed["version"] == "1.1.0"
+        assert (app_data_dir(APP) / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+    @pytest.mark.asyncio
+    async def test_source_naming_another_app_is_refused_with_a_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``--source`` pointing at some other app's tree must not touch this one.
+
+        The refusal carries ``app_source_name_mismatch`` (the CLI's exit 4) and the
+        installed version is untouched, so the rollback that re-registers the old
+        resources is re-registering an app whose files never changed.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        from kiro_crew.apps.manager import get_app
+
+        other = _make_app_source(tmp_path, name="some-other-app", version="9.9.9")
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={"source": str(other)})
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["ok"] is False
+        assert body["code"] == "app_source_name_mismatch"
+        assert "does not match" in body["error"]
+        installed = get_app(APP)
+        assert installed is not None and installed["version"] == "1.0.0"
+
+    @pytest.mark.asyncio
+    async def test_registry_source_naming_another_app_is_refused_before_any_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``registry:<other>`` for app A must not clone and install app B under A's lock.
+
+        ``install_from_registry`` takes its argument as both the entry to clone and the
+        app to install, so the registry branch needs the same identity guard the
+        local branch gets from ``update_app(..., expected_name=name)``.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        touched: list[str] = []
+
+        async def _must_not_clone(name: str, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(f"install_from_registry({name!r}) must not run")
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _must_not_clone)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: touched.append("stop"))
+        monkeypatch.setattr(
+            routes_mod, "deregister_app", lambda n: touched.append("deregister")
+        )
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                f"/api/apps/{APP}/update", json={"source": "registry:some-other-app"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["ok"] is False
+        assert body["code"] == "app_source_name_mismatch"
+        assert "some-other-app" in body["error"]
+        # Nothing of this app was stopped or torn down for a request that was refused.
+        assert touched == []
 
     @pytest.mark.asyncio
     async def test_app_token_cannot_replace_repository_bound_code_from_local_source(
