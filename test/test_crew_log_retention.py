@@ -351,7 +351,7 @@ def test_remove_unit_never_follows_a_unit_directory_linked_to_another_unit():
     except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
         pytest.skip("symlinks unavailable")
 
-    assert _remove("s-attacker") == store.REMOVE_ABSENT
+    assert _remove("s-attacker") == store.REMOVE_LINKED
     assert (victim_dir / "log.jsonl").exists()
     assert CrewLog.exists(lg.KIND_SESSION, "s-victim")
 
@@ -369,7 +369,7 @@ def test_a_unit_directory_linked_outside_the_root_is_refused_by_containment(tmp_
     except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
         pytest.skip("symlinks unavailable")
 
-    assert _remove("s-outside") == store.REMOVE_ABSENT
+    assert _remove("s-outside") == store.REMOVE_LINKED
     assert (elsewhere / "keep.txt").read_text(encoding="utf-8") == "intact"
 
 
@@ -400,7 +400,7 @@ def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
 
     assert store.sweep_expired(30) == (0, 0)
     assert (stash / "log.jsonl").exists()
-    assert _remove("s-hidden") == store.REMOVE_ABSENT
+    assert _remove("s-hidden") == store.REMOVE_LINKED
     assert (stash / "log.jsonl").exists()
 
 

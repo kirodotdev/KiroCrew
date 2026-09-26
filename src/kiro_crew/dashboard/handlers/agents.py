@@ -5651,6 +5651,121 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _member_slug_is_claimed(slug: str) -> bool:
+    """Whether any crew in the config ON DISK NOW still derives *slug*.
+
+    The authorization for removing a member's crew log, and the whole of it: not
+    an age, not a size, not a threshold anyone can tune. A member's unit is keyed
+    by its slug, so the only question that makes a removal safe is whether a live
+    member still answers to that key.
+
+    Resolved through ``member_slug``, never ``slug_for_name``, and enumerated
+    without a name-grammar filter -- both for the reasons
+    ``members._slug_is_claimed_by_any_member`` documents for the same question.
+    The two spellings disagree for a crew whose persisted ``member_id`` is not
+    what its name derives, which provisioning produces deliberately, and the
+    create route validates a crew name only for credential shape, so a name the
+    roster grammar rejects can still be a live crew. Either mistake reports a
+    live owner as gone, and the caller reads "gone" as licence to delete that
+    owner's history.
+
+    Fails CLOSED, and the loader is why this needs saying: a ``config.json`` that
+    does not parse is not an exception here -- it is logged, marked degraded, and
+    the load returns DEFAULTS, so the roster reads empty and an emptiness test
+    alone would take that as proof the owner is gone. So an absent owner counts
+    only when the file it is absent from was actually read: the whole-config
+    degradation marker answers claimed, as does a load that raises, and a crew
+    whose own identity will not resolve is skipped rather than allowed to decide.
+    Nothing is removed on an error, because the cost of keeping a deleted
+    member's log is disk and the cost of the other answer is a live member's
+    history.
+
+    One residue, stated rather than guessed at: the loader also normalizes an
+    ``agents`` value that is not an object at all to an empty roster without
+    marking the file degraded, which this cannot tell from a roster that is
+    genuinely empty. It costs at most the ONE slug a caller is deciding -- the
+    member whose record the delete already committed -- because the predicate
+    answers about that slug alone and never about the tree.
+    """
+    from kiro_crew import members as members_mod
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning(
+            "crew delete: cannot read the roster to decide whether %r is still claimed; "
+            "keeping its crew log",
+            slug,
+            exc_info=True,
+        )
+        return True
+    if DEGRADED_WHOLE_CONFIG in cfg.degraded_sections:
+        logger.warning(
+            "crew delete: the roster was not readable as a whole, so %r cannot be shown "
+            "unclaimed; keeping its crew log",
+            slug,
+        )
+        return True
+    for candidate in cfg.agents:
+        try:
+            if members_mod.member_slug(candidate, cfg) == slug:
+                return True
+        except Exception:
+            # A crew whose persisted identity will not resolve derives no valid
+            # slug, so it cannot be the owner of this one. Skipped rather than
+            # treated as a claim, the same stance the sibling enumeration takes.
+            continue
+    return False
+
+
+def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
+    """Remove the crew log of a member the roster does not hold. Never raises.
+
+    The crew log is the last thing a deleted member leaves behind. Its config
+    record, its memory store, its avatar and its private template copy all go
+    with the delete; without this the log stays on disk for the life of the
+    installation, with no member to read it for and no other path that collects
+    it -- the retention sweep ages SESSION logs from their close entry, and a
+    member log has no close to age from.
+
+    *cfg* is the config the caller captured while it still held *name*'s record,
+    and the slug is resolved from it: a member carrying an explicit ``member_id``
+    keys its log by that id, so resolving the slug once the record is gone would
+    fold the name instead and aim at a different unit.
+
+    Call this while holding ``memory_store_namespace_lock``. The guard it hands
+    the store re-reads the roster, which on its own makes the decision a snapshot:
+    a member id allocated in another process derives the same slug and addresses
+    the same unit, and the unlink has no recovery path. That lock is the one seam
+    every allocator of a member id shares, so holding it is what keeps the window
+    between the decision and the unlink shut.
+
+    Best-effort, like every other step of this teardown. The record is already
+    gone by the time this runs, so raising would turn a log that could not be
+    collected into a failed delete against a crew that is absent. ``owned`` is
+    the ordinary answer while a queued append still holds the lease, and
+    ``absent`` the ordinary answer for a member that never wrote one.
+    """
+    try:
+        from kiro_crew.crew_log.store import REMOVE_REMOVED
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.members import member_slug
+
+        slug = member_slug(name, cfg)
+        status = get_service().remove_unit(
+            slug, still_unclaimed=lambda: not _member_slug_is_claimed(slug)
+        )
+    except Exception:
+        logger.warning("crew delete: could not remove the crew log of %r", name, exc_info=True)
+        return
+    if status == REMOVE_REMOVED:
+        logger.info("crew delete: removed the crew log of %r", slug)
+    else:
+        logger.info("crew delete: the crew log of %r was not removed (%s)", slug, status)
+
+
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
     """Remove the private template copy that existed only for a now-deleted crew.
 
@@ -5784,6 +5899,16 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 teams_mod.drop_member(name)
 
             update_config_locked(mutate=mutate, after_write=_drop_from_team)
+            # And the crew log the member wrote its own history into, decided
+            # while this function still holds the namespace lock. The removal
+            # turns on a config read, and that hold is the only thing stopping
+            # another process from committing a same-name record -- which derives
+            # THIS unit -- between the read and the unlink. Nothing rebuilds a
+            # crew log, so the window has to be closed rather than narrowed, and
+            # the lock is shared with every allocator of a member id. ``cfg`` is
+            # the config captured while the record was still in it, which is what
+            # the slug has to be resolved from.
+            _reclaim_deleted_member_crew_log(name, cfg)
             return retired_store
 
         retired_store = await _drained_to_thread(_delete_member)
