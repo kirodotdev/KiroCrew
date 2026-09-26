@@ -489,6 +489,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     # treatment ``webhooks`` and ``profiles`` already get.
     "crons.json",
     "cron-history",
+    # The script-hook store. It holds executable state, not just configuration:
+    # each entry's ``command`` runs as the gateway user on its trigger event,
+    # so a planted entry is persistent code execution that fires on the next
+    # prompt, spawn, or tool call. The trigger is immediate and synchronous,
+    # unlike a scheduled job, and the file also carries webhook context
+    # registrations. The gateway's own writers (``ScriptHookStore``,
+    # the dashboard hook routes, the MCP control tool) open the path
+    # directly, not through this gate, so hook management is unaffected; the
+    # cost is that a human hand-edit through an agent shell is refused, the
+    # same trade-off every other keystone leaf makes.
+    "hooks.json",
     # The in-flight run markers (``cron_inflight``) belong on the same floor for
     # a sharper reason than the two above: the boot-time loop-stall breaker
     # TRUSTS them. One marker whose PID matches a cron-surface crash dump is

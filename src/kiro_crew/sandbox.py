@@ -455,6 +455,13 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # on them runs in ``CronService.start()``, which only the gateway calls. The
     # in-sandbox ``mcp_cron`` service is a store accessor and never starts.
     "cron-running",
+    # The script-hook store. Fenced from agent file tools by
+    # ``security._CREW_SECRET_LEAVES``; masked here so a spawned shell cannot
+    # plant a ``command`` that the gateway then executes as itself on the next
+    # trigger. Nothing in-sandbox reads it: the store loads and fires in the
+    # GATEWAY process, and hook commands receive their event and context
+    # through the environment and stdin, never by opening this file.
+    "hooks.json",
     "workflow_library",
     # The crew appearance library: user-imported packs a crew wears. Written and
     # read only by the GATEWAY (the owner-gated ``/api/appearances`` routes); no
