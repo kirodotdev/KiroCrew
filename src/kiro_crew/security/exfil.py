@@ -60,18 +60,24 @@ def exfil_query_min_len() -> int:
 # IPv4 literal (``192.168.1.1``, incl. link-local/metadata ``169.254.169.254``),
 # or a bracketed IPv6 literal (``[::1]``, ``[fd00::1]``). The prior regex required
 # a ``.<letters>`` TLD, so ``http://169.254.169.254/latest/…/<secret>`` never
-# matched _URL_RE and its path/query was never scanned. Group 3 stays the
-# path+query so the scan/redact call sites are unchanged.
+# matched _URL_RE and its path/query was never scanned. The userinfo, host,
+# port, and path/query groups are passed to the scan/redact call sites.
 _URL_RE = re.compile(
     r"https?://"
+    # Optional userinfo (``user@`` or ``user:pass@``). Greedy through the final
+    # ``@`` so a password containing ``@`` still leaves the real host in group
+    # 2; ``/``, ``?``, and ``#`` bound it so URL delimiters never enter the
+    # match. Without this the host alternative fails on the user part and the
+    # URL is never scanned.
+    r"([^/?#\s]+@)?"
     r"("
     r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}"  # DNS name with a letter TLD
     r"|\d{1,3}(?:\.\d{1,3}){3}"  # raw IPv4 literal
     r"|\[[0-9A-Fa-f:.]+\]"  # bracketed IPv6 literal (incl. IPv4-mapped ::ffff:d.d.d.d)
-    # Group 3 = path AND/OR query. It must start with ``/`` (path) OR ``?``
+    # Path/query group = path AND/OR query. It must start with ``/`` (path) OR ``?``
     # (a query attached directly to the host, no path segment). The prior
     # ``/[...]*`` required a leading slash, so ``https://host?leak=<secret>``
-    # yielded group(3)=None and both scan/redact bailed on ``qmark == -1``,
+    # yielded group(4)=None and both scan/redact bailed on ``qmark == -1``,
     # never inspecting the query — a real exfil bypass. ``[/?]`` admits both;
     # the ``path_and_query.find("?")`` split at the call sites is unchanged.
     r")(:\d+)?([/?][^\s)\"'>]*)?"
@@ -870,6 +876,7 @@ def _exfil_url_warning(
     path_and_query: str,
     exempt_hosts: frozenset[str],
     *,
+    userinfo: str = "",
     port: str = "",
     is_https: bool = True,
     allow_safe_presigned: bool = True,
@@ -902,8 +909,8 @@ def _exfil_url_warning(
     if allow_safe_presigned and query and _is_safe_presigned(domain, query):
         return None
 
-    # Hard credential markers are unconditional across the full path/query.
-    if _HARD_CREDENTIAL_RE.search(path_and_query):
+    # Hard credential markers are unconditional across the full userinfo/path/query.
+    if _HARD_CREDENTIAL_RE.search(f"{userinfo}{path_and_query}"):
         trace("exfil_hard_credential")
         return f"Suspicious URL with credential in path/query: {domain}"
 
@@ -911,7 +918,7 @@ def _exfil_url_warning(
     # unconditional. This uses canonical provider-token patterns (GitHub,
     # Stripe, etc.) in addition to the older AWS/SSH/Slack hard floor, but NOT
     # the bare-secret entropy classifier that false-positives on OAuth state.
-    full_payload = f"{domain}{port}{path_and_query}"
+    full_payload = f"{userinfo}{domain}{port}{path_and_query}"
     if _contains_fixed_credential(full_payload):
         trace("exfil_fixed_credential")
         return f"Suspicious URL with credential in path/query: {domain}"
@@ -1054,10 +1061,11 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     warnings: list[str] = []
     for match in _URL_RE.finditer(text):
         warning = _exfil_url_warning(
-            match.group(1),
-            match.group(3) or "",
+            match.group(2),
+            match.group(4) or "",
             exempt_hosts,
-            port=match.group(2) or "",
+            userinfo=match.group(1) or "",
+            port=match.group(3) or "",
             is_https=match.group(0).lower().startswith("https://"),
         )
         if warning:
@@ -1090,12 +1098,13 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     exempt_hosts = _exfil_exempt_hosts()
     result = text
     for match in _URL_RE.finditer(text):
-        domain = match.group(1)
+        domain = match.group(2)
         if _exfil_url_warning(
             domain,
-            match.group(3) or "",
+            match.group(4) or "",
             exempt_hosts,
-            port=match.group(2) or "",
+            userinfo=match.group(1) or "",
+            port=match.group(3) or "",
             is_https=match.group(0).lower().startswith("https://"),
         ):
             result = result.replace(match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
