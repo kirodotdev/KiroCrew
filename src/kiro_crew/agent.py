@@ -5353,6 +5353,7 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
         # module-level import here would close a cycle.
         from kiro_crew.apps.bridges import registered_app_mcp_servers
         from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, list_apps
+        from kiro_crew.apps.manifest import mcp_url_kind
     except Exception:  # noqa: BLE001 — apps subsystem unavailable
         return servers
 
@@ -5388,23 +5389,34 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                     continue
                 ref = f"{name}:{server_name}"
                 live = registered.get(ref)
+                gateway_backend = bool(manifest.backend.entryPoint)
                 if isinstance(live, dict):
-                    chosen = dict(live)  # resolved live-port URL / pinned command
-                elif spec.get("url"):
-                    # An HTTP server's manifest URL is only illustrative when the
-                    # GATEWAY launches the backend (backend.entryPoint set): the
-                    # port is "auto"-resolved and unknown until the process starts,
-                    # so with no live entry we skip rather than write a dead port
-                    # (mirroring _register_mcp_servers' refusal to write one).
-                    # A SELF-MANAGED HTTP server (no backend.entryPoint — e.g. an
-                    # independent companion app on a fixed port) has an
-                    # authoritative URL and never gets a live registration, so
-                    # preserve the manifest URL instead of dropping the server.
-                    if manifest.backend.entryPoint:
+                    # The live entry was written by an earlier registration pass,
+                    # possibly under an earlier ceiling; it is held to the same
+                    # rule as the manifest spec before it is written again.
+                    if mcp_url_kind(live, gateway_backend) == "invalid":
                         continue
-                    chosen = dict(spec)
+                    chosen = dict(live)  # resolved live-port URL / pinned command
+                elif (url_kind := mcp_url_kind(spec, gateway_backend)) == "backend":
+                    # The GATEWAY launches this backend (backend.entryPoint set) and
+                    # its manifest URL is only illustrative: the port is
+                    # "auto"-resolved and unknown until the process starts, so with
+                    # no live entry we skip rather than write a dead port
+                    # (mirroring _register_mcp_servers' refusal to write one).
+                    continue
+                elif url_kind == "invalid":
+                    # The same refusal _register_mcp_servers applies: a url that is
+                    # not an absolute https (or loopback http) url, or not a string
+                    # at all, is never written to the file kiro-cli dials. This
+                    # fallback is the SECOND writer of that file, so a refusal that
+                    # lived only in the first was open here.
+                    continue
                 else:
-                    chosen = dict(spec)  # stdio/command: nothing to resolve
+                    # "remote" -- a remote server's own address or a SELF-MANAGED
+                    # fixed-port one (no backend.entryPoint), which never gets a
+                    # live registration -- or a stdio/command entry: nothing to
+                    # resolve, the manifest spec is authoritative.
+                    chosen = dict(spec)
                 servers[ref] = _ceiling_filtered_spec(ref, chosen, audit=audit)
         except Exception:  # noqa: BLE001 — one bad app must not poison the rest
             logger.warning("Skipping MCP servers for app %s (manifest error)", name)

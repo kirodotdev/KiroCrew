@@ -11,6 +11,7 @@ app-specific fields.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import posixpath
 import re
@@ -227,6 +228,200 @@ _CRON_FIELD_JSON_TYPES = {
 }
 
 
+def references_env(value: str) -> bool:
+    """Whether *value* carries the ``${VAR}`` / ``${env:VAR}`` form kiro-cli EXPANDS
+    at session runtime in a remote MCP server's url and header values, against an
+    environment that carries the operator's provider credentials.
+
+    A manifest that writes one into a server's headers is asking the operator's
+    session to send a credential the manifest never held to whatever process
+    answers. The plugin converter and both writers of the agent config refuse it
+    through this one predicate, and the pattern itself is the runtime expander's
+    OWN (``mcp_gateway.rewriter._ENV_VAR_PLACEHOLDER``), imported lazily the way
+    ``mcp_discovery`` does, so the refusal can never drift from what is expanded.
+    """
+    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER  # circular at module load
+
+    return bool(_ENV_VAR_PLACEHOLDER.search(value))
+
+
+def mcp_url_violation(url: str) -> str:
+    """Why *url* is not an MCP endpoint both writers of the agent config may dial,
+    or ``""`` when it is.
+
+    One parser, one rule set, for the converter and both agent-config writers:
+    the two had drifted once, and the gap was a parser differential -- a url that
+    ``urlparse`` reads as ``localhost`` (a backslash before ``@``, a control
+    character) and kiro-cli's parser reads as an external host, which would slip a
+    plain-http external endpoint past the https-unless-loopback ceiling. So the
+    raw bytes are refused first, before any parse: no backslash, no control or
+    whitespace character. Then the format's own rules (Agent Plugins 1.0 §7.2.1):
+    absolute http(s), a host, no user information, no fragment, a port that
+    parses. The loopback/https rule is the caller's, because it depends on the
+    scheme AND the host together.
+    """
+    if not url.strip():
+        return "blank"
+    if "\\" in url or any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in url):
+        return "carries a backslash, control or whitespace character"
+    try:
+        parsed = urllib.parse.urlparse(url)
+        parsed.port  # parses lazily; ``host:bad`` and an out-of-range port raise here
+    except ValueError:
+        return "does not parse"
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "is not an absolute http(s) url with a host"
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return "carries user information or a fragment"
+    return ""
+
+
+def mcp_entry_references_env(config: dict[str, Any]) -> bool:
+    """Whether ANY string an MCP entry hands the runtime carries ``${VAR}``.
+
+    kiro-cli expands the reference from the operator's environment wherever it
+    appears -- a remote url or header (sent to the host the entry names) and a
+    stdio ``command``, ``args``, ``cwd`` or ``env`` value (handed to the process
+    the entry launches, which for a third-party app is code spawned under
+    ``minimal_env`` precisely so it never sees those credentials). One predicate
+    over every field, so no arm is left where a credential can ride through.
+    """
+    for key in ("url", "command", "cwd"):
+        value = config.get(key)
+        if isinstance(value, str) and references_env(value):
+            return True
+    args = config.get("args")
+    if isinstance(args, list) and any(isinstance(a, str) and references_env(a) for a in args):
+        return True
+    for key in ("headers", "env"):
+        mapping = config.get(key)
+        if isinstance(mapping, dict) and any(
+            isinstance(v, str) and references_env(v) for v in mapping.values()
+        ):
+            return True
+    return False
+
+
+def mistyped_mcp_server_fields(config: dict[str, Any]) -> list[str]:
+    """Fields of an ``mcpServers`` entry whose VALUE is not the shape every reader
+    of the agent config assumes: ``type``, ``command``, ``cwd``, ``url`` strings;
+    ``args`` a list of strings; ``env`` and ``headers`` string-to-string objects.
+
+    ``mcpServers`` is copied verbatim from ``app.json`` (:meth:`AppManifest.from_dict`),
+    so ``args: 7`` reaches the registration writer, which iterates ``args`` and
+    overlays ``env`` without re-checking them -- and raises mid-registration, under
+    the config lock, after the loop has already mutated the server map. The plugin
+    converter drops such an entry on the way in; the two agent-config writers refuse
+    it on the way out, through this one check, so a directly installed app is held
+    to the same shape as a converted one.
+    """
+    bad: list[str] = []
+    for key in ("type", "command", "cwd", "url"):
+        value = config.get(key)
+        if value is not None and not isinstance(value, str):
+            bad.append(key)
+    args = config.get("args")
+    if args is not None and not (isinstance(args, list) and all(isinstance(a, str) for a in args)):
+        bad.append("args")
+    for key in ("env", "headers"):
+        mapping = config.get(key)
+        if mapping is not None and not (
+            isinstance(mapping, dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items())
+        ):
+            bad.append(key)
+    return bad
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether a url host names THIS machine: ``localhost``, a loopback address, or
+    the unspecified address (``0.0.0.0``, ``::``), which a local server binds to
+    and which connects to loopback.
+
+    The one predicate behind two questions that must agree: whether an app
+    manifest's MCP ``url`` is the app's own gateway-launched backend
+    (``mcp_url_kind``) and whether a plugin package may declare plain
+    ``http`` to it (``plugin_import``). Two copies drifted on exactly the
+    unspecified address once.
+    """
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def mcp_url_kind(cfg: object, gateway_backend: bool) -> str:
+    """What an ``mcpServers.<name>.url`` IS, so registration treats it accordingly.
+
+    Returns ``""`` when the entry carries no ``url`` KEY (a stdio entry) and its
+    fields are well-typed; ``"invalid"`` for an entry that is not an object at all,
+    or has a mistyped field whatever the transport (``args: 7`` raises in the
+    writer's stdio arm, under the config lock); else one of:
+
+    Shared by the registration writer (``bridges._register_mcp_servers``) and the
+    agent-rebuild fallback (``agent._collect_app_mcp_servers``), the two writers of
+    the file kiro-cli dials, and public so neither imports it by a private name
+    inside a blanket ``try/except`` that would turn a rename into zero servers.
+
+    - ``"backend"`` -- the app's OWN gateway-launched backend: a LOOPBACK host
+      (``localhost``, ``127.x``, ``::1``, ``0.0.0.0``) on an app that declares
+      ``backend.entryPoint``. ``backend.port:"auto"`` hands that process a port on
+      this host, so the manifest's illustrative port is a dead URL until the
+      backend is up -- the case the skip-and-rewrite below exists for.
+    - ``"remote"`` -- any other well-formed http(s) url. A remote host is the
+      server's own address (the shape an imported plugin package declares); a
+      loopback url on an app WITHOUT a gateway-launched backend is a self-managed
+      server on a fixed port. Neither has a live port to wait for, and skipping
+      either drops the app's whole tool set on an app that installed clean. This is
+      the same split ``agent.py`` draws by ``backend.entryPoint`` for its manifest
+      fallback.
+    - ``"invalid"`` -- not an absolute http(s) url with a host, plain ``http`` to
+      a host that is not this machine, or a url or header value that carries a
+      ``${VAR}`` reference kiro-cli would expand from the operator's environment --
+      the app's own backend included, which is spawned under ``minimal_env`` so that
+      third-party app code never sees those credentials (a header written that way
+      sends a credential the manifest never held to whatever process answers). Before the split such an entry was
+      skipped for want of a live port; it must not start being written now that
+      a non-backend url is, because this file is read by kiro-cli on every
+      session -- and a cleartext remote endpoint would carry every tool call and
+      any declared header across the network for a network position to rewrite.
+      The same rule the plugin converter applies on the way in.
+    """
+    if not isinstance(cfg, dict) or mistyped_mcp_server_fields(cfg):
+        return "invalid"
+    if mcp_entry_references_env(cfg):
+        # No exemption, the app's own backend and its stdio servers included: a
+        # backend is spawned under ``minimal_env`` precisely so third-party app
+        # code never sees the operator's credentials, and a value the runtime
+        # expands would hand it one anyway, silently. A server that needs a secret
+        # gets it through the app's own secret store, never the operator's env.
+        return "invalid"
+    if "url" not in cfg:
+        return ""
+    url = cfg.get("url")
+    if not isinstance(url, str) or mcp_url_violation(url):
+        # PRESENT but not a url the format admits. Keyed on the key, not on
+        # truthiness: a manifest is ``dict[str, Any]`` copied verbatim, so
+        # ``"url": 7`` reaches here, and reading it as "no url" sends a commandless
+        # entry down the stdio arm and into the file kiro-cli loads every session.
+        # The shape rules (parse, scheme, host, userinfo, fragment, raw bytes) are
+        # the converter's own, so the two writers cannot drift apart again.
+        return "invalid"
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    loopback = is_loopback_host(host)
+    if parsed.scheme == "http" and not loopback:
+        return "invalid"
+    if gateway_backend and loopback:
+        return "backend"
+    return "remote"
+
+
 @dataclass
 class CronEntry:
     """A scheduled agent job declared by an app."""
@@ -391,9 +586,7 @@ class CronEntry:
             agent_sequence=[
                 str(a) for a in _list_or_empty("agent_sequence", data.get("agent_sequence"))
             ],
-            env={
-                str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()
-            },
+            env={str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()},
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
             folder=_str_or_empty(data.get("folder")),
@@ -989,9 +1182,7 @@ class Dependencies:
             # it must degrade to "empty", never crash. Both lines, since the
             # pre-existing `commands` had the identical shape.
             commands=[str(c) for c in (data.get("commands") or [])],
-            optionalCommands=[  # noqa: N815
-                str(c) for c in (data.get("optionalCommands") or [])
-            ],
+            optionalCommands=[str(c) for c in (data.get("optionalCommands") or [])],  # noqa: N815
         )
 
 
@@ -1575,9 +1766,11 @@ class CommandArgument:
             placeholder=str(data.get("placeholder", "")),
             hint=str(data.get("hint", "")),
             kind=str(data.get("kind", "text")),
-            hosts=[str(h).strip().lower() for h in hosts_raw if str(h).strip()]
-            if isinstance(hosts_raw, list)
-            else [],
+            hosts=(
+                [str(h).strip().lower() for h in hosts_raw if str(h).strip()]
+                if isinstance(hosts_raw, list)
+                else []
+            ),
             patternError=str(data.get("patternError", "")),
             saw_pattern="pattern" in data,
             # A `hosts` that is present but not a list would otherwise coerce to the
@@ -1693,9 +1886,7 @@ class CommandContribution:
             # argument declared", which is a DIFFERENT command rather than an invalid
             # one. An explicit ``null`` is treated as absent, matching the host.
             bad_argument=(
-                "argument" in data
-                and arg_raw is not None
-                and not isinstance(arg_raw, dict)
+                "argument" in data and arg_raw is not None and not isinstance(arg_raw, dict)
             ),
         )
 
@@ -1714,14 +1905,12 @@ class CommandContribution:
             # Mirrors `MAX_KEYWORDS` in `contributedCommands.ts`, which drops the overflow
             # -- refused here so the author is told rather than silently trimmed.
             errors.append(
-                f"{where}: {len(self.keywords)} keywords exceeds the limit of "
-                f"{_MAX_KEYWORDS}"
+                f"{where}: {len(self.keywords)} keywords exceeds the limit of " f"{_MAX_KEYWORDS}"
             )
         for kw in self.keywords:
             if _mirrored_len(kw) > _MAX_KEYWORD:
                 errors.append(
-                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters "
-                    f"({_mirrored_len(kw)})"
+                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters " f"({_mirrored_len(kw)})"
                 )
                 break
         if not self.title:
@@ -1732,8 +1921,7 @@ class CommandContribution:
             # the frontend -- the command vanished from the launcher with the app author
             # having seen no error on install, the worst of both validators.
             errors.append(
-                f"{where}: title exceeds {_MAX_TITLE} characters "
-                f"({_mirrored_len(self.title)})"
+                f"{where}: title exceeds {_MAX_TITLE} characters " f"({_mirrored_len(self.title)})"
             )
         if self.subtitle and _mirrored_len(self.subtitle) > _MAX_TITLE:
             # Mirrors the frontend's cap. The subtitle is SEARCHED -- `rankRootRows` runs
@@ -1785,8 +1973,7 @@ class CommandContribution:
                 # The reader is asked for a value the command then ignores -- always a
                 # mistake, and a confusing one, because the command still runs.
                 errors.append(
-                    f"{where}: declares an argument but the prompt never uses "
-                    f"{ARGUMENT_TOKEN}"
+                    f"{where}: declares an argument but the prompt never uses " f"{ARGUMENT_TOKEN}"
                 )
             errors.extend(self._validate_matcher(where))
         return errors
@@ -2123,9 +2310,7 @@ class Contributes:
     #: Counted rather than flagged so the error can say how many vanished. Not
     #: serialized.
     dropped_commands: int = 0
-    sessionControls: list[SessionControlContribution] = field(  # noqa: N815
-        default_factory=list
-    )
+    sessionControls: list[SessionControlContribution] = field(default_factory=list)  # noqa: N815
     #: Whether the manifest's ``sessionControls`` was present but not a list. Same reason
     #: as ``bad_commands``: coercing to ``[]`` reads as a deliberate empty list, so the
     #: declaration would install clean and then never render a chip. Not serialized.
@@ -2179,9 +2364,11 @@ class Contributes:
                 # discarded here is reported as nothing at all — the app installs
                 # clean and the control simply never appears. The placeholder fails
                 # the required-field checks, which is that promised refusal.
-                SessionControlContribution.from_dict(c)
-                if isinstance(c, dict)
-                else SessionControlContribution()
+                (
+                    SessionControlContribution.from_dict(c)
+                    if isinstance(c, dict)
+                    else SessionControlContribution()
+                )
                 for c in raw_controls
             ]
             if isinstance(raw_controls, list)
@@ -2200,8 +2387,7 @@ class Contributes:
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
-            bad_session_controls="sessionControls" in data
-            and not isinstance(raw_controls, list),
+            bad_session_controls="sessionControls" in data and not isinstance(raw_controls, list),
             bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
@@ -2537,9 +2723,7 @@ class AppManifest:
                 errors.append(
                     f"session control contribution entryPoint contains path traversal: {ctl.entryPoint!r}"
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.

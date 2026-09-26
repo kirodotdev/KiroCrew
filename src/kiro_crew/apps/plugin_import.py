@@ -44,6 +44,7 @@ from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import urlparse
 
 from kiro_crew.apps.manifest import (
     KEBAB_RE,
@@ -52,6 +53,11 @@ from kiro_crew.apps.manifest import (
     RESERVED_ROUTE_APP_NAMES,
     SEMVER_RE,
     AppManifest,
+    is_loopback_host,
+    mcp_entry_references_env,
+    mcp_url_violation,
+    mistyped_mcp_server_fields,
+    references_env,
 )
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.terminal_safe import safe_terminal_line
@@ -73,6 +79,36 @@ VENDOR_MANIFEST_DIR_GLOB = ".*-plugin"
 
 FORMAT_SCHEMA_QUALIFIED = "schema-qualified-root"
 FORMAT_VENDOR_DIRECTORY = "vendor-directory"
+
+#: The one schema version whose ``mcp.json`` entry semantics this converter
+#: implements. The format versions its two documents in lockstep (Agent Plugins
+#: 1.0 §10.1: the document's ``$schema`` version MUST match the manifest's;
+#: §7.2.2: a mismatch or an unsupported version disables the MCP component for
+#: that plugin), and equality alone is not fail-closed: a 2.0/2.0 pair would pass
+#: while only 1.0 entry semantics are coded here. Any other version disables the
+#: MCP component with a warning.
+IMPLEMENTED_MCP_SCHEMA_VERSION = "1.0.0"
+
+#: The schema-qualified format keeps its MCP servers OUT of the manifest, in one
+#: document fixed at the package root. Read only when the manifest itself declares
+#: no ``mcpServers``, so a package carrying both is read the way its manifest says.
+STANDARD_MCP_FILENAME = "mcp.json"
+
+#: Transports that document may declare, mapped to the ``type`` spelling an app
+#: manifest emits. ``stdio`` maps to no key at all: an entry with a ``command`` and
+#: no ``type`` is already the stdio spelling every reader of the emitted manifest
+#: understands, and the published packages write it that way.
+STANDARD_MCP_TRANSPORTS: dict[str, str | None] = {
+    "stdio": None,
+    "streamable-http": "http",
+    "sse": "sse",
+}
+
+#: The only placeholders the schema-qualified format expands, and both name a root
+#: conversion does not preserve: the package root, and a per-install data
+#: directory the CLIENT creates. A value carrying either is package-relative in the
+#: sense :func:`_package_relative_fields` refuses, whatever else it carries.
+STANDARD_PLACEHOLDERS = ("${PLUGIN_ROOT}", "${PLUGIN_DATA}")
 
 # A skill is a directory holding this file. Discovery is recursive under each
 # declared skills root, matching the source format's default.
@@ -193,6 +229,7 @@ _MANIFEST_KNOWN_KEYS = frozenset(
         "homepage",
         "repository",
         "keywords",
+        "displayName",
         "skills",
         "mcpServers",
         "apps",
@@ -925,6 +962,11 @@ def _package_relative_fields(config: dict[str, Any]) -> list[str]:
         text = value.strip()
         if not text:
             return False
+        # A standard placeholder names the package root or the client's per-install
+        # data directory. Neither survives conversion, so a value carrying one is
+        # package-relative whether or not it also carries a separator.
+        if any(placeholder in text for placeholder in STANDARD_PLACEHOLDERS):
+            return True
         # A SEPARATOR is what makes a value a path, not a leading dot. Keying on
         # "./" and ".\\" left the ordinary spelling "bin/server" unflagged, and a
         # relative program resolves against the SESSION's working directory
@@ -982,6 +1024,14 @@ def _package_relative_fields(config: dict[str, Any]) -> list[str]:
     cwd = config.get("cwd")
     if isinstance(cwd, str) and cwd.strip() and not _is_absolute_path(cwd):
         found.append("cwd")
+    # The schema-qualified format expands its placeholders in env VALUES too, so a
+    # server handed ``${PLUGIN_DATA}`` through its environment resolves against a
+    # directory that does not exist after conversion, exactly like a cwd would.
+    env = config.get("env")
+    if isinstance(env, dict):
+        for key, value in env.items():
+            if isinstance(value, str) and any(ph in value for ph in STANDARD_PLACEHOLDERS):
+                found.append(f"env[{key}]")
     return found
 
 
@@ -1149,6 +1199,12 @@ def _convert_mcp_servers(root: Path, declared: object, report: ImportReport) -> 
                 f"mcpServers[{name}] declares neither a command nor a url; dropped"
             )
             continue
+        mistyped = mistyped_mcp_server_fields(config)
+        if mistyped:
+            report.warnings.append(
+                f"mcpServers[{name}] has fields of the wrong type: {', '.join(mistyped)}; dropped"
+            )
+            continue
         relative_fields = _package_relative_fields(config)
         if relative_fields:
             report.unmapped.append(
@@ -1172,6 +1228,239 @@ def _convert_mcp_servers(root: Path, declared: object, report: ImportReport) -> 
             MappedKind("mcpServers", "app.json mcpServers", f"{len(cleaned)} server(s)")
         )
     return cleaned
+
+
+def _schema_version(uri: object) -> str:
+    """The version segment of a published schema URI, or ``""`` when it has none."""
+    if not isinstance(uri, str) or not uri.startswith(SCHEMA_NAMESPACE_PREFIX):
+        return ""
+    return uri[len(SCHEMA_NAMESPACE_PREFIX) :].split("/", 1)[0]
+
+
+def _normalize_standard_server(
+    name: str, config: dict[str, Any], report: ImportReport
+) -> dict[str, Any] | None:
+    """One entry of the standard's ``mcp.json``, in the shape an app manifest emits.
+
+    The document is closed per transport, so a key the transport does not define is
+    dropped and named. An entry is dropped whole when it names no supported transport
+    or when its endpoint breaks the format's own rules -- an HTTP url must be
+    ``https`` unless the host is loopback, may carry no userinfo or fragment, and
+    its header names are unique case-insensitively. The stdio side keeps the
+    package-relative question for :func:`_package_relative_fields`, which already
+    answers it for every format.
+    """
+    transport = config.get("type")
+    # Guarded before the membership test: ``in`` on a dict HASHES the key, so a
+    # list- or object-valued ``type`` from a foreign document would raise past the
+    # coded boundary instead of being dropped and named like every other bad entry.
+    if not (isinstance(transport, str) and transport in STANDARD_MCP_TRANSPORTS):
+        if transport is None:
+            # Inferred only when the entry spells exactly ONE transport. An entry
+            # carrying both a command and a url is ambiguous, and guessing stdio
+            # would run the command of a package that reads as remote.
+            has_command = isinstance(config.get("command"), str)
+            has_url = isinstance(config.get("url"), str)
+            if has_command == has_url:
+                report.warnings.append(
+                    f"mcpServers[{name}] declares no type and does not spell exactly one "
+                    "transport; dropped"
+                )
+                return None
+            transport = "stdio" if has_command else "streamable-http"
+            report.warnings.append(f"mcpServers[{name}] declares no type; read as {transport}")
+        else:
+            report.warnings.append(
+                f"mcpServers[{name}] declares transport {transport!r}, which is not one of "
+                f"{', '.join(STANDARD_MCP_TRANSPORTS)}; dropped"
+            )
+            return None
+
+    allowed: tuple[str, ...] = (
+        ("type", "command", "args", "env", "cwd")
+        if transport == "stdio"
+        else ("type", "url", "headers")
+    )
+    unknown = sorted(k for k in config if isinstance(k, str) and k not in allowed)
+    if unknown:
+        # The format is closed per transport (§7.2.1): an unknown field makes the
+        # ENTRY invalid, not the field. Reading around it would silently decide a
+        # ``disabled: true`` the author wrote means "enabled".
+        report.warnings.append(
+            f"mcpServers[{name}] carries fields not defined for {transport}: "
+            f"{', '.join(unknown)}; dropped"
+        )
+        return None
+
+    if transport == "stdio":
+        env = config.get("env")
+        if isinstance(env, dict) and any(k in ("PLUGIN_ROOT", "PLUGIN_DATA") for k in env):
+            # The format reserves both names for the client to set; an entry that
+            # defines one is asking to shadow the root it is contained by.
+            report.warnings.append(
+                f"mcpServers[{name}] env defines a reserved placeholder name; dropped"
+            )
+            return None
+        emitted_stdio = {k: config[k] for k in ("command", "args", "env", "cwd") if k in config}
+        if mcp_entry_references_env(_without_format_placeholders(emitted_stdio)):
+            # The format expands only its two placeholders here and keeps every other
+            # ``${...}`` literal (§9.2); the runtime that reads the emitted manifest
+            # expands ``${VAR}`` from the operator's environment into the process
+            # this entry launches -- third-party code handed a credential it never
+            # held. The two format placeholders are masked out of this probe so they
+            # reach the receiving pass, which refuses them for the precise reason:
+            # they name a root conversion does not preserve.
+            report.warnings.append(
+                f"mcpServers[{name}] command, args, cwd or env carries an environment "
+                "reference, which the format does not expand and the runtime would; dropped"
+            )
+            return None
+        return emitted_stdio
+
+    url = config.get("url")
+    if not isinstance(url, str) or not url.strip():
+        report.warnings.append(f"mcpServers[{name}] declares {transport} with no url; dropped")
+        return None
+    violation = mcp_url_violation(url)
+    if violation:
+        report.warnings.append(f"mcpServers[{name}] url {violation}; dropped")
+        return None
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if parsed.scheme == "http" and not is_loopback_host(host):
+        report.warnings.append(
+            f"mcpServers[{name}] url is plain http to a non-loopback host; dropped"
+        )
+        return None
+    if references_env(url):
+        report.warnings.append(
+            f"mcpServers[{name}] url carries an environment reference, which the format "
+            "does not expand and the runtime would; dropped"
+        )
+        return None
+    emitted: dict[str, Any] = {"type": STANDARD_MCP_TRANSPORTS[transport], "url": url}
+    headers = config.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        report.warnings.append(f"mcpServers[{name}] has fields of the wrong type: headers; dropped")
+        return None
+    if isinstance(headers, dict) and headers:
+        seen: set[str] = set()
+        for key, value in headers.items():
+            folded = key.lower() if isinstance(key, str) else ""
+            if not folded:
+                report.warnings.append(f"mcpServers[{name}] has a blank header name; dropped")
+                return None
+            if folded in seen:
+                report.warnings.append(
+                    f"mcpServers[{name}] header names are not unique case-insensitively; dropped"
+                )
+                return None
+            seen.add(folded)
+            # The format keeps header values LITERAL; the runtime that reads the
+            # emitted manifest expands ``${VAR}`` in them from the operator's
+            # environment. A header written that way would send a credential the
+            # package never held to the host the package named, silently.
+            if isinstance(value, str) and references_env(value):
+                report.warnings.append(
+                    f"mcpServers[{name}] header {key!r} carries an environment reference, "
+                    "which the format does not expand and the runtime would; dropped"
+                )
+                return None
+        emitted["headers"] = headers
+    return emitted
+
+
+def _without_format_placeholders(config: dict[str, Any]) -> dict[str, Any]:
+    """*config* with ``${PLUGIN_ROOT}`` / ``${PLUGIN_DATA}`` blanked out of every string.
+
+    A probe copy for the environment-reference check only; the entry the caller
+    emits is untouched, so the receiving pass still sees the placeholders and refuses
+    them as package-relative.
+    """
+
+    def scrub(value: object) -> object:
+        if isinstance(value, str):
+            for placeholder in STANDARD_PLACEHOLDERS:
+                value = value.replace(placeholder, "")
+            return value
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        if isinstance(value, dict):
+            return {k: scrub(v) for k, v in value.items()}
+        return value
+
+    return {k: scrub(v) for k, v in config.items()}
+
+
+def _standard_mcp_document(
+    root: Path, plugin_schema: object, report: ImportReport
+) -> dict[str, Any] | None:
+    """Read the schema-qualified format's root ``mcp.json`` as an inline server map.
+
+    A failure here disables the MCP component and nothing else: the format isolates
+    each component at its own boundary, so a package whose skills are sound still
+    converts when its server document is not. Every refusal is a reported warning.
+    The returned map goes through :func:`_convert_mcp_servers` like a manifest-inline
+    one, so the package-relative refusal and the bounding pass apply unchanged.
+    """
+    path = root / STANDARD_MCP_FILENAME
+    if is_link_or_junction(path):
+        report.warnings.append(
+            f"{STANDARD_MCP_FILENAME} is a link, not a file; MCP servers not read"
+        )
+        return None
+    if not path.is_file():
+        return None
+    try:
+        document = _read_json_object(path, STANDARD_MCP_FILENAME)
+    except PluginImportError as exc:
+        report.warnings.append(f"{STANDARD_MCP_FILENAME} not read: {exc}")
+        return None
+    schema = document.get("$schema")
+    if not _schema_version(schema):
+        report.warnings.append(
+            f"{STANDARD_MCP_FILENAME} declares no published $schema; MCP servers not read"
+        )
+        return None
+    if _schema_version(schema) != _schema_version(plugin_schema):
+        report.warnings.append(
+            f"{STANDARD_MCP_FILENAME} schema version {_schema_version(schema)} does not match "
+            f"the manifest's {_schema_version(plugin_schema)}; MCP servers not read"
+        )
+        return None
+    if _schema_version(schema) != IMPLEMENTED_MCP_SCHEMA_VERSION:
+        report.warnings.append(
+            f"{STANDARD_MCP_FILENAME} schema version {_schema_version(schema)} is not the one "
+            f"this converter implements ({IMPLEMENTED_MCP_SCHEMA_VERSION}); MCP servers not read"
+        )
+        return None
+    unknown = sorted(
+        k for k in document if isinstance(k, str) and k not in ("$schema", "mcpServers")
+    )
+    if unknown:
+        report.warnings.append(
+            f"{STANDARD_MCP_FILENAME} keys not read by this converter: {', '.join(unknown)}"
+        )
+    servers = document.get("mcpServers")
+    if not isinstance(servers, dict):
+        report.warnings.append(f"{STANDARD_MCP_FILENAME} mcpServers is not an object; not read")
+        return None
+    normalized: dict[str, Any] = {}
+    # Bounded per entry INSPECTED, the same way the receiving pass is: a document of
+    # nothing but refused entries emits nothing and still grows the report per entry.
+    for inspected, (name, config) in enumerate(servers.items(), start=1):
+        if inspected > MAX_MCP_SERVERS:
+            report.warnings.append(
+                f"more than {MAX_MCP_SERVERS} mcpServers declared; the rest are dropped"
+            )
+            break
+        if not isinstance(name, str) or not isinstance(config, dict):
+            normalized[name] = config  # the receiving pass names the refusal
+            continue
+        emitted = _normalize_standard_server(name, config, report)
+        if emitted is not None:
+            normalized[name] = emitted
+    return normalized
 
 
 def _hook_files(root: Path, declared: object, report: ImportReport) -> list[dict[str, Any]]:
@@ -1523,7 +1812,9 @@ def _convert_into(
             report.warnings.append("package declared no version; emitted 0.0.0")
         version = "0.0.0"
 
-    display_name = _first_nonempty(interface.get("displayName"), data.get("name"), app_name)
+    display_name = _first_nonempty(
+        interface.get("displayName"), data.get("displayName"), data.get("name"), app_name
+    )
     description = _first_nonempty(
         data.get("description"),
         interface.get("shortDescription"),
@@ -1534,7 +1825,29 @@ def _convert_into(
         report.warnings.append("package declared no description; emitted a placeholder")
 
     skills = _convert_skills(root, data.get("skills"), out_dir, report)
-    mcp_servers = _convert_mcp_servers(root, data.get("mcpServers"), report)
+    declared_mcp = data.get("mcpServers")
+    if report.source_format == FORMAT_SCHEMA_QUALIFIED and (
+        declared_mcp is None or declared_mcp in ({}, [], "")
+    ):
+        # The format has no ``mcpServers`` manifest key at all, so a manifest that
+        # carries one is speaking the vendor shape: a non-empty inline map or a
+        # declared path is honoured as such. An EMPTY value says nothing and must
+        # not shadow the root document, or the package converts to an app with
+        # skills and no tools, silently -- the failure this reader exists to remove.
+        document = _standard_mcp_document(root, data.get("$schema"), report)
+        if declared_mcp is not None:
+            if document is not None:
+                outcome = f"the root {STANDARD_MCP_FILENAME} is read instead"
+            elif os.path.lexists(root / STANDARD_MCP_FILENAME):
+                # ``lexists``, not ``exists``: the reader refused a LINKED document
+                # without following it, and a presence probe that follows the link
+                # afterwards would resolve the very target the refusal declined to.
+                outcome = f"and the root {STANDARD_MCP_FILENAME} could not be read (see above)"
+            else:
+                outcome = f"and there is no root {STANDARD_MCP_FILENAME} to read either"
+            report.warnings.append(f"manifest mcpServers is empty; {outcome}")
+        declared_mcp = document
+    mcp_servers = _convert_mcp_servers(root, declared_mcp, report)
     _report_hooks(root, data.get("hooks"), report)
     _report_connectors(root, data.get("apps"), report)
     carried = _carried_fields(data, interface, report)

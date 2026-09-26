@@ -1031,13 +1031,64 @@ under a `{app}:{server}` namespace rather than into the shared Kiro global,
 because that global is read by Kiro IDE and every other kiro-cli agent, so an
 app's private tools would leak into surfaces that never installed it.
 
-An HTTP MCP server whose backend port cannot be resolved live is **not written
+A BACKEND HTTP MCP server whose port cannot be resolved live is **not written
 at all**, and any stale entry for it is scrubbed. A manifest's illustrative
-fixed port written verbatim while the backend is down is a reachable-looking but
-dead URL, and kiro-cli connects to every server in the agent config on each
-request, so one dead entry surfaces as a transient 5xx and then a hard error for
-**all** requests, not just that app's. The enable path re-registers with the
-real port once the backend is up.
+fixed port written verbatim while the backend is down is a URL KNOWN to be
+wrong -- a placeholder for a port this gateway has not allocated yet -- and the
+regression that rule closed surfaced as a transient 5xx and then a hard error
+for **all** requests, not just that app's. The rule is about a url that is wrong
+by construction, not about reachability: a remote url is the address its author
+meant kiro-cli to dial, the same shape as any user-declared remote server in
+`~/.kiro/settings/mcp.json`, and is written as declared. An unreachable remote
+entry degrades that one server, not the session: kiro-cli's own
+`--require-mcp-startup` flag exists to make an MCP startup failure fatal (exit
+3), so the default is to continue without that server. Two probes on kiro-cli
+2.24.1, each with an agent whose only MCP entry was unreachable, completed a
+non-interactive turn normally (exit 0): `https://mcp.invalid.example/mcp` (DNS
+failure) and `https://10.255.255.1/mcp` (a blackholed route, where the TCP
+connect hangs until the entry's own timeout). The enable path re-registers with the real port once the backend is up.
+
+Both writers of that file -- `_register_mcp_servers` and the agent-rebuild
+fallback in `agent._collect_app_mcp_servers` -- classify every entry through one
+predicate, `manifest.mcp_url_kind`, and neither writes an entry it classifies
+`invalid`. The rebuild fallback holds a LIVE registered entry to the same rule
+before writing it again, so an entry written under an earlier ceiling does not
+ride back in. The three classes:
+
+- **backend** -- a loopback host (`localhost`, a loopback or unspecified address)
+  on an app that declares `backend.entryPoint`; the same split `agent.py` draws
+  for its manifest fallback. Skipped while no live port exists, port rewritten
+  once one does.
+- **remote** -- any other well-formed url: a remote server an imported plugin
+  package declares, or a self-managed fixed-port one. No port to substitute, so
+  it is written as declared.
+- **invalid** -- never written: an entry that is not an object; a mistyped field
+  (`args: 7`, `env` as a list) that would otherwise raise inside the writer under
+  the config lock; a `url` that is not an absolute http(s) url with a host (a
+  non-string, a blank, a malformed port, a backslash or control character, user
+  information, a fragment); plain `http` to a host other than this machine; or a
+  `${VAR}` reference in any string the entry hands the runtime -- url, header,
+  `command`, `args`, `cwd` or `env` value -- the app's own backend and stdio
+  servers included. kiro-cli would expand that reference from the operator's
+  environment and hand the credential to whatever process answers or launches,
+  and an app backend is spawned under `minimal_env` precisely so it never sees
+  one.
+
+The url shape rules are `manifest.mcp_url_violation`, "this machine" is
+`manifest.is_loopback_host`, and the `${VAR}` predicate
+(`manifest.references_env`) reads the runtime expander's own pattern
+(`mcp_gateway.rewriter._ENV_VAR_PLACEHOLDER`), so none of the three can drift
+from what the runtime does. The plugin converter applies the same rules on the
+way in, so a cleartext remote endpoint or a credential reference cannot reach the
+agent config from either side.
+
+**Pinned expectation on kiro-cli:** the remote class rests on kiro-cli continuing
+without a server that fails to start or connect unless `--require-mcp-startup`
+is passed. The gateway never passes that flag. If a kiro-cli release flips the
+default, the symptom is a session that fails on every request while one remote
+entry is down, and the remedy is to gate `remote` entries on a reachability
+probe before writing them -- not to restore the blanket skip, which dropped
+every remote server.
 
 Connection and tool exposure are separate. An entry in `mcpServers` is still
 connected even when it has no matching `@server` reference in `tools`; omitting
