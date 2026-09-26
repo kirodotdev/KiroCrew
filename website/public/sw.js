@@ -1,7 +1,7 @@
 // Minimal service worker for PWA installability.
-// Network-first for the SPA shell; boot-critical modules (hashed /assets and the
-// /vendor import-map stubs) go to the network with a bounded 5xx retry;
-// everything else goes straight to network.
+// Network-first for the SPA shell; boot-critical modules (hashed /assets, the
+// /vendor import-map stubs and the /pcm-worklet.js voice-capture module) go to
+// the network with a bounded 5xx retry; everything else goes straight to network.
 //
 // Cache contains ONLY the shell (/ and /index.html). No other responses are
 // cached — hashed assets rely on HTTP immutable caching, and app/API routes
@@ -124,6 +124,20 @@ self.addEventListener('fetch', e => {
   // either. (A sandboxed widget iframe has an opaque origin and is not
   // SW-controlled at all, so it is unaffected either way.)
   if (url.pathname.startsWith('/vendor/')) {
+    e.respondWith(fetchAssetWithRetry(e.request))
+    return
+  }
+  // The voice-capture worklet gets the same retry. Dictation and meetings
+  // transcription call `audioWorklet.addModule('/pcm-worklet.js')` exactly once
+  // per session and treat any rejection as fatal ("audio worklet unavailable"),
+  // so one failed fetch is a dead feature, not a degraded one. As a top-level
+  // path it used to fall through to the shell handler below, whose
+  // non-navigation fallback turns a single transient failure into
+  // Response.error() -- and opening a new chat, when voice sessions mount, is
+  // exactly when gateway churn (5xx, session rotation) makes that failure likely.
+  // Skipping the worker instead would not help: the browser's own fetch fails the
+  // same way and nothing retries it.
+  if (url.pathname === '/pcm-worklet.js') {
     e.respondWith(fetchAssetWithRetry(e.request))
     return
   }
