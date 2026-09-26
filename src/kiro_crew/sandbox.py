@@ -58,7 +58,11 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    APP_BACKEND_PIDFILE_LEAF,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
@@ -534,6 +538,22 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # mask cannot drift from the tool gate that fences the same store.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
+    # The app-backend spawn record: pid, start instant and the per-spawn instance
+    # token for each app whose backend the gateway launched. Two gateway-side
+    # decisions read it and nothing in the sandbox does -- the startup stale-reap,
+    # and the adoption path, which admits a listener already answering an app's
+    # declared port ONLY when this record attributes it
+    # (``apps.backend._adoption_provenance``). That second reader is why the mask
+    # has to exist: the process the check excludes is a backend that outlived its
+    # app's uninstall while holding the port, it inherits ``KIROCREW_HOME`` from the
+    # spawn that started it, and a same-UID write of its own inherited token into
+    # this file would author the very provenance the gateway trusts to refuse it.
+    # HIDDEN rather than READONLY for the usual reason -- no in-sandbox consumer to
+    # keep reading -- and precreated in
+    # ``_materialize_app_backend_pidfile_mask_target`` because ``mount(2)`` cannot mask
+    # a name
+    # that does not exist and the record is written only AFTER the first spawn.
+    APP_BACKEND_PIDFILE_LEAF,
 )
 
 #: Crew-home ceilings and gateway-managed data: readable by sandboxed code,
@@ -1590,6 +1610,25 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: created visible to every sandbox already running. Its resolver treats an
 #: existing empty root as usable, and proves the root writable before certifying
 #: any clone, so materialising it early changes nothing it relies on.
+#: The bytes a fresh app-backend spawn record holds, published before a namespace spawn
+#: so its mask can mount. The ``SENSITIVE_FILES`` loop guards on ``isfile``, so an ABSENT
+#: leaf gets NO mask and a namespace that outlives the leaf's later creation reads the
+#: real document -- the same non-vacuity argument :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`
+#: makes for directories, and the record is written only after the first backend spawns.
+#:
+#: ABSENT-EQUIVALENT, trivially so: the reader is the GATEWAY process, which never sees
+#: the mask at all, and the one value the stub is read as is the empty mapping
+#: ``_read_pidfile`` already returns for an absent file. Nothing in the sandbox reads it,
+#: so there is no stale-read case to argue either.
+#:
+#: Published with ``O_CREAT | O_EXCL`` directly at the name, not staged through a
+#: sibling temp the way the live-target pointer is: these bytes are a fixed two-character
+#: literal with no secret in them and nothing the gateway executes, so there is nothing
+#: for a concurrent namespace to win by racing the create, and a temp in the visible
+#: data-home root would itself be the linkable name the staged materialisers exist to
+#: avoid.
+_APP_BACKEND_PIDFILE_PRECREATE_CONTENT: str = "{}"
+
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     # Same lazily-created shape as aws-control-staging: the file-delivery step-up
@@ -3308,6 +3347,69 @@ def masked_credential_leaf_aliases() -> list[tuple[str, int, str, bool]]:
                 }
                 found.append((target, info.st_nlink, root, len(located) + 1 == info.st_nlink))
     return found
+
+
+def _materialize_app_backend_pidfile_mask_target() -> str | None:
+    """Publish the app-backend spawn record's absent-equivalent stub so its mask can mount.
+
+    The FILE counterpart of :func:`_materialize_maskable_dirs`, and it shares that
+    function's simplifying property: the record is a DIRECT child of the data home, so
+    there is no agent-writable intermediate component for a planted link to redirect and
+    no per-component descent is needed -- the whole hazard
+    :func:`_materialize_md_notebook_mask_targets` walks chains to avoid.
+
+    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an
+    absent record is an UNMASKED record for every namespace already running, and the crew
+    data home is writable at OS level. A process in such a namespace can simply CREATE
+    the name, and the gateway then reads what it wrote as the provenance that decides
+    which port holder it will adopt and manage. Publishing the stub first makes the mask
+    non-vacuous, so every namespace binds a fixed empty document over the name from the
+    outset. :data:`_APP_BACKEND_PIDFILE_PRECREATE_CONTENT` carries the absent-equivalence
+    argument, and why this one publishes in place rather than through a staged temp.
+
+    **Fail-closed**, like the directory materialiser and for the same reason: launching
+    with the record maskless is the exposure this exists to prevent. Never truncates and
+    never removes -- an existing regular file is left byte-for-byte alone, whether it
+    holds real state or this stub. Returns the path if it published one.
+    """
+    try:
+        root = str(config_dir())
+    except Exception as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the crew data home to materialise the masked record: {exc}"
+        ) from exc
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, APP_BACKEND_PIDFILE_LEAF)
+    # Refused before the isfile check, exactly as the directory materialiser refuses
+    # before its isdir check: ``isfile`` FOLLOWS a link, so a leaf that is a symlink
+    # resolving to a real file would pass it and the mask would bind over the
+    # referent while the lexical name stayed a replaceable link in a writable
+    # directory.
+    _refuse_if_dangling_symlink(target)
+    _refuse_if_symlink_leaf(target)
+    if os.path.exists(target):
+        return None
+    try:
+        fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        # Something won the create race. ``FileExistsError`` does not say WHAT now
+        # sits at the name, so re-validate with no-follow semantics rather than
+        # masking over whatever appeared in the window.
+        _refuse_if_symlink_leaf(target)
+        return None
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot create the masked record {safe_terminal_line(target)}: {exc}"
+        ) from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(_APP_BACKEND_PIDFILE_PRECREATE_CONTENT)
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot publish the masked record {safe_terminal_line(target)}: {exc}"
+        ) from exc
+    return target
 
 
 def _materialize_live_target_mask_target() -> str | None:
@@ -8088,6 +8190,11 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs()
+    # And the FILE leaves, whose ``SENSITIVE_FILES`` loop has the isfile guard: the
+    # app-backend spawn record is written only after the first backend starts, so on a
+    # fresh host its mask would otherwise be vacuous for the life of every namespace
+    # spawned before then -- including one that could author the record itself.
+    _materialize_app_backend_pidfile_mask_target()
     # And the ``SENSITIVE_FILES`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.

@@ -26,6 +26,15 @@ KIROCREW_SPAWNED_VALUE = "1"
 # the root's own tree from a fresh spawn that took the root's recycled pid.
 KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
 
+# The app-backend spawn record, as a crew-data-home-relative leaf name: pid, start
+# instant and per-spawn instance token for each app whose backend the gateway
+# launched. Named here rather than inside ``apps.backend`` because two independent
+# places must agree on it -- the store itself, and the sandbox mask that fences it
+# from a spawned process -- and a drift between them silently unfences the one
+# record the adoption path trusts to tell its own backend from a survivor of a
+# previous install.
+APP_BACKEND_PIDFILE_LEAF = "app_backends.pids.json"
+
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
 # .get(...))`` — a bare bool() treats ``"0"``/``"false"`` as truthy, which for a

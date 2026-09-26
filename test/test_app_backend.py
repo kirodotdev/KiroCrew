@@ -3078,6 +3078,25 @@ class TestAdoptedRecoveryRebindsOwnership:
         ap = AppProcess(app_name="ad", port=9240, pid=0, proc=None, healthy=False,
                         mcp_healthy=False, adopted_pids=[111],
                         adopted_start_times={111: "old"})
+        # The re-bind attributes the owners it re-captures against the spawn this
+        # gateway recorded for the app, so the record has to be present for these
+        # cases to reach the promotion logic they exercise. Refusal on an
+        # unattributed set has its own pins in test_apps_backend_coverage.py. The
+        # fence the record is only trusted behind is a real bind mask in a real
+        # mount namespace, which no in-process test can create, so it is simulated
+        # present for the same reason; its verdicts are pinned in that file too.
+        monkeypatch.setattr(
+            bmod, "path_is_masked_for_process", lambda _pid, _path: (True, "fenced here")
+        )
+        monkeypatch.setattr(
+            bmod,
+            "_read_pidfile",
+            lambda: {
+                "ad": {"pid": 0, "start_time": None, "port": 9240, "spawn_instance": "sp-ad"}
+            },
+        )
+        monkeypatch.setattr(bmod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(bmod, "process_spawn_instance", lambda _pid: "sp-ad")
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["ad"] = ap

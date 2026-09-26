@@ -3511,6 +3511,76 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
     return None
 
 
+def process_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
+    """*pid*'s per-spawn ``KIROCREW_SPAWN_INSTANCE``, or ``None``.
+
+    The public reading of :func:`_env_spawn_instance`, for callers outside this
+    module that need to ask whether a live process belongs to a spawn they have a
+    record of. The token is read from the process's EXEC-TIME environment, which
+    the process itself cannot rewrite, so a match is positive attribution rather
+    than a claim the process makes about itself.
+
+    ``None`` covers every negative in one value -- no such process, no token on
+    its environment, an unreadable environment, and a host with no environment
+    oracle -- so a caller that needs a positive answer fails closed on all of
+    them. :func:`group_vouching_available` says whether this host can answer at
+    all, which is what lets a caller tell "not ours" from "cannot see".
+    """
+    return _env_spawn_instance(pid, proc_root)
+
+
+def path_is_masked_for_process(
+    pid: int, path: str, proc_root: Path | None = None
+) -> tuple[bool, str]:
+    """Whether *path* is a MOUNT POINT in *pid*'s mount namespace.
+
+    The question a caller asks when it is about to trust a file that a bind mask is
+    supposed to keep out of that process's reach. A mask is a property of a MOUNT
+    NAMESPACE, and a namespace is fixed when the process is spawned -- so a process
+    started before the mask existed sees the real file no matter what the current
+    gateway masks, and only its own mount view can say which case it is in.
+
+    Reads ``/proc/<pid>/mountinfo``, whose fifth field is the mount point as that
+    namespace renders it. The sandbox binds masks at their real absolute paths and
+    denies the sandboxed process ``pivot_root``, so a masked leaf appears there as its
+    own absolute path; the comparison is therefore exact, and an ancestor-level mask
+    reads as absent. That is the fail-closed direction: a caller told "unmasked"
+    refuses, where a caller told "masked" on an ancestor's word could trust a file the
+    process can still write.
+
+    Linux only, like :func:`group_vouching_available` and for the same reason -- no
+    other platform exposes a per-process mount view. Returns
+    ``(masked, reason)``, and the reason SEPARATES the negatives a caller must not
+    conflate: this host has no mount view at all, this process's view could not be
+    read, and this process's view shows the path unmasked. Never raises.
+    """
+    if sys.platform != "linux":
+        return False, "this host has no per-process mount view"
+    root = Path(proc_root) if proc_root is not None else Path("/proc")
+    try:
+        raw = (root / str(pid) / "mountinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"the mount view of pid {pid} is unreadable ({exc.strerror or exc})"
+    want = os.path.realpath(path)
+    for line in raw.splitlines():
+        fields = line.split(" ")
+        if len(fields) < 5:
+            continue
+        # mountinfo octal-escapes the characters that would break its own field
+        # splitting. Decode them before comparing, or a data home with a space in it
+        # would read as unmasked and refuse a legitimately fenced process.
+        point = (
+            fields[4]
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\")
+        )
+        if point == path or os.path.realpath(point) == want:
+            return True, f"pid {pid} sees a mask at the path"
+    return False, f"pid {pid} sees the path unmasked"
+
+
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 

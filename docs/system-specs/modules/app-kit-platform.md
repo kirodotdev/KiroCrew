@@ -859,8 +859,9 @@ Ordering is deliberate — hooks first, so an app's `on_shutdown` still has its
 own backend alive. Stop targets come from the runtime tracking table
 (`apps/backend.py::spawned_backend_names`), never from persisted `enabled`
 metadata: the metadata filter is wrong in both directions (it would signal an
-**adopted** externally-managed backend, whose contract is to survive gateway
-exit and be re-adopted on the next start, and it would miss a still-running
+**adopted** backend, which holds no handle of ours, survives gateway
+exit by design, and is re-adopted on the next start only while its spawn
+record still attributes its owners, and it would miss a still-running
 child whose app was disabled cross-process, metadata-only). Driving the sweep
 from the tracking table also keeps `stop_app_backend`'s pidfile-record erasure
 away from apps with nothing running, so a retained prior-generation orphan
@@ -2054,14 +2055,34 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   we spawned is judged first by `Popen.poll()`, which answers from an
   already-reaped exit status without touching the app. An exited process cannot
   recover on its own, so one observation demotes it and the watch stops. An
-  **adopted** backend has no `Popen` handle — it belongs to another supervisor —
-  and is judged by its health endpoint alone.
+  **adopted** backend has no `Popen` handle — the gateway that spawned it is gone,
+  or the owner holding the port is a member of that spawn's tree rather than its
+  leader — and is judged by its health endpoint alone.
+- **Adoption admits only owners the gateway can attribute.** A listener already
+  answering an app's manifest-declared fixed port is adopted only when
+  `_adoption_provenance` attributes EVERY captured owner to the spawn record this
+  app's pidfile row holds, by one of two routes: the owner IS the recorded pid with
+  its recorded start instant still live (`leader`), or its exec-time environment
+  carries the recorded `spawn_instance` token, which the whole spawn tree inherits
+  and no process can rewrite for itself (`tree`, `/proc`-backed, Linux only). Every
+  captured owner is signalled at stop, so one attributed owner cannot speak for a set
+  that also holds a same-UID `SO_REUSEPORT` co-binder. The gate fails CLOSED: a
+  missing row, an unreadable row, a recycled pid, an empty owner set, and a host that
+  cannot read a token all refuse. This is what keeps a backend that outlived its
+  app's uninstall from being adopted by the next install of the same name, and the
+  fenced record is what keeps the answer unforgeable by the process it judges.
 - **An unexpected spawned-process exit is restarted, but never blindly.** After
   the dead generation's MCP scrub has landed, the supervisor reuses
   `start_app_backend` so its replacement follows the normal pidfile, health-gate,
   and MCP-promotion path. It restarts only while the exact record remains tracked,
   the app is positively enabled (unknown fails closed), and the process-wide gateway
-  shutdown signal is clear; adopted instances are excluded. The first replacement
+  shutdown signal is clear; adopted instances are excluded. The exited leader's
+  pidfile row is dropped only once the attempt has DECIDED, and is kept when what ends
+  up tracked is an adopted instance resting on it: the row carries the spawn tree's
+  token, so a removal taken before the respawn asks would leave the adopt branch
+  unable to attribute a pre-fork worker or detached child of this same app that is
+  still holding the port, and the app would stay down for as long as its own orphan
+  kept it. The first replacement
   attempt is immediate; subsequent fast-phase failures back off 1s, 2s, 4s … to 30s.
   After eight fast attempts (0+1+2+4+8+16+30+30 seconds, a 91-second window), the
   supervisor warns once and retries every 300 seconds for as long as the app stays
@@ -2269,10 +2290,12 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   dead url this gate exists to keep out of `mcp.json`.
 - **An ADOPTED recovery re-binds ownership before it promotes.** `adopted_pids` is what
   `stop_app_backend` signals and what uninstall acts behind, and it was captured at
-  adoption. A recovery means the EXTERNAL supervisor put something back, possibly a
-  different process — so the owner set is re-captured through the same consistency
-  sandwich adoption uses, and the promotion is REFUSED when ownership cannot be
-  confirmed. Unhealthy-but-serving is recoverable on the next sweep; a record that claims
+  adoption. A recovery means something is answering in the dead backend's place,
+  possibly a different process — so the owner set is re-captured through the same
+  consistency sandwich adoption uses, attribution is asked AGAIN on the set just
+  captured rather than inherited from the adoption that installed the record, and the
+  promotion is REFUSED when ownership cannot be confirmed. Unhealthy-but-serving is
+  recoverable on the next sweep; a record that claims
   freshly-valid ownership of a process that is gone is not, because stop would then
   signal the wrong PIDs while the live replacement keeps running.
 - **The watch is bound to the RECORD, not the app name.** A stop/start installs a
