@@ -8813,11 +8813,16 @@
       "status_failed": "Не удалось прочитать состояние репозитория.",
       "row_empty": "Пустая папка",
       "row_hidden_only": "Содержит только скрытые элементы (dotfiles, кэши)",
+      "row_linked": "Ссылка на другую папку: содержимое не показано",
       "row_truncated": "Файлы не показаны: достигнут лимит в 10 000 файлов",
       "row_unreadable_marker": "Не удалось прочитать — см. уведомление выше",
+      "row_unreadable_marker_dismissed": "Не удалось прочитать — уведомление скрыто",
       "root_unreadable": "Нет разрешения на чтение папки рабочей области",
       "root_hidden_only": "Эта рабочая область содержит только скрытые элементы (dotfiles, кэши)",
-      "unreadable_folders": "Папки недоступны для чтения: {{paths}}"
+      "unreadable_folders": "Папки недоступны для чтения: {{paths}}",
+      "dismiss_unreadable": "Скрыть: не показывать это уведомление, пока набор нечитаемых папок не изменится",
+      "unreadable_dismissed": "Уведомление скрыто",
+      "undo_dismiss_unreadable": "Отменить"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

@@ -54,7 +54,7 @@ def _pretend_directory_symlink(monkeypatch, link: os.PathLike[str] | str) -> Non
     it before descending (``followlinks`` is off), and the handler's own
     hidden-only predicate asks the same function, so one patched answer gives both
     the symlink-to-a-directory shape: listed among the subdirectories, never
-    walked into, no row of its own.
+    walked into, never yielded as a folder of its own.
     """
     real_islink = os.path.islink
     target = os.path.realpath(os.fspath(link))
@@ -455,15 +455,19 @@ class TestProjectTree:
         assert data["paths"] == ["mixed/kept.txt"]
 
     @pytest.mark.asyncio
-    async def test_walk_reports_a_folder_holding_only_a_directory_symlink_as_hidden_only(
+    async def test_a_folder_holding_only_a_directory_symlink_is_not_hidden_only_and_the_link_is_a_row(
         self, plain_project, mock_sel, monkeypatch
     ):
-        """A symlink to a directory is listed among the walk's subdirectories but
-        never descended (``followlinks`` is off), so it becomes neither a row nor
-        a parent: one more entry the listing hides, not an empty folder. The link
-        is a seam (``_pretend_directory_symlink``) over a real directory holding a
-        file, so the assertion runs where symlinks need a privilege, and the file
-        beneath proves the walk did not go in.
+        """``ls deploy`` shows ``current``: a symlink to a directory is a visible,
+        navigable entry, so its folder is NOT hidden-only (hidden-only means every
+        entry is one the listing filters out by nature -- dot-directories, the
+        skip set). The walk never follows a link (``followlinks`` is off, against
+        link cycles) and would otherwise yield it as neither a row nor a parent,
+        leaving the folder to read as empty; so the link is listed as a directory
+        row of its own and named in ``linkedDirectories``, and nothing beneath it
+        is listed. The link is a seam (``_pretend_directory_symlink``) over a real
+        directory holding a file, so the assertion runs where symlinks need a
+        privilege, and the file beneath proves the walk did not go in.
         """
         plain = plain_project
         (plain / "releases").mkdir(parents=True)
@@ -476,10 +480,54 @@ class TestProjectTree:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
 
-        assert data["hiddenOnlyDirectories"] == ["linked"]
-        assert "linked" in data["directories"]
-        assert "linked/current" not in data["directories"]
+        assert data["hiddenOnlyDirectories"] == []
+        assert data["linkedDirectories"] == ["linked/current"]
+        # The folder AND the link are rows, in walk order; the link's target is
+        # never walked, so no file beneath it is listed.
+        assert data["directories"] == ["linked", "linked/current", "releases"]
         assert data["paths"] == ["releases/kept.txt"]
+        assert data["unreadableDirectories"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_directory_symlink_named_like_a_skip_directory_is_still_a_row_and_not_hidden(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """``shared/node_modules -> ../store/node_modules`` is one visible entry:
+        the skip set drops directories not worth WALKING INTO, and a link is never
+        walked into, so the skip filter has nothing to say about it. Links must
+        therefore be told apart on the names as the walk found them, before the
+        filter -- on the filtered names a linked ``node_modules`` (or a dot-named
+        link) would vanish and its folder would be called hidden-only. A REAL
+        ``node_modules`` beside it stays hidden, as before.
+        """
+        plain = plain_project
+        (plain / "store" / "node_modules" / "dep").mkdir(parents=True)
+        (plain / "store" / "node_modules" / "dep" / "index.js").write_text("x")
+        (plain / "shared" / "node_modules" / "dep").mkdir(parents=True)
+        (plain / "shared" / "node_modules" / "dep" / "index.js").write_text("x")
+        (plain / "dotted" / ".cache").mkdir(parents=True)
+        (plain / "dotted" / ".cache" / "entry").write_text("x")
+        _pretend_directory_symlink(monkeypatch, plain / "shared" / "node_modules")
+        _pretend_directory_symlink(monkeypatch, plain / "dotted" / ".cache")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        # ``store`` holds a real cache: hidden-only. ``shared`` and ``dotted``
+        # hold a link each: a row, not hidden.
+        assert data["hiddenOnlyDirectories"] == ["store"]
+        assert data["linkedDirectories"] == ["dotted/.cache", "shared/node_modules"]
+        assert data["directories"] == [
+            "dotted",
+            "dotted/.cache",
+            "shared",
+            "shared/node_modules",
+            "store",
+        ]
+        # Nothing behind a link or inside the real cache is listed.
+        assert data["paths"] == []
+        assert data["unreadableDirectories"] == []
 
     @pytest.mark.asyncio
     async def test_walk_lists_a_kept_directory_it_could_not_read(
@@ -626,6 +674,31 @@ class TestProjectTree:
         assert data["hiddenOnlyDirectories"] == data["directories"]
 
     @pytest.mark.asyncio
+    async def test_a_linked_marker_is_redacted_like_its_directory_row(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """Mutation pin for ``"linkedDirectories"`` in the egress redaction
+        tuple, same shape as the other two: the link's row and the marker
+        naming it must be the same redacted string, and the raw credential-shaped
+        name must appear nowhere in the body.
+        """
+        plain = plain_project
+        link = plain / "AKIAIOSFODNN7EXAMPLE"
+        link.mkdir(parents=True)
+        _pretend_directory_symlink(monkeypatch, link)
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(data)
+        assert len(data["directories"]) == 1
+        assert data["directories"][0].startswith("[REDACTED: credential]")
+        assert data["linkedDirectories"] == data["directories"]
+        # The root holds a visible entry, so it is neither empty nor hidden-only.
+        assert data["hiddenOnlyDirectories"] == []
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_marker_is_redacted_like_its_directory_row(
         self, plain_project, mock_sel, monkeypatch
     ):
@@ -700,6 +773,9 @@ class TestProjectTree:
         assert data["repo"] is True
         assert data["hiddenOnlyDirectories"] == []
         assert data["unreadableDirectories"] == []
+        # git lists a symlink as a file (the link is the tracked object), so
+        # this branch never has a linked directory row to qualify.
+        assert data["linkedDirectories"] == []
         assert "logs" not in data["directories"]
 
     @pytest.mark.asyncio

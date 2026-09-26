@@ -3238,11 +3238,16 @@
       "status_failed": "Couldn’t read the repository status.",
       "row_empty": "Empty folder",
       "row_hidden_only": "Contains only hidden items (dotfiles, caches)",
+      "row_linked": "Link to another folder: contents not listed",
       "row_truncated": "Files not shown: file limit of 10,000 reached",
       "row_unreadable_marker": "Not readable — see the notice above",
+      "row_unreadable_marker_dismissed": "Not readable — notice dismissed",
       "root_unreadable": "No permission to read the workspace folder",
       "root_hidden_only": "This workspace contains only hidden items (dotfiles, caches)",
-      "unreadable_folders": "Folders not readable: {{paths}}"
+      "unreadable_folders": "Folders not readable: {{paths}}",
+      "dismiss_unreadable": "Dismiss: hide this notice until the unreadable folders change",
+      "unreadable_dismissed": "Notice dismissed",
+      "undo_dismiss_unreadable": "Undo"
     },
     "logEntry": {
       "trace_load_failed": "Couldn’t load this run’s trace."

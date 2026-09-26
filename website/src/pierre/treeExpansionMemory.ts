@@ -35,78 +35,111 @@ const MAX_REMEMBERED_DIRS = 20
  *  the tail only costs those directories their restored state. */
 const MAX_REMEMBERED_PATHS = 500
 
-/** Expansion for the current page session. Module-level so it survives the
- *  rail's remount on in-place tab navigation. Bounded like the stored record:
- *  a long-lived tab must not retain an entry per project dir ever visited. */
-const sessionExpansion = new Map<string, readonly string[]>()
+/** A bounded, per-project set of tree paths remembered across the rail's
+ *  remount (module-scope map) and a page reload (`localStorage` mirror under
+ *  `storageKey`). */
+export interface ProjectPathMemory {
+  /** Remember `paths` for `projectDir`, replacing what was remembered. */
+  remember(projectDir: string, paths: readonly string[]): void
+  /** The remembered paths for `projectDir`: session map first, then
+   *  `localStorage`, then empty. */
+  recall(projectDir: string): readonly string[]
+  /** Test-only: drop the module-scope session map so suites stay isolated. */
+  __resetForTests(): void
+}
 
-/** Delete-then-set keeps insertion order meaning "least recently written
- *  first"; evicting the first key past the cap then drops the stalest. */
-function setBounded(map: Map<string, readonly string[]>, key: string, value: readonly string[]): void {
-  map.delete(key)
-  map.set(key, value)
-  for (const k of map.keys()) {
-    if (map.size <= MAX_REMEMBERED_DIRS) break
-    map.delete(k)
+/** Build one memory over its own storage key. The expansion memory below is
+ *  one instance; the dismissed "Folders not readable" notices
+ *  (`./treeUnreadableDismissals`) are another — the same session map, mirror,
+ *  caps and tolerance for unusable storage, spelled once. */
+export function createProjectPathMemory(storageKey: string): ProjectPathMemory {
+  /** Paths for the current page session. Module-level so they survive the
+   *  rail's remount on in-place tab navigation. Bounded like the stored
+   *  record: a long-lived tab must not retain an entry per project dir ever
+   *  visited. */
+  const session = new Map<string, readonly string[]>()
+
+  /** Delete-then-set keeps insertion order meaning "least recently written
+   *  first"; evicting the first key past the cap then drops the stalest. */
+  const setBounded = (key: string, value: readonly string[]): void => {
+    session.delete(key)
+    session.set(key, value)
+    for (const k of session.keys()) {
+      if (session.size <= MAX_REMEMBERED_DIRS) break
+      session.delete(k)
+    }
+  }
+
+  /** Read the whole stored record. `{}` for a missing or malformed value;
+   *  `null` when storage itself is unusable (so a write should not follow). */
+  const readStore = (): Record<string, unknown> | null => {
+    try {
+      const raw = localStorage.getItem(storageKey)
+      if (!raw) return {}
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      return parsed as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+
+  return {
+    // The mirror write serializes the whole record synchronously. Accepted
+    // deliberately: callers only invoke this on a REAL change (user-paced
+    // clicks, deduped upstream), and one JSON.stringify of a 20x500-capped
+    // record is far below frame budget on those. Deferring the write would add
+    // a lost-on-navigation window for no felt gain.
+    remember(projectDir, paths) {
+      const capped = paths.slice(0, MAX_REMEMBERED_PATHS)
+      setBounded(projectDir, capped)
+      const store = readStore()
+      if (store === null) return
+      // Delete-then-set keeps insertion order meaning "least recently written
+      // first", so eviction below always drops the stalest project.
+      delete store[projectDir]
+      store[projectDir] = capped
+      const dirs = Object.keys(store)
+      for (let i = 0; i < dirs.length - MAX_REMEMBERED_DIRS; i++) delete store[dirs[i]]
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(store))
+      } catch {
+        // Private mode / quota exceeded: the session map above still covers
+        // the remount case, only reload persistence is lost.
+      }
+    },
+    recall(projectDir) {
+      const inSession = session.get(projectDir)
+      if (inSession) return inSession
+      const store = readStore()
+      const entry = store?.[projectDir]
+      if (!Array.isArray(entry)) return []
+      const paths = entry
+        .filter((p): p is string => typeof p === 'string')
+        .slice(0, MAX_REMEMBERED_PATHS)
+      setBounded(projectDir, paths)
+      return paths
+    },
+    __resetForTests() {
+      session.clear()
+    },
   }
 }
 
-/** Read the whole stored record. `{}` for a missing or malformed value;
- *  `null` when storage itself is unusable (so a write should not follow). */
-function readStore(): Record<string, unknown> | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return parsed as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
+const expansion = createProjectPathMemory(STORAGE_KEY)
 
-/** Remember the expanded directory set for a project directory.
- *
- *  The mirror write serializes the whole record synchronously. Accepted
- *  deliberately: the caller only invokes this on a REAL expansion change
- *  (user-paced clicks, deduped upstream), and one JSON.stringify of a
- *  20x500-capped record is far below frame budget on those. Deferring the
- *  write would add a lost-on-navigation window for no felt gain. */
+/** Remember the expanded directory set for a project directory. */
 export function rememberExpandedPaths(projectDir: string, expanded: readonly string[]): void {
-  const capped = expanded.slice(0, MAX_REMEMBERED_PATHS)
-  setBounded(sessionExpansion, projectDir, capped)
-  const store = readStore()
-  if (store === null) return
-  // Delete-then-set keeps insertion order meaning "least recently written
-  // first", so eviction below always drops the stalest project.
-  delete store[projectDir]
-  store[projectDir] = capped
-  const dirs = Object.keys(store)
-  for (let i = 0; i < dirs.length - MAX_REMEMBERED_DIRS; i++) delete store[dirs[i]]
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
-  } catch {
-    // Private mode / quota exceeded: the session map above still covers the
-    // remount case, only reload persistence is lost.
-  }
+  expansion.remember(projectDir, expanded)
 }
 
 /** Recall the remembered expanded directory set for a project directory:
  *  session map first, then `localStorage`, then empty. */
 export function recallExpandedPaths(projectDir: string): readonly string[] {
-  const inSession = sessionExpansion.get(projectDir)
-  if (inSession) return inSession
-  const store = readStore()
-  const entry = store?.[projectDir]
-  if (!Array.isArray(entry)) return []
-  const paths = entry
-    .filter((p): p is string => typeof p === 'string')
-    .slice(0, MAX_REMEMBERED_PATHS)
-  setBounded(sessionExpansion, projectDir, paths)
-  return paths
+  return expansion.recall(projectDir)
 }
 
 /** Test-only: drop the module-scope session map so suites stay isolated. */
 export function __resetTreeExpansionMemoryForTests(): void {
-  sessionExpansion.clear()
+  expansion.__resetForTests()
 }

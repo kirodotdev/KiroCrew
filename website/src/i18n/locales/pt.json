@@ -8694,11 +8694,16 @@
       "status_failed": "Não foi possível ler o estado do repositório.",
       "row_empty": "Pasta vazia",
       "row_hidden_only": "Contém apenas itens ocultos (dotfiles, caches)",
+      "row_linked": "Link para outra pasta: conteúdo não listado",
       "row_truncated": "Arquivos não exibidos: limite de 10.000 arquivos atingido",
       "row_unreadable_marker": "Não legível — veja o aviso acima",
+      "row_unreadable_marker_dismissed": "Não legível — aviso dispensado",
       "root_unreadable": "Sem permissão para ler a pasta do espaço de trabalho",
       "root_hidden_only": "Este espaço de trabalho contém apenas itens ocultos (dotfiles, caches)",
-      "unreadable_folders": "Pastas não legíveis: {{paths}}"
+      "unreadable_folders": "Pastas não legíveis: {{paths}}",
+      "dismiss_unreadable": "Dispensar: ocultar este aviso até que as pastas não legíveis mudem",
+      "unreadable_dismissed": "Aviso dispensado",
+      "undo_dismiss_unreadable": "Desfazer"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

@@ -39,6 +39,8 @@ import {
   rememberExpandedPaths,
   __resetTreeExpansionMemoryForTests,
 } from '../pierre/treeExpansionMemory'
+import { __resetTreeUnreadableDismissalsForTests, recallDismissedUnreadable, rememberDismissedUnreadable } from '../pierre/treeUnreadableDismissals'
+import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { treeMock } from './__mocks__/pierreTreesReact'
 import type { MenuItem, MenuContext, VisibleRow } from './__mocks__/pierreTreesReact'
 
@@ -408,6 +410,21 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     ])
   })
 
+  it('says "Link to another folder: contents not listed" under a symlinked folder, and nothing under the folder holding it', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['HEARTBEAT.md'],
+      directories: ['deploy', 'deploy/current'],
+      linkedDirectories: ['deploy/current'],
+      repo: false,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['HEARTBEAT.md', 'deploy/', 'deploy/current/', `deploy/current/Link to another folder: contents not listed${M}`],
+    ])
+  })
+
   it('marks the row of a folder the server could not read as pointing to the notice, puts no state row under it, and keeps its parent populated', async () => {
     // Nothing beneath the folder is KNOWN, so no row may make a claim about its
     // contents -- and a failed read is an error, which is REPORTED only through
@@ -499,6 +516,466 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     await waitForTree()
     expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  describe('dismissing the not-readable notice', () => {
+    const DISMISS = 'Dismiss: hide this notice until the unreadable folders change'
+    const MARKER = 'Not readable — see the notice above'
+    const MARKER_DISMISSED = 'Not readable — notice dismissed'
+    const locked = (over: Partial<TreePayload> = {}) => mkTree({
+      paths: ['README.md'],
+      directories: ['vault', 'vault/locked'],
+      unreadableDirectories: ['vault/locked'],
+      repo: false,
+      ...over,
+    })
+    const lockedRow = { kind: 'directory', name: 'locked', path: 'vault/locked' } as const
+    const decorateLocked = () => {
+      const decorate = treeMock.last().options.renderRowDecoration as (
+        context: { item: MenuItem; row: VisibleRow },
+      ) => unknown
+      return decorate({ item: lockedRow, row: { ...lockedRow, isExpanded: true } })
+    }
+
+    beforeEach(() => {
+      __resetTreeUnreadableDismissalsForTests()
+      localStorage.removeItem('mc-files-tree-unreadable-dismissed')
+    })
+
+    it('hides the notice once dismissed and turns the row marker into "notice dismissed"', async () => {
+      // A folder that stays unreadable by design (a root-owned cache) would
+      // keep the red alert on every Files visit -- alarm as wallpaper. The
+      // dismiss control does what a ✕ promises: the notice goes. Until then it
+      // is the alert in the danger tone, never a toned-down status, and the
+      // control names its promise for hover as well as for the accessibility
+      // tree. The folder's row keeps its lock marker, whose label no longer
+      // sends the reader to a notice that is not there.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.className).toContain('text-danger')
+      expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER })
+      const control = screen.getByRole('button', { name: DISMISS })
+      expect(control).toHaveAttribute('title', DISMISS)
+
+      fireEvent.click(control)
+
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      // What stands in its place names the user's action, never the error: no
+      // toned-down copy of the folder list survives the dismissal.
+      expect(screen.getByRole('status')).not.toHaveTextContent(/vault\/locked|not readable/i)
+      expect(screen.queryByRole('button', { name: 'Ask the agent' })).not.toBeInTheDocument()
+      // The marker is fed by the payload, so it stays; its label follows the
+      // dismissal.
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER_DISMISSED })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+
+    it('leaves a one-line "Notice dismissed — Undo" where the notice stood; Undo brings the notice back and clears the remembered set', async () => {
+      // The ✕ sits beside "Ask the agent" at the same weight, and a dismissal
+      // is remembered per project across reloads -- so a mis-click, or a click
+      // by a reader who did not take in the tooltip, needs a way back that is
+      // visible, not hover-only. The line names the action, not the error, and
+      // its Undo restores the alert and forgets the whole remembered set.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+
+      const line = screen.getByTestId('workspace-tree-unreadable-dismissed')
+      expect(line).toHaveAttribute('role', 'status')
+      expect(line).toHaveTextContent('Notice dismissed')
+      expect(line.className).toContain('text-muted')
+      const undo = within(line).getByRole('button', { name: 'Undo' })
+      expect(undo).toHaveAccessibleDescription('Notice dismissed')
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER_DISMISSED })
+
+      fireEvent.click(undo)
+
+      const notice = screen.getByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked')
+      expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: DISMISS })).toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-tree-unreadable-dismissed')).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER })
+      // Cleared, not merely hidden: the session map and the reload mirror both
+      // hold nothing for the project.
+      expect(recallDismissedUnreadable(ROOT)).toEqual([])
+      expect(JSON.parse(localStorage.getItem('mc-files-tree-unreadable-dismissed') ?? '{}')).toEqual({ [ROOT]: [] })
+    })
+
+    it('keeps the Undo offer for the undo window only; expiry leaves the dismissal as it was', async () => {
+      // Transient: the way back is offered while the mistake is fresh, on the
+      // product's one undo clock (the session-move bar's horizon). Expiry
+      // leaves the dismissal remembered and the notice hidden.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('status')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('holds the Undo window open while the pointer is over the spot or focus is inside it, and resumes where it stopped', async () => {
+      // The pointer is on the ✕ when the offer lands -- on the spot the line
+      // takes over -- so the offer holds a FULL window until it leaves; a focus
+      // inside it holds likewise, and the two are tracked apart so a pointer
+      // passing through cannot release a hold keyboard focus still owns.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      const spot = screen.getByTestId('workspace-tree-unreadable-notice').parentElement as HTMLElement
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.mouseEnter(spot) })
+        act(() => { fireEvent.click(dismiss) })
+        const undo = () => screen.queryByRole('button', { name: 'Undo' })
+        expect(screen.getByTestId('workspace-tree-unreadable-dismissed').parentElement).toBe(spot)
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { fireEvent.mouseLeave(spot) })
+        // Part of the window runs, then a focus hold freezes the remainder...
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1000) })
+        act(() => { fireEvent.focus(undo() as HTMLElement) })
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { fireEvent.mouseEnter(spot) })
+        act(() => { fireEvent.mouseLeave(spot) })
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        // ...and the remainder, not a fresh window, runs once the hold lifts.
+        act(() => { fireEvent.blur(undo() as HTMLElement) })
+        act(() => { vi.advanceTimersByTime(999) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(undo()).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('lands a keyboard dismissal on Undo and lets the window run once focus leaves it: the hold the ✕ set is not stuck on a control that is gone', async () => {
+      // Enter on the ✕ unmounts it. The spot's focus capture had set the hold
+      // when the ✕ took focus, and a removed element fires no focusout, so
+      // without the swap clearing it the offer would stay held for the life
+      // of the mount: the Undo line above the tree for as long, and every
+      // later offer born held (GPT and Opus lanes). Focus itself would fall to
+      // <body>, with the window running while the keyboard user tabs back
+      // from the top of the panel (UX lane) -- so the swap hands it to Undo,
+      // the way back, where it holds the window as any focus inside the spot
+      // does, and the window resumes the moment focus moves on.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      const elsewhere = document.createElement('button')
+      document.body.appendChild(elsewhere)
+      vi.useFakeTimers()
+      try {
+        // Enter on a focused button is a click in every browser; this DOM runs
+        // no default actions, so the click Enter would dispatch is fired by
+        // hand. What is under test is the FOCUSED control unmounting.
+        act(() => { dismiss.focus() })
+        expect(dismiss).toHaveFocus()
+        fireEvent.keyDown(dismiss, { key: 'Enter' })
+        act(() => { fireEvent.click(dismiss) })
+
+        const undo = screen.getByRole('button', { name: 'Undo' })
+        expect(undo).toHaveFocus()
+        // Held while focus is on Undo, as any focus inside the spot holds...
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo).toBeInTheDocument()
+        // ...and a full window runs once it leaves. Focus is moved by focusing
+        // ANOTHER element, which blurs only what really had focus: a hold left
+        // by the unmounted ✕ would get no focusout here and never lift.
+        act(() => { elsewhere.focus() })
+        expect(undo).not.toHaveFocus()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+        elsewhere.remove()
+      }
+    })
+
+    it('lands a keyboard Undo on the ✕, and the next dismissal is not born held by the hold Undo left behind', async () => {
+      // The other direction of the same swap: Enter on Undo unmounts it while
+      // it has focus. Focus goes to the control that reverses it, as the
+      // Auto-title Undo's does; and the hold is cleared here too, or the offer
+      // the NEXT ✕ creates would inherit a hold nothing is holding and never
+      // run out.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const elsewhere = document.createElement('button')
+      document.body.appendChild(elsewhere)
+      vi.useFakeTimers()
+      try {
+        const first = screen.getByRole('button', { name: DISMISS })
+        act(() => { first.focus() })
+        act(() => { fireEvent.click(first) })
+        const undo = screen.getByRole('button', { name: 'Undo' })
+        expect(undo).toHaveFocus()
+        fireEvent.keyDown(undo, { key: 'Enter' })
+        act(() => { fireEvent.click(undo) })
+
+        const dismiss = screen.getByRole('button', { name: DISMISS })
+        expect(dismiss).toHaveFocus()
+        expect(screen.getByTestId('workspace-tree-unreadable-notice')).toHaveAttribute('role', 'alert')
+        expect(recallDismissedUnreadable(ROOT)).toEqual([])
+        // Focus moves on; a later click (a browser that focuses no pressed
+        // button moves no focus) creates an offer that must run out on the
+        // clock, not sit on a stale hold.
+        act(() => { elsewhere.focus() })
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Undo' })).not.toHaveFocus()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS + 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+        elsewhere.remove()
+      }
+    })
+
+    it('clears the focus hold when the payload swaps the spot under a focused Undo, so the next offer is not born held', async () => {
+      // The swap is not always the user's: the notice comes back on its own
+      // when a new folder fails, and Undo unmounts under the focus it holds.
+      // No control was activated, so there is nothing to hand focus to -- but
+      // the hold must still go with the element it described.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      const undo = screen.getByRole('button', { name: 'Undo' })
+      act(() => { undo.focus() })
+      expect(undo).toHaveFocus()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.invalidateQueries() })
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      expect(undo).not.toBeInTheDocument()
+
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS + 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('retires the Undo offer for good once the notice has returned on its own, even if the payload settles again inside the window', async () => {
+      // Gone is one-way, as for every undo offer: the alert came back with a
+      // new folder, so the old dismissal is no longer what the user is looking
+      // at, and when that folder reads again the remembered set hides the
+      // notice WITHOUT resurrecting an Undo for a click made a payload ago.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await screen.findByTestId('workspace-tree-unreadable-notice')
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument())
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+
+    it('does not let a hold left by an unmounted spot pin a later offer open', async () => {
+      // The pointer parked on the spot gets no leave event when the spot goes
+      // (every folder read again). A later notice dismissed from the keyboard,
+      // pointer elsewhere, must still run its window out.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      await screen.findByRole('button', { name: DISMISS })
+      fireEvent.mouseEnter(screen.getByTestId('workspace-tree-unreadable-notice').parentElement as HTMLElement)
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ unreadableDirectories: [] }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument())
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not carry the Undo offer across a remount: the dismissal is remembered, the offer is not', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const first = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+      first.unmount()
+
+      treeMock.reset()
+      renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    })
+
+    it('remembers the dismissal across a remount and a page reload, per project', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const first = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      first.unmount()
+
+      // The Files tab remounts on in-place tab navigation: the module map
+      // answers before the notice can flash red. The marker proves the payload
+      // (and the folder) landed, so the absence is the dismissal, not a tree
+      // that has not loaded yet.
+      treeMock.reset()
+      const second = renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      second.unmount()
+
+      // A page reload drops the module map; the localStorage mirror answers.
+      __resetTreeUnreadableDismissalsForTests()
+      treeMock.reset()
+      const third = renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      third.unmount()
+
+      // Another project's identical folder was never dismissed.
+      treeMock.reset()
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ root: '/repo/other' }))
+      renderTree({ projectDir: '/repo/other' })
+      await waitForTree()
+      expect(await screen.findByTestId('workspace-tree-unreadable-notice')).toHaveAttribute('role', 'alert')
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+    })
+
+    it('brings the notice back when a folder outside the dismissed set becomes unreadable', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked, ops/secrets')
+      // The alert is back on its own, so the Undo offer is retired: one way
+      // back at a time, never a live alert with an Undo line beside it.
+      expect(screen.queryByTestId('workspace-tree-unreadable-dismissed')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      // Both folders' markers point at the notice again.
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+      // Dismissing again covers the whole current list, with a fresh Undo.
+      fireEvent.click(screen.getByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked', 'ops/secrets'])
+    })
+
+    it('forgets a dismissed folder once it reads again, so the same folder failing anew alerts again', async () => {
+      // A dismissal covers the folder's CURRENT failure, not the folder
+      // forever: a folder that recovers and later breaks again is a new
+      // failure and must not inherit its old dismissal.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      // The folder reads again: nothing unreadable, and the dismissal is
+      // pruned to the payload -- in the store too, so a reload does not
+      // resurrect it.
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ unreadableDirectories: [] }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(recallDismissedUnreadable(ROOT)).toEqual([]))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(decorateLocked()).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-files-tree-unreadable-dismissed') ?? '{}')).toEqual({ [ROOT]: [] })
+
+      // The same folder fails again: the alert is back, marker pointing at it.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked')
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+    })
+
+    it('does not forget a dismissal before the listing has answered', async () => {
+      // A mount that has not heard from the server yet knows nothing about the
+      // folders: pruning against that silence would forget every dismissal on
+      // every reload and re-alert the very visit the dismissal was for.
+      rememberDismissedUnreadable(ROOT, ['vault/locked'])
+      let answer: (payload: TreePayload) => void = () => {}
+      vi.mocked(api.projectTree).mockImplementation(() => new Promise(resolve => { answer = resolve }))
+      renderTree()
+      await act(async () => { await Promise.resolve() })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      await act(async () => { answer(locked()) })
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
   })
 
   it('says the files were not listed when a childless folder lost them to the file cap, once at a time', async () => {

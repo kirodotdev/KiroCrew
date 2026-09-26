@@ -9,10 +9,14 @@
  *
  *  - `empty`: listed as a directory with no file and no subfolder in it;
  *  - `hidden-only`: not empty on disk, but every entry in it is a folder the
- *    listing skips or hides (a dot-directory, a tooling cache, a symlink to a
- *    directory the walk does not follow) -- the server names these in
- *    `hiddenOnlyDirectories`, and without that signal `_bg/` holding only
- *    `.kiro/` would be called empty;
+ *    listing filters out by nature (a dot-directory, a tooling cache) -- the
+ *    server names these in `hiddenOnlyDirectories`, and without that signal
+ *    `_bg/` holding only `.kiro/` would be called empty;
+ *  - `linked`: it is a symlink to a directory. A visible, navigable entry, so
+ *    the server lists it as a row of its own (and its folder is not hidden-only
+ *    for holding it), but the walk never follows a link, so nothing beneath it
+ *    is listed -- the server names these in `linkedDirectories`, and without
+ *    that signal the link would be called empty;
  *  - `truncated`: it has files, but the workspace file cap left it none --
  *    the server names these in `truncatedDirectories`.
  *
@@ -39,7 +43,7 @@
  * opens over nothing.
  */
 
-export type TreeStateRowKind = 'empty' | 'hidden-only' | 'truncated'
+export type TreeStateRowKind = 'empty' | 'hidden-only' | 'linked' | 'truncated'
 
 export type TreeStateRowLabels = Readonly<Record<TreeStateRowKind, string>>
 
@@ -67,6 +71,7 @@ export interface TreeStateRowPayload {
   truncatedDirectories?: readonly string[]
   hiddenOnlyDirectories?: readonly string[]
   unreadableDirectories?: readonly string[]
+  linkedDirectories?: readonly string[]
 }
 
 const parentOf = (path: string): string => {
@@ -130,9 +135,11 @@ export function planTreeStateRows(tree: TreeStateRowPayload, labels: TreeStateRo
   const truncated = new Set(tree.truncatedDirectories ?? [])
   const unreadable = new Set(tree.unreadableDirectories ?? [])
   const hiddenOnly = new Set(tree.hiddenOnlyDirectories ?? [])
+  const linked = new Set(tree.linkedDirectories ?? [])
   const segments = {
     empty: stateRowSegment(labels.empty),
     'hidden-only': stateRowSegment(labels['hidden-only']),
+    linked: stateRowSegment(labels.linked),
     truncated: stateRowSegment(labels.truncated),
   } as const
 
@@ -145,12 +152,15 @@ export function planTreeStateRows(tree: TreeStateRowPayload, labels: TreeStateRo
     if (unreadable.has(dir)) continue
     // Truncation is checked first: a folder that lost its files to the cap is
     // not empty, and the server never lists a folder with files as hidden-only;
-    // the order only fixes what a malformed payload shows.
+    // a link is never walked, so it is neither truncated nor hidden-only. The
+    // order only fixes what a malformed payload shows.
     const kind: TreeStateRowKind = truncated.has(dir)
       ? 'truncated'
-      : hiddenOnly.has(dir)
-        ? 'hidden-only'
-        : 'empty'
+      : linked.has(dir)
+        ? 'linked'
+        : hiddenOnly.has(dir)
+          ? 'hidden-only'
+          : 'empty'
     paths.add(`${dir}/${segments[kind]}`)
     folders.add(dir)
   }

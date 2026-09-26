@@ -8694,11 +8694,16 @@
       "status_failed": "Impossible de lire l’état du dépôt.",
       "row_empty": "Dossier vide",
       "row_hidden_only": "Ne contient que des éléments cachés (dotfiles, caches)",
+      "row_linked": "Lien vers un autre dossier : contenu non listé",
       "row_truncated": "Fichiers non affichés : limite de 10 000 fichiers atteinte",
       "row_unreadable_marker": "Lecture impossible — voir l’avis ci-dessus",
+      "row_unreadable_marker_dismissed": "Lecture impossible — avis ignoré",
       "root_unreadable": "Aucune autorisation de lecture du dossier de l’espace de travail",
       "root_hidden_only": "Cet espace de travail ne contient que des éléments cachés (dotfiles, caches)",
-      "unreadable_folders": "Dossiers non lisibles : {{paths}}"
+      "unreadable_folders": "Dossiers non lisibles : {{paths}}",
+      "dismiss_unreadable": "Ignorer : masquer cet avis jusqu’à ce que les dossiers non lisibles changent",
+      "unreadable_dismissed": "Avis ignoré",
+      "undo_dismiss_unreadable": "Annuler"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

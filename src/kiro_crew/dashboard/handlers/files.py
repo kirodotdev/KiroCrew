@@ -8217,6 +8217,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
                 "truncatedDirectories": [],
                 "hiddenOnlyDirectories": [],
                 "unreadableDirectories": [],
+                "linkedDirectories": [],
             }
         )
 
@@ -8269,9 +8270,12 @@ async def api_project_tree(request: web.Request) -> web.Response:
                     # file beneath it it is absent, never childless -- while an
                     # indexed path beneath it still comes from the index
                     # (`--cached` reads no directory) and makes it an ordinary
-                    # populated row.
+                    # populated row. A symlink to a directory is listed by git
+                    # as a FILE (the link itself is the tracked object), so it
+                    # is a file row here, never a childless directory.
                     "hiddenOnlyDirectories": [],
                     "unreadableDirectories": [],
+                    "linkedDirectories": [],
                 }
 
         # Fallback: walk twice so the first pass can compute fair per-directory
@@ -8280,8 +8284,9 @@ async def api_project_tree(request: web.Request) -> web.Response:
         directories: list[str] = []
         # Directories the walk leaves CHILDLESS although they are not empty on
         # disk: every entry is a directory this filter drops (a dot-directory
-        # or a tooling cache) or a symlink to a directory the walk does not
-        # follow, and there is no file. The dashboard renders a childless folder
+        # or a tooling cache) and there is no file -- a symlink to a directory
+        # is NOT such an entry (it is a visible row of its own, see
+        # ``linked_directories``). The dashboard renders a childless folder
         # with a state row beneath it, and the row must not call such a folder
         # empty -- `_bg/` holding only `.kiro/` is the reported case. Reported
         # separately from `directories` so the tree can tell the two apart; a
@@ -8289,6 +8294,11 @@ async def api_project_tree(request: web.Request) -> web.Response:
         # even when it also holds hidden entries. The root itself, when its top
         # level holds only such entries, is named as ``.`` (it is no row).
         hidden_only_directories: list[str] = []
+        # Symlinks to directories, listed as rows of their own (see the walk
+        # below): the walk never follows a link, so nothing beneath one is
+        # listed, and the dashboard says so beneath its row rather than calling
+        # the link -- or the folder holding only links -- empty.
+        linked_directories: list[str] = []
         # Directories the walk KEPT but could not read. ``os.walk`` reports a
         # failed ``scandir`` on a subdirectory through ``onerror`` and then
         # skips it WITHOUT yielding it (its default ``onerror=None`` swallows
@@ -8335,28 +8345,44 @@ async def api_project_tree(request: web.Request) -> web.Response:
         file_counts: dict[str, int] = {}
         for dirpath, dirnames, filenames in os.walk(base, onerror=_record_unreadable):
             had_subdirectories = bool(dirnames)
-            dirnames[:] = sorted(
-                d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not d.startswith(".")
-            )
             rel_dir = os.path.relpath(dirpath, base)
             directory = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
             if directory:
                 directories.append(directory)
-            # A symlink to a directory stays in ``dirnames`` but the walk
-            # never descends it (``followlinks`` is off), so it becomes
-            # neither a row nor a parent: one more entry the listing hides.
-            # The root is judged by the same rule, OUTSIDE the ``if directory``
+            # A symlink to a directory is a visible, navigable entry -- ``ls``
+            # shows it -- but the walk never descends it (``followlinks`` is
+            # off, against link cycles) and never yields it, so it would be
+            # neither a row nor a parent and its folder would read as childless.
+            # It is listed as a directory row of its own and named in
+            # ``linkedDirectories``: the row shows, nothing beneath it is
+            # listed (the target is not walked), and the dashboard says so
+            # beneath it instead of calling the link empty. Links are told
+            # apart on the names as the walk found them, BEFORE the skip
+            # filter below: the filter drops directories not worth walking
+            # into, and a link is never walked into -- a ``node_modules`` that
+            # is a link to a shared install is one visible entry, not a cache
+            # the listing hides, so filtering it first would lose the row and
+            # call its folder hidden-only. It does NOT count as hidden:
+            # hidden-only means every entry the folder holds is a real
+            # directory the listing filters out by nature (dot-directories,
+            # the skip set), so it applies when the filter emptied
+            # ``dirnames``, no link was among them, and no file remains. The
+            # root is judged by the same rule, OUTSIDE the ``if directory``
             # above: a project directory whose top level holds only skipped or
             # hidden entries yields no file and no kept subdirectory, so the
             # payload would be the empty-workspace shape and the dashboard
             # would call the workspace empty -- the claim this listing refuses
             # to make one level down. The root is no directory row of its own,
             # so it is named as ``.``, exactly as an unreadable root is.
-            if (
-                had_subdirectories
-                and not filenames
-                and all(os.path.islink(os.path.join(dirpath, d)) for d in dirnames)
-            ):
+            links = sorted(name for name in dirnames if os.path.islink(os.path.join(dirpath, name)))
+            dirnames[:] = sorted(
+                d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not d.startswith(".")
+            )
+            for name in links:
+                link = f"{directory}/{name}" if directory else name
+                directories.append(link)
+                linked_directories.append(link)
+            if had_subdirectories and not filenames and not dirnames and not links:
                 hidden_only_directories.append(directory or ".")
             file_counts[directory] = len(filenames)
 
@@ -8383,6 +8409,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
             "truncatedDirectories": truncated_directories,
             "hiddenOnlyDirectories": hidden_only_directories,
             "unreadableDirectories": unreadable_directories,
+            "linkedDirectories": linked_directories,
         }
 
     result = await asyncio.to_thread(_run)
@@ -8411,6 +8438,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
         "truncatedDirectories",
         "hiddenOnlyDirectories",
         "unreadableDirectories",
+        "linkedDirectories",
     ):
         result[key] = list(
             dict.fromkeys(redact_path_segments(p, redact) for p in result[key])
