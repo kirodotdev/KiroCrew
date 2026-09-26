@@ -1189,7 +1189,7 @@ async def test_resume_replay_bounds_and_offloads_the_splitter_probe(
     probes: list[str] = []
     offloads: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
 
-    def _capture(probe: str, limit: int, *, reserve: int = 0) -> list[str]:
+    def _capture(probe: str, limit: int, *, reserve: int = 0, redactor: Any = None) -> list[str]:
         probes.append(probe)
         return ["safe preview"]
 
@@ -1212,7 +1212,10 @@ async def test_resume_replay_bounds_and_offloads_the_splitter_probe(
         (
             _capture,
             (probes[0], session_resume._REPLAY_TEXT_LIMIT),
-            {"reserve": session_resume._REPLAY_RESERVE},
+            {
+                "reserve": session_resume._REPLAY_RESERVE,
+                "redactor": session_resume._redact_discord_text,
+            },
         )
     ]
     assert preview == "safe preview" + session_resume._REPLAY_TRUNCATED

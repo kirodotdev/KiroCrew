@@ -309,7 +309,19 @@ def render_chunks(
     if not text:
         return []
     if stable:
-        return split_markdown_safe(text, limit, redactor=_redact_all, stable=True)
+        # PREFIX-STABLE, and stated HERE rather than as a mode on the shared
+        # splitter: redact the whole body, then cut at this budget and nowhere
+        # else. The streaming turn renderer re-splits its growing body every frame
+        # and treats all but the last chunk as delivered, so it needs chunk *i*
+        # decided by the text before it and nothing later. A credential-aware cut
+        # searches for a safer budget by reading the WHOLE body, so text arriving
+        # later can move a boundary under a message already sent -- which a count
+        # of delivered chunks cannot detect and no later frame can take back. That
+        # caller grades its own seam before it counts a chunk final, and holds one
+        # it cannot yet vouch for. Two calls the module already makes, which is why
+        # the shared primitive needs no branch for it.
+        redacted, _ = redact_for_display(text, _redact_all)
+        return split_markdown_safe(redacted, limit)
     # A credential-aware cut can DECLINE to cut, answering with the text whole,
     # which is fail-closed but one chunk over ``limit``. This channel's own sender
     # posts each chunk as its own message with no length bound of its own, so the

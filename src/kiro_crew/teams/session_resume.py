@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
@@ -335,12 +336,19 @@ def _replay_preview(raw: str) -> str:
 
     Split with the shared fence-safe splitter rather than sliced, so a preview cannot
     end inside a code fence and leave the rest of the message rendering as code.
+
+    The redactor goes in even though only ``chunks[0]`` is kept. A cut that keeps one
+    chunk cannot hand the reader a key across two messages, so the guard buys nothing
+    HERE -- but an exemption is a claim about one call, and a claim is only worth its
+    upkeep where the alternative costs something. Passing it makes the rule the
+    enumeration states uniform: a splitter call carries a redactor, and the one
+    exception names the call that cannot take one.
     """
     safe = _display_safe(raw).strip()
     if not safe:
         return ""
     budget = min(_REPLAY_TEXT_LIMIT, TEAMS_MAX_TEXT) - len(_REPLAY_TRUNCATED)
-    chunks = split_markdown_safe(safe, budget)
+    chunks = split_markdown_safe(safe, budget, redactor=_default_redactor)
     if not chunks:
         return ""
     return chunks[0] + (_REPLAY_TRUNCATED if len(chunks) > 1 else "")
