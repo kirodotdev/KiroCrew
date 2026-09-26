@@ -402,9 +402,24 @@ interpreter then dies on `from urllib.parse import …` reached through
 check probes stdlib packages spread across the alphabet — via each one's
 `__init__.py`, since an extractor creates a directory before filling it and a
 top-level `.py` file lands with the early batch — and, when any are missing,
-reports "still being installed" through the normal gateway-failure dialog, whose
-**Retry** succeeds once extraction completes. It stays silent for the legacy
-flat layout, which carries no interpreter tree to verify.
+reports "still being installed" through the normal gateway-failure dialog. It
+stays silent for the legacy flat layout, which carries no interpreter tree to
+verify.
+
+That dialog does not wait for a click. While it is open it re-runs the same
+refusal predicate (`launchBlockingBundleParts`, shared with the launcher so the
+probe can never be laxer than the refusal) every five seconds, repaints the
+remaining-component count in place, and — once every part is on disk — shows
+"Installation finished", lingers briefly, and fires its own **Retry**. That is
+the very action the button fires, resolved through the same window-closed
+handshake, so it re-enters `startGateway()` exactly once by the ordinary path
+and introduces no second respawn owner beside `recoverWedgedGateway` or the
+liveness monitor. A click always wins over the probe, and the probe stands down
+when an update install is dispatched (the updater stops the gateway on purpose)
+or the app is quitting. Only the pre-spawn refusal arms it; the reclassified
+crash below keeps the manual **Retry**, because there the probe cannot see what
+is missing and a permanently truncated bundle would otherwise respawn and crash
+on every tick.
 
 That pre-spawn check cannot be complete, and does not pretend to be: extraction
 order *within* a package is not the app's to control, so `import zoneinfo` can
