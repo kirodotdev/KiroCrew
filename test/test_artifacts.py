@@ -14,6 +14,7 @@ from kiro_crew.artifacts import (
     MAX_VERSIONS,
     Artifact,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactStore,
@@ -2678,3 +2679,141 @@ class TestAllowedRootsSingleProducer:
         assert "Path.home()" not in handler_src
         assert ".publish.relocate_roots" not in handler_src
         assert "allowed_source_roots()" in handler_src
+
+
+# ── optimistic-concurrency content token ────────────────────────────────────
+
+
+class TestConflictToken:
+    def test_get_mints_an_opaque_token_for_store_backed_content(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        art = store.get("x")
+        assert art.content_token and len(art.content_token) == 64
+        # Not the plain digest: the token must not let a reader test guesses
+        # against content the HTTP layer redacts.
+        import hashlib
+
+        assert art.content_token != hashlib.sha256(b"v1").hexdigest()
+        assert store.get("x").content_token == art.content_token
+
+    def test_matching_token_writes_and_returns_the_next_token(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        token = store.get("x").content_token
+        art = store.update("x", content="v2", expected_token=token)
+        assert store.get("x").content == "v2"
+        assert art.content_token == store.get("x").content_token != token
+
+    def test_stale_token_raises_and_writes_nothing(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        stale = store.get("x").content_token
+        store.update("x", content="from another window")
+        with pytest.raises(ArtifactConflictError) as info:
+            store.update("x", content="stale edit", expected_token=stale, snapshot=True)
+        assert info.value.current_token == store.get("x").content_token
+        assert info.value.version == 1
+        assert store.get("x").content == "from another window"
+        assert store.get("x").version == 1
+
+    def test_a_silent_save_trips_the_guard_though_the_version_did_not_move(
+        self, store: ArtifactStore
+    ) -> None:
+        store.create(name="x", content="v1")
+        stale = store.get("x").content_token
+        store.update("x", content="silent save")  # snapshot=False: version stays 1
+        assert store.get("x").version == 1
+        with pytest.raises(ArtifactConflictError):
+            store.update("x", content="stale", expected_token=stale)
+
+    def test_rewriting_identical_content_still_moves_the_token(self, store: ArtifactStore) -> None:
+        # Rotation per write: a writer cannot save a guess and compare tokens.
+        store.create(name="x", content="same")
+        first = store.get("x").content_token
+        store.update("x", content="same")
+        assert store.get("x").content_token != first
+
+    def test_omitted_token_keeps_last_write_wins(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        store.update("x", content="v2")
+        store.update("x", content="v3")
+        assert store.get("x").content == "v3"
+
+    def test_metadata_only_update_ignores_the_token(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        stale = store.get("x").content_token
+        store.update("x", content="v2")
+        art = store.update("x", name="Renamed", expected_token=stale)
+        assert art.name == "Renamed"
+        # A rename is not a content write, so it does not move the token.
+        token = store.get("x").content_token
+        store.update("x", description="d")
+        assert store.get("x").content_token == token
+
+    def test_snapshot_of_unchanged_content_keeps_the_token(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        token = store.get("x").content_token
+        store.update("x", snapshot=True)
+        assert store.get("x").content_token == token
+        store.update("x", content="v2", expected_token=token)
+
+    @pytest.mark.parametrize("bad", ["abc", "G" * 64, "A" * 64, 123])
+    def test_malformed_token_is_a_validation_error(self, store: ArtifactStore, bad) -> None:
+        store.create(name="x", content="v1")
+        with pytest.raises(ArtifactValidationError):
+            store.update("x", content="v2", expected_token=bad)
+        assert store.get("x").content == "v1"
+
+    def test_invalid_event_type_is_refused_before_any_write(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        with pytest.raises(ArtifactValidationError):
+            store.update("x", content="v2", snapshot=True, event_type="bogus")
+        assert store.get("x").content == "v1"
+        assert store.get("x").version == 1
+
+    def test_live_file_backed_artifact_mints_no_token_and_ignores_one(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        src = tmp_path / "live.md"
+        src.write_text("v1", encoding="utf-8")
+        store.create(name="live", content="v1", source_path=str(src), kind="markdown")
+        assert store.get("live").content_token is None
+        store.update("live", content="v2", expected_token="0" * 64)
+        assert src.read_text(encoding="utf-8") == "v2"
+
+    def test_token_is_shared_by_every_instance_on_a_root(self, tmp_path: Path) -> None:
+        a = ArtifactStore(root=tmp_path / "artifacts")
+        b = ArtifactStore(root=tmp_path / "artifacts")
+        a.create(name="x", content="v1")
+        b.update("x", content="v2", expected_token=a.get("x").content_token)
+        assert a.get("x").content == "v2"
+
+    def test_salt_is_persisted_but_never_serialized(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        meta = json.loads((store.root / "x" / "meta.json").read_text(encoding="utf-8"))
+        assert len(meta["content_salt"]) == 32
+        assert "content_token" not in meta
+        wire = store.get("x").to_dict(include_content=True)
+        assert "content_salt" not in wire
+        assert wire["content_token"] == store.get("x").content_token
+        assert "content_token" not in store.get("x").to_dict()
+
+    @pytest.mark.parametrize("bad", ["not-hex", "é" * 32, 7])
+    def test_corrupt_persisted_salt_is_an_artifact_error(self, store: ArtifactStore, bad) -> None:
+        store.create(name="x", content="v1")
+        path = store.root / "x" / "meta.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta["content_salt"] = bad
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        with pytest.raises(ArtifactError, match="content_salt"):
+            store.get("x")
+
+    def test_legacy_artifact_without_a_salt_is_guarded(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        path = store.root / "x" / "meta.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        del meta["content_salt"]
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        token = store.get("x").content_token
+        assert token
+        store.update("x", content="v2", expected_token=token)
+        with pytest.raises(ArtifactConflictError):
+            store.update("x", content="v3", expected_token=token)

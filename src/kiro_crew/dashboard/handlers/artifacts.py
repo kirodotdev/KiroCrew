@@ -51,6 +51,7 @@ from kiro_crew.artifacts import (
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactReplacedError,
@@ -1794,6 +1795,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 event_type=event_type,
                 from_version=from_version,
                 snapshot=snapshot,
+                expected_token=body.get("expected_token"),
             )
         )
         # store.update() only loads content into the returned Artifact when
@@ -1821,6 +1823,25 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             error=str(exc),
         )
         return _err(str(exc))
+    except ArtifactConflictError as exc:
+        # A stale content write: nothing was written. The body carries what the
+        # client needs to refetch and re-base.
+        _audit(
+            tool="artifact_update",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug, "version": exc.version},
+        )
+        return web.json_response(
+            {
+                "error": str(exc),
+                "code": "artifact_conflict",
+                "current_token": exc.current_token,
+                "version": exc.version,
+            },
+            status=409,
+        )
     except ArtifactError as exc:
         # Catches the base class fallback — store._write_text() raises
         # ArtifactError("refusing to write sensitive path: ...") which is

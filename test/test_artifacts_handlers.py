@@ -2645,3 +2645,58 @@ class TestUpdateWebappMetadata:
         )
         # Bounded validator rejects non-http(s) URLs.
         assert resp.status == 400
+
+
+# ── optimistic-concurrency content token ────────────────────────────────────
+
+
+class TestUpdateConflictToken:
+    @pytest.mark.asyncio
+    async def test_detail_carries_the_token_and_never_the_salt(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        body = _json_body(await api_artifact_detail(_request(match={"slug": "x"})))
+        assert body["content_token"] == isolated_store.get("x").content_token
+        assert "content_salt" not in body
+
+    @pytest.mark.asyncio
+    async def test_matching_token_saves_and_returns_the_next_token(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        token = isolated_store.get("x").content_token
+        resp = await api_artifact_update(
+            _request(body={"content": "v2", "expected_token": token}, match={"slug": "x"})
+        )
+        assert resp.status == 200
+        body = _json_body(resp)
+        assert body["content"] == "v2"
+        assert body["content_token"] == isolated_store.get("x").content_token != token
+
+    @pytest.mark.asyncio
+    async def test_stale_token_answers_409_with_the_rebase_token(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        stale = isolated_store.get("x").content_token
+        isolated_store.update("x", content="newer")
+        resp = await api_artifact_update(
+            _request(body={"content": "stale", "expected_token": stale}, match={"slug": "x"})
+        )
+        assert resp.status == 409
+        body = _json_body(resp)
+        assert body["code"] == "artifact_conflict"
+        assert body["current_token"] == isolated_store.get("x").content_token
+        assert body["version"] == 1
+        assert isolated_store.get("x").content == "newer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["short", 42, ["x"]])
+    async def test_malformed_token_is_a_400(self, isolated_store, patch_restricted, bad) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(body={"content": "v2", "expected_token": bad}, match={"slug": "x"})
+        )
+        assert resp.status == 400
+        assert isolated_store.get("x").content == "v1"
