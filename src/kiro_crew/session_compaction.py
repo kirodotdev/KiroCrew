@@ -20,6 +20,7 @@ such as guarded reset and queue retirement.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -50,6 +51,9 @@ COMPACT_OUTCOME_RECYCLED = "recycled"
 #: missing capability there would be false about a harness that has it and merely
 #: failed once.
 COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE = "restarted_uncompactable"
+#: A compaction failed and the restart is held: sub-agents still run on this session's
+#: process, and restarting it now would end them. Sent with ``success=False``.
+COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS = "waiting_for_subagents"
 
 
 class CompactCallback(Protocol):
@@ -110,6 +114,10 @@ class CompactionDeps:
     compact_failure_cooldown_secs: float
     compact_min_effect_pct_points: float
     post_compact_reset_pct: float
+    #: How long a restart waits for sub-agents sharing the process it would kill,
+    #: and how often it looks again while it waits.
+    cotenant_wait_secs: float = 600.0
+    cotenant_poll_secs: float = 2.0
 
 
 class _CompactionOwner(Protocol):
@@ -157,6 +165,8 @@ class _CompactionOwner(Protocol):
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None: ...
 
     def mark_needs_reinjection(self, key: str) -> None: ...
+
+    def _lifecycle_boundary(self) -> Any: ...
 
     async def reset(
         self,
@@ -698,6 +708,58 @@ class CompactionCoordinator:
                 # claims a missing capability the harness has.
                 self.state.uncompactable_recycles.discard(key)
 
+    def _live_cotenants(self, runs: Any, key: str) -> list[str]:
+        """Ids of *key*'s runs that are live on a process they share with it."""
+        return [
+            info.id
+            for info in runs.running
+            if info.parent_session_key == key
+            and runs.has_live_shared_session(info.conversation_key or f"subagent:{info.id}")
+        ]
+
+    async def _await_cotenants(self, key: str, pct: float) -> None:
+        """Hold a failed compaction's restart while sub-agents share the process.
+
+        A failed compaction is a pause, not an end. The parent's process also hosts
+        its session-sharing sub-agents, so shutting it down ends them with no report.
+        The restart polls (the manager's per-key completion event is shared, so another
+        waiter may release it) for at most ``cotenant_wait_secs``. Past that it stops
+        those runs with the ordinary cancel, bounded, so each reports "stopped" into
+        the conversation, which carries on after the restart.
+        """
+        lifecycle = self._owner._lifecycle_boundary()
+        # The ``SubagentManager`` registered as the parent-end teardown handler.
+        runs = lifecycle._child_teardown
+        if runs is None or not self._live_cotenants(runs, key):
+            return
+        self._deps.logger.warning(
+            "Session %s restart held: compaction failed and sub-agents share its process", key
+        )
+        callback = self.state.on_compacted
+        if callback is not None:
+            try:
+                await callback(
+                    key, pct, success=False, outcome=COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS
+                )
+            except Exception:
+                self._deps.logger.exception("Compact callback failed for %s", key)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._deps.cotenant_wait_secs
+        while ids := self._live_cotenants(runs, key):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                self._deps.logger.warning("Session %s: stopping sub-agents %s", key, ids)
+                for info in runs.running:
+                    if info.id in ids and not info._stop_origin:
+                        info._stop_origin = "stopped at a failed compaction's restart"
+                task = asyncio.ensure_future(asyncio.gather(*(runs.cancel(i) for i in ids)))
+                self._owner._background_tasks.add(task)
+                task.add_done_callback(self._owner._background_tasks.discard)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=20.0)
+                return
+            await asyncio.sleep(min(remaining, self._deps.cotenant_poll_secs))
+
     async def _recycle_unmanaged(self, key: str, session: Any, pct: float) -> str:
         """Recycle a session no compaction path can reach, turn-exclusive.
 
@@ -791,6 +853,7 @@ class CompactionCoordinator:
                 "never reached" if result_wait_used is None else f"{result_wait_used:.0f}s",
                 exc_info=True,
             )
+            await self._await_cotenants(key, pct)
             # This owner-facade hop is load-bearing for both monkeypatches and
             # the lifecycle boundary's exact-identity recycling marker.
             await self._owner._recycle_held(key, session, pct)
