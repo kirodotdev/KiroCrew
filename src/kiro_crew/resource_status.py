@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.cpu_affinity import affinity_cpu_count
 
 logger = logging.getLogger(__name__)
 
@@ -635,7 +636,7 @@ def inject_xdist_auto_cap(env: MutableMapping[str, str]) -> None:
     available_gb = _read_available_gb()
     if available_gb < 0:
         return  # probe unavailable — fail open to xdist's default
-    env[XDIST_AUTO_ENV] = str(compute_xdist_auto_workers(available_gb, os.cpu_count() or 1))
+    env[XDIST_AUTO_ENV] = str(compute_xdist_auto_workers(available_gb, affinity_cpu_count() or 1))
 
 
 @dataclass(frozen=True)

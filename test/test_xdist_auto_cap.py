@@ -137,10 +137,22 @@ def test_inject_auto_computes_from_probe(monkeypatch: pytest.MonkeyPatch) -> Non
     with (
         _with_raw_config({}),
         patch.object(rs, "_read_available_gb", return_value=8.0),
-        patch("os.cpu_count", return_value=16),
+        patch.object(rs, "affinity_cpu_count", return_value=16),
     ):
         rs.inject_xdist_auto_cap(env)
     assert env[rs.XDIST_AUTO_ENV] == "4"  # floor(8 * 0.5 / 1)
+
+
+def test_inject_auto_sizes_from_cpu_allowance_not_host() -> None:
+    env: dict[str, str] = {}
+    with (
+        _with_raw_config({}),
+        patch.object(rs, "_read_available_gb", return_value=64.0),
+        patch.object(rs, "affinity_cpu_count", return_value=2),
+        patch("os.cpu_count", return_value=64),
+    ):
+        rs.inject_xdist_auto_cap(env)
+    assert env[rs.XDIST_AUTO_ENV] == "2"
 
 
 def test_inject_auto_fails_open_when_probe_unavailable() -> None:
@@ -187,7 +199,7 @@ async def test_spawn_env_carries_xdist_cap(tmp_path, monkeypatch) -> None:
         patch("kiro_crew.session._track_session_pid"),
         _with_raw_config({}),
         patch.object(rs, "_read_available_gb", return_value=8.0),
-        patch("os.cpu_count", return_value=16),
+        patch.object(rs, "affinity_cpu_count", return_value=16),
     ):
         mock_proc = MagicMock()
         mock_proc.pid = 12345
