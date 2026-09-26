@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.wecom.client import (
     WECOM_MAX_REPLY_BYTES,
@@ -31,10 +32,35 @@ class FakeClient:
         self.forgotten: list[str] = []
         self.pushed: list[tuple[str, str]] = []
         self.push_ok = True
+        #: (data, media_type, filename) for each upload_media call.
+        self.uploaded: list[tuple[bytes, str, str]] = []
+        #: (chat_id, media_id, media_type) for each send_file_proactive call.
+        self.files_sent: list[tuple[str, str, str]] = []
+        self.upload_media_id = "mid-1"
+        self.file_send_ok = True
+        #: Optional callbacks fired INSIDE the corresponding await, so a test can
+        #: mutate the transport's allow-list mid-flight (models a live reconfigure
+        #: landing during the upload / between the file and caption pushes).
+        self.on_upload = None
+        self.on_file_send = None
 
     async def send_proactive(self, chat_id: str, content: str) -> bool:
         self.pushed.append((chat_id, content))
         return self.push_ok
+
+    async def upload_media(self, data: bytes, media_type: str, filename: str) -> str:
+        self.uploaded.append((data, media_type, filename))
+        if self.on_upload is not None:
+            self.on_upload()
+        return self.upload_media_id
+
+    async def send_file_proactive(
+        self, chat_id: str, media_id: str, *, media_type: str = "file"
+    ) -> bool:
+        self.files_sent.append((chat_id, media_id, media_type))
+        if self.on_file_send is not None:
+            self.on_file_send()
+        return self.file_send_ok
 
     def forget_msgid(self, msgid: str) -> None:
         self.forgotten.append(msgid)
@@ -199,6 +225,133 @@ class TestProactiveSend:
         transport.note_warm_chat("Wei")
         with pytest.raises(WeComSendError):
             await transport.send_message("Wei", "hi")
+
+
+class TestSendDocument:
+    """The file leg: native media upload plus caption forwarding."""
+
+    @staticmethod
+    def _doc(alt: str = "") -> OutboundFile:
+        return OutboundFile(path="/tmp/report.pdf", data=b"bytes", alt=alt, mime="application/pdf")
+
+    @pytest.mark.asyncio
+    async def test_uploads_and_sends_the_file(self) -> None:
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        result = await transport.send_document("Wei", self._doc())
+        assert result == "mid-1"
+        assert client.uploaded == [(b"bytes", "file", "report.pdf")]
+        assert client.files_sent == [("Wei", "mid-1", "file")]
+        # No caption -> no companion text push.
+        assert client.pushed == []
+
+    @pytest.mark.asyncio
+    async def test_an_oversize_image_downgrades_to_file_instead_of_failing(self) -> None:
+        # A .png maps to WeCom's image type (2 MB cap). A 3 MB screenshot exceeds
+        # that cap but fits the 20 MB file cap, so it must upload as `file` — a
+        # downloadable card is strictly better than the whole send failing.
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        big_png = OutboundFile(
+            path="/tmp/shot.png", data=b"x" * 3_000_000, alt="", mime="image/png"
+        )
+        result = await transport.send_document("Wei", big_png)
+        assert result == "mid-1"
+        assert client.uploaded == [(b"x" * 3_000_000, "file", "shot.png")]
+        assert client.files_sent == [("Wei", "mid-1", "file")]
+
+    @pytest.mark.asyncio
+    async def test_a_small_image_still_uploads_as_image(self) -> None:
+        # Below the 2 MB image cap, a .png keeps its native image type.
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        small_png = OutboundFile(path="/tmp/icon.png", data=b"x" * 1000, alt="", mime="image/png")
+        result = await transport.send_document("Wei", small_png)
+        assert result == "mid-1"
+        assert client.uploaded == [(b"x" * 1000, "image", "icon.png")]
+        assert client.files_sent == [("Wei", "mid-1", "image")]
+
+    @pytest.mark.asyncio
+    async def test_a_nonempty_caption_is_delivered_as_a_companion_text_push(self) -> None:
+        # The prior behaviour dropped the caller's description silently: WeCom's
+        # media frame carries no text field, so the caption must go as a separate
+        # aibot_send_msg push AFTER the file lands (Opus finding).
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        result = await transport.send_document("Wei", self._doc(), caption="Q3 numbers")
+        assert result == "mid-1"
+        assert client.files_sent == [("Wei", "mid-1", "file")]
+        assert client.pushed == [("Wei", "Q3 numbers")]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_caption_sends_no_companion_push(self) -> None:
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        await transport.send_document("Wei", self._doc(), caption="")
+        assert client.pushed == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_caption_push_still_reports_the_file_delivered(self) -> None:
+        # The file already reached the user, so a dropped companion caption is
+        # logged, not turned into a delivery failure.
+        client = FakeClient()
+        client.push_ok = False
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        result = await transport.send_document("Wei", self._doc(), caption="see attached")
+        assert result == "mid-1"
+        assert client.pushed == [("Wei", "see attached")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_file_send_returns_none_and_sends_no_caption(self) -> None:
+        client = FakeClient()
+        client.file_send_ok = False
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        result = await transport.send_document("Wei", self._doc(), caption="unsent")
+        assert result is None
+        # The file leg failed, so the caption must not be pushed on its own.
+        assert client.pushed == []
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_conversation_is_refused(self) -> None:
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        assert await transport.send_document("Stranger", self._doc(), caption="x") is None
+        assert client.uploaded == [] and client.pushed == []
+
+    @pytest.mark.asyncio
+    async def test_revocation_during_upload_suppresses_the_file_push(self) -> None:
+        # The allow-list can be replaced by a live reconfigure while the chunked
+        # upload is in flight (a departing/compromised userid revoked mid-upload).
+        # A media frame cannot be recalled, so authorization must be rechecked
+        # AFTER the upload, before the push — a single check at entry is a TOCTOU
+        # window (GPT security finding).
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        client.on_upload = lambda: setattr(transport, "_allowed", frozenset())
+        result = await transport.send_document("Wei", self._doc(), caption="secret")
+        assert result is None
+        assert client.uploaded  # upload happened
+        assert client.files_sent == []  # but the file was NOT pushed
+        assert client.pushed == []  # and neither was the caption
+
+    @pytest.mark.asyncio
+    async def test_revocation_before_caption_suppresses_only_the_caption(self) -> None:
+        # The caption is a SECOND delivery past its own await, so a revocation
+        # landing between the file push and the caption push must stop the caption
+        # even though the file already (irrecoverably) landed.
+        client = FakeClient()
+        transport = WeComTransport(client, allowed_users=["Wei"])
+        client.on_file_send = lambda: setattr(transport, "_allowed", frozenset())
+        result = await transport.send_document("Wei", self._doc(), caption="secret")
+        assert result == "mid-1"  # the file leg completed and is reported delivered
+        assert client.files_sent == [("Wei", "mid-1", "file")]
+        assert client.pushed == []  # the caption was withheld from the revoked peer
+
+    def test_files_outbound_stays_false(self) -> None:
+        # The flag gates renderer inline-image EXTRACTION, which WeCom has no path
+        # for; the file_send document path is gated by DOCUMENT_CHANNELS instead,
+        # so it must not be declared True (GPT finding).
+        assert WECOM_CAPABILITIES.files_outbound is False
 
 
 class TestAuthorize:

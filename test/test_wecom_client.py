@@ -838,3 +838,197 @@ class TestStatusCallback:
 
         assert seen and seen[0][0] is False
         assert "dns boom" in seen[0][1]
+
+
+# ------------------------------------------------------------------
+# Tests: media upload handshake + file send
+# ------------------------------------------------------------------
+
+
+def _make_client() -> WeComClient:
+    return WeComClient(
+        bot_id="bot1",
+        secret="sec1",
+        ws_url="wss://fake",
+        on_message=AsyncMock(),
+    )
+
+
+async def _feed_response(client: WeComClient, req_prefix: str, frame: dict) -> None:
+    """Deliver *frame* as the response to the newest pending upload req_id.
+
+    The upload command mints its own req_id and parks a future on
+    _pending_responses; a real ACK frame replays that req_id. The test does not
+    know the minted id, so it stamps the frame with the sole pending id.
+
+    upload_media parks behind ``asyncio.to_thread`` hops (prepare_upload, then
+    per-chunk base64), so on a loaded ``-n auto`` runner the pending future may
+    not be registered the instant this is called. Poll for it under a bounded
+    deadline rather than asserting on a fixed sleep, which is the measured-flaky
+    shape testing-conventions.md warns against.
+    """
+
+    async def _await_single_pending() -> list[str]:
+        while True:
+            pending = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
+            if len(pending) == 1:
+                return pending
+            if len(pending) > 1:
+                raise AssertionError(f"expected one pending upload req_id, got {pending}")
+            await asyncio.sleep(0)
+
+    try:
+        pending = await asyncio.wait_for(_await_single_pending(), timeout=5.0)
+    except asyncio.TimeoutError:
+        current = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
+        raise AssertionError(f"expected one pending upload req_id, got {current}")
+    frame = {**frame, "headers": {"req_id": pending[0]}}
+    await client._handle_message(json.dumps(frame))
+
+
+class TestUploadMedia:
+    pytestmark = pytest.mark.asyncio
+
+    async def test_full_handshake_returns_media_id(self) -> None:
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        # Small file → single chunk → init, chunk, finish (3 frames).
+        async def drive_responses() -> str:
+            return await client.upload_media(b"hello!", "file", "greet.txt")
+
+        task = asyncio.create_task(drive_responses())
+        # Let upload_media run until it parks on the init response.
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"errcode": 0, "errmsg": "ok"})
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"type": "file", "media_id": "MID42"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
+        media_id = await asyncio.wait_for(task, timeout=2)
+
+        assert media_id == "MID42"
+        # Three frames, correct cmds and correlated upload_id.
+        assert [f["cmd"] for f in fake_ws.sent] == [
+            "aibot_upload_media_init",
+            "aibot_upload_media_chunk",
+            "aibot_upload_media_finish",
+        ]
+        assert fake_ws.sent[0]["body"]["filename"] == "greet.txt"
+        assert fake_ws.sent[0]["body"]["total_chunks"] == 1
+        assert fake_ws.sent[1]["body"]["upload_id"] == "UP1"
+        assert fake_ws.sent[1]["body"]["chunk_index"] == 0
+        assert fake_ws.sent[2]["body"]["upload_id"] == "UP1"
+
+    async def test_non_zero_errcode_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        task = asyncio.create_task(client.upload_media(b"hi there", "file", "f.txt"))
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {},
+                "errcode": 40004,
+                "errmsg": "bad",
+            },
+        )
+        with pytest.raises(WeComUploadError, match="refused"):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_missing_media_id_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        task = asyncio.create_task(client.upload_media(b"hi there", "file", "f.txt"))
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+            },
+        )
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"errcode": 0})
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"body": {}, "errcode": 0})
+        with pytest.raises(WeComUploadError, match="media_id"):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_no_ws_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        client = _make_client()
+        client._ws = None
+        with pytest.raises(WeComUploadError, match="no live"):
+            await client.upload_media(b"hi there", "file", "f.txt")
+
+    async def test_stalled_upload_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # When ACKs never arrive, upload_media gives up with WeComUploadError
+        # rather than hanging or later landing a frame the caller gave up on. Both
+        # bounds enforce this: the per-frame ACK wait and the derived whole-
+        # handshake deadline. With tiny budgets the per-frame wait trips first;
+        # either way the fail-closed contract holds.
+        from kiro_crew.wecom import client as client_mod
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        monkeypatch.setattr(client_mod, "_UPLOAD_ACK_TIMEOUT_SECS", 0.02)
+        monkeypatch.setattr(client_mod, "_UPLOAD_PER_CHUNK_BUDGET_SECS", 0.02)
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        # Never feed the init response, so the handshake stalls.
+        with pytest.raises(WeComUploadError):
+            await client.upload_media(b"hi there", "file", "f.txt")
+        # No pending upload waiter is left behind (leak-safe registration).
+        assert not [r for r in client._pending_responses if r.startswith("aibot_upload_media-")]
+
+    async def test_pending_responses_does_not_disturb_pending_acks(self) -> None:
+        # A stream/proactive int-ACK still routes to _pending_acks even while an
+        # upload response waiter exists for a different req_id.
+        client = _make_client()
+        loop = asyncio.get_running_loop()
+        ack_waiter: asyncio.Future[int] = loop.create_future()
+        client._pending_acks["aibot_send_msg-abc"] = ack_waiter
+        resp_waiter: asyncio.Future[dict] = loop.create_future()
+        client._pending_responses["aibot_upload_media-xyz"] = resp_waiter
+
+        # Deliver an int-ACK for the proactive push req_id.
+        await client._handle_message(
+            json.dumps(
+                {
+                    "headers": {"req_id": "aibot_send_msg-abc"},
+                    "errcode": 0,
+                }
+            )
+        )
+        assert ack_waiter.result() == 0
+        assert not resp_waiter.done()  # untouched

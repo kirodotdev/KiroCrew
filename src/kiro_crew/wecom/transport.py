@@ -43,9 +43,12 @@ dispatched and in this order:
 from __future__ import annotations
 
 import logging
+import ntpath
+import posixpath
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -61,6 +64,7 @@ from kiro_crew.wecom.client import (
     WeComClient,
     WeComInbound,
 )
+from kiro_crew.wecom.media_upload import MAX_BYTES_BY_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +110,18 @@ WECOM_CAPABILITIES = TransportCapabilities(
     edit=True,
     reactions=False,
     files_inbound=True,
-    files_outbound=False,
     rich_blocks=False,
     threads=False,
+    # ``files_outbound`` gates ONE thing: whether a renderer pulls a local image
+    # reference out of a sealed reply segment and uploads it inline (the flag the
+    # Discord/Teams/Telegram renderers read before extracting). WeCom ships no such
+    # renderer extraction path, so the flag stays False and an inline reference
+    # keeps printing its path — the honest degradation. This is INDEPENDENT of the
+    # ``file_send`` document path this change adds: that path is gated by
+    # ``upload_destination.DOCUMENT_CHANNELS`` + the ``send_document`` verb, never
+    # by this flag, so declaring True here would be functionally inert while making
+    # the capability ledger claim an extraction WeCom does not do.
+    files_outbound=False,
     # Keep canonical tables: an adaptive representation can exceed the cap while
     # the only shorter raw candidate still contains a value that display-form
     # redaction would remove. That reason is independent of the overflow path the
@@ -128,6 +141,46 @@ WECOM_CAPABILITIES = TransportCapabilities(
     # and repeat the same result on the next tick.
     returns_message_id=False,
 )
+
+
+#: Extension -> WeCom media ``type`` (aibot_upload_media_init body.type). Anything
+#: not mapped is an ordinary ``file``. An extension only maps to a richer type
+#: when both hold: WeCom's own ``type`` accepts that format, AND the file clears
+#: ``security.BINARY_MIME_ALLOWLIST`` in ``_gate_upload_file`` — a format the gate
+#: refuses never reaches here, so mapping it would be dead. WeCom's ``image`` type
+#: is JPG/PNG only, so gif/bmp/webp stay ``file`` (they are allowlisted, upload
+#: fine, and render as a downloadable file). WeCom ``voice`` is AMR-only and
+#: ``audio/amr`` is not allowlisted, so voice is unreachable and unmapped. Only
+#: the allowlisted video containers (mp4/webm) map to ``video``.
+_WECOM_TYPE_BY_EXT: dict[str, str] = {
+    # image — WeCom image type is JPG/PNG only
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    # video — only the allowlisted containers
+    ".mp4": "video",
+    ".webm": "video",
+}
+
+
+def wecom_media_type_for(filename: str) -> str:
+    """The WeCom media ``type`` for *filename*, by extension; ``file`` by default."""
+    dot = filename.rfind(".")
+    ext = filename[dot:].lower() if dot != -1 else ""
+    return _WECOM_TYPE_BY_EXT.get(ext, "file")
+
+
+def _basename(path: str) -> str:
+    """Basename of *path* regardless of the OS that produced it.
+
+    ``OutboundFile.path`` is an OS-native path from the caller: a Windows send
+    yields a backslash path (``C:\\Users\\<user>\\file.pdf``), so splitting on
+    ``/`` alone (or the container's own ``posixpath``) would leave the whole
+    absolute path — disclosing the local username and directory layout to WeCom
+    in the upload's ``filename`` field. Strip both separators, whichever the
+    running OS uses, so only the leaf name is transmitted.
+    """
+    return posixpath.basename(ntpath.basename(path))
 
 
 class WeComTransport(MessagingTransport):
@@ -254,6 +307,119 @@ class WeComTransport(MessagingTransport):
             # also mean failure.
             raise WeComSendError("WeCom proactive send failed (no live connection)")
         return ""
+
+    async def send_document(
+        self,
+        conversation_id: str,
+        document: OutboundFile,
+        *,
+        caption: str = "",
+        thread_id: str | None = None,
+    ) -> str | None:
+        """Deliver ONE file to *conversation_id* as native WeCom media.
+
+        The generic-file counterpart of :meth:`send_message`, resolved by
+        ``upload_destination.resolve_channel`` for the ``file_send`` MCP tool and
+        called by ``api_channel_upload_file`` with ``caption`` + ``thread_id``.
+        WeCom has no thread concept, so ``thread_id`` is accepted for the shared
+        transport contract and ignored. Runs the temporary-material upload
+        handshake (``upload_media``) then a proactive file send
+        (``send_file_proactive``) — the ``aibot_send_msg`` path, matching
+        :meth:`send_message`'s mirror/cron semantics.
+
+        A non-empty ``caption`` is delivered as a companion text push AFTER the
+        file lands (WeCom's media frame carries no text field, unlike
+        Telegram/Discord which fold the caption into the upload). It is
+        best-effort: the file is already delivered, so a failed caption push is
+        logged and does not turn a landed file into a reported failure — the
+        alternative, silently dropping the user's typed description, is what this
+        addresses.
+
+        Takes an :class:`OutboundFile` whose ``data`` the file_send gates already
+        validated; the upload uses those bytes, never re-opening the path.
+        ``conversation_id`` is the userid (see :meth:`resolve_conversation`).
+
+        Returns a non-empty marker (the WeCom ``media_id``, or ``"sent"``) on a
+        confirmed send — WeCom carries no message id (``returns_message_id=False``),
+        but the channel-upload caller treats a falsy return as a delivery failure,
+        so success must be non-empty — and ``None`` on a delivery failure, so the
+        caller falls back to its dashboard-link path.
+        """
+        if not conversation_id or not document.data:
+            return None
+        # Re-authorize at the send boundary, same as send_message: a persisted
+        # binding outlives the allow-list entry that justified it.
+        if not self._may_push(conversation_id):
+            logger.warning("wecom send_document: conversation not authorized")
+            return None
+        filename = _basename(document.path) or "file"
+        # Pick the WeCom media type by extension so an image renders as an image
+        # message and an mp4/webm as video — not all as a generic file. Only
+        # formats WeCom accepts AND `security.BINARY_MIME_ALLOWLIST` admits are
+        # mapped (JPG/PNG image, mp4/webm video); anything else, including gif and
+        # AMR voice, sends as an ordinary `file`.
+        wecom_type = wecom_media_type_for(filename)
+        # A rich type carries a tighter platform cap than `file` (image/voice 2 MB
+        # vs file/video 20 MB). A body that WeCom's image/video type would refuse
+        # for size still delivers as a downloadable `file`, so downgrade rather
+        # than fail the whole send — degrading to `file` is strictly better than
+        # the dashboard-link fallback the caller would otherwise report.
+        size = len(document.data)
+        type_cap = MAX_BYTES_BY_TYPE.get(wecom_type, MAX_BYTES_BY_TYPE["file"])
+        file_cap = MAX_BYTES_BY_TYPE["file"]
+        if wecom_type != "file" and type_cap < size <= file_cap:
+            wecom_type = "file"
+        try:
+            media_id = await self._client.upload_media(document.data, wecom_type, filename)
+            # Re-authorize AFTER the upload, before the push. The check above and
+            # the push below straddle the chunked upload handshake — a multi-second,
+            # multi-await window on a large body — and the allow-list can be
+            # replaced inside it by a live `reconfigure` (a departing/compromised
+            # userid revoked mid-upload). A media frame cannot be recalled once the
+            # ACK lands, so the authorization decision must be fresh at each send
+            # boundary, not carried across the upload.
+            if not self._may_push(conversation_id):
+                logger.warning("wecom send_document: conversation deauthorized during upload")
+                return None
+            if not await self._client.send_file_proactive(
+                conversation_id, media_id, media_type=wecom_type
+            ):
+                logger.warning("wecom send_document: proactive send not acknowledged")
+                return None
+        except Exception as exc:  # noqa: BLE001 — best-effort leg; caller falls back
+            # Never log the exception payload (may carry the path / errmsg); the
+            # class is enough for an operator, matching the client's own logging.
+            logger.warning("wecom send_document failed: %s", type(exc).__name__)
+            return None
+        # The caller's typed description rides alongside the file. WeCom's media
+        # frame (media_type:{media_id}) has no text field — unlike Telegram/Discord
+        # which fold the caption into the upload — so it must go as a separate
+        # aibot_send_msg text push. Best-effort AFTER the confirmed file send: the
+        # file already reached the user, so a dropped caption is logged and the
+        # send still counts as delivered. Dropping it silently (the prior
+        # behaviour) is what made the user's description vanish without a trace.
+        if caption:
+            # The caption is a SECOND delivery, past its own await (the file
+            # push + ACK), so it needs its own fresh authorization: the roster
+            # can be revoked between the file landing and this push, and the
+            # caption must not reach a recipient who lost access in that gap.
+            if not self._may_push(conversation_id):
+                logger.warning("wecom send_document: conversation deauthorized before caption")
+            else:
+                try:
+                    if not await self._client.send_proactive(conversation_id, caption):
+                        logger.warning("wecom send_document: caption push not acknowledged")
+                except Exception as exc:  # noqa: BLE001 — companion leg; file already sent
+                    logger.warning(
+                        "wecom send_document caption push failed: %s", type(exc).__name__
+                    )
+        # WeCom carries no message id on aibot_send_msg (returns_message_id=False),
+        # but the channel-upload caller treats a FALSY return (`""`/None) as a
+        # delivery failure (`if not mid`). A confirmed proactive send above IS a
+        # delivery, so return a non-empty marker — the media_id — rather than the
+        # empty string, which would be misread as "delivery_reported_no_message_id"
+        # even though the file already reached the user.
+        return media_id or "sent"
 
     async def resolve_conversation(self, user_id: str) -> str:
         # No addressable DM channel id; the userid is the logical conversation.
