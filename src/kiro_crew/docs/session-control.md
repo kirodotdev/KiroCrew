@@ -258,9 +258,8 @@ bound ancestor's, so moving it under a bound folder, or out from under a
 binding, would rebind the chats inside it): an unbound folder moves only between
 places that confer the same binding, and a folder carrying its own binding moves
 freely (nearest wins). This holds for every agent — an app's or a member's own
-folders included. An app or a crew member may not declare `steering_dirs` (a
-folder's steering is a host-file read the gateway performs, delivered into the
-person's chats), and no agent may
+folders included. No agent may declare `steering_dirs` (a folder's steering is a
+host-file read the gateway performs, delivered into the person's chats), nor
 move a folder to where its sessions would inherit different steering directories. An
 ordinary session may move the person's folders but is held to those two rules;
 the same two rules hold at the filing verbs (`chat_folder_move_session`,

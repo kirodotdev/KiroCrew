@@ -671,9 +671,10 @@ class TestAnAgentIsHeldToTheMoveAndSteeringRules:
     """The same WHO bit keys the two rules a binding's reach implies: an agent
     may not move a folder to where its subtree would inherit a different
     binding or different steering (``binding_crossed`` / ``steering_crossed``,
-    decided under the store lock). An ordinary session is that agent as much as
-    an app or a member; the person -- the sidebar's own credential -- keeps
-    every write.
+    decided under the store lock), and may not declare ``steering_dirs`` (a
+    gateway host-file read that lands in the person's chats). An ordinary
+    session is that agent as much as an app or a member; the person -- the
+    sidebar's own credential -- keeps all four writes.
     """
 
     BOUND = "fldr0000000b"
@@ -719,6 +720,60 @@ class TestAnAgentIsHeldToTheMoveAndSteeringRules:
         assert across_steering.status == 403, steering_body
         assert steering_body["code"] == "steering_dirs_forbidden"
         assert _by_id(state, self.LOOSE)["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_session_cannot_declare_steering_at_create_or_update(
+        self, tmp_path
+    ) -> None:
+        state = _state(
+            _slot_with_project("chat-1-100", str(tmp_path)), folders=self._tree(tmp_path)
+        )
+        with patch("kiro_crew.dashboard.chat_folders.sel") as sel_fn:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                created = await client.post(
+                    "/api/chat/folders",
+                    json={"name": "Notes", "steering_dirs": [str(tmp_path)]},
+                    headers={"X-Session-Key": "dashboard:chat-1-100"},
+                )
+                created_body = await created.json()
+                updated = await client.patch(
+                    f"/api/chat/folders/{PERSON}",
+                    json={"steering_dirs": [str(tmp_path)]},
+                    headers={"X-Session-Key": "dashboard:chat-1-100"},
+                )
+        assert created.status == 403, created_body
+        assert created_body["code"] == "steering_dirs_forbidden"
+        assert updated.status == 403
+        assert not any(f["name"] == "Notes" for f in state._folders)
+        assert "steering_dirs" not in _by_id(state, PERSON)
+        kwargs = sel_fn.return_value.log_api_access.call_args.kwargs
+        assert kwargs["caller"] == "dashboard:chat-1-100"
+        assert kwargs["source"] == "app_isolation"
+
+    @pytest.mark.asyncio
+    async def test_a_channel_session_without_a_slot_is_the_same_agent(self, tmp_path) -> None:
+        """No key-shape arm: a Channels agent's key is just a session that
+        names no slot, refused a declaration and a cross-binding move by the
+        same two rules, audited against its key under the same source."""
+        state = _state(_ChatSlot("chat-1-100"), folders=self._tree(tmp_path))
+        headers = {"X-Session-Key": "channel:chan-000001:helper"}
+        with patch("kiro_crew.dashboard.chat_folders.sel") as sel_fn:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                moved = await client.patch(
+                    f"/api/chat/folders/{self.LOOSE}",
+                    json={"parent_id": self.BOUND},
+                    headers=headers,
+                )
+                declared = await client.patch(
+                    f"/api/chat/folders/{PERSON}",
+                    json={"steering_dirs": [str(tmp_path)]},
+                    headers=headers,
+                )
+        assert (moved.status, declared.status) == (403, 403)
+        assert _by_id(state, self.LOOSE)["parent_id"] == ""
+        kwargs = sel_fn.return_value.log_api_access.call_args.kwargs
+        assert kwargs["caller"] == "channel:chan-000001:helper"
+        assert kwargs["source"] == "app_isolation"
 
     @pytest.mark.asyncio
     async def test_the_person_keeps_all_four(self, tmp_path) -> None:

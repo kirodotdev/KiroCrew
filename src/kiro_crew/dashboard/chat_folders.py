@@ -894,39 +894,50 @@ MAX_FOLDER_STEERING_DIR_LEN = 4096
 
 
 def _refuse_agent_steering_dirs(
-    state: Any, request: web.Request, steering_dirs: list, *, operation: str, folder_id: str
+    state: Any,
+    request: web.Request,
+    steering_dirs: list | None,
+    *,
+    operation: str,
+    folder_id: str,
 ) -> web.Response | None:
-    """Only the PERSON may declare steering directories; refuse an app or a member.
+    """Only the PERSON may change a folder's steering directories; every agent is refused.
 
     A steering directory is a host-file READ the unsandboxed gateway performs
-    on the folder's behalf and hands to every chat in the folder. Folder
-    permission is not host-file permission: an app (or an admitted crew member)
-    that may create and edit its own folders must not be able to point one at
-    an arbitrary readable Markdown tree -- the person's notes, a repository
-    outside the app's reach -- and have the gateway launder that read into its
-    own model session, with no tool grant and no signal. So a NON-EMPTY
-    ``steering_dirs`` from an app or member principal (``folder_principal``) is
-    refused at both write sites, before any path is touched, and audited as
-    denied. Clearing to ``[]`` stays allowed (it only removes reads). The
-    person's own dashboard calls carry the empty principal and are unaffected; a
-    person can still declare steering on a folder an app or member owns, and the
-    delivery gate then routes it to that principal's chats as before.
+    on the folder's behalf and reads into the model context of every chat the
+    folder delivers it to -- for a folder the person owns, the PERSON's chats.
+    Folder permission is not host-file permission: an app or a crew member that
+    may create and edit its own folders must not point one at an arbitrary
+    readable Markdown tree and have the gateway launder that read into its own
+    model sessions, with no tool grant and no signal; and an ordinary session
+    must not put words in front of the person's next chat that way either --
+    nor take away what the person put there: a ``steering_dirs`` of ``[]`` from
+    an agent REMOVES the person's declaration from every chat in the subtree,
+    the same mutation of the person's context in the other direction. So the
+    person is read first (:func:`_is_the_person`), and any ``steering_dirs`` a
+    request from anyone else names -- a declaration or a clear -- is refused at
+    both write sites, before any path is touched, and audited as denied against
+    the agent's principal or, for a session nobody else names, its session key.
+    *steering_dirs* is ``None`` when the request did not name the field at
+    all: nothing is mutated, nothing is refused. The person's own sidebar calls
+    are unaffected: a person can still declare or clear steering on a folder an
+    app or member owns, and the delivery gate then routes it to that
+    principal's chats as before.
     """
-    request_app = folder_principal(state, request)
-    if not request_app or not steering_dirs:
+    if _is_the_person(request) or steering_dirs is None:
         return None
     sel().log_api_access(
-        caller=request_app,
+        caller=_agent_audit_caller(state, request),
         operation=operation,
         outcome="denied",
         source="app_isolation",
         resources=f"folder={folder_id or '-'} steering_dirs={len(steering_dirs)}",
-        error="steering_dirs may be declared only by the person",
+        error="steering_dirs may be changed only by the person",
     )
     return web.json_response(
         {
             "error": (
-                "steering_dirs may be declared only from the person's own session: "
+                "steering_dirs may be declared or cleared only from the person's own session: "
                 "folder permission does not grant host-file reads"
             ),
             "code": "steering_dirs_forbidden",
@@ -1978,7 +1989,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     # gateway READ or launch (``_is_the_person``): the steering fence right
     # below and the binding admission further down both key on it.
     refused = _refuse_agent_steering_dirs(
-        state, request, steering_dirs, operation="chat.folder_create", folder_id=""
+        state,
+        request,
+        steering_dirs if "steering_dirs" in body else None,
+        operation="chat.folder_create",
+        folder_id="",
     )
     if refused is not None:
         return refused
@@ -2212,7 +2227,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # folder's subtree. An empty list clears them; anything else is
         # validated per entry (absolute/sensitive/isdir), capped at 16, and
         # deduped. Off the loop, like project_dir, since each entry stats disk.
-        # Only the person may declare a non-empty list (see
+        # Only the person may declare or clear the list (see
         # _refuse_agent_steering_dirs); the refusal precedes any path work and
         # keys on the same WHO bit as every fence in this route.
         raw_steering = body["steering_dirs"]
