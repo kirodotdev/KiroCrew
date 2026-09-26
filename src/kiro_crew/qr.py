@@ -24,18 +24,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: Quiet-zone width, in modules. The spec's minimum is 4; 2 is enough for a
-#: screen-displayed code a phone camera reads from a lit panel, and it keeps the
-#: image compact enough to sit in a dashboard card without scaling.
-_QR_BORDER = 2
+#: Quiet-zone width, in modules. 4 is the spec minimum (ISO/IEC 18004): a decoder
+#: needs that light margin to tell the three finder patterns apart from whatever
+#: surrounds the image. It is encoded in the image rather than left to the page,
+#: which may put too little white space around it.
+_QR_BORDER = 4
 
-#: Pixels per module. 8 keeps a URL-length payload readable by a phone held at a
-#: normal distance from a laptop screen.
+#: Default pixels per module. 8 keeps a URL-length payload readable by a phone
+#: held at a normal distance from a laptop screen.
 _QR_BOX_SIZE = 8
 
 
-def render_qr_data_uri(payload: str) -> str:
-    """Encode *payload* as a PNG ``data:`` URI.
+def render_qr_data_uri(payload: str, *, box_size: int = _QR_BOX_SIZE) -> str:
+    """Encode *payload* as a PNG ``data:`` URI, *box_size* pixels per module.
+
+    A caller that shows the image at its natural size picks *box_size* so the
+    whole symbol fits its display box. The browser then draws every module as a
+    whole number of screen pixels instead of rescaling the image by a fractional
+    factor, which blurs module edges or makes modules uneven.
 
     Raises whatever the encoder raises (a payload too long for any QR version is
     the realistic case) — the caller decides how to report it, because "the code
@@ -50,7 +56,7 @@ def render_qr_data_uri(payload: str) -> str:
     # top-level-imports rule is advisory and this is a considered deviation.
     import qrcode  # noqa: PLC0415 - see comment above
 
-    qr = qrcode.QRCode(border=_QR_BORDER, box_size=_QR_BOX_SIZE)
+    qr = qrcode.QRCode(border=_QR_BORDER, box_size=box_size)
     qr.add_data(payload)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")

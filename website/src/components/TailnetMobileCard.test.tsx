@@ -354,6 +354,19 @@ describe('TailnetMobileCard — the QR', () => {
     expect(screen.getByText(/open your dashboard for 1h/)).toBeInTheDocument()
   })
 
+  it('shows the QR at its natural size so the browser never blurs its modules', async () => {
+    // A fixed 180px box squeezes a code of about 80 modules to roughly 2px a
+    // module, with smoothing, which is too small and soft for a phone camera.
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
+    await mount()
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+    const img = await screen.findByAltText('QR code linking to this dashboard')
+    expect(img).not.toHaveAttribute('width')
+    expect(img).not.toHaveAttribute('height')
+    expect(img.className).toContain('[image-rendering:pixelated]')
+    expect(img.className).toContain('max-w-full')
+  })
+
   it('drops the code from state when dismissed', async () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount()
