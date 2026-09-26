@@ -24,6 +24,14 @@ import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessio
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
 
+// How long after the not-found deadline a slots frame may still be treated as
+// the gateway finishing its restore. The deadline itself is 5s; the recovery
+// path exists for gateway restarts and large session restores, which settle on
+// the same seconds scale. Past this bound a frame carrying the key still proves
+// the banner false — but it no longer proves the user is waiting for that link,
+// so it may only retire the notice, never move them.
+const SID_RECOVERY_WINDOW_MS = 30_000
+
 interface UseChatPageSessionControllerArgs {
   activeSlot: string | null
   activeSlotRef: MutableRefObject<string | null>
@@ -572,6 +580,7 @@ export function useChatPageSessionController({
     activeSlot: string | null
     activeSlotChanged: boolean
     error: string
+    deniedAt: number
   } | null>(null)
   // Equality at recovery time cannot distinguish "stayed on A" from A -> B -> A.
   // Latch the first committed change while a denied link is pending; returning
@@ -601,6 +610,7 @@ export function useChatPageSessionController({
           activeSlot: activeSlotRef.current,
           activeSlotChanged: false,
           error,
+          deniedAt: Date.now(),
         }
         initialSidRef.current = null
         pendingSidRef.current = false
@@ -627,6 +637,15 @@ export function useChatPageSessionController({
     const denied = deniedSidRef.current
     if (!denied || !filteredSlots.some(slot => slot.key === denied.key)) return
     deniedSidRef.current = null
+    // "Active slot unchanged" reads as "still waiting for the link" only while
+    // the restore it was denied by could still be running. The record outlives
+    // that window — no expiry, and reconnects re-deliver the full list — so a
+    // frame arriving minutes later would otherwise yank a user who has been
+    // reading or composing here the whole time. Retire the false banner, stay put.
+    if (Date.now() - denied.deniedAt > SID_RECOVERY_WINDOW_MS) {
+      setSidError(current => current === denied.error ? '' : current)
+      return
+    }
     if (denied.activeSlotChanged || activeSlotRef.current !== denied.activeSlot) {
       setSidError(current => current === denied.error ? '' : current)
       return
