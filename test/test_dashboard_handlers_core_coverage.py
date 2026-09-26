@@ -2469,6 +2469,60 @@ class TestLocalToken:
         minted.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("shares_namespaces,status", [(False, 403), (True, 200)])
+    async def test_linux_namespace_divergence_alone_decides_the_owner_verdict(
+        self, monkeypatch, fake_sel, shares_namespaces, status
+    ) -> None:
+        """On Linux the namespace comparison is the whole owner verdict.
+
+        The other refusal tests on this route hand the gate no peer pid, which
+        answers on its first leg and leaves the Linux measure unreached from here.
+        In this one the kernel DOES identify the caller and its start id IS
+        readable, so the two callers below differ by one bit: whether they share
+        the gateway's user and mount namespaces. A same-uid caller that does not
+        is refused, and the refusal carries the code a mint reads its remedy from
+        beside the audit value the pod records for it.
+
+        Both directions are asserted, because a gate that refused every caller
+        would satisfy the negative one on its own. The comparison is also pinned
+        to the gateway's own pid, which is what makes it a statement about this
+        process rather than about any two processes. The app-backend escape is
+        held off so one cause decides the verdict; it is covered separately.
+        """
+        from kiro_crew import member_memory_auth as auth
+
+        peer_pid = 12345
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="linux"))
+        monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: peer_pid)
+        monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda _pid: False)
+        monkeypatch.setattr(
+            auth.platform_compat, "get_process_start_id", lambda _pid: "synthetic-start"
+        )
+        namespaces = MagicMock(return_value=shares_namespaces)
+        monkeypatch.setattr(auth.platform_compat, "process_namespaces_match", namespaces)
+        minted = MagicMock(return_value="issued-value")
+        monkeypatch.setattr(core_mod, "generate_token", minted)
+
+        resp = await core_mod.api_token_local(
+            _req(
+                app={"local_secret": "right", "state": SimpleNamespace(owner_id="owner-1")},
+                headers={"X-Local-Secret": "right"},
+            )
+        )
+
+        assert resp.status == status
+        namespaces.assert_called_once_with(peer_pid, os.getpid())
+        if status == 403:
+            assert json.loads(resp.body)["code"] == "member_owner_token_refused"
+            assert (
+                fake_sel.log_api_access.call_args.kwargs["resources"] == "unverified-owner-process"
+            )
+            minted.assert_not_called()
+        else:
+            minted.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_every_refusal_carries_a_code_matching_its_audit_record(
         self, monkeypatch, fake_sel
     ) -> None:
