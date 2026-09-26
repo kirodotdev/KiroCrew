@@ -888,13 +888,44 @@ async def handle_update_app(request: web.Request) -> web.Response:
     source = body.get("source", info.get("source", ""))
 
     # Registry-installed apps: re-clone from registry.
-    # Attempt install first, only deregister old resources on success
-    # to avoid leaving the app in a broken state on failure.
+    # Same order as the local-source branch below: stop the backend and scrub
+    # its resources BEFORE the files are replaced. For an already-installed
+    # app ``install_from_registry`` reaches ``update_app``, which renames the
+    # live tree aside and copies the new one in -- on Windows that fails with a
+    # sharing violation (WinError 32) while the backend still holds a file open
+    # under the tree (#10144). The "don't leave the app broken on a failed
+    # install" invariant the old install-first order protected is kept by the
+    # failure path instead: it re-registers the old resources and restarts the
+    # backend if the app was enabled, exactly as the local-source branch does.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
         async with app_lifecycle_lock(name):
+            # Preflight BEFORE the stop so a retryable refusal leaves app state
+            # untouched (app-kit-platform: refusal "without mutating app state").
+            # ``install_from_registry`` re-checks at its own replacement boundary.
+            startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
+            if startup_refusal is not None:
+                return startup_refusal
+
+            # Stop the backend, then deregister old resources -- same order as
+            # uninstall and the disable rollback. Stopping pops the tracking record,
+            # so the health watch cannot re-register the OLD manifest's MCP servers
+            # after the scrub (see app-kit-platform §17).
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), stop_app_backend, name
+            )
+            await _deregister_app_off_loop(name)
+
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
+                # Re-register old resources on failure and bring the backend back
+                # if it was running: the old tree is intact (``update_app`` restores
+                # it on a failed replacement), so the app is left usable, not broken.
+                await _register_app_off_loop(name)
+                if info.get("enabled"):
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), start_app_backend, name
+                    )
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_update",
@@ -903,16 +934,6 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     error=reg_install.get("error", ""),
                 )
                 return web.json_response(reg_install, status=400)
-            # Install succeeded — now safe to swap resources. Stop the backend BEFORE
-            # deregistering, matching uninstall and the disable rollback: stopping pops
-            # the tracking record, which is what stops the health watch from
-            # re-registering the OLD manifest's MCP servers in the window between the
-            # two (see app-kit-platform §17). Deregistering first leaves that window
-            # open, and the entries the update removed would survive it.
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
-            )
-            await _deregister_app_off_loop(name)
             # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
             # ``enabled`` when the new version adds ``permissions.sessionApproval``,
             # and a backend started here would run an app the UI shows as disabled.
@@ -934,11 +955,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # Per-app lifecycle lock: the deregister → stop → copy → re-register
+    # Per-app lifecycle lock: the stop → deregister → copy → re-register
     # sequence must not interleave with another update/install/uninstall of
     # the same app — update_app moves user data through a shared
     # ``.{name}-data-tmp`` path, so an interleaving can destroy it.
-    # (The registry branch above holds the same lock around install_from_registry.)
+    # (The registry branch above holds the same lock around the same sequence.)
     async with app_lifecycle_lock(name):
         startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
         if startup_refusal is not None:
