@@ -961,6 +961,12 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/session_handle.py",
+        "_build_permission_event",
+    ): "``_meta.kiro.consent`` on a permission request is KAS's own vocabulary (toolId "
+    "plus consent capability). No other harness sends it, and reading it elsewhere would "
+    "mint a non-shell verdict from a shape that backend never promised.",
+    (
         "src/kiro_crew/acp/runtime.py",
         "_spawn_admitted",
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "

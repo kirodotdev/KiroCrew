@@ -523,6 +523,7 @@ class TestHookGateKwargs:
         "mcp_server_name": "mcp_server_name",
         "mcp_tool_name": "tool_name",
         "mcp_identity_trusted": "mcp_identity_trusted",
+        "spawn_target": "spawn_target",
     }
 
     def test_maps_every_event_field_verbatim(self):
@@ -543,6 +544,7 @@ class TestHookGateKwargs:
             mcp_server_name="ops",
             tool_name="execute_bash",
             mcp_identity_trusted=True,
+            spawn_target="helper",
         )
         kwargs = hook_gate_kwargs(event)
         assert kwargs == {
@@ -554,6 +556,7 @@ class TestHookGateKwargs:
             "mcp_server_name": "ops",
             "mcp_tool_name": "execute_bash",
             "mcp_identity_trusted": True,
+            "spawn_target": "helper",
         }
         assert set(kwargs) == set(self.EVENT_FIELD_BY_KWARG)
         # ``raw_params`` is the event's dict itself, not a copy — the gate
@@ -578,6 +581,7 @@ class TestHookGateKwargs:
             "mcp_server_name": "",
             "mcp_tool_name": "",
             "mcp_identity_trusted": False,
+            "spawn_target": "",
         }
         noisy = hook_gate_kwargs(
             SimpleNamespace(
@@ -589,6 +593,7 @@ class TestHookGateKwargs:
                 mcp_server_name=None,
                 tool_name=None,
                 mcp_identity_trusted=None,
+                spawn_target=None,
             )
         )
         assert noisy == bare

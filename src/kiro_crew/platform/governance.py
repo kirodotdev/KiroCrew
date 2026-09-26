@@ -4063,6 +4063,32 @@ BUILTIN_TOOL_SCOPES: Dict[str, Tuple[str, ...]] = {
     "web_search": ("network.egress",),
 }
 
+#: Builtin -> the ``capabilities.*`` gate that also governs it. A capability is
+#: not a ``tools`` rule, so the name check below cannot see it: a policy that
+#: switches spawning off, or scopes which agents may be spawned, says nothing
+#: about the tool NAME ``use_subagent``. An auto-approved spawn raises no
+#: permission request, so the per-spawn check at the gate never runs for it --
+#: which is why the grant itself is withheld while the capability restricts
+#: anything. Every ``allowedTools`` writer asks this predicate, so no backend and
+#: no channel (the wire projection, the on-disk spec) can carry the grant.
+BUILTIN_TOOL_CAPABILITIES: Dict[str, str] = {"use_subagent": "capabilities.spawn"}
+
+
+def _capability_restricts(control: object) -> bool:
+    """Whether one level's capability gate restricts anything.
+
+    ``None`` (undeclared) is no opinion. A declared gate restricts when it is off
+    or carries any scope -- a scope is a ruleset, and even an empty allow-mode one
+    denies everything. Only an enabled gate with no scopes permits every use. A
+    shape this does not recognise is treated as a restriction.
+    """
+    if control is None:
+        return False
+    if not isinstance(control, CapabilityGate):
+        return True
+    return not control.enabled or bool(control.scopes)
+
+
 # The scopes whose enforcement is an ALWAYS-ON, ceiling-independent floor applied
 # at the PreToolUse gate: sensitive-path blocking for filesystem tools and
 # denied-command rules for shell tools. A builtin mapping to any of these must
@@ -4229,7 +4255,10 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         # bypassed a `tools`-scope ceiling (e.g. tools.deny=["report"]). The
         # capability scopes it DOES map to add path/host granularity on top.
         scopes = ("tools",) + tuple(BUILTIN_TOOL_SCOPES.get(ref, ()))
-        return not any(_ruleset_has_an_opinion(ceiling.get(scope)) for scope in scopes)
+        if any(_ruleset_has_an_opinion(ceiling.get(scope)) for scope in scopes):
+            return False
+        capability = BUILTIN_TOOL_CAPABILITIES.get(ref)
+        return not (capability and _capability_restricts(ceiling.get(capability)))
     except Exception:  # noqa: BLE001 — see the fail-closed note above
         logger.warning("ceiling probe failed for %r; not auto-approving", ref, exc_info=True)
         return False

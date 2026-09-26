@@ -163,6 +163,190 @@ class TestSpawnGate:
         assert subagent._vet_spawn_governance("cli_chat", "anything") is None
 
 
+_SPAWN_OFF = {
+    "version": 1,
+    "boot": {"fail_closed": True},
+    "capabilities": {"spawn": {"enabled": False}},
+}
+_SPAWN_RESEARCHER_ONLY = {
+    "version": 1,
+    "boot": {"fail_closed": True},
+    "capabilities": {
+        "spawn": {
+            "enabled": True,
+            "scopes": {"agents": {"mode": "allow", "allow": ["researcher"]}},
+        }
+    },
+}
+
+
+def _kas_spawn_event(target: str):
+    """The permission event Crew builds from KAS 2.24's sub-agent spawn request."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    params = {
+        "sessionId": "s1",
+        "toolCall": {"toolCallId": "invoke_subagent_t1", "title": f"Sub-agent: {target}"},
+        "options": [{"optionId": "allow_once", "name": "Allow", "kind": "allow_once"}],
+        "_meta": {
+            "kiro": {
+                "toolId": "invoke_sub_agent",
+                "consent": {"capability": "subagent", "resource": target, "askType": "implicit"},
+            }
+        },
+    }
+    event, _ = build_permission_event(
+        JsonRpcMessage(id=1, method="session/request_permission", params=params),
+        shell_cache={},
+        kas_consent_meta=True,
+    )
+    return event
+
+
+def _gate(event):
+    from kiro_crew.hooks import HookManager, hook_gate_kwargs
+
+    return HookManager().on_tool_call(
+        event.title, session_key="cli_chat", **hook_gate_kwargs(event)
+    )
+
+
+class TestKasSpawnIsVettedAgainstTheSpawnPolicy:
+    """A KAS spawn the gate classifies must meet ``capabilities.spawn`` before any
+    grant or prompt -- the ``tools`` question alone cannot see a spawn policy."""
+
+    def test_a_disabled_spawn_capability_denies_it(self):
+        from kiro_crew.hooks import TOOL_DENY
+
+        _install(_SPAWN_OFF)
+        event = _kas_spawn_event("researcher")
+        assert event.spawn_target == "researcher"
+        result = _gate(event)
+        assert result.action == TOOL_DENY
+        assert "spawn policy" in (result.reason or "")
+
+    def test_the_agents_scope_is_judged_on_the_stated_target(self):
+        from kiro_crew.hooks import TOOL_DENY
+
+        _install(_SPAWN_RESEARCHER_ONLY)
+        assert _gate(_kas_spawn_event("deployer")).action == TOOL_DENY
+        assert _gate(_kas_spawn_event("researcher")).action != TOOL_DENY
+
+    def test_an_ungoverned_host_does_not_deny_it(self):
+        from kiro_crew.hooks import TOOL_DENY
+
+        _install(None)
+        assert _gate(_kas_spawn_event("anything")).action != TOOL_DENY
+
+    def test_a_call_with_no_spawn_target_is_not_spawn_vetted(self):
+        """Every other backend's events carry no target, so their gate is unchanged."""
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        _install(_SPAWN_OFF)
+        result = HookManager().on_tool_call("Sub-agent: researcher", session_key="cli_chat")
+        assert result.action != TOOL_DENY
+
+
+class TestKasSpawnHonoursTheCallersTaskProfile:
+    """A profile bound to the spawning agent's name is half of ``policy ∩ profile``;
+    the spawn vet must reach it the way the gate's ``tools`` plane does."""
+
+    def test_a_task_profile_that_forbids_spawning_denies_it(self):
+        import json
+
+        from kiro_crew.hooks import TOOL_DENY, HookManager, hook_gate_kwargs
+
+        _install(None)
+        (gp._PROFILES_DIR / "researcher.json").write_text(
+            json.dumps(
+                {
+                    "name": "researcher",
+                    "bind": {"type": "task", "id": "researcher"},
+                    "capabilities": {"spawn": {"enabled": False}},
+                }
+            )
+        )
+        gp.reset_store()
+        event = _kas_spawn_event("helper")
+        gate = HookManager()
+        denied = gate.on_tool_call(
+            event.title, session_key="cli_chat", agent="researcher", **hook_gate_kwargs(event)
+        )
+        assert denied.action == TOOL_DENY
+        assert "spawn policy" in (denied.reason or "")
+        other = gate.on_tool_call(
+            event.title, session_key="cli_chat", agent="writer", **hook_gate_kwargs(event)
+        )
+        assert other.action != TOOL_DENY
+
+
+class TestSpawnGrantIsWithheldUnderASpawnPolicy:
+    """An auto-approved spawn raises no request, so the per-spawn check would never
+    run for it: while a spawn policy restricts spawning, no ``allowedTools`` writer
+    -- the KAS projection or kiro-cli's own spec -- keeps ``use_subagent``."""
+
+    def test_a_disabled_spawn_capability_withholds_it_on_kas(self):
+        from kiro_crew.acp import kas_agents
+
+        _install(_SPAWN_OFF)
+        kept = kas_agents._ceiling_permitted(["use_subagent", "web_fetch"], "a")
+        assert kept == ["web_fetch"]
+
+    def test_a_disabled_spawn_capability_withholds_it_on_kiro_cli(self):
+        from kiro_crew import agent
+
+        _install(_SPAWN_OFF)
+        assert agent._may_auto_approve("use_subagent") is False
+        assert agent._may_auto_approve("web_fetch") is True
+
+    def test_an_agents_scope_withholds_it(self):
+        from kiro_crew.platform.governance import may_skip_gate_now
+
+        _install(_SPAWN_RESEARCHER_ONLY)
+        assert may_skip_gate_now("use_subagent") is False
+
+    def test_a_profile_that_restricts_spawning_withholds_it(self):
+        import json
+
+        from kiro_crew.platform.governance import may_skip_gate_now
+
+        _install(None)
+        (gp._PROFILES_DIR / "researcher.json").write_text(
+            json.dumps(
+                {
+                    "name": "researcher",
+                    "bind": {"type": "task", "id": "researcher"},
+                    "capabilities": {"spawn": {"enabled": False}},
+                }
+            )
+        )
+        gp.reset_store()
+        assert may_skip_gate_now("use_subagent") is False
+
+    def test_an_enabled_unscoped_spawn_capability_keeps_it(self):
+        from kiro_crew.acp import kas_agents
+        from kiro_crew.platform.governance import may_skip_gate_now
+
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}},
+            }
+        )
+        assert may_skip_gate_now("use_subagent") is True
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+
+    def test_no_policy_leaves_both_backends_unchanged(self):
+        from kiro_crew import agent
+        from kiro_crew.acp import kas_agents
+
+        _install(None)
+        assert agent._may_auto_approve("use_subagent") is True
+        assert kas_agents._ceiling_permitted(["use_subagent"], "a") == ["use_subagent"]
+
+
 # ── shared helpers ──
 class TestHelpers:
     def test_governance_permits_capability(self):

@@ -641,6 +641,7 @@ def hook_gate_kwargs(event: object, **overrides: Any) -> dict[str, Any]:
         "mcp_server_name": getattr(event, "mcp_server_name", "") or "",
         "mcp_tool_name": getattr(event, "tool_name", "") or "",
         "mcp_identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
+        "spawn_target": getattr(event, "spawn_target", "") or "",
     }
     unknown = set(overrides) - set(kwargs)
     if unknown:
@@ -793,6 +794,7 @@ class HookManager:
         mcp_server_name: str = "",
         mcp_tool_name: str = "",
         mcp_identity_trusted: bool = False,
+        spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
     ) -> ToolHookResult:
@@ -1312,6 +1314,7 @@ class HookManager:
             diff_path=diff_path,
             mcp_ref=governance_mcp_ref,
             extra_titles=(mcp_tool_name,) if mcp_tool_name and mcp_tool_name != tool_name else (),
+            spawn_target=spawn_target,
         )
         if gov_reason:
             return ToolHookResult.deny_policy(gov_reason)
@@ -1845,8 +1848,17 @@ def _governance_denial(
     diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: tuple[str, ...] = (),
+    spawn_target: str = "",
 ) -> str | None:
     """Return a denial reason if governance forbids *tool_name*, else None.
+
+    *spawn_target* is the agent a backend-stated sub-agent spawn will start (set
+    only from KAS's own ``_meta.kiro.consent``; see ``AcpEvent.spawn_target``).
+    When set, ``capabilities.spawn`` is judged too -- the gate on, and the target
+    in its ``agents`` scope -- on the SAME ceiling and profile this call resolved,
+    so a spawn costs no second profile resolution and cannot be judged against a
+    different profile snapshot. A spawn policy is not a ``tools`` rule, so the
+    title question alone cannot answer it.
 
     *mcp_ref* is an already-canonical ``@server`` / ``@server/tool`` reference
     for the trusted MCP identity, evaluated in addition to (or instead of) the
@@ -1898,6 +1910,8 @@ def _governance_denial(
             subject = getattr(decision, "item", "") or tool_name or mcp_ref
             _audit_governance(session_key, agent, subject, decision)
             return f"Blocked by governance policy: {decision.reason}"
+        if spawn_target:
+            return _spawn_policy_denial(ceiling, profile, spawn_target, session_key, agent)
         return None
     except PlatformCompositionError:
         raise
@@ -1913,6 +1927,37 @@ def _governance_denial(
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
         return None
+
+
+def _spawn_policy_denial(
+    ceiling: Any, profile: Any, target: str, session_key: str, agent: str
+) -> str | None:
+    """The ``capabilities.spawn`` verdict for a spawn of *target*, or None.
+
+    The two questions ``subagent._vet_spawn_governance`` asks -- is spawning on,
+    and is *target* in the ``agents`` scope -- put to a ceiling and profile the
+    caller already resolved. Fails CLOSED, unlike the ``tools`` question around
+    it: this is an authorization for a spawn, and an evaluation error that
+    permitted it would be the bypass the check exists to stop.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+    from kiro_crew.platform.governance import resolve
+
+    try:
+        gate = resolve(ceiling, profile, "capabilities.spawn", "")
+        if not gate.permitted:
+            _audit_governance(session_key, agent, target, gate)
+            return f"Blocked by spawn policy: {gate.reason}"
+        scoped = resolve(ceiling, profile, "capabilities.spawn", f"agents:{target}")
+        if not scoped.permitted:
+            _audit_governance(session_key, agent, target, scoped)
+            return f"Blocked by spawn policy: agent {target!r} is not permitted"
+        return None
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.warning("spawn policy could not be evaluated; refusing the spawn", exc_info=True)
+        return "Blocked by spawn policy: it could not be evaluated"
 
 
 def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:

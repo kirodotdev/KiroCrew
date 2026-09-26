@@ -873,6 +873,11 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    #: spawn_target: the agent a KAS sub-agent spawn will start, read from the
+    #: engine-written ``_meta.kiro.consent.resource`` of a consent-classified
+    #: request (``_dispatch.kas_consent_tool``). Empty on every other event. The
+    #: hook gate vets it against ``capabilities.spawn`` before anything is asked.
+    spawn_target: str = ""
     #: tool_identity_trusted: tool_name below came from a provenance-verified
     #: adapter-authored identity channel, never a title or inline fallback.
     #: Security gates must require this flag in addition to a recognized name.

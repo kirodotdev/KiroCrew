@@ -4749,6 +4749,7 @@ class AcpSessionHandle:
             # parent toolCallId to inherit trusted params for a different
             # operation, while same-origin repeat frames still resolve.
             cache_scope=str(_perm_params.get("sessionId") or self._session_id),
+            kas_consent_meta=self._runtime.acp_backend == ACP_BACKEND_KAS,
         )
         if recorded is not None and event.request_id != "":
             self._permission_options[event.request_id] = recorded

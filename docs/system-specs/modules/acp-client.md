@@ -380,6 +380,38 @@ caches `False` and takes its trusted identity from the adapter-resolved
 resolves nothing (the shell cache stays unwritten), so the permission event
 stays low-fidelity rather than earning a minted non-shell verdict.
 
+One exception fills a shell-cache MISS from the permission request itself, and
+only on KAS (`build_permission_event(kas_consent_meta=True)`, set by both
+transports when the backend is KAS). A KAS sub-agent spawn's `tool_call` frame
+(`_meta.kiro.kind: "agent-subtask"`) is taken by
+`AcpSessionHandle._handle_kas_subagent` for the sub-agent roster and never
+reaches the shared parser, and its toolCallId is synthetic
+(`invoke_subagent_<id>`), so every cache misses and the request would reach
+`_unverifiable_shell` unclassified and be refused. The request carries the
+engine-written `_meta.kiro` block, and `_dispatch.kas_consent_tool` reads it:
+when the toolId is `invoke_sub_agent`, `consent.capability` is `subagent`,
+`consent.resource` names the target agent and no `command` field is present,
+the miss resolves to a non-shell verdict (`shell_classified=True`,
+`is_shell=False`), `tool_name` is set to the Crew name `use_subagent`, and
+`spawn_target` carries the target. The deny floor, `auto_deny_tools` and the
+`tools` ceiling are then asked about `use_subagent` rather than the title
+alone, and `HookManager.on_tool_call` judges `spawn_target` against
+`capabilities.spawn` (the gate on, the target in its `agents` scope: the two
+questions `subagent._vet_spawn_governance` asks on Crew's own spawn path)
+inside `_governance_denial`, on the same ceiling and profile it resolved for
+the `tools` question, before any grant or prompt. That profile is resolved for
+the calling agent, so a profile bound to the spawning agent's name applies, and
+an evaluation error refuses the spawn. Because an auto-approved spawn raises no request at all,
+the shared `governance.may_skip_gate` withholds `use_subagent` from every
+`allowedTools` writer, and so from the `subagent` rule on the wire and on disk,
+while the ceiling or any configured profile restricts `capabilities.spawn`
+(governance.md § `allowedTools`). Any other
+shape stays unclassified. It never sets `is_shell` True, never overrides a
+cache hit, and grants no provenance: `raw_params_trusted` and
+`mcp_identity_trusted` stay `False`, so a child spawn stays
+`child_low_fidelity` and title-keyed auto-approve stays gated for it exactly
+as for any other child request with no trusted params.
+
 For a CHILD event, the identity lane only helps a consumer the handle actually
 delivers to: the session handle fail-closes every low-fidelity child permission
 request whose consumer never set `child_fidelity_aware`

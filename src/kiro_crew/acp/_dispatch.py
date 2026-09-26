@@ -1255,6 +1255,58 @@ def is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> 
     return bool(event is not None and event.mcp_identity_trusted and event.mcp_server_name)
 
 
+#: KAS toolId of a tool whose permission request is a consent question about a
+#: call that runs no host command -> (the ``_meta.kiro.consent.capability`` KAS
+#: stamps on that request, the Crew tool name the same tool goes by). A sub-agent
+#: spawn is the case that needs it: its ``tool_call`` frame is taken for the
+#: sub-agent roster and never reaches the shared parser, and its toolCallId is
+#: synthetic (``invoke_subagent_<id>``), so every toolCallId-keyed cache misses.
+#: The child's own tool calls raise their own permission requests, so this
+#: classification waives nothing about them.
+_KAS_NON_COMMAND_TOOLS: dict[str, tuple[str, str]] = {
+    "invoke_sub_agent": ("subagent", "use_subagent"),
+}
+
+
+def kas_consent_tool(params: object) -> tuple[str, str]:
+    """The Crew tool and target a KAS permission request's own ``_meta.kiro`` names.
+
+    Returns ``(crew_tool_name, target)``, or ``("", "")``. ``_meta`` is written by
+    the KAS engine, not the model -- the same channel Crew already trusts for MCP
+    identity on ``tool_call`` frames. A non-empty answer means "not a shell call,
+    this is the tool, and this is the agent it starts", and is given only when
+    every field agrees: the toolId is on :data:`_KAS_NON_COMMAND_TOOLS`, the
+    consent capability is the one KAS assigns that toolId, ``consent.resource``
+    names the target, and no ``command`` rides along (KAS sets that field only for
+    a shell call). Anything else -- an unknown toolId, a missing or different
+    capability, a ``shell`` capability, no target, a command -- returns
+    ``("", "")`` and leaves the request unclassified, which keeps the refusal.
+
+    The name returned is Crew's (``use_subagent``), not KAS's, because it is the
+    name a deny rule or a ``tools`` ceiling is written against. The target is what
+    ``capabilities.spawn``'s ``agents`` scope is judged on, so a spawn with no
+    stated target is not classified at all rather than vetted as "no agent".
+    """
+    if not isinstance(params, dict):
+        return "", ""
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    if not isinstance(kiro, dict) or "command" in kiro:
+        return "", ""
+    tool_id = kiro.get("toolId")
+    known = _KAS_NON_COMMAND_TOOLS.get(tool_id) if isinstance(tool_id, str) else None
+    if known is None:
+        return "", ""
+    capability, crew_name = known
+    consent = kiro.get("consent")
+    if not isinstance(consent, dict) or consent.get("capability") != capability:
+        return "", ""
+    target = consent.get("resource")
+    if not isinstance(target, str) or not target.strip():
+        return "", ""
+    return crew_name, target.strip()
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -1267,12 +1319,20 @@ def build_permission_event(
     cache_scope: str = "",
     diff_path_cache: dict[str, str] | None = None,
     gate_envelope_nonce: str | None = None,
+    kas_consent_meta: bool = False,
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
     ``gate_envelope_nonce`` is set only by a caller whose session runs Kiro Crew's
     gate extension (``Routing.VERIFIED_GATE_EXTENSION``); see :func:`gate_envelope`
     for what it unlocks and why the default consults nothing.
+
+    ``kas_consent_meta`` is set only by a caller whose session runs on KAS. It lets a
+    shell-cache MISS be resolved to "not a shell call" from the request's own
+    ``_meta.kiro`` block (see :func:`kas_consent_tool`), and to carry that tool's
+    Crew name as ``tool_name`` so deny and governance rules bind to it; it never sets
+    ``is_shell`` True and never overrides a cache hit. Every other backend leaves it
+    False, so its payloads are read exactly as before.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -1441,6 +1501,14 @@ def build_permission_event(
         # own agent-influenced ``kind``, which the deny-by-default rule above is
         # about; that field described the dialog and was discarded.
         cached_shell = is_shell_kind(envelope["kind"])
+    _kas_tool, _spawn_target = "", ""
+    if cached_shell is None and kas_consent_meta:
+        # A KAS sub-agent spawn's tool_call frame never reaches the caches; its
+        # request's engine-written ``_meta.kiro`` is the classification instead.
+        # Resolves to False only: a request it cannot read stays unclassified.
+        _kas_tool, _spawn_target = kas_consent_tool(params)
+        if _kas_tool:
+            cached_shell = False
     is_shell = bool(cached_shell)
     if cached_shell is None and tool_input:
         logger.info(
@@ -1482,7 +1550,7 @@ def build_permission_event(
             _raw_params_trusted = envelope is not None and not envelope["truncated"]
 
     # Trusted MCP server + tool identity recovered from the preceding tool_call
-    # (the permission payload carries no _meta). .get() (not .pop()) mirrors the
+    # (identity is never read off the permission payload). .get() (not .pop()) mirrors the
     # is_shell cache: a later tool_call_update for the same id re-reads it; the
     # per-turn dispatch .clear() handles cleanup. Empty on a miss (fail-closed
     # for the app-own-server auto-approve). The tool name lets the app-own-server
@@ -1497,7 +1565,10 @@ def build_permission_event(
         tool_name_cache.get(_ck) if (tool_name_cache is not None and tool_call_id) else None
     )
     _mcp_server_name = _cached_server or ""
-    _tool_name = _cached_tool or ""
+    # The Crew name of a KAS consent-classified tool, so the deny floor and the
+    # governance ceiling are asked about it and not about its title alone. It
+    # does NOT set ``_mcp_identity_trusted`` below: that flag records a cache hit.
+    _tool_name = _cached_tool or _kas_tool
     # Explicit identity-provenance flag (mirrors _raw_params_trusted): True iff
     # BOTH cache reads above actually HIT — a written entry may legitimately be
     # "" for a non-MCP tool, so the hit is distinguished from a miss by the
@@ -1537,6 +1608,7 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         diff_path=_diff_path,
+        spawn_target=_spawn_target,
     )
     return event, recorded
 

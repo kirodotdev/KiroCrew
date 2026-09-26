@@ -7875,6 +7875,20 @@ class TestChatPermissionRequest:
         assert "could not be verified" in capsys.readouterr().err
 
     @pytest.mark.asyncio
+    async def test_an_unclassified_request_is_not_said_to_run_a_command(self, monkeypatch, capsys):
+        """A request nothing classified claimed no command, so the notice must not
+        say it did -- that sends the reader after the wrong defect."""
+        provider, sels, _ = await self._drive(
+            monkeypatch,
+            event=self._event(title="Sub-agent: my-research", tool_kind="", shell_classified=False),
+        )
+        assert provider.calls == [("reject", 7, False)]
+        assert sels[0]["error"] == "unverified_shell"
+        err = capsys.readouterr().err
+        assert "claims to run a command" not in err
+        assert "could not be identified" in err
+
+    @pytest.mark.asyncio
     async def test_a_cosmetic_kind_variant_still_refuses(self, monkeypatch):
         # Widening a fail-closed test is safe, so casing/padding must not be a
         # way to present an unverifiable command as an ordinary tool call.

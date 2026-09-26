@@ -2003,6 +2003,9 @@ class AcpProvider(LLMProvider):
             # half (child_mcp_identity_trusted) for every crossing event.
             raw_params_trusted=e.raw_params_trusted,
             shell_classified=e.shell_classified,
+            # Dropping this would let a KAS spawn reach the prompt unvetted
+            # against the spawn policy on this surface.
+            spawn_target=e.spawn_target,
             tool_identity_trusted=e.tool_identity_trusted,
             mcp_identity_trusted=e.mcp_identity_trusted,
             server_name=e.server_name,

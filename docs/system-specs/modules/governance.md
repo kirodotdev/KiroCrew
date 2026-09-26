@@ -921,6 +921,16 @@ concurrent default-home rewrite and record a projection that never landed. An un
 baseline rebuilds once rather than skipping — a redundant rewrite costs a file write, a
 skipped one costs the tighten.
 
+A builtin can also be governed by a **capability** rather than by its name:
+`BUILTIN_TOOL_CAPABILITIES` maps `use_subagent` to `capabilities.spawn`. A capability is not
+a `tools` rule, so the name check cannot see it, and an auto-approved spawn raises no
+permission request, so the per-spawn check at the gate never runs for it. `may_skip_gate`
+therefore also withholds the grant while that capability restricts anything at the level
+asked (off, or any scope; an enabled gate with no scopes permits every use). Every writer asks
+this one predicate, so the grant is withheld on every backend and channel alike: kiro-cli's
+own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
+policy nothing changes.
+
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
 already-running process keeping its own sandbox — a restart is its only answer, which is also

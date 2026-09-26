@@ -65,14 +65,29 @@ _MCP_CAPABILITY = "mcp"
 #: KAS's table: an entry here is a promise that auto-approving the Crew tool and
 #: allowing the KAS capability mean the same thing. Anything absent is treated as
 #: unclassifiable and left to prompt (see the module docstring).
+#:
+#: Keyed on the names an ``allowedTools`` list carries, which are Crew's (and
+#: kiro-cli's) names, not KAS's internal toolIds. The sub-agent tool is
+#: ``use_subagent`` there; KAS calls the same tool ``invoke_sub_agent``, and that
+#: spelling is deliberately NOT a key. The governance ceiling filters
+#: ``allowedTools`` by ref before this table reads it, so a second spelling for
+#: one tool would let a spec obtain under the alias the grant the ceiling withholds
+#: under the Crew name. ``disclose_context`` stays: it is KAS's skill tool, Crew
+#: has no name of its own for it, so there is no Crew spelling it could alias.
 CAPABILITY_BY_TOOL: dict[str, str] = {
     # Network.
     "web_fetch": "web_fetch",
     "web_search": "web_search",
     # Sub-agents and skills.
-    "invoke_sub_agent": "subagent",
+    "use_subagent": "subagent",
     "disclose_context": "skill",
 }
+
+#: KAS toolId -> the Crew name ``allowedTools`` must use for the same tool. A
+#: spec carrying the KAS spelling gets no grant (see :data:`CAPABILITY_BY_TOOL`
+#: for why it is not an alias), so it is named at WARNING with the fix: the
+#: spawn it meant to auto-approve now prompts, and the author should know why.
+KAS_SPELLINGS: dict[str, str] = {"invoke_sub_agent": "use_subagent"}
 
 #: Tools this module refuses to translate even though the capability exists.
 #:
@@ -222,6 +237,14 @@ def allowed_tools_to_permissions(
             "agent %r: allowedTools entries with no KAS capability, left to prompt: %s",
             agent_id,
             ", ".join(sorted(unclassified)),
+        )
+    for entry in sorted(set(unclassified) & set(KAS_SPELLINGS)):
+        logger.warning(
+            "agent %r: allowedTools lists %r, which is KAS's own name for the tool; "
+            "list %r instead to auto-approve it -- until then it prompts",
+            agent_id,
+            entry,
+            KAS_SPELLINGS[entry],
         )
     if withheld:
         # Louder than `unclassified`, and separate from it: this one is a policy

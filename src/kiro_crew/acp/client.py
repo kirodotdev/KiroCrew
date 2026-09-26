@@ -104,6 +104,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
@@ -13929,6 +13930,7 @@ class AcpClient:
             # Same compatibility shape as the maps above: an instance built without
             # ``__init__`` has no nonce, and no nonce means no envelope is trusted.
             gate_envelope_nonce=_gate_nonce or None,
+            kas_consent_meta=self.backend == ACP_BACKEND_KAS,
         )
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
