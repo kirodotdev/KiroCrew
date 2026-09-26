@@ -1902,20 +1902,20 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     # install/update/uninstall of the same app (e.g. enabling while an
     # off-loop uninstall is deleting the app directory).
     async with app_lifecycle_lock(name):
-        # Reload INSIDE the lock: the `info` fetched above predates it, so a
-        # concurrent enable/disable could land between the fetch and this
-        # lock — deriving the rollback state from the stale snapshot would
-        # disable an app another request just enabled, or skip stopping a
-        # backend it just started. Also used below to skip hook_reconcile on a
-        # re-enable: the flag alone does not prove onEnable ran (a file-only
-        # CLI enable skips it), but the reload is still the accurate "was this
-        # app already enabled before this call" signal that both the Python
-        # hook gate and the onEnable rollback below rely on.
+        # A re-enable repeats every step but the Python hooks: the flag does not prove
+        # onEnable ran (a file-only CLI enable skips it), while hook_reconcile loads hooks.
+        was_enabled = app_enabled_state(name) is True
+        # Reload INSIDE the lock for `is_gateway_app`: the `info` fetched above
+        # predates it, so a concurrent enable/disable could land between the
+        # fetch and this lock — deriving the onEnable-failure rollback's scope
+        # from the stale snapshot would skip stopping a backend a concurrent
+        # request just started, or deregister one it didn't own. `was_enabled`
+        # above already gives the same race-safety for the enabled flag itself
+        # (it's read inside this same lock).
         current = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), get_app, name
         )
         snapshot = current if current is not None else info
-        was_enabled = bool(snapshot.get("enabled"))
         is_gateway_app = snapshot.get("resources", "gateway") == "gateway"
         result = enable_app(name, session_approval_consent=session_approval_consent)
         if not result.ok:
@@ -1971,18 +1971,45 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 name, on_enable, timeout=enable_timeout, action="on_enable"
             )
             if script_output.get("failed") and client_platform is None:
-                # Rollback: disable the app unconditionally — including a
-                # re-enable of an already-enabled app, which therefore also
-                # ends disabled; this is not a full restore of the prior
-                # state. The backend this route would have started does not
-                # exist — onEnable gates start_app_backend below — but a
-                # RE-enabled gateway app still has its PREVIOUS backend
-                # running, so that one must be stopped before the metadata is
-                # flipped to disabled, or the running process outlives its
-                # enabled flag. Deregistration is gateway-only: a self-managed
-                # (resources=="app") app's registrations are not this route's
-                # to remove.
-                if is_gateway_app and was_enabled:
+                if was_enabled:
+                    # Re-enable of an already-enabled app: a flaky onEnable
+                    # (e.g. a transient `npm install` network blip) must not
+                    # take down an app that was already working — leave it
+                    # running and enabled. Mirrors `kirocrew app enable`'s
+                    # CLI behavior for the same case.
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_enable",
+                        outcome="failed",
+                        resources=name,
+                        error="onEnable script failed; app was already enabled, left enabled",
+                    )
+                    cleaned, _ = redact_credentials(
+                        sanitize_script_output(str(script_output.get("output", "")))
+                    )
+                    cleaned, _ = redact_exfiltration_urls(cleaned)
+                    return web.json_response(
+                        {
+                            "ok": False,
+                            "name": name,
+                            "error": (
+                                "onEnable script failed — app was already enabled; left enabled"
+                            ),
+                            "script_output": cleaned,
+                            "code": "on_enable_failed_left_enabled",
+                        },
+                        status=400,
+                    )
+                # Fresh enable of a previously-disabled app: roll back fully.
+                # stop_app_backend runs unconditionally (was_enabled is
+                # already False here, so there is nothing left to gate on) —
+                # a gateway app with backend.entryPoint can have its backend
+                # auto-started at install time while still recorded disabled,
+                # and skipping the stop would leave that process running with
+                # no record left to manage it. Deregistration is gateway-only:
+                # a self-managed (resources=="app") app's registrations are
+                # not this route's to remove.
+                if is_gateway_app:
                     await asyncio.get_running_loop().run_in_executor(
                         subprocess_executor(), stop_app_backend, name
                     )

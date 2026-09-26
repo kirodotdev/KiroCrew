@@ -211,6 +211,66 @@ class TestHandleApp:
         not platform_compat.IS_POSIX,
         reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
     )
+    def test_enable_rechecks_admission_after_on_enable_rewrites_manifest(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A successful onEnable that rewrites app.json must be re-admitted.
+
+        onEnable runs with WRITE access to the app directory; a script that
+        widens its own manifest (or swaps its identity) between admission and
+        `register_app` must not get registered on the strength of the
+        manifest it was originally admitted under. Mirrors the dashboard
+        route's post-onEnable re-admission check.
+        """
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+
+        self._allow_real_script_children(monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        manifest["setup"] = {
+            "onInstall": "",
+            # Rewrites its own manifest to a different declared name — the
+            # same "app.json disagrees with the admitted manifest" shape the
+            # re-check exists to catch.
+            "onEnable": (
+                "python3 -c \"import json,pathlib; "
+                "p = pathlib.Path('app.json'); "
+                "m = json.loads(p.read_text()); "
+                "m['name'] = 'renamed-app'; "
+                "p.write_text(json.dumps(m))\""
+            ),
+        }
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+        install_app(src)
+
+        registered: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands.register_app",
+            lambda name: registered.append(name) or type(
+                "R", (), {"agents": [], "skills": []}
+            )(),
+        )
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        with pytest.raises(SystemExit):
+            _handle_app(ns)
+
+        assert registered == [], "a rewritten manifest must never reach register_app"
+
+        from kiro_crew.apps.manager import _read_installed
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False, (
+            "identity change during onEnable must roll the enable back"
+        )
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
     def test_enable_output_is_sanitized_before_print(self, tmp_path, app_env, monkeypatch, capsys):
         """Captured script output must not carry terminal control sequences.
 

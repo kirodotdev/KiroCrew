@@ -704,6 +704,12 @@ def _run_install_script(name: str, script: str, app_root: Path) -> tuple[bool, s
             **popen_kwargs,
         )
     except OSError as exc:
+        # wrap_argv already staged the seatbelt profile/launcher at cleanup_path;
+        # a spawn failure here must still unlink it, or every install that hits
+        # this path (e.g. no sandbox binary on this host) leaks one orphan file.
+        if cleanup_path:
+            with contextlib.suppress(OSError):
+                os.unlink(cleanup_path)
         return False, f"failed to launch install script: {exc}"
     # Capture the kill authority BEFORE any wait: once proc.wait() reaps the
     # bash wrapper, the leader's PID stops resolving — the group lookup
@@ -837,7 +843,9 @@ def _reap_install_script_tree(
     platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
 
 
-def _remove_installed_tree_except_data(dest: Path, *, preserve_data: bool) -> None:
+def _remove_installed_tree_except_data(
+    dest: Path, *, preserve_data: bool, restore_data_from: Path | None = None
+) -> None:
     """Remove a failed partial install, optionally keeping a ``data/`` directory.
 
     ``preserve_data`` must be true only when a ``data/`` directory existed
@@ -846,6 +854,14 @@ def _remove_installed_tree_except_data(dest: Path, *, preserve_data: bool) -> No
     written by the source package or by the failed ``onInstall`` script itself,
     and keeping it would let the NEXT attempt silently restore that partial,
     unverified state as if it were established user data.
+
+    ``restore_data_from``, when given, is a pre-script backup of that SAME
+    pre-existing ``data/`` (see ``install_app``'s ``data_backup``). The failed
+    script ran with write access to ``dest`` and may have partially migrated,
+    truncated, or corrupted ``data/`` before failing — keeping whatever it
+    left (the plain ``preserve_data`` path) would silently promote that broken
+    state to "preserved user data". When a backup is supplied, ``data/`` is
+    replaced wholesale with it instead of being left as-is.
     """
     if not dest.is_dir():
         return
@@ -865,6 +881,12 @@ def _remove_installed_tree_except_data(dest: Path, *, preserve_data: bool) -> No
         else:
             with contextlib.suppress(OSError):
                 child.unlink()
+    if preserve_data and restore_data_from is not None and restore_data_from.is_dir():
+        restored = dest / "data"
+        with contextlib.suppress(OSError):
+            if restored.exists() or restored.is_symlink():
+                shutil.rmtree(str(restored), ignore_errors=True)
+            shutil.move(str(restore_data_from), str(restored))
 
 
 def install_app(
@@ -1083,6 +1105,13 @@ def install_app(
     # gate that guards every other manifest-script surface runs first, and the
     # script executes in the COPIED app dir rather than the source tree.
     install_script = manifest.setup.onInstall
+    # A second, script-window-scoped backup of pre-existing data/, distinct
+    # from tmp_data above: tmp_data is already consumed (moved into dest/data)
+    # by the time the script runs, so it is no longer available as a fallback
+    # if the script mutates or destroys data/ before failing. See
+    # _remove_installed_tree_except_data's restore_data_from for why a bare
+    # preserve_data is not enough here.
+    data_backup = dest.parent / f".{name}-data-script-backup"
     # The registry path already executed this hook in its own checkout (before
     # calling install_app inside the registry_source_repository scope) and the
     # copied tree carries its effects — running it again here would double
@@ -1090,6 +1119,11 @@ def install_app(
     # generated files). Only a source arriving OUTSIDE the registry scope — a
     # local-directory install — still needs the hook.
     if install_script and _REGISTRY_SOURCE_REPOSITORY.get() is None:
+        if preserved_prior_data and (dest / "data").is_dir():
+            with contextlib.suppress(OSError, shutil.Error):
+                if data_backup.exists():
+                    shutil.rmtree(str(data_backup), ignore_errors=True)
+                shutil.copytree(str(dest / "data"), str(data_backup))
         execution_denied = app_execution_denied(
             name,
             action="install",
@@ -1101,7 +1135,9 @@ def install_app(
             repository=source_repository,
         )
         if execution_denied:
-            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
             sel().log_api_access(
                 caller="app_install",
                 operation="app_execution_admission",
@@ -1124,7 +1160,9 @@ def install_app(
         logger.info("Executing sandboxed install script for app %s from %s", name, source)
         script_ok, script_output = _run_install_script(name, install_script, dest)
         if not script_ok:
-            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
             # Full shared chain: the text is the app's own stdout/stderr and
             # reaches both the SEL audit record and the human-visible error.
             # Terminal control sequences are stripped FIRST — redaction does
@@ -1155,7 +1193,9 @@ def install_app(
             # tampering case this re-read exists to catch. Fail closed through
             # the ordinary script-failure cleanup instead of raising past the
             # AppResult contract.
-            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
             detail = f"install script corrupted the app manifest: {exc}"
             sel().log_api_access(
                 caller="app_install",
@@ -1171,7 +1211,9 @@ def install_app(
                 error_code="on_install_failed",
             )
         if post_script_manifest.name != name or post_script_manifest.version != manifest.version:
-            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
             detail = (
                 f"app manifest changed during install script: expected "
                 f"{name!r} v{manifest.version}, found "
@@ -1192,7 +1234,9 @@ def install_app(
             )
         post_denied = app_admission_denied(name, manifest=post_script_manifest, action="install")
         if post_denied:
-            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            _remove_installed_tree_except_data(
+                dest, preserve_data=preserved_prior_data, restore_data_from=data_backup
+            )
             sel().log_api_access(
                 caller="app_install",
                 operation="admission",
@@ -1206,6 +1250,11 @@ def install_app(
                 error=f"blocked by admission policy: {post_denied}",
             )
         manifest = post_script_manifest
+        # Script succeeded and passed the post-script re-checks: the backup's
+        # job is done, and leaving it behind would strand it under the apps
+        # directory forever (nothing else ever cleans this path).
+        if data_backup.is_dir():
+            shutil.rmtree(str(data_backup), ignore_errors=True)
 
     # Write installed metadata
     meta = InstalledApp(

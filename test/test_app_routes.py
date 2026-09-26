@@ -747,3 +747,54 @@ async def test_benign_on_enable_passes_readmission(tmp_path, monkeypatch):
     meta = _read_installed("api-test-app")
     assert meta is not None
     assert meta.enabled is True
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="real-bash onEnable; /bin/bash does not resolve on Windows"
+)
+@pytest.mark.asyncio
+async def test_failed_reenable_leaves_an_enabled_app_enabled(tmp_path, monkeypatch):
+    """A re-enable whose onEnable fails must NOT disable the app.
+
+    The app was already enabled and working; that state belongs to the user,
+    not to this request — disabling it (and stopping its backend) would take
+    down a working app because of a flaky script (e.g. a transient `npm
+    install` network blip). Only an enable this request itself performed is
+    rolled back. Mirrors the CLI's
+    ``test_failed_reenable_leaves_an_enabled_app_enabled``.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", lambda app_name: None)
+    monkeypatch.setattr("kiro_crew.apps.routes.stop_app_backend", lambda app_name: None)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+
+        # The installed manifest now acquires a failing script (an update).
+        home = tmp_path / "kirocrew-home"
+        installed_manifest = home / "apps" / "api-test-app" / APP_MANIFEST_FILENAME
+        updated = json.loads(installed_manifest.read_text())
+        updated["setup"] = {"onEnable": "exit 7"}
+        installed_manifest.write_text(json.dumps(updated, indent=2))
+
+        resp = await client.post("/api/apps/api-test-app/enable")  # re-enable fails
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_failed_left_enabled"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is True, (
+        "a failed re-enable must leave an already-enabled app enabled"
+    )

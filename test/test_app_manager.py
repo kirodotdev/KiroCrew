@@ -3686,6 +3686,41 @@ class TestLocalInstallScript:
         assert leftovers == []
 
     @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="app lifecycle scripts are bash; a bash child cannot run on Windows",
+    )
+    def test_install_script_failure_restores_data_the_script_corrupted(
+        self, tmp_path, app_home
+    ):
+        """A script that mutates data/ then fails must not strand the mutation.
+
+        tmp_data is already consumed (moved into dest/data) before the script
+        runs, so it cannot serve as the failure fallback — the failing
+        script's own write to data/ would otherwise become the "preserved"
+        state, silently promoting corrupted/partial data as if it were the
+        user's own.
+        """
+        prior = app_home / "apps" / "oninstall-app" / "data"
+        prior.mkdir(parents=True)
+        (prior / "state.json").write_text('{"user": true}')
+        src = self._make_scripted_app_source(
+            tmp_path,
+            on_install="printf corrupted > data/state.json && exit 3",
+        )
+        result = install_app(src)
+        assert result.ok is False
+        assert result.error_code == "on_install_failed"
+        restored = app_home / "apps" / "oninstall-app" / "data" / "state.json"
+        assert restored.is_file()
+        assert restored.read_text() == '{"user": true}', (
+            "a failed install script must not leave its own corrupting write "
+            "in place of the pre-existing user data"
+        )
+        # The script-window backup must not linger after the outcome is
+        # resolved (success or failure).
+        assert not (app_home / "apps" / ".oninstall-app-data-script-backup").exists()
+
+    @pytest.mark.skipif(
         not hasattr(os, "symlink"),
         reason="a symlink is a POSIX-only path shape",
     )

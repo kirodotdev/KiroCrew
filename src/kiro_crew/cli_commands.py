@@ -38,6 +38,7 @@ from kiro_crew import (
     platform_compat,
 )
 from kiro_crew.agent import reset_agent_model
+from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.backend import recorded_backend_port
 from kiro_crew.apps.bridges import (
     SessionPointerCleanup,
@@ -1272,6 +1273,41 @@ def _handle_app(args: argparse.Namespace) -> None:
                     )
                 elif safe_output:
                     print(f"   onEnable: {safe_output}")
+                # The script just ran with WRITE access to the app directory,
+                # so app.json on disk may no longer match the manifest this
+                # enable was admitted under — the same tamper window the
+                # dashboard route's post-onEnable re-check closes. Re-read,
+                # re-verify identity, and re-run admission BEFORE
+                # register_app reads the (possibly rewritten) manifest and
+                # hands it agents/skills/MCP servers/crons.
+                post_enable_manifest = get_app_manifest(args.name)
+                admitted_version = app_manifest.version if app_manifest is not None else None
+                if post_enable_manifest is None:
+                    denied_reason = "onEnable removed or corrupted the app manifest"
+                elif (
+                    post_enable_manifest.name != args.name
+                    or post_enable_manifest.version != admitted_version
+                ):
+                    denied_reason = (
+                        f"app manifest changed during onEnable: expected "
+                        f"{args.name!r} v{admitted_version}, found "
+                        f"{post_enable_manifest.name!r} v{post_enable_manifest.version}"
+                    )
+                else:
+                    denied_reason = (
+                        app_admission_denied(
+                            args.name, manifest=post_enable_manifest, action="enable"
+                        )
+                        or ""
+                    )
+                if denied_reason:
+                    disable_app(args.name)
+                    deregister_app(args.name)
+                    print(
+                        f"❌ blocked after onEnable: {denied_reason}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             reg = register_app(args.name)
             _print_file_only_app_result(args.name, enabled=True)
             if reg.agents:
