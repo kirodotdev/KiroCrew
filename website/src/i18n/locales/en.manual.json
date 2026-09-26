@@ -1942,6 +1942,8 @@
       "copy_failed": "Copy failed",
       "disconnected_message": "Terminal disconnected",
       "displaced_message": "Another window took over this terminal",
+      "exit_line_unknown": "[Shell exited]",
+      "exit_line_code": "[Shell exited with code {{code}}]",
       "failed_retry": "Failed — retry",
       "reconnect": "Reconnect",
       "reconnecting": "Reconnecting…",
@@ -2585,6 +2587,7 @@
         "kind_skills": "Skills",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
+        "kind_terminal": "Terminal",
         "kind_webhook": "Webhook"
       },
       "notificationBanner": {
@@ -6323,6 +6326,9 @@
         "terminal_completion": "Command completion",
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
+        "terminal_close_on_exit": "Close the tab when the shell exits",
+        "terminal_close_on_exit_desc": "Off: an exited shell's tab stays open, showing its output and exit code, and does not reopen a shell. On: the tab closes as the shell exits, and a non-zero exit is reported in the notification feed.",
+        "terminal_close_on_exit_save_failed": "Could not save the close-on-exit setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
         "installed_themes_load_failed": "Could not load the theme list; retrying automatically. Until it loads, an installed theme cannot be selected or applied.",
         "installed_themes_refresh_failed": "Could not refresh the theme list. It is out of date.",

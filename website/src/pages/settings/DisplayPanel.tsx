@@ -203,7 +203,7 @@ export function DisplayPanel() {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
-      terminal?: { shell?: string; completion?: { enabled?: boolean } }
+      terminal?: { shell?: string; completion?: { enabled?: boolean }; close_on_exit?: boolean }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -311,6 +311,24 @@ export function DisplayPanel() {
       setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.completion.enabled', value),
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
+  }))
+
+  // Whether an exited shell closes its tab (dashboard.terminal.close_on_exit).
+  // Server-side like the two above: the reap path reads it at each exit and
+  // carries the decision in the exit frame, so every window agrees. Default
+  // off; only a literal `true` reads as on, the rule the backend applies.
+  const serverCloseOnExit = mcQ.data?.dashboard?.terminal?.close_on_exit === true
+  const shownCloseOnExit = overlay.shown('dashboard.terminal.close_on_exit', serverCloseOnExit)
+  const [closeOnExitError, setCloseOnExitError] = useState<string | null>(null)
+  const closeOnExitMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.terminal.close_on_exit', value),
+    path: () => 'dashboard.terminal.close_on_exit',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.close_on_exit', value),
+    onFailure: () => setCloseOnExitError(i18nT('pages.settings.displayPanel.terminal_close_on_exit_save_failed')),
+    onSupersede: () => setCloseOnExitError(null),
   }))
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
@@ -603,6 +621,18 @@ export function DisplayPanel() {
             disabled={!mcQ.isSuccess}
             configKey="dashboard.terminal.completion.enabled"
           />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_close_on_exit')}
+            description={i18nT('pages.settings.displayPanel.terminal_close_on_exit_desc')}
+            checked={shownCloseOnExit}
+            onChange={v => closeOnExitMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="dashboard.terminal.close_on_exit"
+          />
+          {/* No hand-off: the toggle saves on click and holds no draft, but
+              `shellDraft` above and `installValue` further down this panel are
+              unsaved local state that the hand-off's navigation would unmount. */}
+          <ErrorNotice message={closeOnExitError} variant="inline" />
           {/* No hand-off: the toggle itself has no draft (it saves on click),
               but `shellDraft` above and `installValue` further down this panel
               are unsaved local state, and the hand-off's navigation unmounts

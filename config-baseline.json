@@ -7665,6 +7665,20 @@
       "defaultValue": ""
     },
     {
+      "path": "dashboard.terminal.close_on_exit",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Close the tab when the shell exits",
+      "help": "Off (default): an exited shell's tab stays open showing its output and exit code, and does not reopen a shell. On: the tab closes as the shell exits, and a non-zero exit is reported in the notification feed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.terminal.completion",
       "kind": "core",
       "type": "object",

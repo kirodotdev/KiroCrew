@@ -53,6 +53,8 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # default stays `default`; the producer escalates the entering-critical
     # note explicitly (see notifications/resource_pressure.py).
     "system.resources": _DEFAULT_PRIORITY,
+    # A dashboard terminal shell that exited with a non-zero or unknown status.
+    "system.terminal": _DEFAULT_PRIORITY,
 }
 
 # Fallback channel for legacy kinds that have no dedicated system channel

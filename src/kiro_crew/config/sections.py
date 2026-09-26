@@ -3549,6 +3549,19 @@ class DashboardConfig:
                         ),
                     },
                 },
+                "close_on_exit": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Close the tab when the shell exits",
+                        "help": (
+                            "Off (default): an exited shell's tab stays open showing "
+                            "its output and exit code, and does not reopen a shell. On: the "
+                            "tab closes as the shell exits, and a non-zero exit is "
+                            "reported in the notification feed."
+                        ),
+                    },
+                },
                 "completion": {
                     "type": "object",
                     "additionalProperties": True,

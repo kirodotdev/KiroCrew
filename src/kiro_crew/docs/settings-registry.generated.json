@@ -996,6 +996,14 @@
       "route": "/settings/developer?highlight=developer.which-judge-answers"
     },
     {
+      "id": "display.close-the-tab-when-the-shell-exits",
+      "label": "Close the tab when the shell exits",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.terminal.close_on_exit",
+      "description": "Off: an exited shell's tab stays open, showing its output and exit code, and does not reopen a shell. On: the tab closes as the shell exits, and a non-zero exit is reported in the notification feed.",
+      "configKey": "dashboard.terminal.close_on_exit"
+    },
+    {
       "id": "display.command-completion",
       "label": "Command completion",
       "tab": "display",
