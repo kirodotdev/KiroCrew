@@ -670,6 +670,65 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
   })
+
+  /**
+   * A 404 means the backend holds no future for this approval: it was decided
+   * or expired where this client could not see it (a missed frame across a
+   * reconnect, a gateway restart). The activity panel already classifies that
+   * through `isTerminalApprovalRefusal` (#11180); this banner resolves the SAME
+   * id and must not keep offering a retry that can never succeed, silently.
+   */
+  it('withdraws the banner and says why when the spawn approval is already gone', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+
+    await waitFor(() => {
+      expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
+    })
+    // A rejected request is an error (AUTOSDE errors-use-error-notice), and the
+    // panel shows this same sentence through ErrorNotice: not the status strip.
+    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
+    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    // No outcome is known, so the card is withdrawn, not terminated: an
+    // approval decided elsewhere still converges on its own spawn stream.
+    expect(store.getState().chat.subagents.a1.status).toBe('pending')
+    expect(store.getState().chat.subagents.a1.approving).toBe(false)
+  })
+
+  it('keeps the buttons after a refusal that is not terminal', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(500, 'boom'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+
+    await waitFor(() => {
+      expect(store.getState().chat.subagents.a1.approving).toBe(false)
+    })
+    expect(screen.getByRole('button', { name: /^Approve$/ })).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('components.approvalCard.approval_no_longer_pending'))).not.toBeInTheDocument()
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
+  })
+
+  it('withdraws only the gone sub-agent from a multi-agent banner', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve sub-agent: task 2' }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Approve sub-agent: task 2' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText(/2 sub-agents are awaiting your approval to run/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 3' })).toBeInTheDocument()
+  })
 })
 
 /**

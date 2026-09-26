@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval, isSpawnApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -128,7 +128,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // Exception-first ordering: retrying/stalled agents need eyes; the healthy
   // majority collapses behind the summary row at scale.
   const activeList = useMemo(() => {
-    const act = all.filter(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending')
+    // A pending run whose approval proved gone is neither in flight nor owed
+    // to the user, so it leaves the chip rather than becoming "running".
+    const act = all.filter(a => a.status === 'running' || a.status === 'tool' || (a.status === 'pending' && !isSpawnApprovalGone(a)))
     const rank = (a: SubagentActivity) => (a.retrying ? 0 : a.stalled ? 1 : a.status === 'pending' ? 2 : 3)
     return act.sort((x, y) => rank(x) - rank(y))
   }, [all])

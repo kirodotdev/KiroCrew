@@ -21,6 +21,8 @@ import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
+import { markSubagentApprovalGone } from '../store/chatSlice'
+import { isTerminalApprovalRefusal } from '../api/apiError'
 import { safeSetItem, safeGetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
 import { shallowEqual } from 'react-redux'
@@ -1343,7 +1345,20 @@ function ChatInput({
       if (action === 'reject' && slotId) {
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: i18nT('hooks.useWebSocket.approval_rejected') }))
       }
-    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
+    }).catch((err: unknown) => {
+      // The panel resolves this same id; a refusal that proves the approval
+      // gone is withdrawn through the one owner both surfaces read (#11180),
+      // instead of leaving buttons that can only re-send it.
+      if (isTerminalApprovalRefusal(err) && a.approval_id) {
+        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
+        // A rejected request, so an error surface; the panel shows this same
+        // sentence through ErrorNotice too.
+        setApprovalNoticeKind('error')
+        setApprovalNotice(i18nT('components.approvalCard.approval_no_longer_pending'))
+        return
+      }
+      dispatch(markSubagentApproving({ id: a.id, approving: false }))
+    })
   }, [dispatch, slotId])
   const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
     for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)

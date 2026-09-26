@@ -3975,9 +3975,17 @@ const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
  * `approval_id` is the load-bearing half — `sseSubagentPending` is the only
  * writer of `'pending'` and always sets it, so its absence means a card built
  * some other way and must not be claimed as blocked on the user.
+ *
+ * A gone approval (`markSubagentApprovalGone`) is excluded: once a resolve has
+ * proved it decided or expired, no surface can take the decision, so none may
+ * say the user owes it. Such a run launched nothing either, so a tally that
+ * would otherwise fall through to "running" must check `isSpawnApprovalGone`.
  */
+export const isSpawnApprovalGone = (a: SubagentActivity) =>
+  !!a.approval_id && a.approvalGone === a.approval_id
+
 export const isAwaitingSpawnApproval = (a: SubagentActivity) =>
-  a.status === 'pending' && !!a.approval_id
+  a.status === 'pending' && !!a.approval_id && !isSpawnApprovalGone(a)
 
 /** Counts subagents pending spawn approval in a subagent map. */
 const countPendingApprovals = (m?: Record<string, SubagentActivity>) => {
@@ -5207,6 +5215,24 @@ const chatSlice = createSlice({
       for (const sa of Object.values(state.slotActivity)) {
         const b = sa.subagents[action.payload.id]
         if (b) { b.approving = action.payload.approving; return }
+      }
+    },
+    /** One owner for a terminal refusal, so the side panel and the composer
+     *  banner, which resolve the same id, both withdraw it (#11180). */
+    markSubagentApprovalGone(state, action: PayloadAction<{ id: string; approval_id: string }>) {
+      if (isUnsafeKey(action.payload.id)) return
+      const mark = (a: SubagentActivity | undefined) => {
+        if (!a) return false
+        // Only the approval that was refused: a newer one on this card stays live.
+        if (a.approval_id === action.payload.approval_id) {
+          a.approving = false
+          a.approvalGone = action.payload.approval_id
+        }
+        return true
+      }
+      if (mark(state.subagents[action.payload.id])) return
+      for (const sa of Object.values(state.slotActivity)) {
+        if (mark(sa.subagents[action.payload.id])) return
       }
     },
     sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string }>) {
@@ -7354,7 +7380,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

@@ -18,7 +18,7 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
+import { markSubagentApproving, markSubagentApprovalGone, isSpawnApprovalGone, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { PanelSectionHeader } from '../../components/ui'
 import SideChat from './SideChat'
@@ -155,6 +155,8 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       dispatch(markSubagentApproving({ id: a.id, approving: false }))
       const gone = isTerminalApprovalRefusal(e)
       setGoneFor(gone ? a.approval_id ?? null : null)
+      // The composer banner resolves this same id from the store.
+      if (gone && a.approval_id) dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
       const reason = e instanceof Error ? e.message : ''
       setActionError(gone
         ? i18nT('components.approvalCard.approval_no_longer_pending')
@@ -163,6 +165,12 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           : i18nT('components.approvalCard.decision_failed'))
     })
   }, [a.approval_id, a.id, slot, dispatch])
+
+  // A refusal found through the composer banner lands here via the store, so
+  // this card withdraws the same approval and says why. The terminal verdict
+  // outranks an older transient failure from a press here, which it supersedes.
+  const storeGone = isPending && isSpawnApprovalGone(a)
+  const shownError = storeGone ? i18nT('components.approvalCard.approval_no_longer_pending') : actionError
 
   // Live elapsed timer for running subagents
   const [elapsed, setElapsed] = useState(0)
@@ -298,7 +306,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {/* Approval buttons for pending */}
-      {isPending && !a.approving && goneFor !== a.approval_id && (
+      {isPending && !a.approving && goneFor !== a.approval_id && !storeGone && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -307,9 +315,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
       {/* Activity panel, no draft to lose → hand-off on. Also covers a refused
           Cancel on a running card. */}
-      {actionError && (
+      {shownError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={actionError} askAgent />
+          <ErrorNotice variant="inline" message={shownError} askAgent />
         </div>
       )}
       {/* Output (streaming body) */}
