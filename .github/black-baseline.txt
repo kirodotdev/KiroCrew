@@ -7,7 +7,6 @@
 #
 # Refresh (after formatting something listed here):
 #   python3 scripts/check_black_formatting.py --update-baseline
-src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py

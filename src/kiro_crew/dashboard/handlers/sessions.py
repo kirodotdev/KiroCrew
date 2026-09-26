@@ -74,14 +74,15 @@ from kiro_crew.history import (
     transcript_stem,
     transcript_stems,
 )
+from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.messaging.link import _in_namespace, canonical_key
 from kiro_crew.platform import redact_log_via_context
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
-    create_subprocess_limited,
     scrub_agent_subprocess_env,
     wrap_argv,
 )
@@ -808,8 +809,10 @@ async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
             subprocess_executor(), _wrap_argv_whoami, kiro_bin
         )
         argv = cgroup_scope_argv(argv)
-        proc = await create_subprocess_limited(
-            *argv,
+        # Supervised so the call ends what it leaves behind (see
+        # spawn_supervised_oneshot).
+        proc = await spawn_supervised_oneshot(
+            argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),
@@ -841,8 +844,7 @@ async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
     finally:
         if proc is not None and proc.returncode is None:
             try:
-                proc.kill()
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await kill_and_reap(proc, timeout=5)
             except Exception:
                 pass
         if cleanup:
@@ -979,8 +981,7 @@ async def _fetch_usage_bg() -> str | None:
         if child.returncode is not None:
             return
         try:
-            child.kill()
-            await asyncio.wait_for(child.wait(), timeout=5)
+            await kill_and_reap(child, timeout=5)
         except Exception:
             pass
 
@@ -1151,8 +1152,8 @@ async def _fetch_usage_bg() -> str | None:
         # returns, before anything is parsed. Only a pair that proves the same
         # account may label and publish what came back between them.
         before = (await _adjacent_identity()) or {}
-        proc = await create_subprocess_limited(
-            *argv,
+        proc = await spawn_supervised_oneshot(
+            argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=scrub_agent_subprocess_env(),

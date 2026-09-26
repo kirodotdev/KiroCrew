@@ -414,7 +414,8 @@ class TestFetchUsageBg:
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited_once()  # reaped (FDs closed) on the timeout path
+        # kill_and_reap drains the pipes with a second communicate() (FDs closed).
+        assert proc.communicate.await_count == 2  # reaped on the timeout path
         assert sessions_mod._usage_fetching is False
 
     @pytest.mark.asyncio
@@ -430,9 +431,13 @@ class TestFetchUsageBg:
         events: list[str] = []
         proc = _mock_proc(b"")
         proc.returncode = None  # still running
-        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def communicate():
+            events.append("communicate")
+            raise asyncio.TimeoutError
+
+        proc.communicate = communicate
         proc.kill = MagicMock(side_effect=lambda: events.append("kill"))
-        proc.wait = AsyncMock(side_effect=lambda: events.append("wait") or 0)
 
         async def whoami(_bin):
             events.append("whoami")
@@ -444,8 +449,16 @@ class TestFetchUsageBg:
             started = time.monotonic()
             await sessions_mod._fetch_usage_bg()
             elapsed = time.monotonic() - started
-        # top whoami, the pre-spawn whoami, the reap, then the handler's whoami.
-        assert events == ["whoami", "whoami", "kill", "wait", "whoami"], events
+        # top whoami, the pre-spawn whoami, the scrape, the reap (kill + draining
+        # communicate), then the handler's whoami.
+        assert events == [
+            "whoami",
+            "whoami",
+            "communicate",
+            "kill",
+            "communicate",
+            "whoami",
+        ], events
         proc.kill.assert_called_once()  # the finally does not reap a second time
         assert elapsed < 5  # the (mocked) reap is bounded; nothing waited on the child
         assert sessions_mod._usage_cache == {"available": False}
@@ -456,9 +469,13 @@ class TestFetchUsageBg:
         events: list[str] = []
         proc = _mock_proc(b"")
         proc.returncode = None
-        proc.communicate = AsyncMock(side_effect=RuntimeError("pipe broke"))
+
+        async def communicate():
+            events.append("communicate")
+            raise RuntimeError("pipe broke")
+
+        proc.communicate = communicate
         proc.kill = MagicMock(side_effect=lambda: events.append("kill"))
-        proc.wait = AsyncMock(side_effect=lambda: events.append("wait") or 0)
 
         async def whoami(_bin):
             events.append("whoami")
@@ -468,7 +485,14 @@ class TestFetchUsageBg:
              patch.object(sessions_mod, "_fetch_whoami", AsyncMock(side_effect=whoami)), \
              patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             await sessions_mod._fetch_usage_bg()
-        assert events == ["whoami", "whoami", "kill", "wait", "whoami"], events
+        assert events == [
+            "whoami",
+            "whoami",
+            "communicate",
+            "kill",
+            "communicate",
+            "whoami",
+        ], events
         proc.kill.assert_called_once()
         assert sessions_mod._usage_fetching is False
 
@@ -483,7 +507,7 @@ class TestFetchUsageBg:
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited_once()  # reaped (FDs closed) on the error path
+        assert proc.communicate.await_count == 2  # reaped (FDs closed) on the error path
 
 
 class TestFetchUsageDeadline:

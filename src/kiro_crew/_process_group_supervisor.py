@@ -12,6 +12,7 @@ all of its descendants, so coverage is unchanged.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import signal
 import sys
@@ -25,6 +26,8 @@ except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
 
 _POLL_SECONDS = 0.05
 _RLIMIT_FLAG = "--rlimits="
+_REAP_SURVIVORS_FLAG = "--reap-survivors"
+_REAP_GRACE_SECONDS = 1.0
 
 
 def _apply_rlimits(spec: str) -> None:
@@ -156,6 +159,125 @@ def _group_members(pgid: int) -> set[int]:
     return _ps_group_members(pgid)
 
 
+# pidfd_open(2) and pidfd_send_signal(2) each have one syscall number that is
+# the same on every Linux architecture (they postdate the per-arch tables).
+# Used through ctypes when the interpreter was built without the ``os`` /
+# ``signal`` wrappers: the python-build-standalone CPython 3.12 that uv and mise
+# install has neither, and it is what runs Kiro Crew on the host that hit this.
+_SYS_PIDFD_SEND_SIGNAL = 424
+_SYS_PIDFD_OPEN = 434
+_libc: object = None
+
+
+def _syscall(number: int, *args: object) -> int:
+    global _libc
+    if _libc is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+    result = _libc.syscall(number, *args)  # type: ignore[attr-defined]
+    if result < 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+    return int(result)
+
+
+def _pidfd_open(pid: int) -> int:
+    opener = getattr(os, "pidfd_open", None)
+    if opener is not None:
+        return int(opener(pid))
+    return _syscall(_SYS_PIDFD_OPEN, pid, 0)
+
+
+def _pidfd_send_signal(fd: int, sig: int) -> None:
+    sender = getattr(signal, "pidfd_send_signal", None)
+    if sender is not None:
+        sender(fd, sig)
+        return
+    _syscall(_SYS_PIDFD_SEND_SIGNAL, fd, sig, None, 0)
+
+
+def can_reap() -> bool:
+    """Whether a group member can be pinned before it is signalled (Linux pidfd)."""
+    if not sys.platform.startswith("linux") or not Path("/proc").is_dir():
+        return False
+    try:
+        os.close(_pidfd_open(os.getpid()))
+    except (OSError, AttributeError):
+        return False
+    return True
+
+
+def _signal_member(pid: int, pgid: int, sig: int) -> bool:
+    """Signal *pid* only if it is provably still a member of *pgid*.
+
+    A bare ``os.kill`` after listing the group could reach a stranger: the
+    listed member may exit and its pid be reissued before the signal lands. So
+    the process is pinned with a pidfd first, and membership is re-read AFTER
+    the pin. If the pinned process is still alive, that re-read describes it; if
+    it has exited, the pidfd signal fails with ESRCH and reaches nobody. Joining
+    this group is impossible from outside this session, so a member read back
+    here is always this command's own descendant.
+    """
+    try:
+        fd = _pidfd_open(pid)
+    except OSError:
+        return False
+    try:
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if not _proc_stat_group_member(text, pgid):
+            return False
+        try:
+            _pidfd_send_signal(fd, sig)
+        except OSError:
+            return False
+        return True
+    finally:
+        os.close(fd)
+
+
+def _signal_members(pgid: int, own_pid: int, sig: int) -> set[int]:
+    """Send *sig* to every live member of *pgid* except this process.
+
+    Per member rather than ``killpg``: this leader ignores SIGTERM but not
+    SIGKILL, and it has to outlive the members to keep the group id anchored.
+    Returns the members that were found.
+    """
+    members = _group_members(pgid) - {own_pid}
+    for pid in members:
+        _signal_member(pid, pgid, sig)
+    return members
+
+
+def _terminate_survivors(pgid: int, own_pid: int) -> None:
+    """End the descendants a finished command left in this group.
+
+    Seen in the wild: a kiro-cli launcher wrapper starts a credential helper
+    (about 140 threads) for each call and does not stop it when the call
+    returns. Reparented to a subreaper rather than pid 1, the helper never
+    notices it is orphaned, so every call left one running until the agent's
+    cgroup ran out of pids. SIGTERM first, SIGKILL after a short grace.
+    """
+    try:
+        if not _signal_members(pgid, own_pid, signal.SIGTERM):
+            return
+    except OSError:
+        return
+    deadline = time.monotonic() + _REAP_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            if not (_group_members(pgid) - {own_pid}):
+                return
+        except OSError:
+            pass
+        time.sleep(_POLL_SECONDS)
+    try:
+        _signal_members(pgid, own_pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 def _exit_code(status: int) -> int:
     if os.WIFEXITED(status):
         return os.WEXITSTATUS(status)
@@ -174,8 +296,19 @@ def main() -> None:
     # Optional leading --rlimits=NAME:value,... from the spawning gateway. Applied
     # before the fork below so the exec'd child and every descendant inherit the
     # ceiling.
-    if argv and argv[0].startswith(_RLIMIT_FLAG):
-        _apply_rlimits(argv[0][len(_RLIMIT_FLAG):])
+    #
+    # Optional leading --reap-survivors: once the command exits, end whatever it
+    # left running in this group instead of waiting for it. Without it the wait
+    # below lasts as long as the longest-lived descendant, which is what a caller
+    # that owns the whole tree's lifetime (``_run_process``) wants.
+    reap_survivors = False
+    while argv and argv[0].startswith("--"):
+        if argv[0].startswith(_RLIMIT_FLAG):
+            _apply_rlimits(argv[0][len(_RLIMIT_FLAG) :])
+        elif argv[0] == _REAP_SURVIVORS_FLAG:
+            reap_survivors = True
+        else:
+            raise SystemExit(127)
         argv = argv[1:]
     if not argv or not Path(argv[0]).is_absolute():
         raise SystemExit(127)
@@ -203,6 +336,14 @@ def main() -> None:
     _, status = os.waitpid(child_pid, 0)
     own_pid = os.getpid()
     pgid = os.getpgrp()
+    if reap_survivors and pgid == own_pid and can_reap():
+        # Only while this process LEADS its own group: the caller spawned it with
+        # start_new_session=True, so every member is something this command
+        # started. Without that guarantee the group could be the caller's own,
+        # and signalling it would take the caller down with it. Where a member
+        # cannot be pinned (no pidfd), nothing is signalled and the wait below
+        # behaves as it does without the flag.
+        _terminate_survivors(pgid, own_pid)
     while True:
         try:
             if not (_group_members(pgid) - {own_pid}):

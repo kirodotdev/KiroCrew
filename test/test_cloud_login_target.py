@@ -970,10 +970,10 @@ class TestHandlerBoundary:
         monkeypatch.setattr(sessions_mod, "scrub_agent_subprocess_env", lambda: {})
         current: dict[str, object] = {}
 
-        async def fake_spawn(*argv, **kw):
+        async def fake_spawn(argv, **kw):
             return current["proc"]
 
-        monkeypatch.setattr(sessions_mod, "create_subprocess_limited", fake_spawn)
+        monkeypatch.setattr(sessions_mod, "spawn_supervised_oneshot", fake_spawn)
         current["proc"] = _Proc(1, b"Error: session expired")
         assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") is None
         current["proc"] = _Proc(0, b"{}")
