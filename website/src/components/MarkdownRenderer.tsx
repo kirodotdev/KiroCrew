@@ -47,7 +47,7 @@ import { useGatewayPlatform, type GatewayPlatform } from '../hooks/useGatewayPla
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM } from '../hooks/usePinchZoom'
 import { useBranding } from '../hooks/useBranding'
 import { fileIcon } from '../utils/fileIcons'
-import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
+import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, UNC_PREFIX_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -139,8 +139,8 @@ const PATH_SHAPE_RE =
 const WIN_DRIVE_PATH_SHAPE_RE =
   /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]*$/u
 
-/**
- * A UNC prefix in EITHER spelling — `\\host\share\…` or `//host/share/…` —
+/*
+ * UNC prefixes (`UNC_PREFIX_RE`, imported from `utils/urlTransform`) are
  * refused outright below.
  *
  * NOT an oversight that the Windows support here stops at drive letters. A UNC
@@ -151,26 +151,10 @@ const WIN_DRIVE_PATH_SHAPE_RE =
  * outbound SMB connection, which offers the host's NTLM credentials — a
  * credential-leak vector, from nothing but rendering a message.
  *
- * Windows reads ANY two leading separators as a UNC root, of either kind and in
- * either order, so the character class is the whole point: matching two of the
- * SAME kind (`\\\\` or `//`) leaves `\\/attacker.example\\share\\x` and its `/\\`
- * mirror admitted, and those resolve to the same share. A mixed pair is the same
- * vector under a different coat of paint, and unlike the `//` spelling it is a
- * shape no pre-diff predicate here could even form.
- *
- * Three places in this codebase already hold exactly this line, and this is the
- * fourth: `WINDOWS_ABS_PATH_RE` (utils/urlTransform.ts) excludes UNC for image
- * `src` values, `MdAnchor` refuses a decoded `//`-prefixed link destination, and
- * `WIN_PRODUCER_PATH_RE` (utils/fileTokens.ts) documents the producer/consumer
- * asymmetry that makes all of them deliberate — our own upload endpoint may emit
- * a UNC path because we trust it, while every consumer-side predicate over
- * authorable text must refuse the host-naming shape.
- *
  * Cost on POSIX is nil: `//tmp/x` names the same file as `/tmp/x`, which is
  * still a candidate. Cost on Windows is that a network-share path renders as a
  * copy chip rather than an open chip — the same trade `MdAnchor` already makes.
  */
-const UNC_PREFIX_RE = /^[/\\]{2}/
 
 /** The last path segment, split on EITHER separator so a Windows path yields its
  *  real basename. `lastIndexOf('/')` alone returns -1 for `C:\a\notes` and hands
