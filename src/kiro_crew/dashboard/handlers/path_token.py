@@ -83,4 +83,8 @@ class PathTokenSigner:
             return False
         if exp < time.time():
             return False
-        return hmac.compare_digest(self._mac(exp, parts), mac)
+        # Compared as BYTES: ``hmac.compare_digest`` raises TypeError on a str
+        # holding a non-ASCII character, and the MAC is request-controlled.
+        return hmac.compare_digest(
+            self._mac(exp, parts).encode(), mac.encode("utf-8", "surrogatepass")
+        )
