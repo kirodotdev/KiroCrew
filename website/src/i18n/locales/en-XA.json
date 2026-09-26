@@ -6473,7 +6473,11 @@
       "copy_chip_name": "[Çøþý {{text}} ········]",
       "open_path_chip_name": "[Øþèñ {{path}} ········]",
       "browse_path_chip_name": "[Ɓŕøẁşè {{path}} ···········]",
-      "switch_to_session_chip_name": "[Şẁìţçĥ ţø şèşşìøñ {{label}} ················]"
+      "switch_to_session_chip_name": "[Şẁìţçĥ ţø şèşşìøñ {{label}} ················]",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "[Çøùĺðñ’ţ çøþý — şèĺèçţ ţĥè ţèẋţ ţø çøþý ìţ ɱàñùàĺĺý ··················]",
+      "couldnt_copy_the_full_session_id_for_label": "[Çøùĺðñ’ţ çøþý ţĥè ƒùĺĺ şèşşìøñ ÌÐ ƒøŕ {{label}} (Çţŕĺ+çĺìçķ) ··················]",
+      "couldnt_copy_the_image_path": "[Çøùĺðñ’ţ çøþý ţĥè ìɱàğè þàţĥ ····················]",
+      "couldnt_copy_the_path_label": "[Çøùĺðñ’ţ çøþý ţĥè þàţĥ {{label}} (Çţŕĺ+çĺìçķ) ··················]"
     },
     "markdownToc": {
       "contents": "[Çøñţèñţş ············]",

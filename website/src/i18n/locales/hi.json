@@ -7110,7 +7110,11 @@
       "copy_chip_name": "{{text}} कॉपी करो",
       "open_path_chip_name": "{{path}} खोलो",
       "browse_path_chip_name": "{{path}} ब्राउज़ करो",
-      "switch_to_session_chip_name": "सत्र {{label}} पर जाओ"
+      "switch_to_session_chip_name": "सत्र {{label}} पर जाओ",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "कॉपी नहीं हो सकी — टेक्स्ट चुनकर उसे मैन्युअल रूप से कॉपी करो",
+      "couldnt_copy_the_full_session_id_for_label": "{{label}} की पूरी सत्र आईडी कॉपी नहीं की जा सकी (Ctrl+क्लिक)",
+      "couldnt_copy_the_image_path": "छवि पथ कॉपी नहीं किया जा सका",
+      "couldnt_copy_the_path_label": "पथ {{label}} कॉपी नहीं किया जा सका (Ctrl+क्लिक)"
     },
     "markdownToc": {
       "contents": "विषय-सूची",

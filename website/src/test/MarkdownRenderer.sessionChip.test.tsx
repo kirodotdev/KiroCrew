@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, screen, createEvent, act } from '@testing-library/react'
 
-import MarkdownRenderer, { COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
+import MarkdownRenderer, { COPIED_FLASH_MS, COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
 import { copyToClipboard } from '../utils/clipboard'
 import { buildShareableUrl } from '../utils/shareUrl'
 
@@ -130,6 +130,27 @@ describe('session chip — a SHORT slot name', () => {
     fireEvent.click(screen.getByText(SHORT), { metaKey: true })
     expect(copyToClipboard).toHaveBeenCalledWith(KEY)
     expect(onSessionOpen).not.toHaveBeenCalled()
+  })
+
+  it('a refused copy names the full session ID it failed to copy, for the chip\'s own label — never "select the text", which would name the nickname', async () => {
+    // The chip copies the FULL key (above); its visible text is the short name.
+    // Selecting that text would copy `chat-24`, so the copy chip's recovery
+    // sentence is a wrong instruction here: the shared title-cued notice names
+    // the object that failed to copy instead.
+    vi.useFakeTimers()
+    vi.mocked(copyToClipboard).mockResolvedValue(false)
+    render(
+      <MarkdownRenderer content={`\`${SHORT}\``} onSessionOpen={onSessionOpen} sessions={roster()} messageTs={WRITTEN} />,
+    )
+    await act(async () => { fireEvent.click(screen.getByText(SHORT), { ctrlKey: true }) })
+    expect(copyToClipboard).toHaveBeenCalledWith(KEY)
+    const notice = screen.getByTestId('md-chip-copy-error')
+    expect(notice).toHaveTextContent(/^Couldn’t copy the full session ID for chat-24 \(Ctrl\+click\)$/)
+    expect(notice).not.toHaveTextContent(/select the text/i)
+    expect(screen.getByRole('tooltip').contains(notice)).toBe(true)
+    act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS) })
+    expect(screen.queryByTestId('md-chip-copy-error')).toBeNull()
+    vi.useRealTimers()
   })
 
   it('leaves a short name no open session answers to as plain text', () => {
@@ -668,7 +689,7 @@ describe('session chip — copy acknowledgment', () => {
     // chip that pushes the sentence around.
     const notices = screen.getAllByTestId('md-chip-copy-error')
     expect(notices).toHaveLength(1)
-    expect(notices[0]).toHaveTextContent('Copy failed')
+    expect(notices[0]).toHaveTextContent('Couldn’t copy the full session ID for chat-24-1784661951 (Ctrl+click)')
     expect(screen.getByRole('tooltip').contains(notices[0])).toBe(true)
     expect(flow.innerHTML).toBe(flowBefore)
     expect(flow.querySelector('[data-testid="md-chip-copy-error"], [role="alert"]')).toBeNull()
@@ -707,12 +728,12 @@ describe('session chip — copy acknowledgment', () => {
     expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
     const alerts = screen.getAllByRole('alert')
     expect(alerts).toHaveLength(1)
-    expect(alerts[0]).toHaveTextContent('Copy failed')
+    expect(alerts[0]).toHaveTextContent('Couldn’t copy the full session ID for chat-24-1784661951 (Ctrl+click)')
 
     // The rest of the window changes nothing: the failure stays, nothing flips.
-    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(chip).toHaveAttribute('title', restTitle)
     expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
-    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Copy failed')
+    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Couldn’t copy the full session ID for chat-24-1784661951 (Ctrl+click)')
   })
 })

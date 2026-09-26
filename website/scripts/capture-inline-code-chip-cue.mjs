@@ -14,19 +14,27 @@
  *     status region with the same word; the bubble survives the pointer leaving
  *     and closes by itself when the flash ends.
  *  4. With both clipboard layers stubbed to refuse, the click renders the
- *     "Copy failed" notice in the SAME bubble (an ErrorNotice, announced once),
- *     claims nothing, and moves nothing in the paragraph; it too outlives the
- *     leave and clears itself.
+ *     "Couldn’t copy" notice — naming the recovery: select the text — in the SAME
+ *     bubble (an ErrorNotice, announced once), claims nothing, and moves nothing
+ *     in the paragraph; it too outlives the leave and clears itself.
  *  5. A long path chip still breaks across lines (measured: more than one
  *     client rect), and a copy on a long copy chip moves nothing on the line —
  *     the text after it has the same box before and after the confirmation.
+ *     Its bubble opens BELOW the chip (it is past its message's first line), so
+ *     the words leading up to the chip stay readable; a first-line chip's opens
+ *     above, off the message. Every bubble stays inside the viewport.
  *  6. On the default theme, a session chip paints in the accent like the path
  *     chips (the copy chip beside it is neutral), and its Ctrl+click copy
  *     confirms in its title only once the write lands, without switching.
  *  7. With the clipboard refusing, the title-cued chips — session, path,
- *     broken image — each open the SAME bubble-borne "Copy failed" notice the
- *     copy chip uses, at the pressed chip, one bubble at a time, and nothing
- *     enters the sentence around them.
+ *     broken image — each open the SAME bubble-borne failure notice the copy
+ *     chip uses, at the pressed chip, one bubble at a time, and nothing
+ *     enters the sentence around them. Each names the object that failed to
+ *     copy ("Couldn’t copy the full session ID for <label>" / "the path" / "the image path"),
+ *     and the two dual-action chips (session, path) name the gesture that
+ *     asked for it — "(Ctrl+click)" — so the notice never teaches that a plain
+ *     click copies; what they copy is not always the text shown, so the copy
+ *     chip's "select the text" recovery is not offered.
  *
  * Paths are probed through the same `/api/file-read` HEAD request production
  * issues; a route registered AFTER the harness's catch-all answers it with the
@@ -83,6 +91,14 @@ const detail = {
         `Run \`npm test\` from the website directory. The runner config is \`${FILE}\` and the fixtures sit under \`${DIR}\`.`,
         '',
         'Set `NODE_ENV=production` before `npm run build` to get the shipped bundle.',
+        '',
+        // Two more paragraphs: the NODE_ENV chip above sits with lines of its
+        // own message under it (its bubble opens below, over those lines), and
+        // `Ctrl+C` ends the message (its bubble opens above — below it would
+        // sit on the timestamp and action row).
+        'Then `npm run preview` serves that bundle locally on the port Vite prints, and the browser picks up the same fixtures the tests use, so what you see is exactly what the build produced.',
+        '',
+        'Stop it with `Ctrl+C` when you are done.',
       ].join('\n'),
     },
     { role: 'user', ts: now - 500, content: 'And the long ones?' },
@@ -91,6 +107,10 @@ const detail = {
         `The deepest one is \`${LONG_FILE}\` — it wraps like any other inline code.`,
         '',
         `The gateway reads \`${LONG_COPY}\` at boot, then falls back to defaults.`,
+        '',
+        'Override it with `KIROCREW_SETTINGS` when testing; the override wins over the file for that boot only, and the startup log names which one was read.',
+        '',
+        'Unset it afterwards with `unset KIROCREW_SETTINGS`.',
       ].join('\n'),
     },
     { role: 'user', ts: now - 25, content: 'Where did the sidebar work go, and the screenshot?' },
@@ -128,20 +148,49 @@ async function main() {
     console.log(`${ok ? 'PASS' : 'FAIL'}: ${label}`)
     if (!ok) failures += 1
   }
-  /** Clip the frame to `locator`'s box, grown by `pad` so a bubble above it stays in.
-   *  The transcript is taller than the viewport, so bring the target fully into
-   *  view first — a box partly above y=0 would clip whatever else sits there. */
-  const shotAround = async (locator, name, pad = 48) => {
+  /** Clip the frame to `locator`'s box, grown by `pad` above and `padBelow`
+   *  under it so a bubble on either side stays in. The transcript is taller
+   *  than the viewport, so bring the target fully into view first — a box
+   *  partly above y=0 would clip whatever else sits there. */
+  const shotAround = async (locator, name, pad = 48, padBelow = 56) => {
     await locator.scrollIntoViewIfNeeded()
     await h.page.waitForTimeout(200)
     const box = await locator.boundingBox()
     const clip = {
       x: Math.max(0, box.x - 16), y: Math.max(0, box.y - pad),
-      width: Math.min(1180 - Math.max(0, box.x - 16), box.width + 32), height: box.height + pad + 16,
+      width: Math.min(1180 - Math.max(0, box.x - 16), box.width + 32), height: box.height + pad + padBelow,
     }
     await h.page.screenshot({ path: `${OUT}/${name}.png`, clip })
     console.log('wrote', `${OUT}/${name}.png`)
   }
+  /** The open bubble's side and geometry, next to the anchor's own rects. */
+  const bubbleGeometry = async chip => {
+    const tip = await h.page.locator('[role="tooltip"]').evaluate(el => {
+      const r = el.getBoundingClientRect()
+      return { placement: el.getAttribute('data-placement'), top: Math.round(parseFloat(el.style.top)), left: Math.round(parseFloat(el.style.left)), right: Math.round(r.right), bottom: Math.round(r.bottom), y: Math.round(r.top) }
+    })
+    const anchor = await chip.evaluate(el => {
+      const rects = [...el.getClientRects()]
+      const first = rects[0] ?? el.getBoundingClientRect()
+      const box = el.getBoundingClientRect()
+      return { firstLeft: Math.round(first.left), firstTop: Math.round(first.top), boxLeft: Math.round(box.left), boxBottom: Math.round(box.bottom), lines: rects.length }
+    })
+    return { tip, anchor }
+  }
+  /** The box of everything a message renders UNDER its content — the turn stats
+   *  and the timestamp/action row — as one union rect, or null when nothing is
+   *  there. What a bubble below a last-line chip used to cover. */
+  const footerBox = async msgIndex => h.page.locator('[data-role="assistant"]').nth(msgIndex).evaluate(root => {
+    const content = root.querySelector('.msg-content')
+    let box = null
+    for (let el = content?.nextElementSibling; el; el = el.nextElementSibling) {
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 || r.height === 0) continue
+      box = box ? { top: Math.min(box.top, r.top), bottom: Math.max(box.bottom, r.bottom), left: Math.min(box.left, r.left), right: Math.max(box.right, r.right) } : { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
+    }
+    return box && { top: Math.round(box.top), bottom: Math.round(box.bottom), left: Math.round(box.left), right: Math.round(box.right) }
+  })
+  const overlaps = (tip, box) => !!box && tip.y < box.bottom && tip.bottom > box.top && tip.left < box.right && tip.right > box.left
 
   const copyChip = () => h.page.locator('code[aria-label="Copy npm test"]')
   const fileChip = () => h.page.locator(`code[data-path="${FILE}"]`).first()
@@ -221,6 +270,11 @@ async function main() {
   const describedBy = await copyChip().getAttribute('aria-describedby')
   const tipId = await h.page.locator('[role="tooltip"]').getAttribute('id')
   assert('hover: tooltip is the chip\'s accessible description', !!describedBy && describedBy === tipId)
+  // The npm test chip sits on its message's FIRST line: above is off the
+  // message, so the bubble opens there (the flow rule's only "above").
+  const hoverGeo = await bubbleGeometry(copyChip())
+  assert(`hover: a first-line chip opens its bubble above, at its first fragment (${JSON.stringify(hoverGeo.tip)} vs ${JSON.stringify(hoverGeo.anchor)})`,
+    hoverGeo.tip.placement === 'above' && hoverGeo.tip.top === hoverGeo.anchor.firstTop - 8 && Math.abs(hoverGeo.tip.left - hoverGeo.anchor.firstLeft) <= 8)
   await shotAround(firstMsg(), 'hover-tooltip')
 
   // Contrast: hovering the path chip underlines it SOLID — the link look it keeps.
@@ -292,15 +346,29 @@ async function main() {
   // Same place as the confirmation: the bubble, through ErrorNotice. Nothing in
   // the text flow, so the paragraph's box is byte-identical.
   const failNotice = h.page.locator('[role="tooltip"] [data-testid="md-chip-copy-error"]')
-  assert(`refused: exactly one "Copy failed" notice renders, inside the bubble (${await failNotice.count()})`, (await failNotice.count()) === 1)
-  assert('refused: the notice reads "Copy failed"', /Copy failed/.test((await failNotice.textContent()) ?? ''))
+  assert(`refused: exactly one "Couldn’t copy" notice renders, inside the bubble (${await failNotice.count()})`, (await failNotice.count()) === 1)
+  const failText = (await failNotice.textContent()) ?? ''
+  assert(`refused: the notice names the recovery, verbatim (${JSON.stringify(failText.trim())})`,
+    failText.includes('Couldn’t copy — select the text to copy it manually'))
+  // The notice is wider than the hint it replaced: the bubble must have been
+  // re-measured against the viewport edge for it, so it ends on-screen.
+  const failGeo = await bubbleGeometry(envChip)
+  const viewportWidth = await h.page.evaluate(() => window.innerWidth)
+  assert(`refused: the wider notice's bubble stays inside the viewport (right ${failGeo.tip.right} <= ${viewportWidth - 8}, left ${failGeo.tip.left} >= 8)`,
+    failGeo.tip.right <= viewportWidth - 8 && failGeo.tip.left >= 8)
+  // The chip sits between its message's first and last lines: the bubble opens
+  // below it, over the message's own next line — never on the timestamp and
+  // action row under the message.
+  const envFooter = await footerBox(0)
+  assert(`refused: the bubble opens below a between-line chip and stays off the message's footer row (${JSON.stringify(failGeo.tip)} vs footer ${JSON.stringify(envFooter)})`,
+    failGeo.tip.placement === 'below' && !!envFooter && !overlaps(failGeo.tip, envFooter))
   // Announced once, through the notice itself: it is the bubble's accessible
   // `role="alert"` (no aria-hidden ancestor) and the only alert that carries
   // the failure — no sr-only copy of it anywhere.
   const bubbleAlerts = await h.page.locator('[role="tooltip"] [role="alert"]').count()
   const hiddenNotice = await h.page.locator('[aria-hidden="true"] [data-testid="md-chip-copy-error"]').count()
   const alertTexts = await h.page.locator('[role="alert"]').evaluateAll(els => els.map(el => (el.textContent ?? '').trim().slice(0, 60)))
-  const failAlerts = alertTexts.filter(t => /Copy failed/.test(t)).length
+  const failAlerts = alertTexts.filter(t => /Couldn’t copy/.test(t)).length
   assert(`refused: the notice is the accessible alert, and the only one carrying the failure (${await failNotice.getAttribute('role')}, ${bubbleAlerts}, ${hiddenNotice}, ${failAlerts}; alerts: ${JSON.stringify(alertTexts)})`,
     (await failNotice.getAttribute('role')) === 'alert' && bubbleAlerts === 1 && hiddenNotice === 0 && failAlerts === 1)
   assert('refused: nothing entered the paragraph',
@@ -366,7 +434,89 @@ async function main() {
     tailBefore.h === tailAfter.h && tailBefore.bottom === tailAfter.bottom)
   const copyRectsAfter = await longCopy.evaluate(el => el.getClientRects().length)
   assert(`wrap: long copy chip still spans ${copyRectsAfter} line boxes while confirmed`, copyRectsAfter === copyRects)
+  // The wrapped chip is past its message's first line, so the bubble opens
+  // BELOW it — under the box's bottom-left, where the chip ends — instead of
+  // above its first fragment, where it covered the sentence before it.
+  const wrapGeo = await bubbleGeometry(longCopy)
+  assert(`wrap: a lower chip opens its bubble below its last line (${JSON.stringify(wrapGeo.tip)} vs ${JSON.stringify(wrapGeo.anchor)})`,
+    wrapGeo.tip.placement === 'below' && wrapGeo.tip.top === wrapGeo.anchor.boxBottom + 8 && wrapGeo.tip.left === wrapGeo.anchor.boxLeft && wrapGeo.tip.y >= wrapGeo.anchor.boxBottom)
+  // What the UX read flagged: the bubble used to hide the words before the
+  // chip. Those words are the paragraph's opening text; its line must end above
+  // where the bubble now starts.
+  const openingBottom = await longCopy.evaluate(el => {
+    const p = el.closest('p')
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
+    const first = walker.nextNode()
+    const range = document.createRange()
+    range.selectNodeContents(first)
+    return Math.round(range.getClientRects()[0].bottom)
+  })
+  assert(`wrap: the sentence's opening stays uncovered (line bottom ${openingBottom} <= bubble top ${wrapGeo.tip.y})`, openingBottom <= wrapGeo.tip.y)
+  const viewportHeight = await h.page.evaluate(() => window.innerHeight)
+  assert(`wrap: the bubble below fits inside the viewport (bottom ${wrapGeo.tip.bottom} <= ${viewportHeight - 8})`, wrapGeo.tip.bottom <= viewportHeight - 8)
   await shotAround(lastMsg(), 'long-path-wraps')
+
+  // --- The message's LAST line: below it the bubble would leave the message
+  // and sit on the timestamp and action row, which a reader took for
+  // unreachable; the bubble opens above instead, over a line already read. ---
+  await h.page.mouse.move(5, 5)
+  await h.page.waitForTimeout(1600)
+  const lastLineChip = h.page.locator('code[aria-label="Copy unset KIROCREW_SETTINGS"]')
+  await lastLineChip.hover()
+  await h.page.waitForTimeout(200)
+  const lastGeo = await bubbleGeometry(lastLineChip)
+  const lastFooter = await footerBox(1)
+  assert(`last line: the chip opens its bubble ABOVE, at its first fragment (${JSON.stringify(lastGeo.tip)} vs ${JSON.stringify(lastGeo.anchor)})`,
+    lastGeo.tip.placement === 'above' && lastGeo.tip.top === lastGeo.anchor.firstTop - 8 && lastGeo.tip.bottom <= lastGeo.anchor.firstTop)
+  assert(`last line: the bubble stays off the message's footer row (${JSON.stringify(lastGeo.tip)} vs footer ${JSON.stringify(lastFooter)})`,
+    !!lastFooter && !overlaps(lastGeo.tip, lastFooter))
+  await shotAround(lastMsg(), 'last-line-chip-above')
+  await h.page.mouse.move(5, 5)
+  await h.page.waitForTimeout(300)
+
+  // --- The pane's last visible line: a between-line chip whose bubble would
+  // run off the bottom of the viewport takes its `flip` and opens above. The
+  // composer is hidden for this scene so the transcript reaches the pane's
+  // bottom edge (a maximised transcript pane does the same) and the viewport
+  // is shortened to end just under the chip. ---
+  // The composer block is the composer's nearest ancestor that does not hold
+  // the transcript; hiding it lets the transcript pane reach the viewport's
+  // bottom edge (the shape of a maximised transcript pane).
+  const setComposerHidden = hidden => h.page.evaluate(hide => {
+    const composer = document.querySelector('textarea[data-composer-input]')
+    const transcript = document.querySelector('[data-role="assistant"]')
+    let node = composer
+    while (node && node.parentElement && !node.parentElement.contains(transcript)) node = node.parentElement
+    if (node) node.style.display = hide ? 'none' : ''
+  }, hidden)
+  await setComposerHidden(true)
+  const envBox = await envChip.evaluate(el => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) } })
+  const shortHeight = envBox.bottom + 24
+  await h.page.setViewportSize({ width: 1180, height: shortHeight })
+  await h.page.waitForTimeout(400)
+  // The transcript pins to its newest message on a resize; bring the chip back
+  // to the pane's bottom edge, where a bubble below it would not fit.
+  await envChip.evaluate(el => el.scrollIntoView({ block: 'end' }))
+  await h.page.waitForTimeout(400)
+  const paneEdge = await envChip.evaluate(el => ({ chipTop: Math.round(el.getBoundingClientRect().top), chipBottom: Math.round(el.getBoundingClientRect().bottom), innerHeight: window.innerHeight }))
+  assert(`pane bottom: the chip sits at the pane's last visible line (chip bottom ${paneEdge.chipBottom} within 48px of ${paneEdge.innerHeight})`,
+    paneEdge.innerHeight - paneEdge.chipBottom <= 48 && paneEdge.chipBottom <= paneEdge.innerHeight)
+  await envChip.hover()
+  await h.page.waitForTimeout(200)
+  const flipGeo = await bubbleGeometry(envChip)
+  assert(`pane bottom: below does not fit, so the between-line chip's bubble flips ABOVE its first fragment (${JSON.stringify(flipGeo.tip)} vs ${JSON.stringify(flipGeo.anchor)})`,
+    flipGeo.tip.placement === 'above' && flipGeo.tip.top === flipGeo.anchor.firstTop - 8 && flipGeo.tip.bottom <= flipGeo.anchor.firstTop && flipGeo.tip.bottom <= paneEdge.innerHeight - 8)
+  {
+    const clipTop = Math.max(0, paneEdge.chipTop - 64)
+    await h.page.screenshot({ path: `${OUT}/flip-at-pane-bottom.png`, clip: { x: 0, y: clipTop, width: 1180, height: shortHeight - clipTop } })
+    console.log('wrote', `${OUT}/flip-at-pane-bottom.png`)
+  }
+  await h.page.mouse.move(5, 5)
+  await h.page.waitForTimeout(300)
+  await h.page.setViewportSize({ width: 1180, height: 1500 })
+  await setComposerHidden(false)
+  await h.page.evaluate(() => window.scrollTo(0, 0))
+  await h.page.waitForTimeout(300)
 
   // --- Session chip, on the default (Kiro dark) theme: recoloured by the same
   // rule as the path chips, and its Ctrl+click copy gated on the write. ---
@@ -406,7 +556,7 @@ async function main() {
 
   // --- The ONE failure surface on the title-cued chips: session, path, broken
   // image. Both clipboard layers refuse, as above. Each refusal opens the same
-  // bubble-borne "Copy failed" notice the copy chip uses, at the pressed chip,
+  // bubble-borne failure notice the copy chip uses, at the pressed chip,
   // and nothing enters the sentence around it. ---
   await h.page.evaluate(() => {
     Object.defineProperty(navigator, 'clipboard', {
@@ -420,29 +570,52 @@ async function main() {
   const bubbleNotice = h.page.locator('[role="tooltip"] [data-testid="md-chip-copy-error"]')
   const thirdParaBefore = await thirdMsg().locator('p').evaluateAll(ps => ps.map(p => p.innerHTML))
   const refusals = [
-    { chip: sessionChip, name: 'session', modifiers: ['Control'], frame: 'session-copy-failed' },
-    { chip: thirdFile, name: 'path', modifiers: ['Control'], frame: 'path-copy-failed' },
-    { chip: brokenChip, name: 'broken image', modifiers: [], frame: 'broken-image-copy-failed' },
+    { chip: sessionChip, name: 'session', modifiers: ['Control'], frame: 'session-copy-failed', notice: `Couldn’t copy the full session ID for ${OTHER_SLOT} (Ctrl+click)`, side: 'above' },
+    { chip: thirdFile, name: 'path', modifiers: ['Control'], frame: 'path-copy-failed', notice: `Couldn’t copy the path ${FILE.split('/').pop()} (Ctrl+click)`, side: 'above' },
+    // The broken-image chip is the message's LAST line: below it the bubble
+    // would sit on the timestamp and action row, so it opens above.
+    { chip: brokenChip, name: 'broken image', modifiers: [], frame: 'broken-image-copy-failed', notice: 'Couldn’t copy the image path', side: 'above' },
   ]
-  for (const { chip, name, modifiers, frame } of refusals) {
+  for (const { chip, name, modifiers, frame, notice, side } of refusals) {
     await chip.click({ modifiers })
     await h.page.waitForTimeout(300)
-    assert(`${name} refused: exactly one "Copy failed" notice, inside a bubble (${await bubbleNotice.count()})`,
-      (await bubbleNotice.count()) === 1 && /Copy failed/.test((await bubbleNotice.textContent()) ?? ''))
+    // Each names what failed to copy, in the reader's terms: these chips copy
+    // something their label need not show (the session's normalised key, the
+    // broken image's path), so "select the text" — the copy chip's recovery —
+    // would point at the wrong thing and is not offered here; the path chip
+    // names the file's tail, so a bubble the clamp has pulled left still says
+    // which chip it answers.
+    const noticeText = ((await bubbleNotice.textContent()) ?? '').trim()
+    assert(`${name} refused: exactly one notice naming what failed to copy, inside a bubble (${await bubbleNotice.count()}: "${noticeText}")`,
+      (await bubbleNotice.count()) === 1 && noticeText === notice)
     assert(`${name} refused: one bubble in the document`, (await h.page.locator('[role="tooltip"]').count()) === 1)
     assert(`${name} refused: the notice is the accessible alert and the only one carrying the failure`,
       (await bubbleNotice.getAttribute('role')) === 'alert'
       && (await h.page.locator('[aria-hidden="true"] [data-testid="md-chip-copy-error"]').count()) === 0
-      && (await h.page.locator('[role="alert"]').evaluateAll(els => els.filter(el => /Copy failed/.test(el.textContent ?? '')).length)) === 1)
+      && (await h.page.locator('[role="alert"]').evaluateAll((els, text) => els.filter(el => (el.textContent ?? '').includes(text)).length, notice)) === 1)
     assert(`${name} refused: nothing entered the message flow (${await inFlowNotices.count()})`, (await inFlowNotices.count()) === 0)
     assert(`${name} refused: no dismiss control (the flash clears itself)`, (await bubbleNotice.locator('button').count()) === 0)
     assert(`${name} refused: the chip never claims "Copied!" (${await chip.getAttribute('title')})`,
       (await chip.getAttribute('title')) !== 'Copied!')
-    // The bubble sits over the pressed chip: its left edge is the chip's first
-    // line fragment's, as for the copy chip.
-    const chipLeft = await chip.evaluate(el => Math.round((el.getClientRects()[0] ?? el.getBoundingClientRect()).left))
-    const tipLeft = await h.page.locator('[role="tooltip"]').evaluate(el => Math.round(parseFloat(el.style.left)))
-    assert(`${name} refused: the bubble opens at the pressed chip (${tipLeft} vs ${chipLeft})`, Math.abs(tipLeft - chipLeft) <= 8)
+    // The bubble sits at the pressed chip, on the side the flow rule picks:
+    // above its first line fragment when the chip is on the message's first or
+    // last line, else below its box (bottom-left, where the chip ends). A chip
+    // near the right edge has its bubble pulled left by the viewport clamp
+    // instead, ending 8px inside the edge — that is the clamp doing its job —
+    // and the bubble still overlaps the chip it answers.
+    const geo = await bubbleGeometry(chip)
+    assert(`${name} refused: the flow rule opens the bubble ${side} (${geo.tip.placement})`, geo.tip.placement === side)
+    const wantLeft = geo.tip.placement === 'below' ? geo.anchor.boxLeft : geo.anchor.firstLeft
+    const wantTop = geo.tip.placement === 'below' ? geo.anchor.boxBottom + 8 : geo.anchor.firstTop - 8
+    const clamped = geo.tip.left < wantLeft && geo.tip.right >= viewportWidth - 9
+    const atChip = geo.tip.top === wantTop && (Math.abs(geo.tip.left - wantLeft) <= 8 || clamped)
+    assert(`${name} refused: the bubble opens at the pressed chip, ${geo.tip.placement} it${clamped ? ', clamped to the viewport edge' : ''} (${JSON.stringify(geo.tip)} vs ${JSON.stringify(geo.anchor)})`, atChip)
+    assert(`${name} refused: the bubble stays inside the viewport (right ${geo.tip.right} <= ${viewportWidth - 8})`, geo.tip.right <= viewportWidth - 8 && geo.tip.left >= 8)
+    if (clamped) {
+      assert(`${name} refused: the clamped bubble still overlaps its chip horizontally (bubble ${geo.tip.left}..${geo.tip.right} vs chip from ${geo.anchor.firstLeft})`, geo.tip.right > geo.anchor.firstLeft)
+    }
+    const footer = await footerBox(2)
+    assert(`${name} refused: the bubble stays off the message's footer row (${JSON.stringify(geo.tip)} vs footer ${JSON.stringify(footer)})`, !!footer && !overlaps(geo.tip, footer))
     await shotAround(thirdMsg(), frame)
   }
   const thirdParaAfter = await thirdMsg().locator('p').evaluateAll(ps => ps.map(p => p.innerHTML))

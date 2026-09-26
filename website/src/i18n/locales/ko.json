@@ -7003,7 +7003,11 @@
       "copy_chip_name": "{{text}} 복사",
       "open_path_chip_name": "{{path}} 열기",
       "browse_path_chip_name": "{{path}} 찾아보기",
-      "switch_to_session_chip_name": "{{label}} 세션으로 전환"
+      "switch_to_session_chip_name": "{{label}} 세션으로 전환",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "복사하지 못했습니다 — 텍스트를 선택해 직접 복사하세요",
+      "couldnt_copy_the_full_session_id_for_label": "{{label}}의 전체 세션 ID를 복사하지 못했습니다 (Ctrl+클릭)",
+      "couldnt_copy_the_image_path": "이미지 경로를 복사하지 못했습니다",
+      "couldnt_copy_the_path_label": "{{label}} 경로를 복사하지 못했습니다 (Ctrl+클릭)"
     },
     "markdownToc": {
       "contents": "목차",
