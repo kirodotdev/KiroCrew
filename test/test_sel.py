@@ -155,6 +155,14 @@ class TestHmacKeyManagement:
     def test_key_file_permissions(self, sel_dir):
         SecurityEventLog(base_dir=sel_dir, sync=True)
         key_path = sel_dir / "trust" / "sel_hmac.key"
+        if sys.platform == "win32":
+            # No POSIX mode bits on Windows; owner-only enforcement is the
+            # DACL applied by platform_compat.restrict_to_owner (pinned by the
+            # TestRestrictToOwner suite). Here the creation path must still
+            # have produced the 32-byte key.
+            assert key_path.exists()
+            assert len(key_path.read_bytes()) == 32
+            return
         mode = oct(key_path.stat().st_mode & 0o777)
         assert mode == "0o600"
 

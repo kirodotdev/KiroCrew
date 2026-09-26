@@ -149,7 +149,6 @@ test/test_seed.py::test_seed_main_home_rail_catches_symlink
 test/test_seed.py::test_seed_main_home_rail_refuses
 test/test_seed.py::test_seed_main_home_rail_refuses_even_with_replace
 test/test_seed.py::test_seed_new_home_rail_refuses
-test/test_sel.py::TestHmacKeyManagement::test_key_file_permissions
 test/test_service.py::TestKirocrewBinOverride::test_service_bin_override_wins_over_which
 test/test_service.py::TestLinuxUnitRendering::test_install_writes_unit_via_sudo_install_and_invokes_systemctl
 test/test_service.py::TestServiceEnvironment::test_plist_includes_locale_and_kiro_bin
