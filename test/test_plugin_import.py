@@ -373,6 +373,85 @@ class TestMcpServers:
         assert list(manifest["mcpServers"]) == ["abs"]
         assert not [u for u in report.unmapped if u.kind.startswith("mcpServers")]
 
+    def test_an_endpoint_server_is_refused_rather_than_emitted(self, tmp_path):
+        """A hosted server registers on NO converted app, so it is named, not emitted.
+
+        ``bridges._register_mcp_servers`` writes an entry carrying a ``url`` only
+        when it can resolve a live backend port, and scrubs it otherwise -- pinned
+        by ``test_a_stale_snapshot_cannot_rewrite_a_deliberately_skipped_http_bridge``
+        in ``test_agent_config_merge_on_write.py``. A converted app declares no
+        backend at all (asserted below), so that skip is certain here, and an
+        emitted endpoint server would be the silent tool loss the package-relative
+        branch above exists to prevent.
+        """
+        root = _package(tmp_path, mcpServers="./.mcp.json")
+        _write_json(
+            root / ".mcp.json",
+            {"mcpServers": {"hosted": {"url": "https://api.example.test/mcp"}}},
+        )
+
+        report = convert_plugin_package(root, tmp_path / "out")
+
+        manifest = json.loads((tmp_path / "out" / "app.json").read_text(encoding="utf-8"))
+        assert "mcpServers" not in manifest, (
+            "an endpoint server was emitted into app.json; registration resolves no "
+            "live port for a converted app, so it is scrubbed there and its tools go "
+            "missing on an app that installed clean"
+        )
+        # The reason the refusal is unconditional rather than a judgement call.
+        assert "backend" not in manifest
+        refused = [u for u in report.unmapped if u.kind == "mcpServers[hosted]"]
+        assert len(refused) == 1
+        assert refused[0].bucket == "d"
+        assert refused[0].detail == "url transport"
+        # The endpoint is foreign text this report prints to a terminal; naming the
+        # transport says everything the reader needs without quoting it.
+        assert "example.test" not in refused[0].detail
+
+    def test_an_endpoint_server_is_refused_even_when_it_also_names_a_command(self, tmp_path):
+        """``_register_mcp_servers`` calls any entry with a ``url`` an HTTP entry.
+
+        Its test is ``bool(cfg.get("url"))`` and it runs before the stdio arm, so an
+        entry carrying both is skipped there whatever its command says. A converter
+        that read this one as a launchable stdio server would emit exactly the entry
+        the platform then drops.
+        """
+        root = _package(
+            tmp_path,
+            mcpServers={
+                "both": {"command": "npx", "args": ["-y", "x"], "url": "https://h.test/mcp"}
+            },
+        )
+
+        report = convert_plugin_package(root, tmp_path / "out")
+
+        manifest = json.loads((tmp_path / "out" / "app.json").read_text(encoding="utf-8"))
+        assert "mcpServers" not in manifest
+        assert [u.detail for u in report.unmapped if u.kind == "mcpServers[both]"] == [
+            "url transport"
+        ]
+
+    def test_a_refused_endpoint_server_leaves_a_stdio_sibling_alone(self, tmp_path):
+        """The refusal is per entry: a package is not all-or-nothing."""
+        root = _package(tmp_path, mcpServers="./.mcp.json")
+        _write_json(
+            root / ".mcp.json",
+            {
+                "mcpServers": {
+                    "keep": {"command": "npx", "args": ["-y", "x"]},
+                    "hosted": {"url": "https://api.example.test/mcp"},
+                }
+            },
+        )
+
+        report = convert_plugin_package(root, tmp_path / "out")
+
+        manifest = json.loads((tmp_path / "out" / "app.json").read_text(encoding="utf-8"))
+        assert list(manifest["mcpServers"]) == ["keep"]
+        assert [u.kind for u in report.unmapped if u.kind.startswith("mcpServers")] == [
+            "mcpServers[hosted]"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Kinds with no target
@@ -2660,15 +2739,23 @@ class TestATransportlessServerIsNotWritten:
         assert cleaned == declared
         assert report.warnings == []
 
-    def test_a_url_server_is_still_written(self, tmp_path):
+    def test_a_url_server_is_read_as_a_transport_not_as_a_missing_one(self, tmp_path):
         # The other transport spelling, so the check cannot be read as command-only.
+        # A url entry is NOT emitted -- registration resolves no live port for a
+        # converted app and scrubs it -- but the refusal that catches it must be the
+        # ENDPOINT one, not the transportless one. Asserting "not written" alone
+        # would pass just as well if _has_transport had stopped recognising a url,
+        # which is the regression this control exists to catch.
         report = self._report()
         declared = {"remote": {"url": "https://example.invalid/mcp"}}
 
         cleaned = plugin_import._convert_mcp_servers(tmp_path, declared, report)
 
-        assert cleaned == declared
+        assert cleaned == {}
         assert report.warnings == []
+        assert [(u.kind, u.detail) for u in report.unmapped] == [
+            ("mcpServers[remote]", "url transport")
+        ], report.unmapped
 
 
 class TestTheMappingDocCitesOnlyThisRepo:

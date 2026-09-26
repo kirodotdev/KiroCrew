@@ -1149,6 +1149,49 @@ def _convert_mcp_servers(root: Path, declared: object, report: ImportReport) -> 
                 f"mcpServers[{name}] declares neither a command nor a url; dropped"
             )
             continue
+        # An ENDPOINT server cannot register on a converted app, so it is declined
+        # here for the same reason the package-relative branch below declines a
+        # program this conversion cannot preserve: emitting it registers a server
+        # that never starts, silently, on an app that installed clean.
+        #
+        # ``_register_mcp_servers`` writes an entry carrying a ``url`` only when it
+        # can resolve a LIVE backend port for the app, and scrubs it otherwise --
+        # a manifest's illustrative port is a reachable-LOOKING dead URL that
+        # kiro-cli dials on every request, so that skip protects every session.
+        # This converter emits no ``backend`` section at all (see the dict
+        # assembled in ``_convert_into``), so a converted app has no port to
+        # resolve and that skip is not a possibility here but a certainty: the
+        # entry would be dropped at registration with one INFO line, and the
+        # operator who read "1 server(s)" in this report would find its tools
+        # missing.
+        #
+        # Tested with the platform's own predicate, ``bool(config.get("url"))``,
+        # rather than a stricter one: that is exactly what ``_register_mcp_servers``
+        # calls an HTTP entry, and a converter that disagreed about which entries
+        # are endpoints would emit the ones it had decided were safe into the same
+        # skip. It is asked BEFORE the package-relative test because the platform
+        # asks it first too -- an entry carrying both a ``url`` and a ``command``
+        # is an HTTP entry there, whatever its command says.
+        if bool(config.get("url")):
+            report.unmapped.append(
+                UnmappedKind(
+                    kind=f"mcpServers[{name}]",
+                    bucket="d",
+                    reason=(
+                        "the server is reached at an endpoint, and a converted app "
+                        "declares no backend, so registration has no live port to "
+                        "resolve and drops the entry rather than writing a URL "
+                        "nothing answers"
+                    ),
+                    # The transport is NAMED, not quoted: the url is foreign text
+                    # this report prints to a terminal, and the entry it belongs to
+                    # is already identified by ``kind``, whose length the key bound
+                    # above caps. Echoing the value would put an unbounded foreign
+                    # string on that line for nothing the reader does not have.
+                    detail="url transport",
+                )
+            )
+            continue
         relative_fields = _package_relative_fields(config)
         if relative_fields:
             report.unmapped.append(
