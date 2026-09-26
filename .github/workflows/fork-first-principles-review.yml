@@ -340,6 +340,7 @@ jobs:
       # input. So this step fetches the prose on the runner, into a bounded data
       # file, and the model is granted read-only tools only.
       - name: Fetch PR intent (untrusted data file)
+        id: intent
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -347,62 +348,14 @@ jobs:
           INTENT: ${{ runner.temp }}/pr-intent.txt
         run: |
           set -uo pipefail
-          # A title/description this step could not READ is not a PR without
-          # stated intent. `2>/dev/null || true` discarded both the error text
-          # and the exit status, so a transient API failure handed the reviewer
-          # an empty intent file and the lane judged a PR that appeared to
-          # state nothing -- blaming the author for a description the workflow
-          # never read. The common case is transient, so absorb it here rather
-          # than spending the author's re-run on it: up to three attempts with
-          # a short backoff. A read that never succeeds fails closed while
-          # naming the read as the cause; a genuinely empty description reads
-          # successfully on the first attempt and is judged as written, which
-          # is correct.
-          raw=""
-          read_ok=""
-          for attempt in 1 2 3; do
-            if raw="$(gh api "repos/$REPO/pulls/$PR" --jq '"Title: \(.title)\n\nDescription:\n\(.body // "")"')"; then
-              read_ok=1
-              break
-            fi
-            echo "Reading the PR title and description failed on attempt $attempt."
-            if [ "$attempt" -lt 3 ]; then
-              sleep "$attempt"
-            fi
-          done
-          if [ -z "$read_ok" ]; then
-            echo "::error::Could not read this PR's title and description from the API after 3 attempts, so the review would judge a PR that appears to state no intent. This is a read failure, not a missing description -- re-run this job."
-            exit 1
-          fi
-          # Strip embedded media: a screenshot-heavy body is pure cost to a
-          # reviewer that judges prose, and an attachment URL is not intent.
-          stripped="$(printf '%s' "$raw" | perl -0777 -pe 's/!\[[^\]]*\]\([^)]*\)/[image removed]/g; s{<img\b[^>]*>}{[image removed]}gi; s{<video\b.*?</video>}{[video removed]}gsi; s{<source\b[^>]*>}{[media removed]}gi; s{https?://\S*user-attachments\S*}{[media removed]}g' 2>/dev/null || printf '%s' "$raw")"
-          # Cap at 8000 bytes, dropping a trailing split multibyte character so the
-          # file stays well-formed UTF-8. Mark an over-cap body rather than
-          # truncating it silently.
-          #
-          # One perl read does the cap, because the two obvious shell spellings both
-          # break on precisely the over-cap input the cap exists for. `printf |
-          # head -c` gives the writer SIGPIPE once `head` has its bytes, and under
-          # `pipefail` that 141 fails the step -- a race below the ~64 KiB pipe
-          # buffer (a 30 KB body lost it) and certain above. And `iconv -c` drops
-          # INVALID bytes but still exits 1 on an INCOMPLETE sequence at EOF, so a
-          # `|| <raw fallback>` appended a second copy to the partial output already
-          # captured: 15,998 bytes of malformed UTF-8 from an 8000-byte cap.
-          full="$(mktemp)"
-          printf '%s' "$stripped" > "$full"
-          perl -e '
-            open(my $fh, "<:raw", $ARGV[0]) or die; read($fh, my $b, 8000);
-            # A lead byte with fewer continuation bytes than it declares is the
-            # tail the cap split; anything else invalid was already in the body.
-            $b =~ s/(?:[\xC2-\xDF]|[\xE0-\xEF][\x80-\xBF]?|[\xF0-\xF4][\x80-\xBF]{0,2})\z//;
-            print $b, "\n";
-          ' "$full" > "$INTENT"
-          if [ "$(wc -c < "$full")" -gt 8000 ]; then
-            printf '\n[description TRUNCATED at 8000 bytes]\n' >> "$INTENT"
-          fi
-          rm -f "$full"
-          echo "Wrote PR intent ($(wc -c < "$INTENT") bytes) as a data file."
+          # The title and description come from ONE shared capture, sourced by
+          # every lane whose model judges the author's stated intent. It is one
+          # file rather than a copy per lane because the digest each lane stamps
+          # into its published verdict names the bytes that capture produced: two
+          # implementations of the cap or the media strip would make the same
+          # digest mean two different things, and a reader recomputing it would
+          # get a mismatch from a description nobody had touched.
+          . "$GITHUB_WORKSPACE/.github/scripts/pr-description-capture.sh"
 
       # The review contract, read from the trusted BASE commit -- the same single
       # file the same-repo lane loads, so there is no second copy to drift, and a
@@ -666,6 +619,7 @@ jobs:
           VERDICT: ${{ steps.verdict.outputs.verdict }}
           WITHHELD: ${{ steps.redact.outputs.withheld }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          DESCRIPTION_DIGEST: ${{ steps.intent.outputs.description_digest }}
         run: |
           set -uo pipefail
           [ -z "${PR:-}" ] && { echo "no PR resolved; skipping comment"; exit 0; }
@@ -1352,6 +1306,30 @@ jobs:
               echo
               echo "_The first-principles review did not produce a verdict for \`$HEAD\` ($why). See the Fork First Principles Review job logs. Advisory — does not block merge._"
             } > "$RUNNER_TEMP/fp-comment.md"
+          fi
+          # Name the description revision this verdict read, so staleness is
+          # readable without comparing timestamps: `created_at` is frozen at the
+          # comment's first revision and `updated_at` moves on every in-place
+          # edit, so neither can date a verdict. Stamped by the workflow from the
+          # capture step's own digest, never by the model, and appended after the
+          # redaction step above so that pass cannot rewrite it. Only a real
+          # verdict is stamped -- a "could not complete" notice read no
+          # description and would be claiming one, and the withheld path above
+          # has already left this step.
+          #
+          # The `### ` heading is load-bearing, not decoration: this lane's
+          # finalize step runs concerns_digest() over the review output, and that
+          # awk captures to end-of-file once inside a `### Watch` section. Any
+          # `### ` heading that is not Watch closes the capture.
+          if [ -n "$badge" ] && [ -n "${DESCRIPTION_DIGEST:-}" ]; then
+            {
+              echo
+              echo "### Description read"
+              echo
+              echo "[DESCRIPTION-READ] $DESCRIPTION_DIGEST"
+              echo
+              echo "_That sha256 names the PR description this verdict read. Recompute it with \`.github/scripts/pr-description-capture.sh\`; if it differs, the description changed after this verdict was formed and any finding drawn from the description is unproven._"
+            } >> "$RUNNER_TEMP/fp-comment.md"
           fi
           guarded_comment_upsert "$MARKER" "[FIRST-PRINCIPLES-REVIEWED]" "Fork First Principles Review" "$RUNNER_TEMP/fp-comment.md"
 
