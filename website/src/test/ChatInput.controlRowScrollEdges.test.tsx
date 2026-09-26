@@ -25,6 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { normalizeAutomationRecord } from '../monitoring/automation'
 
 /** `hidden` px of content beyond the right edge, `scrolled` px already past the left. */
 function stubGeometry({ hidden, scrolled = 0 }: { hidden: number; scrolled?: number }) {
@@ -103,5 +104,26 @@ describe('ChatInput control-row scroll-edge cues', () => {
     stubGeometry({ hidden: 240 })
     rerender(<ChatInput {...defaultProps} approvalMode="default" />)
     expect(rightCue()).toBeTruthy()
+  })
+
+  it('keeps the focused automation trigger mounted as a typed goal changes the composer layout', async () => {
+    const props = { ...defaultProps, slotId: 'chat-1', onAutomationClick: vi.fn() }
+    const { rerender } = renderWithProviders(<ChatInput {...props} automation={null} />)
+    const trigger = await screen.findByRole('button', { name: 'Set a goal' })
+    trigger.focus()
+    for (const [status, label, active] of [
+      ['working', 'Working toward your goal', true],
+      ['needs_input', 'Needs your input', false],
+      ['complete', 'Goal achieved', false],
+    ] as const) {
+      const automation = normalizeAutomationRecord({
+        id: 'goal-1', slot_key: 'chat-1', active,
+        goal: { objective: 'Check keyboard focus', criteria: [], progress: '', status, evidence: [] },
+      })
+      rerender(<ChatInput {...props} automation={automation} />)
+      expect(await screen.findByRole('button', { name: `${label}: Check keyboard focus` })).toBe(trigger)
+      expect(document.activeElement).toBe(trigger)
+      expect(controlRow().contains(trigger)).toBe(true)
+    }
   })
 })

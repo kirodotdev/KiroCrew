@@ -85,6 +85,14 @@ export const MONITOR_STATUS_KEYS: Record<MonitorStatus, string> = {
   user_stopped: 'components.sessionAutomationPopover.statuses.user_stopped',
 }
 
+export interface PursuedGoal {
+  objective: string
+  criteria: string[]
+  progress: string
+  status: 'working' | 'waiting' | 'needs_input' | 'paused' | 'blocked' | 'complete' | 'ended'
+  evidence: string[]
+}
+
 export interface LegacyGoalLoop {
   kind: 'legacy_goal_loop'
   id: string
@@ -98,6 +106,9 @@ export interface LegacyGoalLoop {
   nextDueAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
+  /** Typed goal's server revision: REST config_generation / WS generation. */
+  goalGeneration?: number
+  goal?: PursuedGoal
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -342,6 +353,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
   if (!id || !slotKey) return null
 
   if (!owns(loop, 'monitor')) {
+    const goal = object(loop.goal)
+    const generation = loop.config_generation ?? loop.generation
     return {
       kind: 'legacy_goal_loop',
       id,
@@ -355,6 +368,16 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
+      ...(goal && typeof goal.objective === 'string' ? {
+        ...(isCount(generation) ? { goalGeneration: generation } : {}),
+        goal: {
+          objective: goal.objective,
+          criteria: Array.isArray(goal.criteria) ? goal.criteria.filter((v): v is string => typeof v === 'string') : [],
+          progress: text(goal.progress),
+          status: text(goal.status, 'paused') as PursuedGoal['status'],
+          evidence: Array.isArray(goal.evidence) ? goal.evidence.filter((v): v is string => typeof v === 'string') : [],
+        },
+      } : {}),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),

@@ -769,7 +769,10 @@ async def handle_message_transport(
             # its sessions-backed authorizer stand-in (dashboard-only
             # directives stay refused either way).
             directive_consumer=build_directive_consumer(
-                session_key=session_key, sessions=sessions, dispatcher=gateway
+                session_key=session_key,
+                sessions=sessions,
+                dispatcher=gateway,
+                human_request=not from_trusted_bot,
             ),
             audit_session_key=session_key,
             audit_agent=_agent or "kirocrew",

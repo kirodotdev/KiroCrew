@@ -1936,7 +1936,9 @@ async def _handle_slash_command(
         async def _on_hard() -> None:
             await slack.post_message(channel, "⛔ Execution stopped — session reset.", reply_ts)
 
-        outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
+        outcome = await sessions.stop_turn(
+            session_key, on_soft=_on_soft, on_hard=_on_hard, goal_state=get_dashboard_state()
+        )
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale "Stopping…" ephemeral explicitly.
         if outcome == "idle":

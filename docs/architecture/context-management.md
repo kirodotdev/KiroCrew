@@ -81,6 +81,31 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 `thread_history`, `stop_notes`, `memory`, `skills`, `lessons`, `provenance`,
 `finalize`) and `_emit_context_section_timings` logs and histograms them.
 
+Each supported goal session receives a per-turn `[GOAL PURSUIT]` block.
+It supplies the automatic intent policy and the session's current goal snapshot
+from the already-loaded auto-nudge service. It adds no classifier network call
+or separate persistence. Follow-up constraints revise the current goal; status
+questions leave it intact. The block precedes the current request and respects
+`includeCrewContext: false`. Its opener and closer participate in prompt
+metering and untrusted-marker neutralization. Runtime provenance, rather than
+this prose, authorizes creation and resume.
+
+The goal snapshot requires the stored loop's `slot_key` to match the turn's
+resolved auto-nudge binding exactly. A normalized dashboard-name fallback
+renders `goal: null`, without foreign goal data or an `other_automation` marker.
+Explicit dashboard links are resolved through the caller's existing effective
+session key; this reader does not infer ownership from a tab name.
+
+`goal.py` → `goal_context` neutralizes primary structural markers in a copy of
+the goal's text fields before JSON serialization, then mints the trusted goal
+frame. Scrubbing before serialization also covers markers containing line
+breaks. Reloaded IDs and stop reasons receive the same rendering-only scrub;
+non-text stop reasons render empty, and activity renders as a boolean.
+Generation is already normalized to a nonnegative integer on load. Stored
+values and their API/UI projections remain unchanged. The canonical continuation message
+passes through `build_message`'s normal turn-text neutralization; its exact
+host-message authorization binding remains unchanged.
+
 ### What memory contributes at session start
 
 `build_session_context` calls `MemoryStore.get_context` with

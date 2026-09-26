@@ -28,6 +28,7 @@ These tests lock the three halves of the fix:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,68 @@ class _SpyConsumer:
 
     async def __call__(self, kind: str, args: dict) -> None:
         self.applied.append((kind, args))
+
+
+@pytest.mark.asyncio
+async def test_goal_steer_consumption_can_precede_write_ack():
+    from kiro_crew.messaging.dispatch import GoalSteerState
+
+    steering = GoalSteerState()
+
+    class Provider:
+        async def steer(self, text):
+            steering.consume(f"<user_message>\n{text}\n</user_message>")
+            return True
+
+    assert await steering.steer(Provider(), "End this goal")
+    assert steering.confirmed_human
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_failed_goal_steer_write_cannot_authorize_a_later_echo(raises):
+    from kiro_crew.messaging.dispatch import GoalSteerState
+
+    steering = GoalSteerState()
+
+    class Provider:
+        async def steer(self, text):
+            if raises:
+                raise OSError("steer pipe closed")
+            return False
+
+    if raises:
+        with pytest.raises(OSError, match="pipe closed"):
+            await steering.steer(Provider(), "End this goal")
+    else:
+        assert not await steering.steer(Provider(), "End this goal")
+    steering.consume("End this goal")
+    assert not steering.confirmed_human
+
+
+@pytest.mark.asyncio
+async def test_goal_steer_bounds_decline_without_truncating_or_sending():
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.messaging.dispatch import (
+        MAX_GOAL_STEER_CHARS,
+        MAX_PENDING_GOAL_STEERS,
+        GoalSteerState,
+    )
+
+    steering = GoalSteerState()
+    provider = SimpleNamespace(steer=AsyncMock(return_value=True))
+    long_input = "x" * (MAX_GOAL_STEER_CHARS + 1)
+    assert not await steering.steer(provider, long_input)
+    provider.steer.assert_not_called()
+    for index in range(MAX_PENDING_GOAL_STEERS):
+        assert await steering.steer(provider, f"Correction {index}")
+    assert not await steering.steer(provider, "The next correction")
+    assert provider.steer.call_count == MAX_PENDING_GOAL_STEERS
+    steering.consume("The next correction")
+    assert not steering.confirmed_human
+    steering.consume("Correction 0")
+    assert steering.confirmed_human
 
 
 def _core_call(tool: str = "monitor_start", tcid: str = "tc-1") -> AcpEvent:
@@ -604,8 +667,32 @@ class TestBuildDirectiveConsumer:
         consumer built before the attachment still sees it."""
         seen: list[tuple] = []
 
-        async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
-            seen.append((state, slot, session_key, kind, args, producer_is_channel))
+        async def _spy(
+            state,
+            slot,
+            session_key,
+            kind,
+            args,
+            *,
+            producer_is_channel,
+            producer_is_user_facing,
+            producer_is_self_wake,
+            producer_turn_is_current,
+        ):
+            assert producer_is_user_facing is True
+            assert producer_is_self_wake is False
+            assert producer_turn_is_current()
+            seen.append(
+                (
+                    state,
+                    slot,
+                    session_key,
+                    kind,
+                    args,
+                    producer_is_channel,
+                    producer_turn_is_current,
+                )
+            )
             return "ok"
 
         monkeypatch.setattr(
@@ -616,21 +703,26 @@ class TestBuildDirectiveConsumer:
             pass
 
         dispatcher = _Dispatcher()
+        sessions = SimpleNamespace(generation=3)
+        sessions.stop_generation = lambda key: sessions.generation
         consume = build_directive_consumer(
             session_key="discord:kirocrew:direct:42",
-            sessions=object(),
+            sessions=sessions,
             dispatcher=dispatcher,
+            human_request=True,
         )
         dashboard_state = object()  # attached AFTER the consumer was built
         dispatcher.dashboard_state = dashboard_state
         await consume("monitor_start", dict(MONITOR_ARGS))
         assert len(seen) == 1
-        state, slot, session_key, kind, args, producer_is_channel = seen[0]
+        state, slot, session_key, kind, args, producer_is_channel, turn_is_current = seen[0]
         assert state is dashboard_state
         assert slot is None
         assert session_key == "discord:kirocrew:direct:42"
         assert (kind, args) == ("monitor_start", MONITOR_ARGS)
         assert producer_is_channel is True
+        sessions.generation += 1
+        assert not turn_is_current()
 
     @pytest.mark.asyncio
     async def test_falls_back_to_sessions_stand_in(self, monkeypatch):
@@ -638,7 +730,21 @@ class TestBuildDirectiveConsumer:
         fail-closed sessions-backed stand-in, never None."""
         seen: list = []
 
-        async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
+        async def _spy(
+            state,
+            slot,
+            session_key,
+            kind,
+            args,
+            *,
+            producer_is_channel,
+            producer_is_user_facing,
+            producer_is_self_wake,
+            producer_turn_is_current,
+        ):
+            assert producer_is_user_facing is False
+            assert producer_is_self_wake is True
+            assert producer_turn_is_current()
             seen.append((state, producer_is_channel))
             return "ok"
 
@@ -646,7 +752,9 @@ class TestBuildDirectiveConsumer:
             "kiro_crew.dashboard.session_directive_apply.apply_session_directive", _spy
         )
         sessions = object()
-        consume = build_directive_consumer(session_key="slack:1755000000.1", sessions=sessions)
+        consume = build_directive_consumer(
+            session_key="slack:1755000000.1", sessions=sessions, self_wake=True
+        )
         await consume("autonudge_stop", {})
         assert len(seen) == 1
         state, producer_is_channel = seen[0]

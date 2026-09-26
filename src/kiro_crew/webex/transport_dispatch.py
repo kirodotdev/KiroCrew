@@ -53,9 +53,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew import goal_actions
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
+from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -67,6 +69,7 @@ from kiro_crew.messaging.commands import (
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
+    GoalSteerState,
     admit_inbound_callback,
     build_directive_consumer,
     drive_turn,
@@ -392,6 +395,7 @@ class WebexDispatcher:
             self, "webex", "messaging", target="transport", name="WebexDispatcher"
         )
         self._queue = ReceiptQueue()
+        self._goal_steers: dict[str, GoalSteerState] = {}
         # Publish this drain so a peer transport that set aside one of THIS channel's
         # entries can wake it. Required for the set-aside to be a deferral rather than an
         # indefinite wait: a drain otherwise runs only from the tail of its own channel's
@@ -474,6 +478,7 @@ class WebexDispatcher:
         own would nest one Python frame per burst — a sustained burst would grow
         the stack without bound. The outer loop owns the pumping.
         """
+        _goal_self_wake = turn_ceiling.generated_turn_pending()
         assert self.client is not None, "WebexDispatcher.client must be set"
         # Inbound channels-governance gate (off-loop) — recheck per message so a
         # host-profile deny added after connect stops dispatch without a restart
@@ -612,7 +617,9 @@ class WebexDispatcher:
             session_key_for=self._session_key,
             idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
             daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
-            on_busy=lambda sk: self._handle_busy(inbound, sk, body, override_mode),
+            on_busy=lambda sk: self._handle_busy(
+                inbound, sk, body, override_mode, human_request=not _goal_self_wake
+            ),
         )
         if resolved_key is None:
             return  # folded into the running turn
@@ -681,6 +688,14 @@ class WebexDispatcher:
 
             await surface_dispatcher_session(self)
 
+        goal_steers = GoalSteerState()
+
+        def _bind_provider(provider: Any) -> None:
+            # Publish only after this turn owns the provider's session lease.
+            if _goal_self_wake:
+                self._goal_steers[session_key] = goal_steers
+            renderer.authorize_upload_root(getattr(provider, "cwd", "") or "")
+
         try:
             await drive_turn(
                 ChannelTurn(
@@ -692,8 +707,14 @@ class WebexDispatcher:
                     # turn's session key (dashboard-only directives stay refused
                     # for channel sessions).
                     directive_consumer=build_directive_consumer(
-                        session_key=session_key, sessions=self.sessions, dispatcher=self
+                        session_key=session_key,
+                        sessions=self.sessions,
+                        dispatcher=self,
+                        human_request=not _goal_self_wake,
+                        self_wake=_goal_self_wake,
+                        goal_steers=goal_steers,
                     ),
+                    on_steer_consumed=goal_steers.consume,
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
@@ -718,9 +739,7 @@ class WebexDispatcher:
                     # the session map up here: on the FIRST turn of a generation no
                     # session exists yet, so reading it early leaves uploads off
                     # for exactly that turn. Without a root they stay off.
-                    bind_provider=lambda p: renderer.authorize_upload_root(
-                        getattr(p, "cwd", "") or ""
-                    ),
+                    bind_provider=_bind_provider,
                     persist=lambda user_text, reply, is_new: self._persist_turn(
                         session_key, user_text, reply, is_new, agent
                     ),
@@ -733,6 +752,8 @@ class WebexDispatcher:
                 ctx_builder=self.ctx_builder,
             )
         finally:
+            if self._goal_steers.get(session_key) is goal_steers:
+                self._goal_steers.pop(session_key)
             # A reservation the driver never awaited (the prompt rendered, then the
             # turn failed before the decider) would otherwise outlive this turn and
             # be resolved by a stray answer to a later prompt.
@@ -752,6 +773,8 @@ class WebexDispatcher:
         session_key: str,
         text: str,
         override_mode: str | None = None,
+        *,
+        human_request: bool = True,
     ) -> None:
         """A message arrived mid-turn: queue it for after, or steer the turn.
 
@@ -778,11 +801,14 @@ class WebexDispatcher:
             steer = getattr(provider, "steer", None)
             has_active = getattr(provider, "has_active_turn", None)
             live = has_active is None or bool(has_active())
+            goal_steers = self._goal_steers.get(session_key) if human_request else None
             steered = bool(
                 live
                 and getattr(provider, "supports_steer", False)
                 and steer is not None
-                and await steer(text)
+                and await (
+                    goal_steers.steer(provider, text) if goal_steers is not None else steer(text)
+                )
             )
             if steered:
                 await self._reply(inbound, "⏳ Folded into the reply in progress.")
@@ -1531,6 +1557,9 @@ class WebexDispatcher:
         # between an abandoned attempt and its replay still counts (see
         # ``note_user_stop``).
         note_user_stop(self.sessions, session_key)
+
+        goal_state = getattr(self, "dashboard_state", None)
+        await goal_actions.pause_session_goal(session_key, state=goal_state)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)
@@ -1548,10 +1577,9 @@ class WebexDispatcher:
             await self._queue.finish_cancelled_locked(
                 session_key, self._receipt_surface(inbound), owner
             )
-        await self._reply(
-            inbound,
-            "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
-        )
+        reply = "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared."
+        warning = goal_actions.goal_pause_warning(session_key, state=goal_state)
+        await self._reply(inbound, f"{reply}\n\n{warning}" if warning else reply)
 
     def _origin_mirror_link(self, room_id: str) -> ChannelLink:
         """The mirror location for the room a conversation is being read in.

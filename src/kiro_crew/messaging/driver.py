@@ -465,6 +465,9 @@ class TurnDriver:
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
+    on_steer_consumed:
+        Optional synchronous callback receiving the backend's consumption echo.
+        Runs before later tool results; inline display markers never invoke it.
     """
 
     def __init__(
@@ -483,6 +486,7 @@ class TurnDriver:
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
+        on_steer_consumed: Callable[[str], None] | None = None,
     ) -> None:
         self.provider = provider
         self.renderer = renderer
@@ -510,6 +514,7 @@ class TurnDriver:
         # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
         self.directive_consumer = directive_consumer
         self.monitor_completion = monitor_completion
+        self.on_steer_consumed = on_steer_consumed
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
@@ -652,6 +657,8 @@ class TurnDriver:
                 productive = True
                 await self.renderer.dispatch(OutputEvent(kind=THINKING, text=_redact(event.text)))
             elif kind == EVENT_STEER_CONSUMED:
+                if self.on_steer_consumed is not None:
+                    self.on_steer_consumed(event.text or "")
                 # kiro-cli emits both a typed lifecycle event and an inline
                 # marker, in either order. Pair them so renderers receive one
                 # structured boundary, never two rotations. If an older backend

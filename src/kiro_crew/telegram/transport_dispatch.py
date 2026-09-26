@@ -2252,6 +2252,7 @@ class TelegramDispatcher:
         reply = await stop_running_turn(
             self.sessions,
             session_key or self._session_key(route),
+            goal_state=self.dashboard_state,
             queue=self._queue,
             surface=self._receipt_surface(chat_id, None),
             owner=_entry_owner(origin),

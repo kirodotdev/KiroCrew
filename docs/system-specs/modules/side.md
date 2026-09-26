@@ -230,10 +230,11 @@ Helpers: `append_user` (with a `steer` marker), `append_assistant`, `clear`,
 `queue_edit`, and the ledger's `steer_register` / `steer_state` /
 `steer_mark` / `steer_pending` / `steer_settle` / `steer_prune_terminal`.
 
-### `dashboard/steer_settle.py`
+### `steer_settle.py`
 
-`settle_consumed_steers(pending, snapshot)` — pure, and shared with the main chat
-(`chat_runner._settle_consumed_steers` delegates to it). Matches by EQUALITY and
+`settle_consumed_steers(pending, snapshot)` — pure, and shared with main chat and
+channel turns (`chat_runner._settle_consumed_steers` delegates to it).
+It lives below the dashboard and messaging layers. Matches by EQUALITY and
 is count-aware: containment would false-positive a short steer against a longer
 one, and a falsely-settled steer is never requeued, so the question is lost.
 

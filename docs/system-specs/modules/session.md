@@ -1327,6 +1327,20 @@ signal (`_stop_pressed()`) treats any later change as a user Stop, next to the
 slot's in-flight state and the slot's own `_stop_generation`; every
 end-of-turn continuation gate (refusal recovery, Stop-hook continuation,
 promise-only recovery, post-compaction continuation) reads that one signal.
+Manual `/goal` dispatch carries the same live signal through its asynchronous
+authorization and store admission, so a Stop completed during either wait still
+refuses that start.
+
+`stop_turn(..., goal_state=None)` accepts the caller's existing dashboard state
+for goal lookup. Dashboard and channel Stop callers forward it; lifecycle pauses
+typed goals through the same explicit-link collection used by goal admission before
+cancelling the provider. This covers a retained exact slot-key row after trusted
+channel reconciliation. No channel alias is guessed from spelling, and
+the existing `canonical_key` shim preserves lookup after a legacy Slack key
+fold. Stop can follow an explicit link even when the channel cannot arm new
+goals. If reconciliation joins two typed goals, Stop pauses both; goal creation
+and revision still refuse to select a single owner. Goal-less watches stay
+untouched. `preserve_queue=True` handovers still leave pursuit active.
 
 Lifetime: the record is keyed by session key rather than stored on the
 `_Session` object, so it survives the `reset()` a hard stop performs (a flag on
@@ -3092,6 +3106,20 @@ a trust root on its own; publication therefore also writes a
   SO_PEERCRED gateway-authentication follow-up (issue #302).
 
 ### Stateless session-directive tools (`session_directive.py`, #755)
+
+The `goal` directive uses this same session-owned dispatch. Genuine dashboard
+user requests can create a goal automatically. A goal continuation can update
+its own progress or complete it with evidence. Creation, explicit resume, and
+abandonment require human provenance. Both native and out-of-band consumers
+pass the live Stop-generation predicate; a stopped turn cannot arm or revise a
+goal after waiting for a mutation lock. Goal state survives context rollover in
+the existing auto-nudge store and is reinjected on subsequent turns.
+An explicit Stop pauses pursuit; a queue-preserving `stop_turn` handover cancels
+the old response while keeping the goal available to the queued correction.
+Failed tab-close recovery retains the goal's full objective, criteria, progress,
+evidence and working/waiting status while restoring only its remaining cycle and
+runtime budgets. Waiting goals retain their waiting cadence; paused or exhausted
+loops are not revived by this recovery.
 
 Eight session-bound MCP tools — `monitor_start`, `monitor_update`, `autonudge_stop`, `set_project`, `suggest_followup`, `ask_question`, `reset_conversation`, `chat_tag` — used to resolve their OWN session identity (the strict sidecar resolver above) and call a loopback HTTP endpoint, which only produced a usable per-call caller when MCP-gateway **pooling** was enabled. They are now **stateless**: the tool validates its arguments and returns a *directive* — a human-readable confirmation line plus a machine-readable marker (`session_directive.encode`) carrying the validated payload and NO session key. The session-aware consumer, `dashboard/chat_runner._run_chat`'s `EVENT_TOOL_RESULT` handler, decodes the marker (`session_directive.decode`) and applies the effect IN-PROCESS against ITS OWN `slot`/`session_key` via `dashboard/session_directive_apply.py`, then strips the marker from the stored transcript. This works with pooling OFF (the default) because the consumer already owns the session, so no per-process identity source is needed.
 

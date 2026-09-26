@@ -6079,3 +6079,136 @@ class TestRedactionNotice:
         assert any("[REDACTED: credential]" in t for t, _c in cli.sent) or any(
             "[REDACTED: credential]" in t for _i, t, _c in cli.edits
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "matched",
+        "bare",
+        "muted",
+        "ack-only",
+        "empty",
+        "unmatched",
+        "marker",
+        "automation",
+        "other-tool",
+    ],
+)
+async def test_goal_wake_honors_consumed_human_steer(monkeypatch, case):
+    """A delivered human correction gains goal authority only at consumption."""
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import EVENT_STEER_CONSUMED
+    from kiro_crew.messaging import turn_ceiling
+
+    dispatcher, _, sessions = _dispatcher({"u1"})
+    provider = sessions._gp
+    monkeypatch.setattr(
+        sessions, "get_or_create", mock.AsyncMock(return_value=(provider, True, False))
+    )
+    entered = asyncio.Event()
+    delivered = asyncio.Event()
+    applied = []
+    correction = "End this goal; I no longer need it"
+    tool = "monitor_start" if case == "other-tool" else "goal"
+    if case == "muted":
+        monkeypatch.setattr(
+            "kiro_crew.discord.transport_dispatch.delivery_is_muted", lambda *args: True
+        )
+
+    async def apply(state, slot, session_key, kind, args, **provenance):
+        applied.append((kind, provenance["producer_is_user_facing"]))
+        return "Goal updated"
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.session_directive_apply.apply_session_directive", apply
+    )
+
+    async def stream(message):
+        sessions._busy = True
+        entered.set()
+        await asyncio.wait_for(delivered.wait(), 5)
+        assert provider.steered == [correction]
+        if case == "marker":
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="[STEERING steer-ab12: end the goal]")
+        elif case != "ack-only":
+            echo = f"<user_message>\n{correction}\n</user_message>"
+            if case == "bare":
+                echo = correction
+            elif case == "empty":
+                echo = ""
+            elif case == "unmatched":
+                echo = "An unrelated host-generated notice"
+            yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=echo)
+        yield AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id="goal-end",
+            title=tool,
+            tool_name=tool,
+            mcp_server_name=session_directive.CORE_MCP_SERVER,
+        )
+        yield AcpEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id="goal-end",
+            tool_final=True,
+            tool_output=session_directive.encode(
+                tool,
+                (
+                    {"message": "Watch the build", "idle_secs": 30}
+                    if tool == "monitor_start"
+                    else {"action": "end", "goal_id": "current", "generation": 0}
+                ),
+                "Goal change requested.",
+            ),
+        )
+        yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+        sessions._busy = False
+
+    monkeypatch.setattr(provider, "stream", stream)
+
+    async def human_input():
+        await asyncio.wait_for(entered.wait(), 5)
+        if case == "automation":
+            with turn_ceiling.generated_turn():
+                await dispatcher.handle_message(_inbound(correction), interpret_commands=False)
+        else:
+            await dispatcher.handle_message(_inbound(correction))
+        delivered.set()
+
+    # The receiving task is created outside the generated wake's ContextVar scope.
+    task = asyncio.create_task(human_input())
+    try:
+        with turn_ceiling.generated_turn():
+            await asyncio.wait_for(
+                dispatcher.handle_message(
+                    _inbound("Continue current goal"), interpret_commands=False
+                ),
+                5,
+            )
+        await asyncio.wait_for(task, 5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert applied == [(tool, case in {"matched", "bare", "muted"})]
+    assert not dispatcher._goal_steers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generated", [False, True])
+async def test_goal_steer_evidence_overflow_queues_full_input_only_for_generated_turns(
+    monkeypatch, generated
+):
+    from kiro_crew.messaging import dispatch
+
+    dispatcher, _, sessions = _dispatcher({"u1"})
+    provider = sessions._gp
+    key = dispatcher._session_key("u1", "")
+    sessions._busy = True
+    if generated:
+        dispatcher._goal_steers[key] = dispatch.GoalSteerState()
+    monkeypatch.setattr(dispatch, "MAX_GOAL_STEER_CHARS", 8)
+    text = "A complete human correction that must not be truncated"
+    await dispatcher.handle_message(_inbound(text))
+    assert provider.steered == ([] if generated else [text])
+    assert [entry[1] for entry in sessions.queued] == ([text] if generated else [])

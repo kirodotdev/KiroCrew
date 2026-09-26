@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Activity, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
-import { useIsFetching, useMutation, useQueryClient } from '@tanstack/react-query'
+import { motion, useReducedMotion } from 'framer-motion'
+import { Activity, ChevronDown, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
+import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
   deriveAutomationStatus,
@@ -20,6 +21,22 @@ import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { i18nT } from '../i18n/t'
 import MonitorRadar from './MonitorRadar'
 import ErrorNotice from './ErrorNotice'
+import GoalProgressContent, { goalStatusLabel } from './GoalProgressContent'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+
+const MotionIconButton = motion.create(IconButton)
+
+class GoalPauseRefreshError extends Error {
+  constructor(cause: unknown) {
+    super(i18nT('components.goalProgress.pause_refresh_failed'), { cause })
+  }
+}
+
+type GoalRequest = {
+  loop: LegacyGoalLoop
+  slotKey: string
+  action: 'change' | 'refresh' | 'refresh_pause'
+}
 
 interface Props {
   slotKey: string
@@ -124,6 +141,7 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     max_cycles: loop.maxCycles,
     cycle_count: loop.cycleCount,
     active: loop.active,
+    goal: loop.goal,
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
@@ -166,6 +184,7 @@ export default function SessionAutomationPopover({
   interrupted = false,
   sessionMode = '',
 }: Props) {
+  const reducedMotion = useReducedMotion()
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   /* WHICH VIEW THIS OPENS ON, and the goal loop is the default. The bounded
      monitor accepts exactly one thing -- a pull request URL, validated against
@@ -292,14 +311,113 @@ export default function SessionAutomationPopover({
     },
   })
 
+  const goalMutation = useMutation({
+    retry: false,
+    mutationFn: async ({ loop: captured, slotKey: capturedSlot, action }: GoalRequest) => {
+      if (action === 'refresh') return api.autonudgeForSlot(captured.slotKey)
+      if (action === 'refresh_pause' || captured.active || captured.stoppedReason === 'goal_pause_unsaved') {
+        if (action !== 'refresh_pause') await api.stopChatSlot(capturedSlot)
+        try {
+          return await api.autonudgeForSlot(captured.slotKey)
+        } catch (error) {
+          throw new GoalPauseRefreshError(error)
+        }
+      }
+      // A typed goal without a revision must be read before a separate resume click.
+      if (captured.goalGeneration === undefined) return api.autonudgeForSlot(captured.slotKey)
+      return api.autonudgeResume(captured.id, captured.goalGeneration)
+    },
+    onSuccess: (result, captured) => {
+      if (slotKeyRef.current !== captured.slotKey) return
+      const next = result.loop ? normalizeAutomationRecord(result.loop) : null
+      const cached = queryClient.getQueryData<AutomationRecord | null>(['session-automation', captured.slotKey])
+      // Check both live props and the cache: a late response must not republish
+      // older active work into Redux, where it would outrank subsequent refetches.
+      for (const current of [automationRef.current, cached]) {
+        if (current === null || (current && (current.id !== captured.loop.id || current.slotKey !== captured.loop.slotKey))) return
+        if (current?.kind === 'legacy_goal_loop') {
+          if (current.goal?.status === 'complete' || current.goal?.status === 'ended') return
+          const responseGeneration = next?.kind === 'legacy_goal_loop' ? next.goalGeneration : captured.loop.goalGeneration
+          if (current.goalGeneration !== undefined && responseGeneration !== undefined
+            && current.goalGeneration > responseGeneration) return
+        }
+      }
+      onChange(next)
+    },
+    onSettled: (_result, _error, captured) => {
+      void queryClient.invalidateQueries({ queryKey: ['session-automation', captured.slotKey] })
+      void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+    },
+  })
+  // Subscribe to the existing cache without issuing another request. A newer
+  // snapshot also retires uncertainty when the visible active Redux record lags.
+  const { data: goalSnapshot } = useQuery<AutomationRecord | null>({
+    queryKey: ['session-automation', slotKey], enabled: false,
+  })
+  const liveLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
+  const newerGoalSnapshot = liveLoop?.goal && goalSnapshot?.kind === 'legacy_goal_loop'
+    && goalSnapshot.goal && goalSnapshot.id === liveLoop.id && goalSnapshot.slotKey === liveLoop.slotKey
+    && ((goalSnapshot.goalGeneration !== undefined
+      && (liveLoop.goalGeneration === undefined || goalSnapshot.goalGeneration > liveLoop.goalGeneration))
+      || goalSnapshot.goal.status === 'complete' || goalSnapshot.goal.status === 'ended')
+  // A background GET can confirm Stop without updating the active Redux projection.
+  // Use that same-goal revision for both the displayed state and the next click.
+  const legacyLoop = newerGoalSnapshot ? goalSnapshot : liveLoop
+  const capturedGoal = goalMutation.variables
+  const goalRequestMatches = capturedGoal?.slotKey === slotKey
+    && capturedGoal.loop.id === legacyLoop?.id && capturedGoal.loop.slotKey === legacyLoop.slotKey
+  const unchangedGoalState = (current: AutomationRecord | null | undefined) => (
+    current?.kind === 'legacy_goal_loop' && current.id === capturedGoal?.loop.id
+    && current.slotKey === capturedGoal.loop.slotKey
+    && current.goalGeneration === capturedGoal.loop.goalGeneration
+    && current.active === capturedGoal.loop.active
+    && current.stoppedReason === capturedGoal.loop.stoppedReason
+    && current.goal?.status === capturedGoal.loop.goal?.status
+    && current.goal?.status !== 'complete' && current.goal?.status !== 'ended'
+  )
+  // Reconnect may advance Redux while leaving this same-goal cache behind.
+  // Only a strictly older, nonterminal snapshot is irrelevant to the request.
+  const olderGoalSnapshot = goalSnapshot?.kind === 'legacy_goal_loop' && goalSnapshot.goal
+    && goalSnapshot.id === capturedGoal?.loop.id && goalSnapshot.slotKey === capturedGoal.loop.slotKey
+    && goalSnapshot.goalGeneration !== undefined && capturedGoal.loop.goalGeneration !== undefined
+    && goalSnapshot.goalGeneration < capturedGoal.loop.goalGeneration
+    && goalSnapshot.goal.status !== 'complete' && goalSnapshot.goal.status !== 'ended'
+  const goalStateUnchanged = Boolean(goalRequestMatches
+    && unchangedGoalState(legacyLoop)
+    && (goalSnapshot === undefined || olderGoalSnapshot || unchangedGoalState(goalSnapshot)))
+  const pauseUnconfirmed = Boolean(goalStateUnchanged
+    && (goalMutation.error instanceof GoalPauseRefreshError
+      || (capturedGoal?.action === 'refresh_pause' && !goalMutation.isSuccess)))
+  let goalChangeFailure: string | undefined
+  if (goalMutation.error && goalRequestMatches) {
+    if (goalMutation.error instanceof GoalPauseRefreshError) {
+      if (pauseUnconfirmed) goalChangeFailure = i18nT('components.goalProgress.pause_refresh_failed')
+    } else if (capturedGoal.action === 'refresh') {
+      if (goalStateUnchanged) goalChangeFailure = i18nT('components.goalProgress.refresh_failed')
+    } else if (capturedGoal.loop.stoppedReason === 'goal_pause_unsaved') {
+      // The current unsaved-pause warning already explains this failure.
+      if (legacyLoop?.stoppedReason !== 'goal_pause_unsaved' || pauseUnconfirmed) {
+        goalChangeFailure = i18nT('components.goalProgress.retry_pause_failed')
+      }
+    } else if (capturedGoal.loop.active) {
+      goalChangeFailure = i18nT('components.goalProgress.pause_failed')
+    } else {
+      goalChangeFailure = i18nT('components.goalProgress.resume_failed')
+    }
+  }
+
   const terminal = monitor?.terminal ?? null
   const status = monitor ? deriveAutomationStatus(monitor) : 'arm_pending'
   const statusLabel = i18nT(MONITOR_STATUS_KEYS[status])
-  const legacyLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
   const legacyCycle = legacyLoop?.maxCycles
     ? `${legacyLoop.cycleCount}/${legacyLoop.maxCycles}`
     : String(legacyLoop?.cycleCount ?? 0)
-  const triggerLabel = legacyLoop?.active
+  const pursuedGoal = legacyLoop?.goal
+  const pursuedStatusLabel = pauseUnconfirmed ? i18nT('components.goalProgress.pause_unconfirmed')
+    : legacyLoop ? goalStatusLabel(legacyLoop) : ''
+  const triggerLabel = pursuedGoal && legacyLoop
+    ? `${pursuedStatusLabel}: ${pursuedGoal.objective}`
+    : legacyLoop?.active
     ? i18nT(
       interrupted
         ? 'components.autoNudgePopover.goal_interrupted_cycle'
@@ -438,7 +556,7 @@ export default function SessionAutomationPopover({
 
   return (
     <AutoNudgePopover
-      key={legacyLoop?.id ?? `bounded:${slotKey}`}
+      key={legacyLoop && !legacyLoop.goal ? legacyLoop.id : `bounded:${slotKey}`}
       slotKey={slotKey}
       loop={legacyLoop ? legacyWire(legacyLoop) : null}
       open={open}
@@ -451,14 +569,16 @@ export default function SessionAutomationPopover({
       writeDisabled={sessionModeUnsupported}
       interrupted={interrupted}
       trigger={(
-        <IconButton
+        <MotionIconButton
+          layout={!reducedMotion}
+          transition={{ duration: reducedMotion ? 0 : 0.18 }}
           aria-label={triggerLabel}
-          variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
+          variant={!pauseUnconfirmed && (monitor?.active || legacyLoop?.active) ? 'active' : 'default'}
           /* IconButton is a plain block button, so without a flex row the
              inline glyph sits on the text baseline of this 32px box rather
              than at its centre, and the count would trail it without a gap.
              Same row layout the legacy goal trigger has always used. */
-          className="h-8 px-2 rounded-lg shrink-0 flex items-center gap-1"
+          className={`px-2 rounded-lg flex items-center ${pursuedGoal ? 'min-h-10 min-w-0 w-full max-w-full @min-[28rem]/composer:w-auto @min-[28rem]/composer:max-w-96 py-1 text-left gap-2' : 'h-8 shrink-0 gap-1'}`}
         >
           {/* The glyph promises the same thing the label does. With nothing
               armed this button opens "Set a goal", whose own panel is headed by
@@ -466,19 +586,41 @@ export default function SessionAutomationPopover({
               fixes in the label -- and there is no probing to depict. Once
               anything IS armed the radar is accurate and carries the
               action-running pulse. */}
-          {monitor || legacyLoop ? (
+          {pursuedGoal ? (
+            <Goal className="lucide-inline shrink-0" aria-hidden />
+          ) : monitor || legacyLoop ? (
             <MonitorRadar actionRunning={status === 'action_running'} />
           ) : (
             <Goal className="lucide-inline shrink-0" aria-hidden />
           )}
-          {monitor ? (
+          {pursuedGoal && legacyLoop ? (
+            <span className="min-w-0 flex-1">
+              <span className="block whitespace-normal break-words text-[11px]" role="status" aria-live="polite">{pursuedStatusLabel}</span>
+              <span className="block truncate text-[12px] text-text">{pursuedGoal.objective}</span>
+            </span>
+          ) : monitor ? (
             <span className="text-[11px] font-mono">{fmtNumber(monitor.usage.probes)}</span>
           ) : legacyLoop?.cycleCount ? (
             <span className="text-[11px] font-mono">{legacyCycle}</span>
           ) : null}
-        </IconButton>
+          {pursuedGoal && <ChevronDown className={`lucide-inline shrink-0 text-muted ${open ? 'rotate-180' : ''}`} aria-hidden />}
+        </MotionIconButton>
       )}
-      content={legacyView ? undefined : (
+      content={pursuedGoal && legacyLoop ? (
+        <GoalProgressContent
+          loop={legacyLoop}
+          statusLabel={pursuedStatusLabel}
+          changeFailure={goalChangeFailure}
+          pauseUnconfirmed={pauseUnconfirmed}
+          pending={goalMutation.isPending && Boolean(goalRequestMatches)}
+          onAction={() => goalMutation.mutate({
+            loop: legacyLoop, slotKey,
+            action: pauseUnconfirmed ? 'refresh_pause'
+              : !legacyLoop.active && legacyLoop.stoppedReason !== 'goal_pause_unsaved' && legacyLoop.goalGeneration === undefined
+                ? 'refresh' : 'change',
+          })}
+        />
+      ) : legacyView ? undefined : (
         <PopoverContent
           side="top"
           align="start"

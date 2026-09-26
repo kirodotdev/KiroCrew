@@ -2187,7 +2187,7 @@ and let a sub-agent's card land in its parent's slot.
 **Return a session directive and let the session-aware consumer apply it.** This
 is what the `ask_question` MCP tool itself now does, along with `monitor_start`,
 `monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
-and `suggest_followup`, `reset_conversation` and `chat_tag`
+and `suggest_followup`, `reset_conversation`, `chat_tag` and `goal`
 (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
@@ -2196,6 +2196,27 @@ strips the marker from the stored transcript. Sub-agent isolation is therefore
 structural rather than cryptographic: a sub-agent's tool result flows through the
 sub-agent's own runner, so it can only bind to the sub-agent's session. There is
 no walk to get wrong.
+
+`goal` automates the existing `/goal` behavior. Its mutations are directives;
+`inspect` is a strict session-bound read of the existing session-monitor
+endpoint and emits no directive. That endpoint, also used by `monitor_inspect`,
+requires the stored loop key to equal the authenticated session's resolved
+binding before returning goal, plain-loop or structured-monitor data. A
+normalized dashboard-name match alone returns no bound automation.
+During directive replay, inspection performs
+no gateway call. The host resolves the target, checks human/self-wake provenance
+and the current turn, then persists through the existing auto-nudge service.
+Updates and completion require the current goal id and generation; completion
+also requires evidence. The acknowledgment says a change was requested, and
+inspection confirms the applied state.
+`GOAL_MAX_OBJECTIVE_CHARS` limits retained objectives to 16,000 characters after
+redaction, including updates and reloads. Overflow is rejected without mutation
+or truncation; accepted manual objectives retain their full text in the existing
+loop state. Both goal tool schemas also cap the raw objective at 16,000
+characters; the existing 3,800-character encoded directive envelope independently
+limits tool payloads. Criteria, progress and evidence remain bounded. An update
+that omits the objective preserves it without carrying that text through the
+directive envelope again.
 
 The directive marker is model-visible, since it comes back as tool-result text,
 so the consumer defends against forgery by honoring a directive only when the

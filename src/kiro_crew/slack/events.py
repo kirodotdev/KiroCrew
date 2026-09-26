@@ -31,7 +31,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew import __version__
+from kiro_crew import __version__, goal_actions
 from kiro_crew.agent_discovery import agent_spec_stems
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
@@ -103,6 +103,7 @@ from kiro_crew.slack.handler import (
     set_yolo_mode,
     slack_cfg,
 )
+from kiro_crew.slack.interactions import _goal_stop_reply, _stop_session_key
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
 from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
@@ -2654,8 +2655,9 @@ async def _route_message(
         # session that owns it, and that is the key the replay reads. For a flat
         # DM session_key is already the channel-scoped owning key, so the lookup
         # falls back to it unchanged.
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
-        has_session = orch.sessions.has_session(session_key)
+        cancel_key = _stop_session_key(orch.sessions, session_key)
+        note_user_stop(orch.sessions, cancel_key)
+        has_session = orch.sessions.has_session(cancel_key)
         active_task = orch._session_tasks.pop(session_key, None)
         if has_session or active_task:
             orch.sessions.clear_queue(session_key)
@@ -2676,21 +2678,32 @@ async def _route_message(
 
             async def _on_soft() -> None:
                 if orch.slack:
-                    await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
+                    await orch.slack.post_message(
+                        channel, _goal_stop_reply(cancel_key, "⏹ Execution stopped."), stop_post_ts
+                    )
 
             async def _on_hard() -> None:
                 if orch.slack:
                     await orch.slack.post_message(
-                        channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                        channel,
+                        _goal_stop_reply(cancel_key, "⛔ Execution stopped — session reset."),
+                        stop_post_ts,
                     )
 
-            outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
+            outcome = await orch.sessions.stop_turn(
+                cancel_key,
+                on_soft=_on_soft,
+                on_hard=_on_hard,
+                goal_state=getattr(orch, "dashboard_state", None),
+            )
             if active_task and not active_task.done():
                 active_task.cancel()
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
+                await orch.slack.post_message(
+                    channel, _goal_stop_reply(cancel_key, "Nothing running."), stop_post_ts
+                )
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2700,6 +2713,10 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
         else:
+            # A goal can be waiting between turns with no provider to cancel.
+            await goal_actions.pause_session_goal(
+                canonical_key(cancel_key), state=getattr(orch, "dashboard_state", None)
+            )
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2709,7 +2726,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+                await orch.slack.post_message(
+                    channel, _goal_stop_reply(cancel_key, "Nothing running."), stop_post_ts
+                )
         return
 
     # ── !restart: bang alias for /kirocrew restart — intercept here so it

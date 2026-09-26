@@ -71,6 +71,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("incognito", r"\[INCOGNITO SESSION\]"),
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
     ("cancelled_turn", r"\[PREVIOUS TURN WAS CANCELLED"),
+    ("goal_pursuit", r"\[GOAL PURSUIT\]"),
     (REPLY_FORMAT_LABEL, r"\[REPLY FORMAT RULES\]"),
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
@@ -131,6 +132,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
     label: re.compile(pat)
     for label, pat in (
         ("critical_rules", r"\[END CRITICAL RULES\]"),
+        ("goal_pursuit", r"\[END GOAL PURSUIT\]"),
         ("agent_instructions", r"\[END AGENT SYSTEM PROMPT\]"),
         ("session_wrapper", r"\[END OF SESSION CONTEXT\]"),
         ("workspace_identity", r"\[End of workspace identity\]"),

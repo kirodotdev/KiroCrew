@@ -4528,6 +4528,11 @@ export const api = {
     fetch('/api/autonudge').then(j),
   autonudgeForSlot: (slot: string): Promise<{ enabled: boolean; loop: unknown | null }> =>
     fetch('/api/autonudge/slot/' + encodeURIComponent(slot)).then(j),
+  autonudgeResume: (id: string, expectedGeneration?: number): Promise<{ loop: unknown }> =>
+    patch('/api/autonudge/' + encodeURIComponent(id), {
+      active: true,
+      ...(expectedGeneration === undefined ? {} : { expected_generation: expectedGeneration }),
+    }).then(j),
   /** Structured monitor records include terminal outcomes for inspection. */
   monitorsList: (): Promise<{ enabled: boolean; monitors: unknown[] }> =>
     fetch('/api/monitors').then(j),

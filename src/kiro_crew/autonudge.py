@@ -48,6 +48,12 @@ from kiro_crew.atomic_write import fsync_dir, replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
 from kiro_crew.constants import MAX_BANNER_CHARS
+from kiro_crew.goal import (
+    GOAL_CONTINUATION_DELAY_SECS,
+    GOAL_PAUSE_UNSAVED_REASON,
+    GOAL_TERMINAL_STATUSES,
+    GoalState,
+)
 from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
@@ -1124,7 +1130,8 @@ class NudgeLoop:
     # was armed under the old rule, which admitted no self-arm.
     self_armed: bool = False
     # Monotonic per-loop CONFIG generation. Advanced by ``_update_unserialized``
-    # ONLY on a real configuration change (a changed ``message``) or a revival
+    # on a real configuration change (a changed ``message``), goal metadata,
+    # or a revival
     # (inactive -> active), never by internal timer/cycle bookkeeping. Captured
     # at fire time and compared atomically (under the service ``_lock``) before a
     # structural-terminal stop is applied, so a stale completion of an OLD
@@ -1134,6 +1141,14 @@ class NudgeLoop:
     # concurrency framework. Absent in a store written before this field ->
     # decodes to 0, and a first fire simply captures 0.
     config_generation: int = 0
+    goal: GoalState | None = None
+
+    @property
+    def continuation_delay(self) -> int:
+        """Ready goal work can continue promptly; watches retain their cadence."""
+        if self.goal is not None and self.goal.status == "working":
+            return GOAL_CONTINUATION_DELAY_SECS
+        return self.idle_secs
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -1158,6 +1173,10 @@ def terminal_notification_delivery_matches(
 
 class MonitorUpdateConflict(ValueError):
     """A structured mutation would break active action correlation."""
+
+
+class GoalUpdateConflict(ValueError):
+    """A generic mutation conflicts with the goal's objective or final state."""
 
 
 def _is_torn_deactivation(loop: NudgeLoop) -> bool:
@@ -1697,6 +1716,8 @@ class AutoNudgeService:
                             _cg,
                         )
                         loop_values["config_generation"] = 0
+                if loop_values.get("goal") is not None:
+                    loop_values["goal"] = GoalState.from_dict(loop_values["goal"])
                 loop = NudgeLoop(**loop_values)
                 # Rotated on EVERY load: a human may have hand-edited the goal while we
                 # were down, so a pre-restart token must not authorise overwriting it.
@@ -2190,6 +2211,8 @@ class AutoNudgeService:
         # In-memory only: the load path re-mints it unconditionally, so a persisted
         # value could never be honoured and writing one would dirty a clean store.
         payload.pop("goal_token", None)
+        if loop.goal is None:
+            payload.pop("goal", None)
         if loop.monitor is None:
             # Preserve the legacy wire shape instead of eagerly migrating every
             # record the next time an unrelated loop is saved.
@@ -2404,6 +2427,7 @@ class AutoNudgeService:
         self_armed: bool = False,
         loop_id: str | None = None,
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
+        goal: GoalState | None = None,
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -2429,6 +2453,7 @@ class AutoNudgeService:
                 admission_check=admission_check,
                 gate=gate,
                 judge=judge,
+                goal=goal,
                 replace_existing=replace_existing,
                 replace_stopped=replace_stopped,
                 self_armed=self_armed,
@@ -2537,6 +2562,13 @@ class AutoNudgeService:
                     ):
                         raise MonitorUpdateConflict("monitor changed before restart")
                 if existing:
+                    if (
+                        existing.goal is not None
+                        and existing.goal.status not in GOAL_TERMINAL_STATUSES
+                    ):
+                        raise MonitorUpdateConflict(
+                            "this session has an unfinished goal; use the goal tool to manage it"
+                        )
                     # Same split as the legacy add: create-only refuses ANY
                     # record unless the caller opted into ``replace_stopped``,
                     # which under the owner's ruling displaces only
@@ -2750,6 +2782,7 @@ class AutoNudgeService:
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         judge: dict | None = None,
+        goal: GoalState | None = None,
         replace_existing: bool = True,
         replace_stopped: bool = False,
         self_armed: bool = False,
@@ -2768,6 +2801,7 @@ class AutoNudgeService:
                 admission_check=admission_check,
                 gate=gate,
                 judge=judge,
+                goal=goal,
                 replace_existing=replace_existing,
                 replace_stopped=replace_stopped,
                 self_armed=self_armed,
@@ -2788,12 +2822,15 @@ class AutoNudgeService:
         admission_check: Callable[[], bool] | None = None,
         gate: bool = False,
         judge: dict | None = None,
+        goal: GoalState | None = None,
         replace_existing: bool = True,
         replace_stopped: bool = False,
         self_armed: bool = False,
         loop_id: str | None = None,
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     ) -> NudgeLoop:
+        if goal is not None and (gate or goal.status not in {"working", "waiting"}):
+            raise ValueError("a goal must be working or waiting and ungated")
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
             if admission_check is not None and not admission_check():
@@ -2804,6 +2841,10 @@ class AutoNudgeService:
             existing = self._find_by_slot(slot_key)
             restore_existing_provider_credentials = False
             if existing:
+                if existing.goal is not None and existing.goal.status not in GOAL_TERMINAL_STATUSES:
+                    raise MonitorUpdateConflict(
+                        "this session has an unfinished goal; use the goal tool to manage it"
+                    )
                 # Create-only (``replace_existing=False``) refuses ANY existing
                 # record by default — the dashboard REST creates depend on that:
                 # their documented contract is a 409 that never discards a
@@ -2861,6 +2902,15 @@ class AutoNudgeService:
                     existing
                 )
                 await self._revoke_provider_credentials_before_removal(existing.id)
+                try:
+                    # Stop can arrive while credential cleanup awaits. Refuse
+                    # before removing the row a concurrent pause already named.
+                    if admission_check is not None and not admission_check():
+                        raise NudgeAdmissionRefused("session changed before nudge arm committed")
+                except BaseException:
+                    if restore_existing_provider_credentials:
+                        await self._restore_provider_credentials(existing)
+                    raise
                 self.remove_sync(existing.id, persist=False, emit=False)
             now = time.time()
             loop = NudgeLoop(
@@ -2885,7 +2935,12 @@ class AutoNudgeService:
                 # snapshot below so it persists): the countdown starts the
                 # moment the loop is armed, and user turns from here on only
                 # defer delivery, never restart it.
-                next_due_ts=now + idle_secs,
+                next_due_ts=now
+                + (
+                    GOAL_CONTINUATION_DELAY_SECS
+                    if goal is not None and goal.status == "working"
+                    else idle_secs
+                ),
                 # The SUBJECT is decided HERE, from the instruction the caller
                 # already wrote -- no target, kind or enable flag is ever passed.
                 # WHETHER to look for one is the ``gate`` argument above, which the
@@ -2918,6 +2973,7 @@ class AutoNudgeService:
                 gate=gate,
                 banner=banner,
                 self_armed=self_armed,
+                goal=goal,
             )
             self._loops[loop.id] = loop
             # Persist WITHOUT blocking the event loop (no-blocking-call rule:
@@ -2978,6 +3034,8 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         judge: dict | None = None,
+        goal: GoalState | None = None,
+        admission_check: Callable[[], bool] | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
@@ -2997,6 +3055,8 @@ class AutoNudgeService:
                 stopped_reason=stopped_reason,
                 banner=banner,
                 judge=judge,
+                goal=goal,
+                admission_check=admission_check,
                 expected_generation=expected_generation,
                 expect_fingerprint=expect_fingerprint,
             )
@@ -3016,6 +3076,74 @@ class AutoNudgeService:
 
         inner.add_done_callback(_finish)
         return await asyncio.shield(inner)
+
+    async def pause_goal(self, loop_id: str) -> bool:
+        """Pause pursuit without letting a storage error prevent user Stop.
+
+        The ordinary update persists the pause. If that write fails, keep this
+        process paused and expose the lost durability; never roll back a human
+        Stop into another automatic turn. Only a saved pause returns success.
+        """
+        inner = asyncio.create_task(self._pause_goal_locked(loop_id))
+        self._inflight_adds.add(inner)
+
+        def finish(task: asyncio.Task[bool]) -> None:
+            self._inflight_adds.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                logger.error("AutoNudge: goal pause failed", exc_info=task.exception())
+
+        inner.add_done_callback(finish)
+        return await asyncio.shield(inner)
+
+    async def _pause_goal_locked(self, loop_id: str) -> bool:
+        lock = await self._acquire_mutation_lock(loop_id)
+        if lock is None:
+            return False
+        try:
+            loop = self._loops.get(loop_id)
+            if loop is None or loop.goal is None:
+                return False
+            if loop.goal.status in GOAL_TERMINAL_STATUSES:
+                return False
+            if (
+                not loop.active
+                and loop.stopped_reason != GOAL_PAUSE_UNSAVED_REASON
+                and (
+                    (loop.max_cycles and loop.cycle_count >= loop.max_cycles)
+                    or runtime_budget_exceeded(loop)
+                )
+            ):
+                # Resume already refuses spent budgets; retain the original
+                # reason and evidence instead of rewriting a terminal pause.
+                return False
+            reason = (
+                MANUAL_STOP_REASON
+                if loop.active or loop.stopped_reason == GOAL_PAUSE_UNSAVED_REASON
+                else None
+            )
+            try:
+                await self._update_unserialized(loop_id, active=False, stopped_reason=reason)
+            except Exception:
+                if loop.active:
+                    loop.goal = loop.goal.revised({"status": "paused"})
+                    loop.stopped_reason = GOAL_PAUSE_UNSAVED_REASON
+                loop.active = False
+                loop.next_due_ts = 0.0
+                # update rolled back its failed write. Stop must still fence
+                # an older Resume in this process, even on a repeat press.
+                loop.config_generation += 1
+                loop.goal_token = new_goal_token()
+                if loop.id not in self._firing:
+                    self._cancel_timer(loop.id)
+                self._emit("updated", loop)
+                logger.exception(
+                    "AutoNudge: goal %s paused in memory; saving the pause failed",
+                    loop.id,
+                )
+                return False
+            return True
+        finally:
+            lock.release()
 
     async def deactivate_and_wait(self, loop_id: str) -> bool:
         """Persistently pause a loop and wait for its current timer to quiesce.
@@ -3081,6 +3209,8 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         judge: dict | None = None,
+        goal: GoalState | None = None,
+        admission_check: Callable[[], bool] | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
@@ -3098,6 +3228,8 @@ class AutoNudgeService:
                 stopped_reason=stopped_reason,
                 banner=banner,
                 judge=judge,
+                goal=goal,
+                admission_check=admission_check,
                 expected_generation=expected_generation,
                 expect_fingerprint=expect_fingerprint,
             )
@@ -3116,6 +3248,8 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         judge: dict | None = None,
+        goal: GoalState | None = None,
+        admission_check: Callable[[], bool] | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
@@ -3123,6 +3257,45 @@ class AutoNudgeService:
             loop = self._loops.get(loop_id)
             if not loop:
                 return None
+            if admission_check is not None and not admission_check():
+                raise NudgeAdmissionRefused("session or goal changed before update committed")
+            if active and loop.goal is not None and loop.goal.status in {"complete", "ended"}:
+                raise GoalUpdateConflict("a finished goal cannot be resumed")
+            if active and loop.goal is not None and goal is None and expected_generation is None:
+                # Native goal revisions carry their own admission check and
+                # fingerprint. Generic Resume must carry the client's read.
+                raise GoalUpdateConflict("the goal changed; refresh before resuming")
+            if loop.goal is not None:
+                # These bounds belong to the goal, including while its last wake
+                # is still running after expiry. Generic edits cannot renew them.
+                if any(
+                    value is not None and int(value) != stored
+                    for value, stored in (
+                        (max_cycles, loop.max_cycles),
+                        (max_runtime_secs, loop.max_runtime_secs),
+                    )
+                ):
+                    raise GoalUpdateConflict("a goal's cycle and runtime limits cannot be changed")
+                if (
+                    active
+                    and not loop.active
+                    and (
+                        (loop.max_cycles and loop.cycle_count >= loop.max_cycles)
+                        or runtime_budget_exceeded(loop)
+                    )
+                ):
+                    raise GoalUpdateConflict(
+                        "the goal reached a limit; review it in the goal details"
+                    )
+            if (
+                loop.goal is not None
+                and goal is None
+                and message is not None
+                and message != loop.message
+            ):
+                raise GoalUpdateConflict(
+                    "use the goal tool to revise this goal's objective and criteria"
+                )
             # ATOMIC generation fence (inside _lock, before any mutation): a
             # caller applying a structural-terminal stop passes the generation it
             # captured at fire time. If the loop's config generation has moved
@@ -3132,6 +3305,8 @@ class AutoNudgeService:
             # read-then-update, so there is no TOCTOU window between the compare
             # and the write.
             if expected_generation is not None and loop.config_generation != expected_generation:
+                if active and loop.goal is not None:
+                    raise GoalUpdateConflict("the goal changed; refresh before resuming")
                 logger.info(
                     "AutoNudge: loop %s structural stop refused — captured gen %s "
                     "!= current gen %s (config changed under the fired turn)",
@@ -3159,6 +3334,14 @@ class AutoNudgeService:
             claim_discarded_for_retarget = False
             floor_discarded_for_retarget = False
             was_active = loop.active
+            previous_delay = loop.continuation_delay
+            if goal is not None:
+                if loop.goal is None:
+                    raise GoalUpdateConflict("goal metadata cannot replace another automation")
+                loop.goal = goal
+                if goal != previous["goal"] or active is False:
+                    loop.config_generation += 1
+                    loop.goal_token = new_goal_token()
             if message is not None:
                 retarget = message != loop.message
                 loop.message = message
@@ -3392,8 +3575,19 @@ class AutoNudgeService:
                             # Same rule, same reason: the streak is evidence
                             # about a PAST run, and a revival starts a fresh one.
                             loop.consecutive_start_failures = 0
-                    else:
+                    elif loop.goal is None or was_active or stopped_reason is not None:
                         loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+            if loop.goal is not None and goal is None and active is not None:
+                if loop.active:
+                    loop.goal = loop.goal.revised({"status": "working"})
+                elif loop.goal.status in {"working", "waiting"}:
+                    loop.goal = loop.goal.revised({"status": "paused"})
+                if loop.goal != previous["goal"] or active is False:
+                    # An explicit repeated Stop supersedes earlier Resume
+                    # requests even when its visible goal state is unchanged.
+                    loop.config_generation += 1
+                    loop.goal_token = new_goal_token()
+            interval_changed = interval_changed or previous_delay != loop.continuation_delay
             revived = loop.active and not was_active
             if revived:
                 # A revival re-arms the loop for a fresh run: a structural verdict
@@ -3417,7 +3611,7 @@ class AutoNudgeService:
             if not loop.active:
                 loop.next_due_ts = 0.0
             elif interval_changed and loop.next_due_ts > 0:
-                loop.next_due_ts = time.time() + loop.idle_secs
+                loop.next_due_ts = time.time() + loop.continuation_delay
             # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
             # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
             # under THIS lock hold (mutation safety + serialization vs the
@@ -5289,15 +5483,15 @@ class AutoNudgeService:
             return
         now = time.time()
         if loop.next_due_ts <= 0:
-            loop.next_due_ts = now + loop.idle_secs
+            loop.next_due_ts = now + loop.continuation_delay
             if loop.monitor is not None:
                 loop.monitor.next_probe_at = loop.next_due_ts
             self._persist_soon()
         remaining = loop.next_due_ts - now
         if remaining <= 0:
-            delay = float(_OVERDUE_REARM_SECS)
+            delay = float(min(_OVERDUE_REARM_SECS, loop.continuation_delay))
         else:
-            delay = min(remaining, float(loop.idle_secs))
+            delay = min(remaining, float(loop.continuation_delay))
         self._arm_timer(loop, delay=delay)
 
     def _persist_soon(self) -> None:
@@ -6853,7 +7047,7 @@ class AutoNudgeService:
 
     async def _timer(self, loop: NudgeLoop, delay: float | None = None) -> None:
         try:
-            await asyncio.sleep(loop.idle_secs if delay is None else delay)
+            await asyncio.sleep(loop.continuation_delay if delay is None else delay)
         except asyncio.CancelledError:
             return
         if shutdown_event.is_set():
@@ -7090,7 +7284,7 @@ class AutoNudgeService:
             # a loop removed during the observation is not resurrected by its own
             # in-flight tick.
             if loop.active and loop.id in self._loops:
-                loop.next_due_ts = time.time() + loop.idle_secs
+                loop.next_due_ts = time.time() + loop.continuation_delay
                 self._persist_soon()
                 self._arm_from_deadline(loop)
             return
