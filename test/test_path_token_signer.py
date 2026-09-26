@@ -84,3 +84,16 @@ def test_a_signer_refuses_a_nonsense_configuration() -> None:
         PathTokenSigner("", 900)
     with pytest.raises(ValueError):
         PathTokenSigner("ns", 0)
+
+
+@pytest.mark.parametrize("bad", ["é", "\udcff", "\ud800"])
+def test_a_non_ascii_mac_is_refused_not_raised(bad: str) -> None:
+    """``verify`` promises to fail closed on every malformed shape.
+
+    The MAC rides in a URL path segment, so it is request-controlled, and
+    ``hmac.compare_digest`` raises TypeError on a str holding a non-ASCII
+    character. An unexpired expiry reaches that compare.
+    """
+    signer = PathTokenSigner("ns", 900)
+    exp = int(time.time()) + 900
+    assert signer.verify(f"{exp}.{bad}", "doc1") is False
