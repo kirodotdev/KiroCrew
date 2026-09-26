@@ -3202,6 +3202,13 @@ class TestCleanupPersistsHeldNotes:
         That turn drains and CLEARS the queue, then gets cancelled -- so the
         context reaches nobody. The visible row survives either way, which is why
         the sibling test above cannot see this.
+
+        ``_pending_context`` is not where the half lands: this cleanup pops the
+        slot, and that queue is never serialized, so a half sitting in it dies with
+        the frame whether a doomed turn drained it or not. The half is kept in the
+        DURABLE hold as a context-only residual, and that is what this test pins --
+        the stronger property, since an assertion on the queue passes while the
+        half is still one popped frame from being lost.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
@@ -3249,8 +3256,17 @@ class TestCleanupPersistsHeldNotes:
         assert drained == [], (
             "the doomed turn drained the note's context half before cancellation"
         )
-        assert any(mark in (e.get("content") or "") for e in slot._pending_context), (
-            "the note's context half was consumed and is now owed to nobody"
+        residuals = [
+            n
+            for n in slot._deferred_notes
+            if n.get("contextOnly")
+            and mark in ((n.get("context") or {}).get("content") or "")
+        ]
+        assert len(residuals) == 1, (
+            "the note's context half was consumed or queued into the popped frame"
+        )
+        assert not any(mark in (e.get("content") or "") for e in slot._pending_context), (
+            "the half was queued into a slot this cleanup pops, which never reaches disk"
         )
         # Regression: the visible row still reaches the archived record.
         persisted = state.conversation_log.read_messages_chained(
@@ -3362,6 +3378,7 @@ class TestCleanupPersistsHeldNotes:
         assert slot.task is None, (
             "the dead task is still presented as this slot's live turn"
         )
+        assert slot._closing == 0, "restored fenced: `_closing` is a depth, releases owed"
 
 
 class TestPersistenceRebindDenialIsAudited:

@@ -3365,6 +3365,8 @@ def _save_slot_to_history(
     expected_disk_older_count: int | None = None,
     expected_slot_name: str | None = None,
     rows_only: bool = False,
+    refuse_if_closed: bool = False,
+    expected_tab_id: str | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -4049,6 +4051,31 @@ def _save_slot_to_history(
                 # the other retryable refusals in this function already apply.
                 _keep_owed_after_refusal(slot)
                 return False
+            if refuse_if_closed and not closed and existing_meta.get("closed"):
+                # ``closed`` is SLOT_OWNED, so an open-shaped rebuild erases a
+                # dismissal another writer committed; the lock decides the read.
+                logger.warning(
+                    "Skipping history save for %s (slot=%s): the session was closed "
+                    "while this save awaited the lock",
+                    history_key,
+                    slot.key,
+                )
+                return False
+            if expected_tab_id is not None:
+                # A recreation keeps the key and republishes an OPEN line, so neither
+                # guard above sees it; the map can also already hold the original
+                # again, which is why the recreate-won guard cannot cover this. An
+                # absent id is a first save, not a generation.
+                on_disk_tab_id = existing_meta.get("tab_id")
+                if on_disk_tab_id and on_disk_tab_id != expected_tab_id:
+                    logger.warning(
+                        "Skipping history save for %s (slot=%s): the transcript was "
+                        "recreated as generation %s while this save awaited the lock",
+                        history_key,
+                        slot.key,
+                        on_disk_tab_id,
+                    )
+                    return False
             path.parent.mkdir(parents=True, exist_ok=True)
             meta_line: dict = {
                 "_type": "metadata",
@@ -4264,12 +4291,8 @@ def _save_slot_to_history(
                     _queue_shortfall,
                     len(_durable_queue),
                 )
-            # The drop records this write retires are CONSUMED only after the
-            # atomic_write below commits (and never on the rows-only path,
-            # which defers the key to the on-disk value): a dropped note's row
-            # never exists, so the recorded id is its ONLY retirement path —
-            # consuming it before the write commits would leak the entry into
-            # the durable hold forever if the write fails.
+            # A dropped note has no row, so its id is the only retirement path:
+            # consuming it before the write commits strands the entry forever.
             retired_drop_ids = dropped_note_ids if not rows_only else set()
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
@@ -4362,6 +4385,12 @@ def _save_slot_to_history(
                 for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
                     meta_line.pop(meta_key, None)
                 carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+                # The hold belongs to the rows THIS write commits, and the union
+                # above already carries the other holder's own entries.
+                if surviving_hold:
+                    meta_line["deferred_notes"] = surviving_hold
+                else:
+                    meta_line.pop("deferred_notes", None)
             else:
                 carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
             meta_str = json.dumps(meta_line) + "\n"
@@ -4772,6 +4801,8 @@ async def save_slot_off_loop(
     expected_slot_name: str | None = None,
     rows_only: bool = False,
     issued_by_the_retraction: bool = False,
+    refuse_if_closed: bool = False,
+    expected_tab_id: str | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -4820,14 +4851,29 @@ async def save_slot_off_loop(
     holds. See :func:`_save_slot_to_history` for the full contract, including the
     ``tab_id`` test that keeps the flag from deferring to the caller's own line.
 
+    ``refuse_if_closed``: refuse an OPEN-shaped save whose transcript already carries a
+    ``closed`` flag, read under the same lock the write takes. For a caller whose save can
+    race a close: ``closed``/``closed_at`` are ``SLOT_OWNED``, so an open-shaped rebuild
+    neither writes nor carries them back, and committing after the close would erase a
+    dismissal the user already saw take effect. Not needed by a save that cannot interleave
+    with a close, and it must stay off for a REOPEN, whose job is to clear the flag.
+
+    ``expected_tab_id``: the slot GENERATION the caller authorized, refused under the same
+    lock when the transcript on disk carries a different one. A close-and-recreate of a
+    channel-, cron- or workflow-born slot keeps ``history_key`` and republishes an OPEN
+    line, so it defeats both guards above while the file now belongs to a different
+    conversation -- without this the caller's window would merge into the replacement's
+    transcript. An absent on-disk id (first save, legacy line) does NOT refuse.
+
     Returns ``False`` only when the save was skipped WITHOUT writing: the
     session was permanently deleted while the save awaited the lock (the
-    delete-won guard in :func:`_save_slot_to_history`), or the routing moved
-    off ``expected_history_key``. A guarded write is also skipped when the slot
-    is already fenced for close, because the retraction of its name has passed
-    the point where it can wait for this write -- unless the retraction itself
-    issued it (``issued_by_the_retraction``), which the handover drain does and
-    nothing else does. Neither skip raises, for either
+    delete-won guard in :func:`_save_slot_to_history`), the routing moved
+    off ``expected_history_key``, ``refuse_if_closed`` found the session
+    closed, or ``expected_tab_id`` does not match the transcript's generation. A
+    guarded write is also skipped when the slot is already fenced for close, because
+    the retraction of its name has passed the point where it can wait for this write
+    -- unless the retraction itself issued it (``issued_by_the_retraction``), which the
+    handover drain does and nothing else does. None of these skips raises, for either
     ``best_effort`` mode, so a clean return does NOT prove a committed write.
     Callers that go on to republish the slot's content elsewhere (fork, the
     transfer export) must check the return; archival callers (close/cleanup)
@@ -4846,6 +4892,8 @@ async def save_slot_off_loop(
             expected_history_key=expected_history_key,
             expected_slot_name=expected_slot_name,
             rows_only=rows_only,
+            refuse_if_closed=refuse_if_closed,
+            expected_tab_id=expected_tab_id,
         )
 
     def _begin_guarded_metadata_write() -> None:
