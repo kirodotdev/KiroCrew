@@ -17,6 +17,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew.acp import liveness
+from kiro_crew.acp._dispatch import _dumps_degraded, _redact
 from kiro_crew.acp.liveness import (
     CHILD_EXIT_GRACE_SECS,
     EVIDENCE_ESTABLISHED_FLAT,
@@ -28,6 +29,7 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
     ToolCallState,
     consult_offloaded,
+    match_fragment,
 )
 
 
@@ -203,6 +205,120 @@ def test_no_matching_child_is_unknown(tmp_path):
     verdict, evidence = oracle.check_tool(100, tool)
     assert verdict == VERDICT_UNKNOWN
     assert "no matching" in evidence
+
+
+# ── Command matching against the cached JSON rendering ──
+#
+# The dispatch layer caches a dict tool input as its indented JSON rendering,
+# redacted, and that string is what ``ToolCallState.command`` carries. The child
+# runs the command TEXT (``bash -c <command>``), so a match key taken from the
+# rendering must be taken from the decoded ``command`` value: in the rendering a
+# newline is the two characters ``\n``, and a fragment cut at the backslash
+# begins with a stray ``n`` that no real cmdline contains.
+
+_MULTI_LINE_LONGEST_LAST = (
+    "echo start\n"
+    "for i in $(seq 1 20); do sleep 15; done; echo this-line-is-longer-than-the-first-one-on-purpose"
+)
+_MULTI_LINE_LONGEST_FIRST = (
+    "echo this-first-line-is-deliberately-the-longest-one-here\n"
+    "for i in $(seq 1 20); do sleep 15; done"
+)
+_SINGLE_LINE = (
+    "for i in $(seq 1 20); do sleep 15; done; echo this-line-is-longer-than-the-first-one-on-purpose"
+)
+
+
+def _cached_shell_input(command: str) -> str:
+    """*command* exactly as the dispatch layer caches it for the oracle."""
+    return _redact(_dumps_degraded({"command": command, "summary": "probe"}, indent=2))
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param(
+            _MULTI_LINE_LONGEST_LAST,
+            "for i in $(seq 1 20); do sleep 15; done; echo this-line-is-longer-than-the-first-one-on-purpose",
+            id="multi-line-longest-line-not-first",
+        ),
+        pytest.param(
+            _MULTI_LINE_LONGEST_FIRST,
+            "echo this-first-line-is-deliberately-the-longest-one-here",
+            id="multi-line-longest-line-first",
+        ),
+        pytest.param(_SINGLE_LINE, _SINGLE_LINE, id="single-line"),
+    ],
+)
+def test_match_fragment_is_a_line_of_the_decoded_command(command, expected):
+    """The fragment is a verbatim line of the command, whichever line is longest.
+
+    Every fragment must be a substring of the child's real cmdline, which
+    carries the command text with its newlines intact.
+    """
+    fragment = match_fragment(_cached_shell_input(command))
+
+    assert fragment == expected
+    assert fragment in "bash -c " + command
+
+
+def test_redaction_marker_inside_the_rendering_still_splits_the_fragment():
+    """A redacted span never reaches the fragment: the child's cmdline holds the
+    real bytes, so the key is taken from the text on either side of the marker."""
+    cached = (
+        '{\n  "command": "curl -H \\"Authorization: [REDACTED: credential]\\" '
+        'https://example.invalid/results; sleep 300",\n  "summary": "probe"\n}'
+    )
+    child = 'bash -c curl -H "Authorization: Bearer real-token-value" https://example.invalid/results; sleep 300'
+
+    fragment = match_fragment(cached)
+
+    assert fragment == "https://example.invalid/results; sleep 300"
+    assert fragment in child
+
+
+def test_argv_list_command_keeps_the_rendering_wide_split():
+    """A ``command`` that is not a string (an argv array) has no text to decode,
+    so the rendering itself is fragmented, as for any plain-text input."""
+    cached = _dumps_degraded(
+        {"command": ["bash", "-lc", "long-build release > build.log 2>&1"]}, indent=2
+    )
+
+    assert match_fragment(cached) == "long-build release > build.log 2>&1"
+
+
+def test_multi_line_command_cached_as_json_matches_its_live_shell_child(tmp_path):
+    """End to end: a running multi-line command whose longest line is not its
+    first is WORKING, not ``no matching shell child``."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[200], cmdline="kiro-cli acp")
+    fake.add_pid(200, cmdline="bash -c " + _MULTI_LINE_LONGEST_LAST)
+    oracle = _oracle(fake, clock)
+    tool = _shell_tool(_cached_shell_input(_MULTI_LINE_LONGEST_LAST), clock)
+
+    verdict, evidence = oracle.check_tool(100, tool)
+
+    assert verdict == VERDICT_WORKING, evidence
+    assert "200" in evidence
+
+
+def test_a_lookalike_sharing_only_the_program_name_is_not_bound(tmp_path):
+    """Decoding serves the fragment key alone. The program-name key stays cut
+    from the rendering, where it reads nothing, so a JSON-rendered input never
+    binds a sibling's child of the same interpreter: under a shared runtime that
+    child's exit would read as this command's death and cancel a healthy turn."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[200], cmdline="kiro-cli acp")
+    fake.add_pid(200, cmdline="python3 -m pytest test/test_other_thing.py -n0")
+    oracle = _oracle(fake, clock)
+    tool = _shell_tool(_cached_shell_input("python3 tools/update_index.py --rebuild --quiet"), clock)
+
+    verdict, evidence = oracle.check_tool(100, tool)
+
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence == "no matching shell child", evidence
 
 
 # ── The never-matched fork: absent child vs unrecognized live child ──

@@ -587,14 +587,15 @@ def match_fragment(command: str) -> str:
     usually the command text itself (possibly JSON-wrapped). kiro-cli runs
     shell tools via ``bash -c <command>``, so the child's cmdline contains the
     command text near-verbatim; a long contiguous fragment is a strong match
-    key. Redaction markers and shell metacharacters split the text into
-    fragments; the longest one wins. Returns "" when nothing distinctive
-    survives (caller degrades to the weaker program-name match).
+    key. The fragment is cut from the decoded command text
+    (:func:`_command_text`): in the JSON rendering every newline is the two
+    characters ``\\n``, so a fragment cut there straddles the escape and is
+    not a substring of the real cmdline, and a multi-line command would match
+    only on its first line. Redaction markers and shell metacharacters split
+    the text into fragments; the longest one wins. Returns "" when nothing
+    distinctive survives (caller degrades to the weaker program-name match).
     """
-    text = command or ""
-    m = re.search(r"[\"']command[\"']\s*:\s*\"((?:[^\"\\]|\\.)*)\"", text)
-    if m:
-        text = m.group(1)
+    text = _command_text(command)
     # Split on redaction markers and quoting/control chars that differ between
     # the cached rendering and the real argv.
     fragments = re.split(r"\*{3,}|\[REDACTED[^\]]*\]|[\"'\\\n\r]", text)
