@@ -59,6 +59,25 @@ test('browser: never applies page-side scaling (no CSS zoom, no html font-size)'
   }
 })
 
+// Peer test for Behaviour #9: even in the presence of the Electron shell's
+// displayPreferences.fontSize path (which drives Chromium's defaultFontSize
+// through the main process — see electron/display-preferences/), the
+// dashboard React layer must still refuse to write html.style.fontSize. If
+// this test ever fails, the dashboard has started to compound with the
+// shell's font-size setting, which is exactly the multi-scale bug that
+// motivated removing mc-font-scale.
+test('browser: shell defaultFontSize path does not violate the no-page-side-scaling contract', () => {
+  const root = document.createElement('div')
+  root.id = 'root'
+  document.body.appendChild(root)
+  try {
+    renderHook(() => useZoom())
+    expect(document.documentElement.style.fontSize).toBe('')
+  } finally {
+    root.remove()
+  }
+})
+
 // ── desktop (bridge present) ──
 
 test('desktop: reads the native factor on mount', async () => {

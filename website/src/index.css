@@ -2211,7 +2211,9 @@ file-tree-container{
 .win-electron header.topbar-glass a,
 .win-electron header.topbar-glass input,
 .win-electron header.topbar-glass [role="button"],
-.win-electron .win-titlebar-menu{
+.win-electron .win-titlebar-menu,
+.linux-electron header.topbar-glass [role="button"],
+.linux-electron .win-titlebar-menu{
   -webkit-app-region:no-drag;
 }
 .win-titlebar-menu-item{
