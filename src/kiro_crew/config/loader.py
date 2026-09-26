@@ -3343,6 +3343,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         show_thinking=bool(slack_data.get("show_thinking", True)),
         dm_single_session=bool(slack_data.get("dm_single_session", False)),
         home_tab_sessions_per_kind=_safe_int(slack_data.get("home_tab_sessions_per_kind", 5), 5),
+        sessions_limit=_safe_int(slack_data.get("sessions_limit", 10), 10),
     )
 
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
-from kiro_crew.history import transcript_stem
+from kiro_crew.history import transcript_sort_key, transcript_stem
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -39,6 +39,14 @@ _SESSIONS_MAX_MSG_CHARS = 4000
 _SESSIONS_MAX_PREVIEW = 5
 _SESSIONS_DEFAULT_LIMIT = 10
 
+#: Metadata-line field holding the instant of a session's newest HUMAN turn,
+#: written by the dashboard slot save (``chat_persistence._save_slot_to_history``)
+#: and read here as the ranking key. It sits on line 0, so ranking on it costs one
+#: line per candidate rather than a transcript read, and it is CONTENT: unlike
+#: ``st_mtime`` it survives archival, consolidation, rotation, backup and
+#: migration, none of which are conversation activity.
+_META_LAST_USER_AT = "last_user_at"
+
 _SESSION_KIND_DASHBOARD = "dashboard"
 _SESSION_KIND_TASKRUNNER = "taskrunner"
 _SESSION_KIND_OTHER = "other"
@@ -53,6 +61,77 @@ def _sessions_dir() -> Path:
     shadowing this — there is one override knob, not two.
     """
     return data_home() / "sessions"
+
+
+def _rank_by_human_activity(jsonl: Path, mtime: float) -> float:
+    """Rank *jsonl* by its newest human turn, falling back to *mtime*.
+
+    Returns epoch seconds: the transcript's recorded human turn when it has a
+    usable one, and *mtime* otherwise.
+
+    ``st_mtime`` records the last WRITE, and a write is machine activity: a cron
+    wake, a monitor loop, a subagent turn, an auto-title refresh and any bulk
+    maintenance pass over the directory all advance it although nobody read the
+    session. A pass that iterates in activity order INVERTS the list outright,
+    because the freshest session is rewritten first and so ends up holding the
+    oldest stamp. A recorded human turn has none of those properties: it is
+    content, so archival, consolidation, rotation, backup and migration all leave
+    it alone.
+
+    Costs ONE line. Line 0 is always the metadata line -- every writer in
+    ``history`` rewrites it in place instead of appending a second record -- so a
+    stamp that is missing, malformed, or not on a metadata line costs a single
+    ``readline`` and falls back rather than raising.
+    """
+    try:
+        with jsonl.open(encoding="utf-8") as fh:
+            first = fh.readline()
+    except (OSError, UnicodeError):
+        # Unreadable, deleted between the glob and this open, or not valid UTF-8.
+        # The decode case is why ``UnicodeError`` is caught and not merely
+        # tolerated: this runs for EVERY candidate before the ``limit`` break, so
+        # one corrupt transcript anywhere in the directory would otherwise raise
+        # out through the collector and render "Sessions unavailable" on every
+        # surface, on every scan, until someone deleted the file. A
+        # ``UnicodeDecodeError`` is a ``ValueError``, so the I/O clause alone does
+        # not stop it. Rank by mtime; the read loop below skips the file if it is
+        # still unreadable there.
+        return mtime
+    if not first:
+        return mtime
+    try:
+        head = json.loads(first.strip())
+    except ValueError:
+        # Covers json.JSONDecodeError, which subclasses ValueError.
+        return mtime
+    if not isinstance(head, dict) or head.get("_type") != "metadata":
+        return mtime
+    stamped = head.get(_META_LAST_USER_AT)
+    if not isinstance(stamped, str) or not stamped:
+        return mtime
+    try:
+        bucket, seconds = transcript_sort_key(stamped)
+    except (ValueError, OverflowError, OSError):
+        # A stamp can PARSE and still be unusable. ``transcript_sort_key``
+        # resolves a naive value with ``astimezone()``, which raises at the
+        # representable boundary -- measured, not hypothetical: "year 0 is out of
+        # range" for ``0001-01-01T00:00:00`` and "year 10000" for
+        # ``9999-12-31T23:59:59`` -- and ``timestamp()`` can overflow on some
+        # platforms. This helper promises that a bad stamp costs one readline and
+        # falls back, so the CONVERSION has to sit inside that promise too:
+        # otherwise one such file raises out through the collector and every
+        # surface renders "Sessions unavailable" on every scan until someone
+        # deletes it.
+        return mtime
+    if bucket != 0:
+        # Unparseable. ``transcript_sort_key`` reports that through its BUCKET,
+        # and pairs it with a fallback epoch of 0.0 -- so a rank taken from its
+        # seconds alone would not merely be wrong, it would pin the session to
+        # 1970 and bury it below every other row permanently. The file's mtime is
+        # a real instant, so fall back to it: a corrupt stamp costs the session
+        # its precision, not its place in the list.
+        return mtime
+    return seconds
 
 
 # ---------------------------------------------------------------------------
@@ -207,25 +286,30 @@ def _collect_recent_sessions(
     it in means End appears to do nothing while the row still competes for
     one of *limit* slots. See :func:`_row_is_ended` for what counts.
 
-    Sorted by mtime descending, capped at *limit*. The kind filter and the
-    mtime sort key are both derivable without opening a file (kind from the
-    filename stem, mtime from ``stat``), so the number of transcripts read
-    does not grow with the size of the directory — it is *limit* plus however
-    many SKIPPED candidates are met on the way down the mtime order. Skipping
-    keeps going rather than ending the scan, so the result still holds *limit*
-    rows whenever enough usable transcripts exist.
+    Sorted by last HUMAN activity descending, capped at *limit*. The rank key is
+    a session's ``last_user_at`` metadata stamp when it has one and its
+    ``st_mtime`` when it does not, because mtime measures machine activity: a
+    cron wake, a monitor loop, a subagent, or any bulk pass over the directory
+    rewrites the file and reorders the whole list, and a pass that iterates in
+    activity order inverts it. The kind filter still needs no file open (kind
+    comes from the filename stem), and the rank costs ONE line per candidate --
+    line 0 is always the metadata line -- so only the newest *limit*
+    matching transcripts are read in FULL. It is the whole-transcript reads that
+    stay capped at *limit*, not the scan: the one-line rank read does grow with
+    the directory, by one open and one short read per file, which is what a
+    content-based rank costs and what ``stat`` cannot answer.
 
     Three things are skipped: an empty file, an unreadable one, and a
-    dismissed row. The first two are corrupt-file cases, so before dismissals
-    existed the read count was ``limit`` in every ordinary directory. A
-    dismissal is an ORDINARY state, so the extra reads are now reachable in
-    normal use: with the *n* newest rows dismissed, *n* transcripts are read
-    and discarded before the first row is kept. That cost is accepted rather
-    than avoided, because the flag lives on the metadata line and cannot be
-    read from ``stat``, and because the alternative — letting a dismissed row
-    hold its slot — is the bug this exists to fix. It is bounded by the
-    directory and cheap to bound further: ``with_messages=False`` reads only
-    line 0, which is where the flag is.
+    dismissed row. Skipping keeps going down the rank order rather than ending
+    the scan, so the result still holds *limit* rows whenever enough usable
+    transcripts exist. The first two are corrupt-file cases; a dismissal is an
+    ORDINARY state, so with the *n* highest-ranked rows dismissed, *n*
+    transcripts are read and discarded before the first row is kept. That cost
+    is accepted rather than avoided, because the flag lives on the metadata
+    line and cannot be read from ``stat``, and because the alternative --
+    letting a dismissed row hold its slot -- is the bug this exists to fix. It
+    is bounded by the directory and cheap to bound further:
+    ``with_messages=False`` reads only line 0, which is where the flag is.
 
     This function performs synchronous filesystem I/O (directory scan plus
     up to *limit* whole-file reads plus one per skipped candidate, each
@@ -235,6 +319,24 @@ def _collect_recent_sessions(
     directly — a multi-MB transcript read on the loop stalls every other
     task, including the loop-watchdog heartbeat.
     """
+    # A configured limit below 1 cannot render anything: the read loop breaks on
+    # ``len(rows) >= limit`` before it opens a file, so 0 and every negative
+    # value produce an empty list and the surface silently stops working. Treat
+    # such a value as unset rather than as "show nothing" -- an operator turning
+    # the list off disables the surface, and this is the one chokepoint every
+    # caller passes through, so no surface can skip the guard.
+    #
+    # Coerced rather than compared directly: the value now arrives from config
+    # (``slack.sessions_limit``) through a caller that may hold a stub or a
+    # hand-edited file, and an uncomparable value here would raise INSIDE each
+    # surface's try block -- turning a bad number into "Sessions unavailable"
+    # plus an error audit instead of a list.
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = _SESSIONS_DEFAULT_LIMIT
+    if limit < 1:
+        limit = _SESSIONS_DEFAULT_LIMIT
     sessions_dir = sessions_dir if sessions_dir is not None else _sessions_dir()
     if not sessions_dir.exists():
         return []
@@ -249,7 +351,7 @@ def _collect_recent_sessions(
     # Pre-scan: classify + stat every entry WITHOUT reading it, then sort
     # newest-first so the read loop below opens at most ``limit`` valid
     # transcripts instead of every file in the directory.
-    candidates: list[tuple[float, Path, str, str]] = []
+    candidates: list[tuple[float, float, Path, str, str]] = []
     for jsonl in sessions_dir.glob("*.jsonl"):
         if jsonl.is_symlink():
             continue
@@ -269,14 +371,18 @@ def _collect_recent_sessions(
         except OSError:
             # Deleted between glob and stat — skip.
             continue
-        candidates.append((mtime, jsonl, key, row_kind))
+        rank_ts = _rank_by_human_activity(jsonl, mtime)
+        candidates.append((rank_ts, mtime, jsonl, key, row_kind))
 
-    # Stable sort keyed on mtime only, so equal-mtime entries keep
-    # directory-enumeration order (same tie order the full-scan sort had).
+    # Stable sort keyed on the human-activity rank only, so entries that tie on
+    # it keep directory-enumeration order (the same tie order the mtime sort
+    # had). A file with no recorded human turn ties on its mtime instead, so the
+    # two populations interleave on one timeline rather than one preceding the
+    # other wholesale.
     candidates.sort(key=lambda c: c[0], reverse=True)
 
     rows: list[dict] = []
-    for mtime, jsonl, key, row_kind in candidates:
+    for _rank_ts, mtime, jsonl, key, row_kind in candidates:
         if len(rows) >= limit:
             break
 
@@ -293,7 +399,13 @@ def _collect_recent_sessions(
                 with jsonl.open(encoding="utf-8") as fh:
                     first = fh.readline()
                 lines = [first] if first else []
-        except OSError:
+        except (OSError, UnicodeError):
+            # UnicodeError alongside the I/O clause for the same reason the rank
+            # helper catches it, and this is a SECOND decode site the helper
+            # cannot cover: a transcript whose line 0 decodes but whose body does
+            # not reaches here, and one such file would take down the whole list
+            # instead of costing its own row. Skipping keeps the scan walking
+            # down the rank order.
             continue
         if not lines:
             continue
