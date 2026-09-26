@@ -1071,13 +1071,17 @@ class TestAtomicJsonWrite:
 
         target = tmp_path / "test.json"
         target.write_text("{}")
-        target.chmod(0o664)
+        if sys.platform != "win32":
+            target.chmod(0o664)
 
         _atomic_json_write(target, {"key": "value"})
 
         import stat
 
-        assert stat.S_IMODE(target.stat().st_mode) == 0o664
+        if sys.platform != "win32":
+            # Windows has no POSIX mode bits; the content contract below is
+            # what this writer guarantees there.
+            assert stat.S_IMODE(target.stat().st_mode) == 0o664
         assert json.loads(target.read_text(encoding="utf-8")) == {"key": "value"}
 
     def test_new_file_gets_0o644(self, tmp_path: Path):
@@ -1088,7 +1092,8 @@ class TestAtomicJsonWrite:
 
         import stat
 
-        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        if sys.platform != "win32":
+            assert stat.S_IMODE(target.stat().st_mode) == 0o644
         assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
 
     def test_a_contended_rename_is_retried_on_windows(self, tmp_path: Path, monkeypatch):
