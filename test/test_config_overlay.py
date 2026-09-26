@@ -508,6 +508,57 @@ class TestCliConfigSetLocal:
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["model"] == "auto"
 
+    @pytest.mark.parametrize(
+        "shape", ["relative", "absolute", "flat", "unknown_user", "not_a_string", "null"]
+    )
+    def test_config_set_file_refuses_workspace_with_missing_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], shape: str
+    ) -> None:
+        """set --file refuses a workspace naming a missing dir; nothing is written."""
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / "kiro"
+        (config_dir / "ok").mkdir(parents=True)
+        # A stale binding already on disk is not re-judged when left unchanged.
+        stale = {"agent": {"model": "before"}, "workspaces": {"stale": {"dir": "was"}}}
+        (config_dir / "config.json").write_text(json.dumps(stale))
+        bad = {
+            "relative": {"dir": "gone"},
+            "absolute": {"dir": str(tmp_path / "gone")},
+            "flat": "gone",
+            "unknown_user": {"dir": "~no-such-user-kc/ws"},
+            "not_a_string": {"dir": 123},
+            "null": {"dir": None},
+        }[shape]
+        # The base dir is made on first use, so a missing one is not refused.
+        doc = {"agent": {"model": "after"}, "workspaces": {"ok": {"dir": "ok"}, "d": {}}}
+        doc["workspaces"]["stale"] = {"dir": "was"}
+        good_file = tmp_path / "in.json"
+        args = argparse.Namespace(
+            config_action="set", key=None, value=None, file=str(good_file), local=False
+        )
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            doc["workspaces"]["bad"] = bad
+            good_file.write_text(json.dumps(doc))
+            with pytest.raises(SystemExit) as exc_info:
+                _config_cmd(args)
+            assert exc_info.value.code == 1
+            assert "'bad'" in capsys.readouterr().err
+            assert "before" in (config_dir / "config.json").read_text()
+
+            # The same document with only existing dirs goes through.
+            del doc["workspaces"]["bad"]
+            good_file.write_text(json.dumps(doc))
+            _config_cmd(args)
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert saved["agent"]["model"] == "after"
+
 
 class TestCliConfigSetDeclaredDictKeys:
     """`config set` reaches a declared sub-key of a dict field before it is stored.

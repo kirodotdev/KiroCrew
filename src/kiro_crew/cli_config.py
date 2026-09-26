@@ -19,7 +19,9 @@ from kiro_crew.config.loader import (
     config_local_path,
     config_path,
     update_config_locked,
+    workspace_dir_from_entry,
 )
+from kiro_crew.config.sections import _migrate_workspaces
 from kiro_crew.config.superseded_defaults import (
     acked_superseded,
     adopt_coerced_keys,
@@ -40,6 +42,32 @@ if TYPE_CHECKING:
     from kiro_crew.config.schema import ConfigEntry
 
 _MISSING = object()
+
+
+def _refuse_missing_workspace_dirs(data: dict, current: dict) -> dict:
+    """Refuse a new or changed ``workspaces`` entry whose ``dir`` is not an existing directory.
+
+    Same stance as ``workspace update``. The base dir is exempt: it is made on first use.
+    """
+    workspaces = data.get("workspaces")
+    if not isinstance(workspaces, dict):
+        return data
+    on_disk = current.get("workspaces")
+    old = _migrate_workspaces(on_disk) if isinstance(on_disk, dict) else {}
+    base = workspace_dir_from_entry(None)
+    for name, entry in _migrate_workspaces(workspaces).items():
+        if name in old and old[name].dir == entry.dir:
+            continue  # an unchanged binding is not this write's to judge
+        try:
+            path = workspace_dir_from_entry(entry)
+            usable = isinstance(entry.dir, str) and (path == base or path.is_dir())
+        except (RuntimeError, OSError, TypeError, ValueError):  # unknown ``~user``, bad type
+            usable = False
+        if not usable:
+            raise ConfigWriteRefused(
+                f"workspace {name!r}: dir {entry.dir!r} is not an existing directory"
+            )
+    return data
 
 
 def _config_cmd(args: argparse.Namespace) -> None:
@@ -93,12 +121,16 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 )
                 sys.exit(1)
             try:
-                update_config_locked(config_path(), mutate=lambda _: data, on_corrupt="reset")
+                update_config_locked(
+                    config_path(),
+                    mutate=lambda cur: _refuse_missing_workspace_dirs(data, cur),
+                    on_corrupt="reset",
+                )
             except ConfigWriteRefused as e:
                 # Third writer behind the publish floor, same report as the keyed
-                # paths: nothing was written, and the message names the offending
-                # env-var key, never its value. Anchored on the file, since there
-                # is no single key to name.
+                # paths: nothing was written. The message names an env-var key
+                # (never its value) or a workspace and its dir. Anchored on the file,
+                # since there is no single key to name.
                 print(f"❌ {fp}: {e}", file=sys.stderr)
                 sys.exit(1)
             sel().log_api_access(
