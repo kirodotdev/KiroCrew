@@ -2266,16 +2266,15 @@ ACP_BACKEND_ROUTING: dict = {
 #: needs, as advertised by ``session/new`` and applied through
 #: ``session/set_config_option``.
 #:
-#: codex-acp's default ``agent`` mode permits writes inside the workspace without
-#: asking. Its ACP v1 ``mode`` selector is the enforceable boundary: ``read-only``
-#: still permits passive READS -- ACP v1 has no way to require a prompt for those
-#: -- but commands and changes request approval. That residual read gap does not
-#: close and this option cannot close it; what makes it survivable is the
-#: OS-boundary mask in ``acp_tool_gate.adapter_hidden_credential_dirs``, which
+#: codex-acp advertises ``agent`` as its ``auto_review`` mode ("Approve for me"):
+#: Codex's Guardian Review approves ordinary workspace changes and asks only for
+#: actions it judges potentially unsafe. Selecting ``read-only`` here instead
+#: turns that reviewed posture into interactive ask-before-write.
+#: The OS-boundary mask in ``acp_tool_gate.adapter_hidden_credential_dirs`` still
 #: denies the child everything on the read-gate floor except the harness's own
 #: token store.
 ACP_BACKEND_PERMISSION_CONFIG: dict = {
-    ACP_BACKEND_CODEX: ("mode", "read-only"),
+    ACP_BACKEND_CODEX: ("mode", "agent"),
 }
 
 
