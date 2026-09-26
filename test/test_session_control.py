@@ -4596,10 +4596,10 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
         "the folder existence check suspends, so it must precede the caller "
         "re-resolve -- after the re-gate nothing may suspend"
     )
-    # And the filing itself happens inside the synchronous configuration window,
-    # so no caller ever observes the published slot unfiled -- the atomicity
-    # this test requires.
-    filed = src.index("slot.folder_id = folder_id")
+    # And the filing itself -- decided and written by `_file_child_or_retract`,
+    # synchronously -- happens inside the configuration window, so no caller
+    # ever observes the published slot unfiled -- the atomicity this test requires.
+    filed = src.index("_file_child_or_retract(")
     assert publish < filed < configured, (
         "the folder must be assigned between publishing the slot and the end of "
         "its synchronous configuration, or a caller can observe it unfiled"
@@ -5718,3 +5718,94 @@ async def test_a_requeue_onto_a_replaced_slot_is_refused_not_reported_as_sent(
         "a requeue onto a detached slot must be refused as target_moved, not "
         f"reported as delivered: {caught.value.code}"
     )
+
+
+def test_a_child_is_not_filed_where_it_would_inherit_what_its_creator_has_not(tmp_path):
+    """Filing is how a session acquires a folder's binding and steering, and the
+    caller of ``session_create`` is always an agent -- so the child goes through
+    the one filing decision (``chat_folders.filing_crosses_inheritance``): a
+    folder that confers a binding or steering the creator's own placement does
+    not is refused with the move rule's codes and allocates nothing; a child
+    filed beside its creator, under the same binding, lands. The same decision
+    every request-driven filing route takes."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    _folder(state, "fold00000010", "Bound", project_dir=str(bound))
+    _folder(state, "fold00000011", "Under bound", parent_id="fold00000010")
+    _folder(state, "fold00000012", "Steered", steering_dirs=[str(tmp_path)])
+    _folder(state, "fold00000013", "Plain")
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000011")
+        )
+    assert exc.value.code == "folder_project_dir_forbidden"
+    assert exc.value.status == 403
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000012")
+        )
+    assert exc.value.code == "steering_dirs_forbidden"
+    assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
+
+    plain = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000013")
+    )
+    assert state.get_slot(plain["target"]).folder_id == "fold00000013"
+
+    # The creator already sits under the binding: its child beside it inherits
+    # nothing the creator lacks.
+    inside = _slot(state, "chat-2")
+    inside.folder_id = "fold00000010"
+    beside = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(inside), folder_id="fold00000011")
+    )
+    assert state.get_slot(beside["target"]).folder_id == "fold00000011"
+
+
+def test_a_child_is_not_filed_while_a_folder_write_is_in_flight(tmp_path, monkeypatch):
+    """The filing decision runs again ADJACENT to the child's assignment, in the
+    synchronous window that configures the slot (``_file_child_or_retract``).
+    The live tree is the committed tree unless a folder write is in flight, whose
+    provisional state would be observable there -- so with the store lock held at
+    that instant the filing is refused, retryable, and the freshly minted child is
+    retracted rather than left behind unfiled. Red-first: the assignment ran
+    unconditionally and the child stayed."""
+    state = _make_state(tmp_path)
+    _folder(state, "fold00000030", "Plain")
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    class _HeldAtTheWrite:
+        """The real lock for the early gate's read; reports held at the write."""
+
+        def __init__(self, real):
+            self._real = real
+            self.asked = 0
+
+        def locked(self) -> bool:
+            self.asked += 1
+            return True
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        async def __aenter__(self):
+            return await self._real.__aenter__()
+
+        async def __aexit__(self, *exc):
+            return await self._real.__aexit__(*exc)
+
+    held = _HeldAtTheWrite(state._folders_lock)
+    monkeypatch.setattr(state, "_folders_lock", held)
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000030")
+        )
+    assert exc.value.code == "folder_store_busy"
+    assert exc.value.status == 409
+    assert held.asked >= 1
+    assert state.live_slot_count() == before, "a refused filing must retract the child"

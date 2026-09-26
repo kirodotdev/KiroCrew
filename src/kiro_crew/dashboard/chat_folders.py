@@ -10,7 +10,7 @@ import unicodedata
 import uuid
 import weakref
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -32,11 +32,24 @@ from kiro_crew.dashboard.token_auth import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
-from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
+from kiro_crew.hooks import (
+    LINK_SCREEN_PROBE_CAUSES,
+    is_unc_shape,
+    link_screen,
+    unc_probe_allowed,
+    validate_file_path,
+)
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    UNVERIFIABLE_PATH_PREFIX,
+    PathResolutionStalled,
+    is_sensitive_path,
+    is_sensitive_resolved_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -475,24 +488,344 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     return web.json_response(folders)
 
 
+#: The one refusal text for a UNC-shaped ``project_dir``; the tool pre-check and
+#: the validator return the same words so the agent reads one rule.
+PROJECT_DIR_UNC_REFUSAL = "Project directory must not be a network (UNC) path"
+
+
+def project_dir_unc_refusal(raw: str) -> str | None:
+    """The refusal for a UNC-shaped ``project_dir``, or ``None`` when the text is not one.
+
+    ``project_dir`` is agent-authored path text that reaches the gateway's
+    filesystem: ``realpath``/``isdir`` on ``\\\\host\\share``, ``//host/share``
+    or ``\\\\?\\UNC\\host\\share`` makes a Windows gateway open an SMB connection to
+    that host -- an outbound credential probe the text's author controls, with
+    no recovery once the handshake has left. So the shape is refused LEXICALLY,
+    before the first filesystem call, through the repo's one UNC gate
+    (:func:`~kiro_crew.hooks.is_unc_shape` with the
+    :func:`~kiro_crew.hooks.unc_probe_allowed` allowance for shares this
+    gateway itself writes to -- the same pair the steering validator below and
+    the attachment readers apply). Refused on EVERY host, not only Windows: the
+    text is untrusted everywhere and this never reads the platform. Pure string
+    work; the endpoint is the authority and audits its refusal.
+
+    An ADMISSION rule for NON-PERSON principals: every site where a caller
+    other than the person names a directory runs it -- the ``set_project``
+    directive, a non-person request at the slot project endpoint, and any folder
+    route a non-person ``project_dir`` reaches
+    (the fenced path, :func:`screen_and_resolve_project_dir`). The PERSON's own request does not: the
+    probe this prevents is a caller other than the operator steering the
+    gateway onto a host of that caller's choosing, and that threat does not
+    exist when the operator picks a path for the operator's own gateway -- a
+    person could bind a project on a share before this rule and still can, by
+    its UNC name, resolved as main did (:func:`_validate_project_dir`). None of
+    the READ paths run it either: :func:`_resolve_folder_project_dir` (on slot
+    create and agent switch) honours every stored binding as it always was,
+    since only the person binds a folder. The rule's other half is not lexical:
+    a LINK on the way to a non-person path whose target names a share is read
+    without being followed and refused before anything would open the share
+    (the link half of :func:`screen_and_resolve_project_dir`), because there the ``realpath``
+    is the probe one link away.
+    """
+    if is_unc_shape(raw) and not unc_probe_allowed(raw):
+        return PROJECT_DIR_UNC_REFUSAL
+    return None
+
+
+#: The refusal for a non-person LOCAL project path whose way runs through a
+#: link whose target names a share, or a chain longer than the screen follows
+#: -- the two causes after which a by-name resolve IS the probe. The other
+#: screen causes take :data:`PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL`; the lexical
+#: half keeps its own text.
+PROJECT_DIR_LINK_REFUSAL = (
+    "Project directory resolves through a link that names a network share, or through "
+    "a chain of links too long to screen"
+)
+
+#: The link half's refusal when the screen stopped for a cause that is not the
+#: probe: a link it could not read, an ambiguous target, a path too deep to
+#: walk. The person re-spells the path without the link; nothing here says the
+#: path reaches a host, which is why the slot project endpoint answers it with
+#: its own code and audits it apart from the UNC class.
+PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL = (
+    "Project directory resolves through a link that could not be screened (an unreadable "
+    "link, an ambiguous target, or a path too deep) - re-spell it without the link"
+)
+
+
+def _anchored_spelling(expanded: str) -> str:
+    """The spelling the link screen walks: anchored, and collapsed only where the OS collapses.
+
+    ``os.path.abspath`` performs no filesystem I/O, but it folds ``..``
+    lexically. On Windows that IS the platform's rule -- the Win32 path parser
+    folds ``..`` before any filesystem sees a name, so a by-name open of
+    ``C:\\work\\link\\..\\sibling`` reaches ``C:\\work\\sibling`` whatever
+    ``link`` points at -- and ``abspath`` (``GetFullPathNameW``) says exactly
+    what every open there would do. On POSIX the kernel resolves ``..`` against
+    the directory the components before it actually reach, THROUGH a symlink
+    rather than past it: ``/work/link/../sibling`` with ``link ->
+    /projects/team/subdir`` is ``/projects/team/sibling``, and a lexical fold
+    would have opened ``/work/sibling`` instead -- a different directory for
+    the person's chats, admitted silently. There the spelling is only anchored
+    (a relative path to the working directory, as ``realpath`` anchors it) and
+    handed to :func:`~kiro_crew.hooks.link_screen`, whose walk resolves each
+    ``..`` in component order, and to the pinned open after it, which opens
+    ``..`` relative to the directory it holds.
+    """
+    if os.name == "nt":
+        return os.path.abspath(expanded)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(os.getcwd(), expanded)
+
+
+#: The refusal when the pinned resolve finds a component that became a link
+#: between the screen and the open -- the check-to-use swap, refused rather
+#: than followed -- a directory this process cannot open for verification, or a
+#: host that can pin a directory chain neither by descriptor nor by handle.
+PROJECT_DIR_UNVERIFIABLE_REFUSAL = (
+    "Project directory could not be opened as a directory: it is not one, it cannot be "
+    "opened for verification, or a path component changed while it was being checked - "
+    "retry"
+)
+
+#: The validator's own words for a path that names nothing (main's text).
+PROJECT_DIR_MISSING_REFUSAL = "Project directory must be an existing directory"
+
+#: main's own words for a project path that is (or resolves to) a sensitive
+#: location; the fenced resolve answers it without resolving a name again.
+PROJECT_DIR_SENSITIVE_REFUSAL = "project_dir refers to a sensitive path"
+
+
+def project_dir_sensitive_refusal(spelling: str) -> str | None:
+    """The sensitive-path verdict for *spelling* AS IT STANDS -- no resolve of the name.
+
+    ``is_sensitive_path`` resolves its argument again before matching, and after
+    a pinned resolve that second, by-name walk is the hazard the pin closed: on
+    a Windows gateway it follows a junction an agent planted -- or a component
+    swapped after the pin -- to the share it names. So the check here is
+    :func:`~kiro_crew.security.is_sensitive_resolved_path`: the candidate is
+    matched lexically and only the anchors (the home directory, the override
+    roots) are resolved, inline on the calling thread, which is why every caller
+    runs it on a worker thread. Hand it a spelling that holds no link -- the
+    real path a pinned open returned, the link-free spelling the screen handed
+    back, or ``realpath``'s own output. Returns ``None``,
+    :data:`PROJECT_DIR_SENSITIVE_REFUSAL`, or -- when the anchors could not be
+    resolved in time -- the repo's stall refusal (``UNVERIFIABLE_PATH_PREFIX``),
+    fail closed, which :func:`~kiro_crew.security.is_unverifiable_path_refusal`
+    tells apart from a match.
+    """
+    try:
+        if is_sensitive_resolved_path(spelling):
+            return PROJECT_DIR_SENSITIVE_REFUSAL
+    except PathResolutionStalled:
+        return (
+            f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time), "
+            "so it is refused fail-closed. This is NOT a match: the path is not known to "
+            "be sensitive. Retry the same call after a short wait; do not re-spell it. "
+            f"Path: {spelling!r}"
+        )
+    return None
+
+
+#: The fenced admission's answer when a component on the way cannot be TRAVERSED
+#: by this process (an ancestor that denies it access): not a spelling problem
+#: and not a swap, so it carries neither "re-spell" nor "retry".
+PROJECT_DIR_UNOPENABLE_REFUSAL = (
+    "Project directory could not be opened for verification: a directory on the way to it "
+    "denies this process access"
+)
+
+
+#: Why :func:`_pinned_project_dir` stopped: the caller maps these to its words.
+_RESOLVED = ""
+_RESOLVE_MISSING = "missing"
+_RESOLVE_UNOPENABLE = "unopenable"
+_RESOLVE_UNVERIFIABLE = "unverifiable"
+
+
+def _link_refusal(cause: str) -> str:
+    """The validator's words for a link-screen *cause* the screen stopped for.
+
+    A request from a non-person principal is refused for EVERY cause -- an
+    agent re-spells its own request -- but the two kinds are told apart, so the
+    caller can audit and code them apart: the probe causes
+    (:data:`~kiro_crew.hooks.LINK_SCREEN_PROBE_CAUSES`: a share-shaped target, a
+    chain past the horizon, after which a by-name resolve IS the probe) take
+    :data:`PROJECT_DIR_LINK_REFUSAL`; the rest (an unreadable link, an ambiguous
+    target, a path too deep) take :data:`PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL`.
+    """
+    if cause in LINK_SCREEN_PROBE_CAUSES:
+        return PROJECT_DIR_LINK_REFUSAL
+    return PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL
+
+
+def _pinned_refusal(why: str) -> str:
+    """The validator's words for a :func:`_pinned_project_dir` cause other than success.
+
+    A missing directory (or a spelling no filesystem can carry) keeps
+    :data:`PROJECT_DIR_MISSING_REFUSAL`; a component this process may not
+    traverse answers :data:`PROJECT_DIR_UNOPENABLE_REFUSAL`; a component that
+    became a link and a host that cannot pin fail closed with
+    :data:`PROJECT_DIR_UNVERIFIABLE_REFUSAL`.
+    """
+    if why == _RESOLVE_MISSING:
+        return PROJECT_DIR_MISSING_REFUSAL
+    if why == _RESOLVE_UNOPENABLE:
+        return PROJECT_DIR_UNOPENABLE_REFUSAL
+    return PROJECT_DIR_UNVERIFIABLE_REFUSAL
+
+
+def _pinned_project_dir(screened: str) -> tuple[str, str]:
+    """Resolve a screened, link-free spelling through the repo's pinned open.
+
+    Returns ``(real, "")`` -- *real* is the kernel's own path for the directory
+    the open HELD, proven a directory by that open -- or ``("", cause)``:
+    ``missing`` (a component names nothing), ``unopenable`` (a component this
+    process may not open: an exec-only parent, a denied ACL) or
+    ``unverifiable`` (a link or non-directory at a component -- the
+    check-to-use swap, refused at the open instead of followed -- a host that
+    pins neither way, or a real path that cannot be read back). The mechanism is
+    :func:`pinned_fs.real_dir_path_pinned`: on POSIX an ``openat`` chain under
+    ``O_NOFOLLOW``, on Windows a root-first chain of handles opened with
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` and held (no ``FILE_SHARE_DELETE``) until
+    the real path is read -- the same primitive at all three sites that admit a
+    project directory, so the by-name ``realpath`` that a swapped component
+    would redirect runs at none of them.
+    """
+    try:
+        return pinned_fs.real_dir_path_pinned(screened, what="project directory"), _RESOLVED
+    except FileNotFoundError:
+        return "", _RESOLVE_MISSING
+    except ValueError:
+        # A spelling no filesystem can carry -- an embedded NUL, a surrogate the
+        # platform cannot encode -- reaches ``os.open`` as ``ValueError`` (the
+        # screen's ``islink`` swallowed it and passed the spelling unchanged).
+        # Nothing is named by it, so it is the missing directory main's
+        # ``realpath``/``isdir`` answered, not a server error.
+        return "", _RESOLVE_MISSING
+    except PermissionError:
+        return "", _RESOLVE_UNOPENABLE
+    except (pinned_fs.PinnedPathRefusal, OSError):
+        return "", _RESOLVE_UNVERIFIABLE
+
+
+def screen_and_resolve_project_dir(expanded: str) -> tuple[str, str | None]:
+    """The link half and the pinned resolve in one call, for a worker thread.
+
+    What the slot project endpoint runs under ``asyncio.to_thread`` for a
+    non-person caller and the ``set_project`` directive runs inside its own
+    worker-thread validation, so neither site holds a ``realpath`` of its own
+    and neither runs the screen's ``lstat``/``readlink`` or the pinned opens on
+    the event loop. The link half first: the repo's one link-target screen,
+    :func:`~kiro_crew.hooks.link_screen` (the same one
+    :func:`~kiro_crew.hooks.validate_file_path` runs for file reads), over the
+    spelling :func:`_anchored_spelling` hands it, reads each link on the way
+    with ``os.readlink`` (never followed) and refuses a target that names a
+    share, on every host, because on a Windows gateway the ``realpath`` that
+    would follow it IS the SMB probe, and one rule everywhere keeps such a value
+    out of a store a Windows gateway later reads; what it hands back is the
+    path re-spelled through every link it read, holding no link the walk saw.
+    Then the pinned resolve of THAT spelling, never the original
+    (:func:`_pinned_project_dir`). Returns ``(real_dir, None)`` or
+    ``("", refusal)`` with the refusal one of :data:`PROJECT_DIR_LINK_REFUSAL`,
+    :data:`PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL`, :data:`PROJECT_DIR_MISSING_REFUSAL`,
+    :data:`PROJECT_DIR_UNOPENABLE_REFUSAL`, :data:`PROJECT_DIR_UNVERIFIABLE_REFUSAL`,
+    :data:`PROJECT_DIR_SENSITIVE_REFUSAL`
+    (:func:`_link_refusal`, :func:`_pinned_refusal`; the folder routes never
+    reach this path, since a non-person ``project_dir`` is refused whole there).
+    The PERSON's request and every stored value
+    never meet any of this (:func:`_validate_project_dir`, main's by-name
+    resolution).
+    """
+    screened, cause = link_screen(_anchored_spelling(expanded))
+    if screened is None:
+        return "", _link_refusal(cause)
+    # The sensitive-path verdict is decided HERE, on this thread, and never by a
+    # by-name resolve of what the pin returned: ``is_sensitive_path`` resolves
+    # its argument again, and on a Windows gateway that follows a junction an
+    # agent planted -- or a component swapped after the pin -- to the share it
+    # names, the probe the pin exists to prevent (review-caught). The screened
+    # spelling holds no link the walk saw, so it is matched as it stands (a
+    # sensitive path keeps its precedence over a missing one, as at the folder
+    # routes), and the real path the open HELD is matched as the kernel spelled it.
+    if (sensitive := project_dir_sensitive_refusal(screened)) is not None:
+        return "", sensitive
+    real, why = _pinned_project_dir(screened)
+    if why == _RESOLVED:
+        if (sensitive := project_dir_sensitive_refusal(real)) is not None:
+            return "", sensitive
+        return real, None
+    return "", _pinned_refusal(why)
+
+
+def _admit_project_dir(raw: str) -> tuple[str, str | None]:
+    """Validate a ``project_dir`` a REQUEST names. Returns (resolved_path, error_msg).
+
+    The PERSON's admission, by construction: the create and update routes refuse
+    a non-person caller's ``project_dir`` whole before this runs
+    (:func:`_agent_binding_refusal`), and both scaffold routes refuse every
+    non-person caller before the root is read (``chat_folder_scaffold``), so the
+    only request that arrives here is the operator choosing a path for the
+    operator's own gateway -- not the threat the UNC gate exists for. It is
+    therefore :func:`_validate_project_dir`, main's own resolution by name, a
+    share by its UNC spelling included. The fenced path (the UNC gate, the link
+    screen, the pinned resolve) lives in :func:`screen_and_resolve_project_dir`
+    and runs where a non-person principal names path text: the ``set_project``
+    directive and the slot project endpoint's non-person arm.
+    """
+    return _validate_project_dir(raw)
+
+
+def _sensitive_project_dir_refusal(resources: str) -> tuple[str, str | None]:
+    """Audit and word the sensitive-path refusal (main's text)."""
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.folder_project_dir",
+        outcome="denied",
+        resources=resources,
+        error="sensitive path",
+    )
+    return "", PROJECT_DIR_SENSITIVE_REFUSAL
+
+
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
-    """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
+    """Validate and normalize project_dir. Returns (resolved_path, error_msg).
+
+    main's validator, by name: absolute or ``~``-prefixed, then
+    :func:`_validate_by_name` -- ``realpath``, the sensitive check, ``isdir``.
+    It serves the PERSON's request (through :func:`_admit_project_dir`) and the
+    read path (:func:`_resolve_folder_project_dir`), and those are the same
+    population: only the person binds a folder, so every stored value is a path
+    the operator chose for the operator's own gateway, honoured as it always
+    was -- a share by its UNC name, a local link to one, a chain the screen
+    could not read. The UNC gate and the pinned resolve are the NON-PERSON
+    principal's (:func:`screen_and_resolve_project_dir`), because the probe they
+    prevent is a caller other than the operator steering the gateway onto a
+    host of that caller's choosing.
+    """
     if not raw:
         return "", None
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
+    return _validate_by_name(os.path.expanduser(raw))
+
+
+def _validate_by_name(spelling: str) -> tuple[str, str | None]:
+    """main's own resolution -- ``realpath``, sensitive check, ``isdir`` -- for the
+    spellings the gateway resolves by name: the person's request and every stored
+    binding (see :func:`_validate_project_dir`)."""
+    try:
+        resolved = os.path.realpath(spelling)
+    except ValueError:
+        # A spelling no filesystem can carry (an embedded NUL): ``isdir`` swallows
+        # it but ``realpath`` raises it, so it is answered here as the missing
+        # directory it names rather than escaping as a server error.
+        return "", PROJECT_DIR_MISSING_REFUSAL
     if is_sensitive_path(resolved):
-        sel().log_api_access(
-            caller="dashboard",
-            operation="chat.folder_project_dir",
-            outcome="denied",
-            resources=resolved,
-            error="sensitive path",
-        )
-        return "", "project_dir refers to a sensitive path"
+        return _sensitive_project_dir_refusal(resolved)
     if not os.path.isdir(resolved):
-        return "", "Project directory must be an existing directory"
+        return "", PROJECT_DIR_MISSING_REFUSAL
     return resolved, None
 
 
@@ -560,39 +893,51 @@ MAX_FOLDER_STEERING_DIRS = 16
 MAX_FOLDER_STEERING_DIR_LEN = 4096
 
 
-def _refuse_principal_steering_dirs(
-    request_app: str, steering_dirs: list, *, operation: str, folder_id: str
+def _refuse_agent_steering_dirs(
+    state: Any,
+    request: web.Request,
+    steering_dirs: list | None,
+    *,
+    operation: str,
+    folder_id: str,
 ) -> web.Response | None:
-    """Only the PERSON may declare steering directories; refuse everyone else.
+    """Only the PERSON may change a folder's steering directories; every agent is refused.
 
     A steering directory is a host-file READ the unsandboxed gateway performs
-    on the folder's behalf and hands to every chat in the folder. Folder
-    permission is not host-file permission: an app (or an admitted crew member)
-    that may create and edit its own folders must not be able to point one at
-    an arbitrary readable Markdown tree -- the person's notes, a repository
-    outside the app's reach -- and have the gateway launder that read into its
-    own model session, with no tool grant and no signal. So a NON-EMPTY
-    ``steering_dirs`` from a non-person principal is refused at both write
-    sites, before any path is touched, and audited as denied. Clearing to
-    ``[]`` stays allowed (it only removes reads). The person's own dashboard
-    calls carry the empty principal and are unaffected; a person can still
-    declare steering on a folder an app or member owns, and the delivery gate
-    then routes it to that principal's chats as before.
+    on the folder's behalf and reads into the model context of every chat the
+    folder delivers it to -- for a folder the person owns, the PERSON's chats.
+    Folder permission is not host-file permission: an app or a crew member that
+    may create and edit its own folders must not point one at an arbitrary
+    readable Markdown tree and have the gateway launder that read into its own
+    model sessions, with no tool grant and no signal; and an ordinary session
+    must not put words in front of the person's next chat that way either --
+    nor take away what the person put there: a ``steering_dirs`` of ``[]`` from
+    an agent REMOVES the person's declaration from every chat in the subtree,
+    the same mutation of the person's context in the other direction. So the
+    person is read first (:func:`_is_the_person`), and any ``steering_dirs`` a
+    request from anyone else names -- a declaration or a clear -- is refused at
+    both write sites, before any path is touched, and audited as denied against
+    the agent's principal or, for a session nobody else names, its session key.
+    *steering_dirs* is ``None`` when the request did not name the field at
+    all: nothing is mutated, nothing is refused. The person's own sidebar calls
+    are unaffected: a person can still declare or clear steering on a folder an
+    app or member owns, and the delivery gate then routes it to that
+    principal's chats as before.
     """
-    if not request_app or not steering_dirs:
+    if _is_the_person(request) or steering_dirs is None:
         return None
     sel().log_api_access(
-        caller=request_app,
+        caller=_agent_audit_caller(state, request),
         operation=operation,
         outcome="denied",
         source="app_isolation",
         resources=f"folder={folder_id or '-'} steering_dirs={len(steering_dirs)}",
-        error="steering_dirs may be declared only by the person",
+        error="steering_dirs may be changed only by the person",
     )
     return web.json_response(
         {
             "error": (
-                "steering_dirs may be declared only from the person's own session: "
+                "steering_dirs may be declared or cleared only from the person's own session: "
                 "folder permission does not grant host-file reads"
             ),
             "code": "steering_dirs_forbidden",
@@ -946,7 +1291,11 @@ def _subtree_holds_foreign_folder(
     would otherwise relocate a folder the person nested inside it, which is the
     same violation as editing that folder directly, reached one level down.
 
-    Used by the reparent path only. Delete asks a stricter question instead --
+    Used by the reparent path. A ``project_dir`` change is not gated by this
+    test: an agent principal may not change an existing folder's binding at
+    all (see ``api_chat_folder_update``), because the sessions that binding
+    reaches live outside the folder store.
+    Delete asks a stricter question instead --
     whether the folder is EMPTY -- because a delete has more kinds of content to
     account for (sessions, and archived sessions a live scan cannot see), and
     emptiness answers all of them without an ownership test per content type.
@@ -966,6 +1315,325 @@ def _subtree_holds_foreign_folder(
         if _is_descendant(folders, ancestor_id=root_id, folder_id=fid):
             return True
     return False
+
+
+def _inherited_project_dir(folders: list[dict[str, Any]], folder_id: str) -> str:
+    """The STORED binding a folder placed under *folder_id* would inherit: the
+    nearest ancestor's ``project_dir``, or ``""`` for the top level and for a
+    chain that stores none.
+
+    The same nearest-ancestor walk as :func:`_resolve_folder_project_dir`,
+    minus the path validation: this is called inside the folder store's mutate
+    callback, on the event loop and under the store lock, where the validator's
+    realpath/isdir would block every other request. Stored values are compared
+    verbatim -- every binding was written by the same validator, so equal
+    strings are the same binding and different strings are not.
+    Cycle-guarded like every walk over ``parent_id``.
+    """
+    by_id = {str(f.get("id") or ""): f for f in folders}
+    seen: set[str] = set()
+    current = folder_id
+    while current and current not in seen:
+        seen.add(current)
+        node = by_id.get(current)
+        if node is None:
+            break
+        bound = str(node.get("project_dir") or "").strip()
+        if bound:
+            return bound
+        current = str(node.get("parent_id") or "")
+    return ""
+
+
+def _move_changes_inherited_binding(
+    folders: list[dict[str, Any]], target: dict[str, Any], new_parent: str
+) -> bool:
+    """Whether reparenting *target* under *new_parent* changes the project
+    directory the chats in its subtree resolve.
+
+    Nearest wins, so a folder carrying its own binding resolves it wherever it
+    sits and the move changes nothing for its subtree; an unbound folder's
+    subtree resolves the nearest bound ancestor, so the two places are compared
+    as the stored binding each confers (:func:`_inherited_project_dir`), under
+    the same lock the write takes.
+    """
+    if str(target.get("project_dir") or "").strip():
+        return False
+    before = _inherited_project_dir(folders, str(target.get("parent_id") or ""))
+    return before != _inherited_project_dir(folders, new_parent)
+
+
+def _inherited_steering_dirs(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The STORED steering a folder placed under *folder_id* would inherit.
+
+    The steering analogue of :func:`_inherited_project_dir`, for the same
+    caller (the move rule inside the store's mutate callback, on the event loop
+    and under the store lock, where :func:`_resolve_folder_steering_dirs`'s
+    per-entry ``realpath``/``isdir`` would block every other request). Steering
+    ACCUMULATES up ``parent_id`` rather than nearest-wins, so the answer is the
+    chain, root-first: one ``(owner_app, declared entries)`` pair per ancestor
+    that declares any, stored strings verbatim, no validation and no dedup.
+    The owner rides along because the resolver delivers a folder's steering
+    only to chats running as that folder's principal -- so two chains that
+    declare the same directories under different owners steer different chats,
+    and must compare unequal. Equal tuples mean every chat in the moved subtree
+    would resolve exactly the steering it resolves today, whatever principal
+    it runs as. ``()`` for the top level and for a chain declaring nothing.
+    Cycle-guarded like every walk over ``parent_id``.
+    """
+    by_id = {str(f.get("id") or ""): f for f in folders}
+    chain: list[tuple[str, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    current = folder_id
+    while current and current not in seen:
+        seen.add(current)
+        node = by_id.get(current)
+        if node is None:
+            break
+        raw = node.get("steering_dirs")
+        if isinstance(raw, list) and raw:
+            chain.append((_folder_owner_app(node), tuple(str(entry) for entry in raw)))
+        current = str(node.get("parent_id") or "")
+    return tuple(reversed(chain))
+
+
+def _is_the_person(request: web.Request) -> bool:
+    """True when the token middleware POSITIVELY identified *request* as the
+    PERSON's own -- the one bit the folder fences key WHO on.
+
+    ``request["is_dashboard_user"]`` is set ``True`` only when the person's OWN
+    credential validated -- the cookie or session token behind the sidebar's
+    Folder settings -- and ``False`` for an app's token; the internal-secret
+    transport (the managed MCP set, so every agent session's tool call: an
+    ordinary dashboard session's, a crew member's, an app's, a cron's, a
+    subagent's, a channel session's) never sets it, because the secret proves
+    the call came from inside, not who made it. So the person is the caller
+    the middleware NAMED, never the caller nothing else claimed: an absent
+    stamp reads as not the person (``is True``, never truthiness), and a
+    request that met no middleware at all is refused rather than admitted. Not
+    read from the session key either: the browser's transport sends
+    ``X-Session-Key`` too (the active tab's), so the key cannot tell the person
+    from an agent.
+
+    Three rules key on this bit, and nothing else in the module reads who is
+    calling for a binding: a non-person caller's ``project_dir`` is refused
+    whole (:func:`_agent_binding_refusal`) and the person's meets the validators
+    alone; a non-person caller may not declare ``steering_dirs``
+    (:func:`_refuse_agent_steering_dirs`); a non-person caller may not move a
+    folder to where its subtree would inherit a different binding or steering
+    (the two reparent branches in ``api_chat_folder_update``).
+    """
+    return request.get("is_dashboard_user") is True
+
+
+def _agent_audit_caller(state: Any, request: web.Request) -> str:
+    """What an agent's refusal is audited against: its principal (an app's
+    name, a member's ``member:<store>``) or, for a session nobody else names,
+    its own session key."""
+    return (
+        folder_principal(state, request)
+        or request.headers.get("X-Session-Key", "").strip()
+        or "unattributable"
+    )
+
+
+def filing_crosses_inheritance(
+    folders: list[dict[str, Any]], *, from_folder_id: str, to_folder_id: str
+) -> str:
+    """Whether placing a session from one folder into another changes what it INHERITS.
+
+    A folder's binding and steering reach a chat through the folder it is filed
+    in (:func:`_inherited_project_dir`, :func:`_inherited_steering_dirs`: the
+    nearest ancestor's binding, the accumulated steering chain), so filing is
+    how a session acquires them -- at creation, on a re-file, on a fork or a
+    child session, wherever a request names a folder. Returns ``""`` when the
+    two places confer the same binding and steering, ``"binding"`` when the
+    binding differs, else ``"steering"`` when the steering differs. Compared as
+    the STORED values the two folders confer, over the committed tree the caller
+    passes; ``""`` for *from_folder_id* is a session filed nowhere (a new one).
+    """
+    if from_folder_id == to_folder_id:
+        return ""
+    if _inherited_project_dir(folders, from_folder_id) != _inherited_project_dir(
+        folders, to_folder_id
+    ):
+        return "binding"
+    if _inherited_steering_dirs(folders, from_folder_id) != _inherited_steering_dirs(
+        folders, to_folder_id
+    ):
+        return "steering"
+    return ""
+
+
+def refuse_filing_across_inheritance(
+    state: Any,
+    request: web.Request,
+    folders: list[dict[str, Any]],
+    *,
+    slot_key: str,
+    from_folder_id: str,
+    to_folder_id: str,
+    operation: str,
+) -> web.Response | None:
+    """The ONE decision for placing a session into a folder from a REQUEST.
+
+    Every route that writes a session's folder from a request calls this before
+    the write -- ``PATCH /api/chat/slots/{slot}/folder``, ``POST
+    /api/chat/slots`` with a ``folder_id`` -- and the two agent tools that file
+    a child (``session_create``, ``session_fork``) apply the same comparison
+    through :func:`filing_crosses_inheritance`; a structural test enumerates the
+    writers and holds them to it. The PERSON is never confined
+    (:func:`_is_the_person`, the one positive bit every folder fence keys on).
+    Any other principal may not change what the session inherits: a filing
+    under a bound or steered folder -- or out from under one -- rebinds the
+    session on its next agent switch and hands it the folder's steering at its
+    next start exactly as a refused reparent would have, and the ownership
+    checks a route runs only ask whether the caller may touch THIS session. A
+    filing between places that confer the same binding and steering lands.
+    Refused with the move rule's own codes (``folder_project_dir_forbidden``,
+    ``steering_dirs_forbidden``), audited against the caller's principal or --
+    for a session nobody else names -- its session key. *folders* must be the
+    COMMITTED tree (``state.read_folders``): a binding clear awaiting a write
+    that then fails is never judged as unbound.
+    """
+    if _is_the_person(request):
+        return None
+    crossed = filing_crosses_inheritance(
+        folders, from_folder_id=from_folder_id, to_folder_id=to_folder_id
+    )
+    if not crossed:
+        return None
+    sel().log_api_access(
+        caller=_agent_audit_caller(state, request),
+        operation=operation,
+        outcome="denied",
+        source="app_isolation",
+        resources=f"slot={slot_key} folder={to_folder_id or '-'}",
+        error=f"agent cannot file a session across what it would inherit as {crossed}",
+    )
+    return _filing_crossed_response(crossed)
+
+
+async def file_slot_across_inheritance(
+    state: Any,
+    request: web.Request,
+    slot: Any,
+    *,
+    to_folder_id: str,
+    operation: str,
+    revalidate: Callable[[], web.Response | None] | None = None,
+) -> web.Response | None:
+    """Decide AND write a request-driven filing in ONE section under the folder store lock.
+
+    :func:`refuse_filing_across_inheritance` over a snapshot is a decision made
+    before a write that comes later, and every await between the two -- a
+    folder un-hide, a peer round-trip, a persist -- is a window in which a
+    folder mutation can commit and change what the destination (or the source)
+    confers, so the write lands on a tree the decision never saw. Here the
+    decision and the write share a critical section: ``state.hold_folders`` holds
+    the store lock across an awaitable section and hands it the COMMITTED tree,
+    no folder mutation can commit until the section returns, and the assignment
+    of ``slot.folder_id`` runs synchronously inside it. *revalidate*, when a
+    route has identity checks of its own (the slot still registered under its
+    name, the transcript still the caller's), runs inside the same section
+    first, so no await separates those checks from the write either. Returns
+    the refusal response -- nothing written -- or ``None`` after the write; the
+    caller then persists and un-hides as it did, and rolls back on its own
+    persist failure as it did.
+    """
+
+    async def _section(folders: list[dict[str, Any]]) -> web.Response | None:
+        if revalidate is not None:
+            stale = revalidate()
+            if stale is not None:
+                return stale
+        refused = refuse_filing_across_inheritance(
+            state,
+            request,
+            folders,
+            slot_key=slot.key,
+            from_folder_id=slot.folder_id,
+            to_folder_id=to_folder_id,
+            operation=operation,
+        )
+        if refused is not None:
+            return refused
+        if to_folder_id != slot.folder_id:
+            slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
+        slot.folder_id = to_folder_id
+        return None
+
+    return await state.hold_folders(_section)
+
+
+def _filing_crossed_response(axis: str) -> web.Response:
+    """The refusal a non-person FILING meets when the destination folder would
+    hand the session a different binding (*axis* ``"binding"``) or steering
+    (``"steering"``): the move rule's codes, so a client branches on the rule
+    that refused it, in the filing verb's words."""
+    if axis == "binding":
+        return web.json_response(
+            {
+                "error": (
+                    "an agent cannot file a session where it would inherit a different "
+                    "project directory - file it between places with the same binding, "
+                    "or ask the person"
+                ),
+                "code": "folder_project_dir_forbidden",
+            },
+            status=403,
+        )
+    return web.json_response(
+        {
+            "error": (
+                "an agent cannot file a session where it would inherit different steering "
+                "directories - file it between places with the same steering, or ask the "
+                "person"
+            ),
+            "code": "steering_dirs_forbidden",
+        },
+        status=403,
+    )
+
+
+def _agent_binding_refusal(
+    state: Any, request: web.Request, *, operation: str, resources: str
+) -> web.Response:
+    """The one answer an AGENT's ``project_dir`` meets on the folder routes, at
+    create as on the PATCH: refused whole, before the path is looked at.
+
+    A folder's binding is what the gateway later hands every chat filed in the
+    folder as its project, cwd and steering root -- for a folder the person
+    owns, the PERSON's chats. This PR ships no admitted path for an agent to
+    bind one (the agent bind path is a follow-up); the person binds from the
+    sidebar's Folder settings, whose request the middleware stamped as the person's
+    (:func:`_is_the_person`) and never meets this refusal. One code for every
+    agent -- an app, a crew member, an ordinary session's tool call, a cron, a
+    subagent, a channel session -- with the audit naming its principal or its
+    session key (:func:`_agent_audit_caller`), so no caller is sorted by its
+    key. The dashboard MCP tools do not carry ``project_dir`` at all; this
+    refusal is the route's own floor for any internal caller that posts one.
+    """
+    sel().log_api_access(
+        caller=_agent_audit_caller(state, request),
+        operation=operation,
+        outcome="denied",
+        source="app_isolation",
+        resources=resources,
+        error="agent cannot set or clear a folder's project directory",
+    )
+    return web.json_response(
+        {
+            "error": (
+                "an agent cannot set or clear a folder's project directory - the person "
+                "binds a folder from the sidebar's Folder settings"
+            ),
+            "code": "folder_project_dir_forbidden",
+        },
+        status=403,
+    )
 
 
 def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> bool:
@@ -1120,7 +1788,7 @@ async def create_folder_record(
     # Off-loop: realpath + isdir + the sensitive-path scan touch the filesystem,
     # and the scaffold calls this once per folder in a loop, so a slow or
     # network-mounted directory would otherwise stall every other request.
-    project_dir, err = await asyncio.to_thread(_validate_project_dir, requested_dir)
+    project_dir, err = await asyncio.to_thread(_admit_project_dir, requested_dir)
     if err:
         raise FolderCreateError(err)
     if require_resolved_project_dir and project_dir != requested_dir:
@@ -1317,18 +1985,35 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     # the person's rows keep the shape they have on disk today and "absent means
     # the person" stays the one representation (see _folder_owner_app).
     request_app = folder_principal(state, request)
-    refused = _refuse_principal_steering_dirs(
-        request_app, steering_dirs, operation="chat.folder_create", folder_id=""
+    # WHO is calling is one bit for every fence on what a folder makes the
+    # gateway READ or launch (``_is_the_person``): the steering fence right
+    # below and the binding admission further down both key on it.
+    refused = _refuse_agent_steering_dirs(
+        state,
+        request,
+        steering_dirs if "steering_dirs" in body else None,
+        operation="chat.folder_create",
+        folder_id="",
     )
     if refused is not None:
         return refused
     parent_id = str(body.get("parent_id") or "")
+    # A binding is the one field this route refuses an AGENT outright: the
+    # person's ``project_dir`` meets the validators alone
+    # (``create_folder_record``); an agent's is refused before the path is
+    # looked at (``_agent_binding_refusal``), whoever the agent is. An unbound
+    # create is not this rule's concern, whoever is calling.
+    requested_dir = str(body.get("project_dir") or "").strip()
+    if requested_dir and not _is_the_person(request):
+        return _agent_binding_refusal(
+            state, request, operation="chat.folder_create", resources=f"parent={parent_id}"
+        )
     try:
         folder = await create_folder_record(
             state,
             name=str(body.get("name") or ""),
             parent_id=parent_id,
-            project_dir=str(body.get("project_dir") or ""),
+            project_dir=requested_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
             color=str(body.get("color") or ""),
             icon=icon_val,
@@ -1382,6 +2067,17 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if not folder:
         return web.json_response({"error": "not found"}, status=404)
     request_app = folder_principal(state, request)
+    # WHO is calling, computed ONCE above every fence and above ``_apply``: the
+    # binding admission below, the steering fence and the two reparent branches
+    # inside the mutate callback all key on the same bit (``_is_the_person``),
+    # so they cannot disagree on who is confined. Every agent is a confined
+    # mover; the person -- the sidebar's own credential -- is the one mover the
+    # binding and steering rules do not confine. The ownership branches stay on
+    # the folder principal.
+    confined_mover = not _is_the_person(request)
+    # What the audit names for a confined mover: its principal when there is
+    # one, else the calling session -- the only identity such a caller has.
+    mover_audit_caller = _agent_audit_caller(state, request)
     try:
         body = await request.json()
     except Exception:
@@ -1453,7 +2149,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        # The same two paths as create: an AGENT's set-or-clear is refused
+        # whole (``_agent_binding_refusal``), before the path is looked at; the
+        # person's meets the validators alone. Either way the answer is settled
+        # here, before the store lock, and lands in ``changes`` for the atomic
+        # write below; a refusal changes nothing. Off-loop, as create's call
+        # is: realpath/isdir on a stalled network path would otherwise hold
+        # every gateway task.
+        if confined_mover:
+            return _agent_binding_refusal(
+                state, request, operation="chat.folder_update", resources=fid
+            )
+        pd, err = await asyncio.to_thread(
+            _admit_project_dir, str(body["project_dir"] or "").strip()
+        )
         if err:
             return web.json_response({"error": err}, status=400)
         if pd:
@@ -1518,11 +2227,13 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # folder's subtree. An empty list clears them; anything else is
         # validated per entry (absolute/sensitive/isdir), capped at 16, and
         # deduped. Off the loop, like project_dir, since each entry stats disk.
-        # Only the person may declare a non-empty list (see
-        # _refuse_principal_steering_dirs); the refusal precedes any path work.
+        # Only the person may declare or clear the list (see
+        # _refuse_agent_steering_dirs); the refusal precedes any path work and
+        # keys on the same WHO bit as every fence in this route.
         raw_steering = body["steering_dirs"]
-        refused = _refuse_principal_steering_dirs(
-            request_app,
+        refused = _refuse_agent_steering_dirs(
+            state,
+            request,
             raw_steering if isinstance(raw_steering, list) else [raw_steering],
             operation="chat.folder_steering_dirs",
             folder_id=fid,
@@ -1584,6 +2295,57 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
+        if (
+            confined_mover
+            and reparenting
+            and _move_changes_inherited_binding(folders, target, new_parent)
+        ):
+            # The binding axis of the same rule, keyed on the one WHO bit -- not
+            # on ``request_app`` like the three ownership branches above, which
+            # read an ordinary session as the person and rightly let it
+            # reparent the person's folders. A non-person caller may not give a
+            # folder a binding at all (``_agent_binding_refusal``), but a
+            # reparent reaches every session filed in the moved subtree --
+            # live, or in the archive the folder store cannot see -- through
+            # inheritance, on their next agent switch: an UNBOUND folder's
+            # subtree resolves the nearest bound ANCESTOR, so moving it under a
+            # bound folder would rebind the person's chats filed inside it to a
+            # directory the person never chose for them, and moving it out from
+            # under a binding would clear their project. So a move may not
+            # change the binding the moved subtree resolves, compared as the
+            # stored strings both places confer (``_inherited_project_dir``),
+            # under this lock. A folder carrying its own binding is exempt --
+            # nearest wins, so its subtree resolves it wherever it sits -- and
+            # so is a move between two places that confer the same binding.
+            # Decided here, not above the lock, because a concurrent reparent or
+            # a person's PATCH can change what either place inherits between
+            # validation and the write. The person is not confined.
+            return False, "binding_crossed"
+        if (
+            confined_mover
+            and reparenting
+            and _inherited_steering_dirs(folders, str(target.get("parent_id") or ""))
+            != _inherited_steering_dirs(folders, new_parent)
+        ):
+            # The second thing ancestry decides for every chat filed beneath a
+            # folder: the steering directories it inherits, ACCUMULATIVELY, read
+            # into the chat's model context at session start. An agent may not
+            # DECLARE steering (``_refuse_agent_steering_dirs``); a
+            # reparent reaches the same chats through the tree -- moving the
+            # person's folder under one that declares steering hands those
+            # documents to every chat filed inside at its next start, and moving
+            # it out from under one takes them away -- and the binding branch
+            # above is silent whenever both places inherit the same binding. So
+            # a move may not change what the moved subtree inherits for steering
+            # either: compared as the stored chains both places accumulate,
+            # owner included (the resolver delivers a folder's steering only to
+            # its owner's chats), under this lock and validation-free like the
+            # binding walk. No exemption for a folder declaring its own steering:
+            # accumulation means it inherits its ancestors' regardless. A move
+            # between two places that inherit the same steering lands. Decided
+            # here, not above the lock, for the same concurrency reason. The
+            # person is not confined.
+            return False, "steering_crossed"
         target.update(changes)
         if not target.get("color"):
             target.pop("color", None)
@@ -1637,8 +2399,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
     if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
-        # Distinguished in the audit, not to the caller: one code for all three
-        # keeps the response from reporting which folder was foreign.
+        # Distinguished in the audit, not to the caller: one code for all of
+        # them keeps the response from reporting which folder was foreign.
         _reason = {
             "not_owned": "app cannot change a folder it does not own",
             "forbidden_parent": "app cannot move a folder into one it does not own",
@@ -1664,6 +2426,54 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "parent folder not found", "code": "folder_parent_not_found"},
             status=400,
+        )
+    if err == "binding_crossed":
+        # The folder IS the caller's (or, for an ordinary session, the
+        # person's); what it may not do is move it across a binding boundary
+        # (``_apply``), so this is the binding rule's code, not the ownership
+        # one -- a client branches on the rule that refused it. Audited against
+        # the agent's principal or its session key.
+        sel().log_api_access(
+            caller=mover_audit_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="agent cannot move a folder across what its subtree would inherit",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "an agent cannot move a folder where its sessions would inherit a "
+                    "different project directory - move it between places with the "
+                    "same binding, or ask the person"
+                ),
+                "code": "folder_project_dir_forbidden",
+            },
+            status=403,
+        )
+    if err == "steering_crossed":
+        # The steering axis of the same move rule (``_apply``): the steering
+        # fence's code, not the binding one, so a client branches on the rule
+        # that refused it. Audited like its sibling above.
+        sel().log_api_access(
+            caller=mover_audit_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="agent cannot move a folder across what its subtree would inherit as steering",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "an agent cannot move a folder where its sessions would inherit "
+                    "different steering directories - move it between places with the "
+                    "same steering, or ask the person"
+                ),
+                "code": "steering_dirs_forbidden",
+            },
+            status=403,
         )
     if err == "cycle":
         # A concurrent reparent moved the target under this folder while this
@@ -2228,36 +3038,57 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # compare-and-set below stays as defense for the non-endpoint writers
     # (the folder-delete unfile loop) that do not take this lock.
     async with _slot_meta_txn_lock(state):
-        # Re-authorize after the awaits above (body parse, lock acquisition):
-        # same slot OBJECT still registered under the name, routing still on
-        # the transcript captured before the first await. No await between
-        # this check and the mutation below; the _unhide_folder and persist
-        # awaits after it are covered by the save's pin. The generation token
-        # is checked in the same breath: a mismatch means the caller resolved a
-        # slot that has since been replaced under its key.
-        if (
-            state._slots.get(name) is not slot
-            or slot_history_key(slot) != authorized_history_key
-            or (expected_created and slot.created_at != expected_created)
-            or not app_owns_transcript(state._slots, request_app, authorized_history_key)
-        ):
-            source, caller = _audit_origin(request)
-            sel().log_api_access(
-                caller=caller,
-                operation="chat.slot_folder",
-                outcome="denied",
-                source=source,
-                resources=name,
-                error="session was deleted or rebound",
-            )
-            return web.json_response(
-                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
-            )
         previous = slot.folder_id
         previous_changed = slot._folder_changed
-        if folder_id != slot.folder_id:
-            slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
-        slot.folder_id = folder_id
+
+        def _still_the_same_session() -> web.Response | None:
+            # Re-authorize inside the section that writes: same slot OBJECT still
+            # registered under the name, routing still on the transcript captured
+            # before the first await -- so nothing separates this check from the
+            # mutation, not even the store lock's acquisition. The generation
+            # token is checked in the same breath: a mismatch means the caller
+            # resolved a slot that has since been replaced under its key. The
+            # _unhide_folder and persist awaits after the write are covered by the
+            # save's pin.
+            if (
+                state._slots.get(name) is not slot
+                or slot_history_key(slot) != authorized_history_key
+                or (expected_created and slot.created_at != expected_created)
+                or not app_owns_transcript(state._slots, request_app, authorized_history_key)
+            ):
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation="chat.slot_folder",
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="session was deleted or rebound",
+                )
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                )
+            return None
+
+        # A folder's binding and steering reach a chat through the folder it is
+        # FILED in, so this write is the one filing decision AND the write in a
+        # single section under the folder store lock
+        # (``file_slot_across_inheritance``): the tree it judges is the
+        # committed one -- a binding clear awaiting a write that then fails is
+        # never judged as unbound -- and no folder mutation can commit between
+        # the judgement and the assignment. The person is never confined; a
+        # non-person filing may not change what the session inherits.
+        refused = await file_slot_across_inheritance(
+            state,
+            request,
+            slot,
+            to_folder_id=folder_id,
+            operation="chat.slot_folder",
+            revalidate=_still_the_same_session,
+        )
+        if refused is not None:
+            return refused
         # The check above reads the store unlocked, so a delete can land between it
         # and here. _unhide_folder re-checks existence under the store lock, which
         # is the only place the answer cannot go stale — reject rather than persist a

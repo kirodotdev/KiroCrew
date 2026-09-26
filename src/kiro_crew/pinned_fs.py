@@ -46,7 +46,7 @@ from pathlib import Path, PurePath
 from typing import Callable
 
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
-from kiro_crew.platform_compat import open_file_no_reparse
+from kiro_crew.platform_compat import open_file_no_reparse, pin_directory
 
 __all__ = [
     "PUT_BACK_FAILED",
@@ -80,6 +80,7 @@ __all__ = [
     "open_verified_chain",
     "pin_parent",
     "put_back_no_clobber",
+    "real_dir_path_pinned",
     "refuse_hardlink_alias",
     "remove_dir_verified",
     "remove_tree_pinned",
@@ -258,11 +259,34 @@ def dir_flags() -> int:
     return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
+def traverse_flags() -> int:
+    """Open flags that pin a directory for TRAVERSAL only: a directory, never a link, no read.
+
+    ``O_PATH`` where the platform has it (Linux): the descriptor can serve as
+    ``dir_fd`` for the next component's open and answers ``fstat`` and
+    ``/proc/self/fd`` (:func:`fd_real_path`), but the open needs only SEARCH
+    permission on the directory -- the permission a by-name ``realpath`` needs
+    -- so an existing directory under a search-only (``--x``) ancestor still
+    pins; ``O_RDONLY`` there needs READ permission on every ancestor and would
+    refuse what ``realpath`` resolves. ``O_DIRECTORY`` and ``O_NOFOLLOW`` are
+    honoured with ``O_PATH``: a link or a file at a component is ``ENOTDIR``,
+    refused, never followed. Where the platform has no ``O_PATH`` this is
+    :func:`dir_flags`, and a search-only ancestor is a refusal the caller
+    words. For a RESOLVE, not for a walk that lists or reads: ``listdir`` and
+    ``read`` refuse an ``O_PATH`` descriptor.
+    """
+    o_path = getattr(os, "O_PATH", 0)
+    if not o_path:
+        return dir_flags()
+    return o_path | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
 def pin_parent(
     resolved_parent: str,
     *,
     what: str,
     refusal: type[Exception] = PinnedPathRefusal,
+    component_flags: int | None = None,
 ) -> int:
     """Return a descriptor for *resolved_parent*, refusing a component that is now a link.
 
@@ -289,7 +313,12 @@ def pin_parent(
     followed by that resolution. Refusing every symlinked ancestor would close it
     and would also break paths under ``/tmp`` on macOS, where ``/tmp`` is itself a
     link.
+
+    *component_flags* are the flags each component is opened with:
+    :func:`dir_flags` unless a caller that only RESOLVES passes
+    :func:`traverse_flags`, whose descriptors need search permission alone.
     """
+    flags = dir_flags() if component_flags is None else component_flags
     parts = PurePath(resolved_parent).parts
     if not parts:  # pragma: no cover - a resolved path always has parts
         raise refusal(f"refusing to open the {what}: empty parent path")
@@ -304,7 +333,7 @@ def pin_parent(
     try:
         for component in rest:
             try:
-                nxt = os.open(component, dir_flags(), dir_fd=dir_fd)
+                nxt = os.open(component, flags, dir_fd=dir_fd)
             except OSError as exc:
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise refusal(
@@ -333,13 +362,17 @@ def open_in_pinned_parent(
     mode: int,
     what: str,
     refusal: type[Exception] = PinnedPathRefusal,
+    component_flags: int | None = None,
 ) -> int:
     """Open *name* under *resolved_parent* with the parent chain pinned.
 
     *name* is opened as given, so a link at the final name is refused by
-    ``O_NOFOLLOW`` in *flags*. See :func:`pin_parent` for what pinning buys.
+    ``O_NOFOLLOW`` in *flags*. See :func:`pin_parent` for what pinning buys and
+    *component_flags* for how the chain above *name* is opened.
     """
-    dir_fd = pin_parent(resolved_parent, what=what, refusal=refusal)
+    dir_fd = pin_parent(
+        resolved_parent, what=what, refusal=refusal, component_flags=component_flags
+    )
     try:
         return os.open(name, flags, mode, dir_fd=dir_fd)
     finally:
@@ -491,6 +524,121 @@ def fd_real_path(fd: int) -> str | None:
     except (OSError, ValueError, ImportError):
         pass
     return None
+
+
+def _windows_handle_pin_available() -> bool:
+    """Whether this host pins a directory chain by HANDLE (Windows).
+
+    A function, not a constant, so a test can turn the branch off and prove the
+    caller's fail-closed answer on a host that pins neither way.
+    """
+    return os.name == "nt"
+
+
+def real_dir_path_pinned(
+    path: str,
+    *,
+    what: str,
+    refusal: type[Exception] = PinnedPathRefusal,
+) -> str:
+    """Real path of the DIRECTORY at *path*, reached without following a link anywhere.
+
+    The descriptor-pinned twin of ``os.path.realpath(path)`` for a directory a
+    caller already vetted BY NAME (a link screen re-spelled every link it saw):
+    a by-name ``realpath`` after that vetting re-walks the same components, and
+    a component swapped for a link in between is followed -- on a Windows
+    gateway, into the SMB connection the vetting existed to prevent. Here every
+    component is opened without following a link, and the path handed back is
+    the kernel's own answer for the directory actually held
+    (:func:`fd_real_path`).
+
+    * POSIX (:func:`supports_pinned_walk`): the parent chain is opened one
+      ``openat`` at a time under ``O_NOFOLLOW`` and the final name relative to
+      the pinned parent (:func:`open_in_pinned_parent`) -- :func:`pin_parent`
+      says what that buys -- with :func:`traverse_flags`, so on Linux the
+      chain needs only the SEARCH permission a by-name ``realpath`` needs and
+      an existing directory under a search-only ancestor still resolves.
+    * Windows (:func:`_windows_handle_pin_available`): every component is
+      opened ROOT-FIRST by :func:`kiro_crew.platform_compat.pin_directory`
+      (``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT``: a symlink or
+      junction at the name is opened as itself and refused, never traversed)
+      and HELD until the real path is read: a handle without
+      ``FILE_SHARE_DELETE`` keeps its directory -- and everything above it --
+      from being renamed or deleted, so the by-name open of each child runs
+      through ancestors this walk proved and pinned. A reparse point that
+      redirects nothing (a cloud-files placeholder) passes as the directory it
+      is (``allow_filter_reparse``); the person's project may live in OneDrive.
+    * Neither: *refusal*. Nothing here falls back to a by-name walk on its own.
+
+    Raises ``FileNotFoundError`` when a component is absent (the caller keeps
+    its own words for that), ``PermissionError`` when a component exists but
+    this process may not open it (the caller decides whether that fails closed
+    or degrades), and *refusal* for a link or non-directory at any component --
+    the check-to-use swap, refused at the open instead of followed -- for a host
+    that pins neither way, and for a held directory whose real path cannot be
+    read back.
+    """
+    if supports_pinned_walk():
+        parent, name = os.path.split(path.rstrip(os.sep) or path)
+        if not name:
+            # The filesystem root itself: nothing to open relative to, and no
+            # link can sit at it.
+            return os.path.realpath(path)
+        try:
+            fd = open_in_pinned_parent(
+                parent,
+                name,
+                flags=traverse_flags(),
+                mode=0o700,
+                what=what,
+                refusal=refusal,
+                component_flags=traverse_flags(),
+            )
+        except (FileNotFoundError, PermissionError):
+            raise
+        except OSError as exc:
+            # A link at the final name meets ``O_DIRECTORY | O_NOFOLLOW`` and is
+            # refused without being followed (ELOOP or ENOTDIR, by kernel); a
+            # file there is ENOTDIR. Either way nothing traversed it.
+            raise refusal(
+                f"refusing to resolve the {what}: {name!r} is a link or not a directory, "
+                "so resolving through it would follow whatever it points at"
+            ) from exc
+        held = [fd]
+    elif _windows_handle_pin_available():
+        chain = PurePath(path)
+        held = []
+        try:
+            for component in [*reversed(chain.parents), chain]:
+                try:
+                    held.append(pin_directory(str(component), allow_filter_reparse=True))
+                except (FileNotFoundError, PermissionError):
+                    raise
+                except OSError as exc:
+                    raise refusal(
+                        f"refusing to resolve the {what}: {component.name or str(component)!r} "
+                        "is a link or not a directory, so resolving through it would follow "
+                        "whatever it points at"
+                    ) from exc
+        except BaseException:
+            close_all(reversed(held))
+            raise
+    else:
+        raise refusal(
+            f"refusing to resolve the {what}: this host can pin a directory chain neither "
+            "by descriptor nor by handle, and a by-name walk would follow a link planted "
+            "after the check"
+        )
+    try:
+        real = fd_real_path(held[-1])
+    finally:
+        close_all(reversed(held))
+    if not real:
+        raise refusal(
+            f"refusing to resolve the {what}: the real path of the directory held open "
+            "could not be read back"
+        )
+    return real
 
 
 def open_fenced_for_read(

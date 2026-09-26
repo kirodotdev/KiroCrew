@@ -812,3 +812,142 @@ class TestDurableWriteOrdering:
             "the pinned title never reached disk — a restart rehydrates the old "
             "title with a refreshable 'auto' origin"
         )
+
+
+class TestFilingAtCreationGoesThroughTheOneDecision:
+    """``POST /api/chat/slots`` with a ``folder_id`` is a FILING, and filing is how
+    a session acquires a folder's binding and steering -- so it goes through the
+    one filing decision every request-driven filing route takes
+    (``chat_folders.refuse_filing_across_inheritance``): the person files anywhere
+    and the new chat inherits the binding; any other principal -- an app's own
+    credential (``design-critique`` lists this route), the unstamped internal
+    transport -- may not create a session where it would inherit a binding or
+    steering, refused with the move rule's codes before anything is allocated;
+    an unbound, unsteered folder still lands. Red-first on the head before this
+    class: an app's create answered 200 and the new slot carried the person's
+    ``project_dir``.
+    """
+
+    BOUND = "f-bound"
+    STEERED = "f-steered"
+
+    def _state(self, tmp_path):
+        state = _make_state(tmp_path)
+        (tmp_path / "bound").mkdir()
+        state._folders.append(
+            {
+                "id": self.BOUND,
+                "name": "Bound",
+                "order": 1,
+                "parent_id": "",
+                "project_dir": str(tmp_path / "bound"),
+            }
+        )
+        state._folders.append(
+            {
+                "id": self.STEERED,
+                "name": "Steered",
+                "order": 2,
+                "parent_id": "",
+                "steering_dirs": [str(tmp_path)],
+            }
+        )
+        return state
+
+    @staticmethod
+    def _app_with(handler, *, person: bool = False) -> web.Application:
+        app = web.Application()
+
+        @web.middleware
+        async def _stamp(request: web.Request, handler):
+            if person:
+                request["is_dashboard_user"] = True
+            return await handler(request)
+
+        app.middlewares.append(_stamp)
+        app.router.add_post("/api/chat/slots", handler)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_an_app_cannot_create_a_session_under_a_bound_or_steered_folder(self, tmp_path):
+        state = self._state(tmp_path)
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            bound = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+            )
+            assert bound.status == 403, await bound.text()
+            assert (await bound.json())["code"] == "folder_project_dir_forbidden"
+            steered = await client.post(
+                "/api/chat/slots", json={"name": "s2", "folder_id": self.STEERED}
+            )
+            assert steered.status == 403, await steered.text()
+            assert (await steered.json())["code"] == "steering_dirs_forbidden"
+            plain = await client.post(
+                "/api/chat/slots", json={"name": "s3", "folder_id": FOLDER_ID}
+            )
+            assert plain.status == 200, await plain.text()
+        assert "s1" not in state._slots and "s2" not in state._slots
+        assert state._slots["s3"].folder_id == FOLDER_ID
+
+    @pytest.mark.asyncio
+    async def test_the_internal_transport_is_held_to_it_too(self, tmp_path):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+
+        state = self._state(tmp_path)
+        app = self._app_with(api_chat_slot_create)
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+            )
+            assert resp.status == 403, await resp.text()
+        assert "s1" not in state._slots
+
+    @pytest.mark.asyncio
+    async def test_the_person_creates_the_chat_and_it_inherits_the_binding(self, tmp_path):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+
+        state = self._state(tmp_path)
+        app = self._app_with(api_chat_slot_create, person=True)
+        app["state"] = state
+        with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", lambda *a, **k: None):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+                )
+                assert resp.status == 200, await resp.text()
+                assert (await resp.json())["folder_id"] == self.BOUND
+        assert state._slots["s1"].folder_id == self.BOUND
+
+    @pytest.mark.asyncio
+    async def test_an_inheritance_change_between_the_decision_and_the_write_is_caught_at_the_write(
+        self, tmp_path, monkeypatch
+    ):
+        """The early decision runs before the mint and the other awaits of this
+        route; the WRITE re-runs it in one section under the folder store lock
+        (``file_slot_across_inheritance``). Simulated: the destination is unbound
+        when the early decision runs, and becomes bound while the route awaits the
+        folder's binding resolution -- the write refuses, and the slot this request
+        minted is retracted, so nothing is left behind. Red-first: the create
+        answered 200 and the slot sat under the now-bound folder."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = self._state(tmp_path)
+        plain = next(f for f in state._folders if f["id"] == FOLDER_ID)
+        real_resolve = chat_handlers._resolve_folder_project_dir
+
+        def _resolve_then_bind(folders, folder_id):
+            out = real_resolve(folders, folder_id)
+            plain["project_dir"] = str(tmp_path / "bound")  # a commit landing meanwhile
+            return out
+
+        monkeypatch.setattr(chat_handlers, "_resolve_folder_project_dir", _resolve_then_bind)
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots", json={"name": "s9", "folder_id": FOLDER_ID})
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "folder_project_dir_forbidden"
+        assert "s9" not in state._slots

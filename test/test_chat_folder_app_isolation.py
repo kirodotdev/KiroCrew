@@ -43,6 +43,13 @@ def _state(*slots: _ChatSlot) -> DashboardState:
     state._folders = [{"id": "fldr00000001", "name": "Work", "parent_id": ""}]
     state.push_slots_update = MagicMock()
     state.mutate_folders = AsyncMock(return_value="")
+
+    async def _hold(section):
+        # The lock-held section the filing chokepoint writes inside; on this mock
+        # the snapshot is the live list.
+        return await section([dict(f) for f in state._folders])
+
+    state.hold_folders = AsyncMock(side_effect=_hold)
     return state
 
 

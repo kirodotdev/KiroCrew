@@ -278,8 +278,14 @@ def _make_app(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with chat endpoints including agent and create routes."""
+def _make_app_with_agent_routes(state: DashboardState, *, person: bool = True) -> web.Application:
+    """Minimal aiohttp app with chat endpoints including agent and create routes.
+
+    ``person`` stands in for the token middleware's positive ``is_dashboard_user``
+    stamp -- the dashboard's own browser, which is what these routes' tests model
+    unless one says otherwise. The slot-create route reads WHO from it when a
+    request names a folder (``chat_folders.refuse_filing_across_inheritance``).
+    """
     from kiro_crew.dashboard.chat import (
         api_chat_slot_agent,
         api_chat_slot_approve,
@@ -293,7 +299,13 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
         api_chat_slots,
     )
 
-    app = web.Application()
+    @web.middleware
+    async def _stamp_person(request: web.Request, handler):
+        if person and "is_dashboard_user" not in request:
+            request["is_dashboard_user"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[_stamp_person])
     app["state"] = state
     app.router.add_get("/api/chat/slots", api_chat_slots)
     app.router.add_post("/api/chat/slots", api_chat_slot_create)
@@ -308,8 +320,16 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_folder_app(state: DashboardState) -> web.Application:
-    """Minimal aiohttp app with folder endpoints."""
+def _make_folder_app(state: DashboardState, *, dashboard_user: bool = False) -> web.Application:
+    """Minimal aiohttp app with folder endpoints.
+
+    ``dashboard_user=True`` stands in for the token middleware's positive
+    ``is_dashboard_user`` stamp -- the PERSON's own credential validated (the
+    sidebar's cookie or session token), never set on the internal-secret
+    transport the MCP tools use -- which is the one bit the folder fences read
+    WHO from (``chat_folders._is_the_person``). Without it a request is any
+    other caller: an ordinary session's tool call, an app's, a member's.
+    """
     from kiro_crew.dashboard.chat import api_chat_slots
     from kiro_crew.dashboard.chat_folders import (
         api_chat_folder_create,
@@ -322,6 +342,14 @@ def _make_folder_app(state: DashboardState) -> web.Application:
 
     app = web.Application()
     app["state"] = state
+    if dashboard_user:
+
+        @web.middleware
+        async def _stamp_person(request: web.Request, handler: web.Handler) -> web.StreamResponse:
+            request["is_dashboard_user"] = True
+            return await handler(request)
+
+        app.middlewares.append(_stamp_person)
     app.router.add_get("/api/chat/folders", api_chat_folders)
     app.router.add_post("/api/chat/folders", api_chat_folder_create)
     app.router.add_patch("/api/chat/folders/{id}", api_chat_folder_update)

@@ -2847,75 +2847,188 @@ def _is_representable_path(raw: str) -> bool:
     return True
 
 
-def _normalize_windows_link_target(link_path: str, raw_target: str) -> str | None:
-    r"""Normalize one Windows link target without traversing through the link.
+#: Why :func:`link_screen` stopped, when it did. ``LINK_SCREEN_OK`` is the one
+#: value that comes with a spelling. The two causes that name a PROBE -- a link
+#: whose target the screen read and found share-shaped (or an extended
+#: namespace it cannot fold to a local drive), and a chain that ran past the
+#: screen's horizon, whose unread tail the kernel would follow -- are the
+#: causes a by-name ``realpath`` must never be allowed to run after; the rest
+#: (a link that could not be read, a suffix that climbs out of its link, an
+#: ambiguous drive- or root-relative target, a path deeper than the screen
+#: walks) say the screen could not produce a spelling, not that the path
+#: reaches a host, and a caller with a value to honour may resolve those as it
+#: always did.
+LINK_SCREEN_OK = "ok"
+LINK_SCREEN_SHARE_TARGET = "share_target"
+LINK_SCREEN_CHAIN_TOO_LONG = "chain_too_long"
+LINK_SCREEN_UNREADABLE = "unreadable_link"
+LINK_SCREEN_AMBIGUOUS = "ambiguous_target"
+LINK_SCREEN_TOO_DEEP = "too_deep"
+#: The causes after which a by-name resolve of the ORIGINAL spelling is the probe.
+LINK_SCREEN_PROBE_CAUSES = frozenset({LINK_SCREEN_SHARE_TARGET, LINK_SCREEN_CHAIN_TOO_LONG})
 
-    The return value is safe to screen as a new path. Untrusted UNC targets,
-    ambiguous drive/root-relative targets, and extended device namespaces are
-    refused before any filesystem probe can follow them.
+
+def _normalize_link_target(link_path: str, raw_target: str) -> tuple[str | None, str]:
+    r"""Normalize one link target without traversing through the link.
+
+    Returns ``(target, LINK_SCREEN_OK)`` -- *target* is safe to screen as a new
+    path -- or ``(None, cause)``. Untrusted UNC targets, ambiguous drive/root-
+    relative targets, and extended device namespaces are refused before any
+    filesystem probe can follow them.
+
+    On POSIX the rule is the same threat in that platform's spelling: a target
+    with two leading separators is share-shaped (``is_unc_shape``) and refused
+    unless the gateway itself writes there, an absolute target is kept, and a
+    relative one is anchored at the link's own directory. No drive letters and
+    no device namespaces exist there, so those arms do not apply. The anchored
+    spelling is NOT ``normpath``-ed there: a ``..`` inside the target
+    (``sub/../x``) is resolved by :func:`link_screen`'s walk in component
+    order, against the directory ``sub`` actually reaches, because ``sub`` may
+    itself be a link -- the kernel's rule, which a lexical collapse breaks. On
+    Windows the Win32 path parser folds ``..`` lexically before any filesystem
+    sees a name, so ``normpath`` there IS the platform's own rule.
     """
     target = raw_target
+    if os.name != "nt":
+        if is_unc_shape(target):
+            if not unc_probe_allowed(target):
+                return None, LINK_SCREEN_SHARE_TARGET
+        elif not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(link_path), target)
+        if target.count("/") > _MAX_SCREENED_PATH_DEPTH:
+            return None, LINK_SCREEN_TOO_DEEP
+        return target, LINK_SCREEN_OK
     if target[:8].upper() == "\\\\?\\UNC\\":
         target = "\\\\" + target[8:]
     elif target.startswith("\\\\?\\"):
         if not _DRIVE_ABS_RE.match(target[4:]):
-            return None
+            # ``\\?\GLOBALROOT\...``, ``\\?\Volume{...}\...``, a device path: a
+            # namespace that can name a redirector as easily as a volume, and
+            # that the screen cannot fold to a local drive -- the probe class.
+            return None, LINK_SCREEN_SHARE_TARGET
         target = target[4:]
 
     if is_unc_shape(target):
         if not unc_probe_allowed(target):
-            return None
+            return None, LINK_SCREEN_SHARE_TARGET
     elif _DRIVE_ABS_RE.match(target):
         pass
     elif target[:1] in "\\/" or _DRIVE_PREFIX_RE.match(target):
-        return None
+        return None, LINK_SCREEN_AMBIGUOUS
     else:
         target = os.path.normpath(os.path.join(os.path.dirname(link_path), target))
 
     if target.count("\\") + target.count("/") > _MAX_SCREENED_PATH_DEPTH:
+        return None, LINK_SCREEN_TOO_DEEP
+    return target, LINK_SCREEN_OK
+
+
+def _components_below(target: str, ancestor: str) -> str | None:
+    """The part of *target* below its ancestor *ancestor*, in the order the path names it.
+
+    A textual cut, never ``relpath``: ``relpath`` normalizes both spellings
+    first, and on POSIX that folds a ``..`` that follows a link (``x/../c``
+    with ``x`` linked) into nothing, so the components after the link would be
+    judged against the link's PARENT instead of against the directory the link
+    reaches. *ancestor* comes from :func:`platform_compat.first_linked_ancestor`
+    (a rendering of one of *target*'s own parents), so it is a prefix of the
+    rendered *target*; ``None`` says it was not, which the walk treats as a
+    link it cannot place.
+    """
+    if target == ancestor:
+        return ""
+    base = ancestor if ancestor.endswith(("/", "\\")) else ancestor + os.sep
+    if not target.startswith(base):
         return None
-    return target
+    return target[len(base) :]
 
 
-def _screen_windows_links(target: str) -> str | None:
-    """Replace Windows links with screened targets before ``realpath``.
+def link_screen(target: str) -> tuple[str | None, str]:
+    """:func:`screen_link_targets` with the CAUSE it stopped for.
 
-    ``first_linked_ancestor`` walks root-first without traversing a link.
-    Reading that link's own reparse metadata is safe. Replacing the linked
-    prefix with its vetted target preserves the remaining child path while
-    avoiding the blanket rejection of benign local junctions.
+    Returns ``(screened, LINK_SCREEN_OK)`` or ``(None, cause)`` with *cause* one
+    of the ``LINK_SCREEN_*`` values above. The screen itself: ``first_linked_ancestor``
+    walks root-first without traversing a link; reading that link's own reparse
+    metadata is safe; replacing the linked prefix with its vetted target
+    preserves the remaining child path while avoiding the blanket rejection of
+    benign local junctions. Callers that only need yes-or-no take the wrapper;
+    a caller that must tell the probe causes (``LINK_SCREEN_PROBE_CAUSES``) from
+    the ones that merely left it without a spelling takes this.
+
+    The walk resolves in COMPONENT ORDER, the kernel's own: nothing here
+    collapses a ``..`` lexically. Each hop renders the spelling through
+    ``pathlib`` (which drops ``.`` and doubled separators -- the kernel reads
+    those the same way -- and keeps every ``..``), finds the first linked
+    ancestor root-first, and re-spells the path as that link's target followed
+    by the components the path named below the link, ``..`` included. A ``..``
+    is then met by the next hop's ``lstat`` of the prefix, which the kernel
+    resolves against the directory the components before it actually reach --
+    through a link the walk has already re-spelled, never past one -- and the
+    screened spelling handed back may still carry ``..``, for the caller's own
+    pinned open to resolve the same way (``pinned_fs.real_dir_path_pinned``
+    opens ``..`` relative to the directory it holds). ``link/../sibling`` with
+    ``link -> /projects/team/subdir`` therefore reaches
+    ``/projects/team/sibling``, as ``realpath`` does; a lexical collapse before
+    the walk would have reached the link's own ``../sibling``. Callers on
+    Windows still anchor with ``abspath`` first: there the Win32 path parser
+    folds ``..`` before any filesystem sees a name, so the lexical form IS that
+    platform's rule and no ``..`` reaches this walk.
     """
     for _ in range(_WINDOWS_LINK_CHAIN_MAX):
+        target = str(Path(target))
         if target.count("\\") + target.count("/") > _MAX_SCREENED_PATH_DEPTH:
-            return None
+            return None, LINK_SCREEN_TOO_DEEP
 
         linked = platform_compat.first_linked_ancestor(target)
         if linked is not None:
             try:
                 raw_target = os.readlink(linked)  # lgtm[py/path-injection]
-                suffix = os.path.relpath(target, linked)
             except (OSError, ValueError):
-                return None
-            if suffix == ".." or suffix.startswith(".." + os.sep):
-                return None
-            normalized = _normalize_windows_link_target(linked, raw_target)
+                return None, LINK_SCREEN_UNREADABLE
+            below = _components_below(target, linked)
+            if below is None:
+                return None, LINK_SCREEN_UNREADABLE
+            normalized, cause = _normalize_link_target(linked, raw_target)
             if normalized is None:
-                return None
-            target = os.path.normpath(os.path.join(normalized, suffix))
+                return None, cause
+            target = os.path.join(normalized, below) if below else normalized
             continue
 
         if not platform_compat.is_link_or_junction(target):
-            return target
+            return target, LINK_SCREEN_OK
         try:
             raw_target = os.readlink(target)  # lgtm[py/path-injection]
         except OSError:
-            return None
-        normalized = _normalize_windows_link_target(target, raw_target)
+            return None, LINK_SCREEN_UNREADABLE
+        normalized, cause = _normalize_link_target(target, raw_target)
         if normalized is None:
-            return None
+            return None, cause
         target = normalized
 
-    return None
+    return None, LINK_SCREEN_CHAIN_TOO_LONG
+
+
+def screen_link_targets(target: str) -> str | None:
+    """Replace the links on the way to *target* with their screened targets, before ``realpath``.
+
+    The yes-or-no spelling of :func:`link_screen`: the re-spelled path -- every
+    link replaced by the target it named, so the spelling holds no link the walk
+    saw -- or ``None`` when a link on the way cannot be trusted for ANY cause:
+    its target names a share (:func:`_normalize_link_target`), is ambiguous,
+    cannot be read, or the chain runs
+    past ``_WINDOWS_LINK_CHAIN_MAX`` hops. On Windows this is what stands
+    between a local-looking path and the SMB connection ``realpath`` would open
+    through a junction aimed at a share (:func:`validate_file_path` runs it
+    there); on POSIX a link to ``//host/share`` opens nothing, but the folder
+    project-directory sites run it on every host so one rule keeps such a value
+    out of a store a Windows gateway later reads. What it returns is a NAME,
+    screened at one instant: a caller that then resolves it by name has the
+    check-to-use window every by-name walk has, so the caller either resolves
+    through a descriptor-pinned open (``pinned_fs.real_dir_path_pinned``) or
+    records the residual.
+    """
+    screened, _cause = link_screen(target)
+    return screened
 
 
 def validate_file_path(raw: str) -> str | None:
@@ -2975,7 +3088,7 @@ def validate_file_path(raw: str) -> str | None:
         # dashboard/handlers/themes.py::_resolve_local_source.
         if is_unc_shape(target) and not unc_probe_allowed(target):
             return None
-        screened = _screen_windows_links(target)
+        screened = screen_link_targets(target)
         if screened is None:
             return None
         target = screened

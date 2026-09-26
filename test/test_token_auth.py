@@ -4587,3 +4587,83 @@ def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
     (app_dir / ".app_secret").write_text("real", encoding="utf-8")
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False
+
+
+# -- The person stamp's WRITER: `is_dashboard_user`, the one bit every folder
+#    fence reads WHO from (chat_folders._is_the_person) --
+
+
+def _recording_request(**kwargs: object) -> tuple[MagicMock, dict]:
+    """A mock request whose item writes land in a dict, so the stamps the
+    middleware sets can be read back."""
+    req = _make_request(**kwargs)  # type: ignore[arg-type]
+    stamps: dict = {}
+    req.__setitem__.side_effect = stamps.__setitem__
+    req.__getitem__.side_effect = stamps.__getitem__
+    req.__contains__.side_effect = stamps.__contains__
+    req.get.side_effect = stamps.get
+    return req, stamps
+
+
+class TestTheDashboardUserStampIsWrittenPositively:
+    """``request["is_dashboard_user"]`` is the POSITIVE bit the folder fences,
+    the scaffold and the slot project endpoint read the person by
+    (``chat_folders._is_the_person``: ``is True``, never a falsy default). The
+    writer here computes it as ``not <app claim>`` -- identity as the absence
+    of a claim, the shape the read sites are forbidden -- so this pins the
+    writer from both sides: the SET of sites that write the key, and what each
+    credential class gets. A future validated credential class that carried no
+    app claim would otherwise stamp ``True`` and open every fence silently
+    (review-caught); adding a writer site, or a class that lands on one, must
+    land here first.
+    """
+
+    def test_the_writer_set_is_the_four_known_sites_and_nothing_else(self) -> None:
+        import pathlib
+        import re
+
+        from kiro_crew.dashboard import token_auth
+
+        src = pathlib.Path(token_auth.__file__).read_text(encoding="utf-8")
+        writes = re.findall(r'request\["is_dashboard_user"\] = (.+)$', src, flags=re.M)
+        # One False for the internal-secret transport that derives an app; the
+        # rest right after a VALIDATED token's app claim (loopback cookie,
+        # internal-path cookie, the main query/cookie path). Each is ``not`` of
+        # the claim the same block just verified -- never of an unverified
+        # header, a session key, or a default.
+        assert sorted(writes) == ["False", "not _app", "not _app", "not app_name"], writes
+        assert 'request["is_dashboard_user"] = True' not in src
+
+    @pytest.mark.asyncio
+    async def test_a_validated_user_token_is_the_person_and_an_app_token_is_not(self) -> None:
+        mw = token_auth_middleware()
+        person, stamps = _recording_request(
+            query={"token": generate_token("person", ttl_seconds=300)}, remote="10.0.0.1"
+        )
+        resp = await mw(person, _ok_handler)
+        assert resp.status == 200
+        assert stamps["is_dashboard_user"] is True
+        assert stamps["user"] == "person"
+        assert stamps["app"] == ""
+
+        app_req, app_stamps = _recording_request(
+            query={"token": generate_token("person", ttl_seconds=300, app="issue-radar")},
+            remote="10.0.0.1",
+        )
+        await mw(app_req, _ok_handler)
+        # The stamp is written before the app-scope decision, so it is readable
+        # whatever that decision was: the app claim makes it False, positively.
+        assert app_stamps["is_dashboard_user"] is False
+        assert app_stamps["app"] == "issue-radar"
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_credential_never_stamps(self) -> None:
+        mw = token_auth_middleware()
+        req, stamps = _recording_request(query={"token": "no-dot-here"}, remote="10.0.0.1")
+        resp = await mw(req, _ok_handler)
+        assert resp.status in (401, 403)
+        assert "is_dashboard_user" not in stamps
+        # And absence is what every read site treats as "not the person":
+        from kiro_crew.dashboard.chat_folders import _is_the_person
+
+        assert _is_the_person(req) is False  # type: ignore[arg-type]

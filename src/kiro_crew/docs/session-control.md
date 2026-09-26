@@ -240,6 +240,33 @@ The sidebar tree the person organizes their sessions in.
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
 
+A folder's **project directory** is what a chat the person opens inside it
+inherits at creation (the sidebar's new-chat path, `POST /api/chat/slots`), and
+that inheritance is the only zero-cost way to a project-scoped session: context
+(the project's `.kiro/steering`, repo-scoped lessons) is injected once at
+session start, and `set_project` later tears the session down to re-scope it.
+It is the person's to bind, from the sidebar's Folder settings: no tool here
+carries `project_dir`, and the folder endpoints refuse an agent's — a bound
+create, or a set or clear on an existing folder — whoever the agent is (an
+ordinary session, a crew member, an app, a cron, a subagent, a channel
+session), before the path is looked at and with nothing written. If a project
+folder needs a binding, ask the person. `chat_folder_tree` shows each folder's
+current binding as `project=…`. A binding reaches every chat filed in the
+folder, as it always did. No agent may move a folder to where the sessions filed
+in it would inherit a different directory (an unbound folder takes its nearest
+bound ancestor's, so moving it under a bound folder, or out from under a
+binding, would rebind the chats inside it): an unbound folder moves only between
+places that confer the same binding, and a folder carrying its own binding moves
+freely (nearest wins). This holds for every agent — an app's or a member's own
+folders included. No agent may declare `steering_dirs` (a folder's steering is a
+host-file read the gateway performs, delivered into the person's chats), nor
+move a folder to where its sessions would inherit different steering directories. An
+ordinary session may move the person's folders but is held to those two rules;
+the same two rules hold at the filing verbs (`chat_folder_move_session`,
+`chat_folder_file_self`): no agent may file a session where it would inherit a
+different project directory or different steering than it inherits today;
+the person is not.
+
 Read `chat_folder_tree` before you move anything: it renders folders in the order
 the person actually sees, which is what makes a `before` / `after` anchor safe to
 pick. `before` and `after` are mutually exclusive — one anchor names one
