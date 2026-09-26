@@ -980,14 +980,30 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   `ensure_artifact_source`, `refresh_artifact_name`, `ingest_artifact`'s
   `_get_state` read and `release_stale_claim` write, the per-job
   `get_job_status` read in `reconcile_artifacts`, and `remove_artifact` (a
-  `delete_items_batch` → graph rebuild). The one take still on the loop is
-  `ingest_artifact`'s post-ingest `get_job_status` read: it sits between the
-  commit and the fallback ownership write, so offloading it belongs with the
-  ownership-write change that keeps those two from being separated by a
-  cancellation point. The ordering the handler describes is preserved across
-  the hops — name refresh before ingest, the kind-change reconcile before the
-  ingest — and the deduped/ownership finalizers still run on the pipeline's own
-  worker hop, not the loop.
+  `delete_items_batch` → graph rebuild). Ownership of the committed group is
+  recorded inside the pipeline's finalize hop — the uncancellable unit that
+  commits the group — and a plain write that fails there is retried in the same
+  hop under `BEGIN IMMEDIATE`, so no cancellation point separates "committed"
+  from "owned". `ingest_artifact`'s post-ingest status read and its fallback
+  ownership write run as ONE `run_to_completion` unit and are the last line of
+  defence; the fallback write itself is guarded inside one `BEGIN IMMEDIATE`
+  transaction — it writes the ownership row only when every committed id still
+  exists, so a concurrent dedup sweep's result is never overwritten with ids
+  that point at deleted content. Id existence is the sole sweep signal: the
+  sweep only rewrites a state row that names the items it deleted, so a
+  `deduped` status found on a row that never named this commit's ids is a stale
+  marker from an earlier content version and is replaced, not deferred to. When
+  ids are missing, the sweep collapsed the group but could not record that on
+  this row, so the guard records the verdict atomically the way the sweep would
+  have: it deletes any remnant of the group (nothing untracked may remain) and
+  writes the slug's `deduped` marker for this content with the winner claim
+  (`merged_into_source_id`) when an exact-text winner is findable by the
+  committed document's extracted-text hash, so a later deletion of the winner
+  revives the slug through the same path as any other deferred document.
+  The ordering the handler describes is preserved across the hops — name
+  refresh before ingest, the kind-change reconcile before the ingest — and the
+  deduped/ownership finalizers still run on the pipeline's own worker hop, not
+  the loop.
 - **Reconcile on every start, not a creation-gated backfill.** The feature is
   opt-in, and while it is off the change-listener is not registered, so writes in
   that window never reach the Library. Tying the catch-up pass to *creation of

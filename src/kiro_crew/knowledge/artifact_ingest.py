@@ -60,7 +60,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
+from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline, run_to_completion
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -249,6 +249,96 @@ def _write_state_row(
     )
 
 
+def _write_ownership_if_intact(
+    kstore: KnowledgeStore,
+    source_id: str,
+    slug: str,
+    content_hash: str,
+    item_ids: list[str],
+    name: str,
+    kind: str | None,
+    doc_hash: str | None = None,
+) -> bool:
+    """The fallback ownership write, guarded inside ONE write transaction.
+
+    Runs when the plain in-hop write failed and was swallowed as fail-safe. The
+    ids it would record were captured at commit time, and between then and now a
+    concurrent dedup sweep on the shared source may have collapsed the group,
+    deleting some of those items. Recording the captured ids anyway would
+    resurrect an ``active`` row over ids that point at deleted items, and the
+    unchanged-content short-circuit in ``ingest_artifact`` would then trust
+    that row forever -- the artifact's content silently gone from search with
+    no reconcile path that notices.
+
+    So, under ``BEGIN IMMEDIATE`` (the write lock, so no sweep can interleave
+    between the check and the writes), the ownership row is written only if
+    every captured id still exists. That existence check is the sole sweep
+    signal on purpose: the sweep only rewrites a state row that NAMES the items
+    it deleted, and this row never named this commit's ids (the write that
+    would have named them is the one that failed) -- so a ``deduped`` status
+    found here is a STALE marker from an earlier content version, which says
+    nothing about this commit and must be replaced, not deferred to.
+
+    When ids ARE missing, the sweep collapsed the group but could not record
+    that on this row, so the verdict is recorded here, atomically, the way the
+    sweep would have: whatever remnant of the group it left is deleted (a
+    partial group would otherwise be tracked by nothing and duplicated by the
+    next reconcile), and the slug gets a ``deduped`` marker for THIS content
+    carrying the winner claim (``merged_into_source_id``), so that a later
+    deletion of the winner revives the slug through the same path as any other
+    deferred document. ``doc_hash`` is the committed document's extracted-text
+    hash, captured inside the commit hop: an exact-text collapse leaves the
+    winner findable by it. A near-duplicate collapse does not, and the marker
+    then carries no claim -- like the pre-ingest gate's own markers, it holds
+    until the content changes. Returns True when the ownership row was written.
+    """
+    db = kstore.db
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        # Chunked so a large group stays under SQLite's bound-parameter limit.
+        surviving: list[str] = []
+        for start in range(0, len(item_ids), 500):
+            chunk = item_ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            surviving.extend(
+                r["id"] for r in db.execute(
+                    f"SELECT id FROM items WHERE id IN ({marks})", chunk
+                ).fetchall()
+            )
+        if len(surviving) == len(item_ids):
+            _write_state_row(kstore, source_id, slug, content_hash, item_ids, name,
+                             kind=kind)
+            db.execute("COMMIT")
+            return True
+        if surviving:
+            kstore.delete_items_batch_in_txn(surviving, owner_source_id=source_id)
+        winner = None
+        if doc_hash:
+            found = db.execute(
+                "SELECT source_id FROM items WHERE content_hash = ? AND source_id != ? "
+                "LIMIT 1",
+                (doc_hash, source_id),
+            ).fetchone()
+            winner = found["source_id"] if found else None
+        _write_state_row(kstore, source_id, slug, content_hash, [], name,
+                         status="deduped", kind=kind)
+        if winner:
+            db.execute(
+                "UPDATE artifact_item_state SET merged_into_source_id = ? "
+                "WHERE source_id = ? AND slug = ?",
+                (winner, source_id, slug),
+            )
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    if surviving:
+        # Owed by every delete_items_batch_in_txn caller once its transaction
+        # is committed: the orphan sweep drops entities the graph still holds.
+        kstore.reload_graph()
+    return False
+
+
 def refresh_artifact_name(
     kstore: KnowledgeStore, source_id: str, slug: str, name: str
 ) -> bool:
@@ -423,6 +513,7 @@ async def ingest_artifact(
     # concurrent writer (e.g. import_bundle) commits into the same aggregate
     # source while this ingest is awaiting.
     committed_ids: list[str] = []
+    committed_doc_hash: str | None = None
     ownership_persisted = False
 
     def _record_ownership(new_ids: list[str]) -> None:
@@ -433,14 +524,27 @@ async def ingest_artifact(
         # cleanup, the job-status read) are cancellation points, and a
         # shutdown landing there would leave committed items no state row
         # names -- the next reconcile re-ingests the artifact alongside them.
-        nonlocal ownership_persisted
+        nonlocal ownership_persisted, committed_doc_hash
         committed_ids.extend(new_ids)
+        # The committed document's extracted-text hash (every chunk carries it):
+        # the only handle by which a dedup winner can be found later, should the
+        # group be collapsed before its ownership row lands. Read here because
+        # the items exist for certain inside the hop; never fatal.
+        if new_ids and committed_doc_hash is None:
+            try:
+                found = kstore.db.execute(
+                    "SELECT content_hash FROM items WHERE id = ?", (new_ids[0],)
+                ).fetchone()
+                committed_doc_hash = found["content_hash"] if found else None
+            except Exception:
+                logger.debug("could not read the committed document hash for %s",
+                             slug, exc_info=True)
         # Fail-safe, never fail-closed: this write is a durability UPGRADE over
         # the in-memory capture, not a precondition. A raise escaping here would
         # poison the finalize hop AFTER the group committed and the old group
-        # was deleted, making the pipeline report the whole ingest failed. On a
-        # swallowed error the fallback write below still lands on the
-        # uncancelled path.
+        # was deleted, making the pipeline report the whole ingest failed. A
+        # swallowed error is retried under the writer lock right here, and the
+        # post-ingest fallback below is the last line of defence.
         try:
             _set_state(kstore, source_id, slug, content_hash, new_ids, title,
                        kind=art.kind)
@@ -448,8 +552,25 @@ async def ingest_artifact(
         except Exception:
             logger.warning(
                 "could not persist artifact ownership for %s inside the commit "
-                "callback; deferring to the post-ingest state write",
+                "callback; retrying under the writer lock",
                 slug, exc_info=True)
+            # Second attempt, still inside the uncancellable hop, so that no
+            # cancellation point can separate the commit from the ownership
+            # row. ``BEGIN IMMEDIATE`` waits for the writer lock (the usual
+            # reason the plain write raised) instead of failing on it, and the
+            # guard is a no-op this soon after the commit unless a sweep really
+            # did delete part of the group -- in which case it records the
+            # sweep's verdict for this slug instead of an ownership row.
+            try:
+                ownership_persisted = _write_ownership_if_intact(
+                    kstore, source_id, slug, content_hash, new_ids, title, art.kind,
+                    doc_hash=committed_doc_hash,
+                )
+            except Exception:
+                logger.warning(
+                    "in-hop ownership retry for %s failed as well; deferring to "
+                    "the post-ingest state write",
+                    slug, exc_info=True)
     # Route through the SAME path as folders/uploads: write the redacted content
     # to a temp file with the kind's real extension and hand it to
     # ingest_file -> FileReader. This gives html artifacts the ``_read_html``
@@ -497,7 +618,44 @@ async def ingest_artifact(
             except OSError:
                 pass
 
-    status = (pipeline.get_job_status(job_id) or {}).get("status") if job_id else None
+    def _settle_ownership() -> str | None:
+        """Job-status read plus the fallback ownership write, as ONE worker unit.
+
+        Both take the guarded knowledge connection, so neither may run on the
+        loop. They are also a pair: the fallback write exists ONLY for a hop
+        write that failed and was swallowed as fail-safe (``ownership_persisted``
+        False), and it must land whenever the job completed. Splitting them
+        across an await would put a cancellation point between "committed" and
+        "owned": a shutdown landing there skips the write, the committed items
+        have no state row naming them, and the next start's reconcile ingests
+        the artifact again beside them. ``run_to_completion`` drains this unit
+        even under cancellation, the way the ingestion finalizers are run.
+
+        The write is never unconditional, and never blind: ``_write_ownership_if_intact``
+        takes the write lock, confirms that every captured id still exists, and
+        only then records ownership -- a concurrent dedup sweep on the shared
+        source may have collapsed the group, and recording the captured ids over
+        that result would make unchanged ingests short-circuit against missing
+        content forever. A stubbed ``ingest_file`` returns no job id and never
+        reaches this read, which is why the strict tests also exercise a real
+        ingest.
+        """
+        status = (pipeline.get_job_status(job_id) or {}).get("status") if job_id else None
+        if status == "completed" and not ownership_persisted:
+            written = _write_ownership_if_intact(
+                kstore, source_id, slug, content_hash, list(committed_ids), title, art.kind,
+                doc_hash=committed_doc_hash,
+            )
+            if not written:
+                logger.info(
+                    "artifact %s: the committed group was collapsed by a dedup sweep "
+                    "before its ownership row landed; recorded the deduped marker "
+                    "for it instead",
+                    slug,
+                )
+        return status
+
+    status = await run_to_completion(_settle_ownership)
     if status == DUPLICATE_JOB_STATUS:
         # The gate refused the write and recorded the terminal state through the
         # ``on_duplicate`` finalizer above, so there is nothing left to write here.
@@ -507,20 +665,6 @@ async def ingest_artifact(
         # the new items. Leave the recorded state untouched so the next event
         # retries from the prior good group.
         return job_id
-    if not ownership_persisted:
-        # Fallback ONLY for a hop write that failed and was swallowed as
-        # fail-safe. Never an unconditional re-write: the awaits between the
-        # finalize hop and here (temp-file cleanup, job-status read) are windows
-        # where a concurrent dedup sweep may legitimately rewrite this slug's
-        # state row (collapse the group, mark it deduped), and blindly restoring
-        # the captured ids would resurrect an 'active' row over that result --
-        # unchanged ingests would then short-circuit against stale ids forever.
-        # Offloaded: the plausible reason the hop write failed is writer-lock
-        # contention, and retrying the same blocking SQLite write (busy_timeout
-        # up to 10s) on the event loop would stall the gateway loop.
-        await asyncio.to_thread(
-            _set_state, kstore, source_id, slug, content_hash,
-            list(committed_ids), title, kind=art.kind)
     sel().log_tool_invocation(
         session_key="gateway",
         agent="knowledge-artifacts",
