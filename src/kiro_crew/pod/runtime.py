@@ -10,6 +10,7 @@ layer. No state is held; each function reads what it needs from a
 from __future__ import annotations
 
 import contextlib
+import errno
 import http.client
 import json
 import os
@@ -65,6 +66,24 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Pod names become systemd instance names and path segments; keep them strict.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
+
+#: Times a pod-home ``mkdir``-then-``open`` pair is re-run when the directory THIS
+#: call created is removed between the two syscalls. There is no atomic "create
+#: this directory and open it", so a removal lands INSIDE the sequence and no
+#: ordering of the two calls closes that window (GH-12049); the answer is to run
+#: the sequence again, with no sleep, against the descriptor already pinned. The
+#: re-attempt covers a directory the call created and no other: one it merely MET
+#: held state a fresh empty directory would silently stand in for, so that case
+#: is reported instead. Past this many losses the removals are not a race but
+#: something removing the directory repeatedly, which no number of attempts fixes
+#: and an operator has to see.
+#:
+#: :mod:`kiro_crew.pinned_fs` and :mod:`kiro_crew.platform_log_append` each hold a
+#: private bound of the same name and the same value for their own
+#: create-then-open pairs, and they stay separate deliberately: each governs a
+#: different sequence with a different cost of losing, so sharing one constant
+#: would mean tuning any one of them silently retunes the others.
+_CREATE_ATTEMPTS = 3
 
 
 class PodError(RuntimeError):
@@ -2931,12 +2950,54 @@ def _prepare_seeded_home_fd(home_fd: int) -> None:
     _apply_seed_config_floor(data)
     atomic_write_at(home_fd, "config.json", json.dumps(data, indent=2), fsync=True, mode=0o600)
 
-    try:
-        os.mkdir("workspace", 0o700, dir_fd=home_fd)
-    except FileExistsError:
-        pass
-    workspace_fd = os.open("workspace", pinned_fs.dir_flags(), dir_fd=home_fd)
-    os.close(workspace_fd)
+    # Creating ``workspace`` and opening it are two syscalls, and a removal landing
+    # between them is an interleaving no ordering closes; tolerating only the
+    # ``FileExistsError`` half handles a concurrent writer and not a concurrent
+    # remover (GH-12049). The pair is re-run, bounded, against the SAME held home
+    # descriptor -- a retry resolves no name, so it cannot be steered -- but only
+    # for a directory THIS call created: on the restart path a met ``workspace``
+    # holds the pod's own state, and re-creating it empty would boot the pod over
+    # the loss without a word. Errors carry no full path because this function
+    # holds only a descriptor; both callers wrap ``OSError`` into a ``PodError``
+    # that names the pod home.
+    lost: FileNotFoundError | None = None
+    for _ in range(_CREATE_ATTEMPTS):
+        ours = True
+        try:
+            os.mkdir("workspace", 0o700, dir_fd=home_fd)
+        except FileExistsError:
+            ours = False
+        except FileNotFoundError as exc:
+            # The held HOME is gone, so there is nothing to create the workspace
+            # in; every further attempt would land here too, so it is reported at
+            # once, saying what happened rather than leaving a bare relative leaf.
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "the pod home was removed while its 'workspace' directory was "
+                "being created in it",
+                "workspace",
+            ) from exc
+        try:
+            workspace_fd = os.open("workspace", pinned_fs.dir_flags(), dir_fd=home_fd)
+        except FileNotFoundError as exc:
+            if not ours:
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    "the pod home's 'workspace' directory already existed when this "
+                    "seed met it and was removed before it could be opened, so "
+                    "whatever it held is gone; refusing to re-create it empty",
+                    "workspace",
+                ) from exc
+            lost = exc
+            continue
+        os.close(workspace_fd)
+        return
+    raise FileNotFoundError(
+        errno.ENOENT,
+        "the pod home's 'workspace' directory was removed between its creation "
+        f"and its open, {_CREATE_ATTEMPTS} attempts in a row",
+        "workspace",
+    ) from lost
 
 
 def _fixture_name_from_manifest_text(text: str) -> str:
@@ -3241,16 +3302,50 @@ def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
 
     home_fd = -1
     try:
-        try:
-            os.mkdir(home_dir.name, 0o700, dir_fd=root_fd)
-        except FileExistsError:
-            pass
-        try:
-            home_fd = os.open(home_dir.name, pinned_fs.dir_flags(), dir_fd=root_fd)
-        except OSError as exc:
+        # Creating the home and opening it are two syscalls, and a removal landing
+        # between them is an interleaving no ordering closes (GH-12049). The pair
+        # is re-run, bounded, against the SAME pinned pod-root descriptor, but
+        # only for a home THIS call created: a met home holds a prior seed's
+        # state, so its removal is a loss to report, not a name to re-create
+        # empty and boot over. Every report stays a ``PodError`` naming the home,
+        # this function's error surface -- and names the real condition: blaming
+        # a failed open on the home not being a plain directory reads a removal
+        # as a planted file, a claim the code did not observe.
+        lost: FileNotFoundError | None = None
+        for _ in range(_CREATE_ATTEMPTS):
+            ours = True
+            try:
+                os.mkdir(home_dir.name, 0o700, dir_fd=root_fd)
+            except FileExistsError:
+                ours = False
+            except FileNotFoundError as exc:
+                # The pinned pod ROOT is gone; nothing can be created inside an
+                # unlinked directory, so further attempts would land here too.
+                raise PodError(
+                    f"the pod root holding {home_dir} was removed while the home "
+                    "was being created in it; refusing to seed"
+                ) from exc
+            try:
+                home_fd = os.open(home_dir.name, pinned_fs.dir_flags(), dir_fd=root_fd)
+                break
+            except FileNotFoundError as exc:
+                if not ours:
+                    raise PodError(
+                        f"pod home {home_dir} already existed when this seed met it "
+                        "and was removed before it could be opened, so whatever it "
+                        "held is gone; refusing to re-create it empty"
+                    ) from exc
+                lost = exc
+                continue
+            except OSError as exc:
+                raise PodError(
+                    f"pod home {home_dir} is not a plain directory; refusing to seed it: {exc}"
+                ) from exc
+        else:
             raise PodError(
-                f"pod home {home_dir} is not a plain directory; refusing to seed it: {exc}"
-            ) from exc
+                f"pod home {home_dir} was removed between its creation and its "
+                f"open, {_CREATE_ATTEMPTS} attempts in a row; refusing to seed"
+            ) from lost
         try:
             entries = os.listdir(home_fd)
             if entries:

@@ -136,6 +136,22 @@ QUEUE_BYTES_LIMIT = 32 * 1024 * 1024
 DIR_MODE = 0o700
 FILE_MODE = 0o600
 
+#: Times :func:`_pin_destination` re-runs its ``mkdir``-then-``open`` pair when the
+#: destination is removed between the two. Creating a directory and opening it are
+#: two syscalls, so a removal lands INSIDE the sequence and no ordering of the two
+#: calls closes that window (GH-12049) -- the answer is to run the sequence again,
+#: with no sleep, against the parent descriptor pinned once above the loop. The
+#: stakes here are the recorder's life: one escaped ``ENOENT`` reaches
+#: :func:`_stand_down`, which retires recording for the rest of the process, so a
+#: single lost race silently costs every later frame of every session.
+#:
+#: :mod:`kiro_crew.pinned_fs` and :mod:`kiro_crew.platform_log_append` each hold a
+#: private bound of the same name and the same value for their own
+#: create-then-open pairs, and the three stay separate deliberately: each governs
+#: a different sequence with a different cost of losing, so sharing one constant
+#: would mean tuning any one of them silently retunes the others.
+_CREATE_ATTEMPTS = 3
+
 #: Set once when recording has failed, so a broken destination costs one log
 #: line rather than one per frame for the life of the process.
 _stood_down = False
@@ -573,6 +589,15 @@ def _pin_destination(directory: Path) -> int:
     (:func:`_require_owner_only_dir`); a leaf this run created is 0o700 by
     construction and passes the same check. A pre-existing directory is
     checked, never changed. The descriptor is returned; the caller owns it.
+
+    Creating the leaf and opening it are two syscalls, and a removal landing
+    between them is an interleaving no ordering closes. The pair is re-attempted,
+    :data:`_CREATE_ATTEMPTS` times, against the SAME pinned parent descriptor --
+    a retry resolves no name, so it cannot be steered, and the link refusal is
+    re-asked on every attempt. Exhaustion, and a removal of the pinned parent
+    itself, raise ``FileNotFoundError`` carrying the whole path rather than the
+    bare relative name ``openat`` was given, so the stand-down line an operator
+    reads names the directory instead of a leaf with no directory component.
     """
     normalised = Path(os.path.normpath(directory.absolute()))
     _refuse_linked_component(normalised)
@@ -580,19 +605,63 @@ def _pin_destination(directory: Path) -> int:
         str(normalised.parent), what="recording destination", refusal=OSError
     )
     try:
-        try:
-            os.mkdir(normalised.name, DIR_MODE, dir_fd=parent_fd)
-        except FileExistsError:
-            pass
-        try:
-            fd = os.open(normalised.name, pinned_fs.dir_flags(), dir_fd=parent_fd)
-        except OSError as exc:
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise OSError(
-                    f"recording destination {directory} is a symbolic link or not a "
-                    f"directory; set {ENV_RECORD_FRAMES} to a directory path"
+        lost: FileNotFoundError | None = None
+        for _ in range(_CREATE_ATTEMPTS):
+            try:
+                os.mkdir(normalised.name, DIR_MODE, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            except FileNotFoundError as exc:
+                # The pinned PARENT is gone, not the destination being created.
+                # Nothing can be made inside an unlinked directory, so every further
+                # attempt would land here too -- reported at once, and with the whole
+                # path, because the errno carries only the relative name the syscall
+                # was given.
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    "the directory holding the recording destination was removed, so "
+                    f"{normalised.name!r} cannot be created in it; "
+                    f"set {ENV_RECORD_FRAMES} to a directory that stays",
+                    str(normalised),
                 ) from exc
-            raise
+            try:
+                fd = os.open(normalised.name, pinned_fs.dir_flags(), dir_fd=parent_fd)
+                break
+            except FileNotFoundError as exc:
+                # The destination existed a syscall ago and is gone: the mirror of the
+                # ``FileExistsError`` tolerated above -- a concurrent writer is handled
+                # there, and this handles the concurrent remover (GH-12049). The pair
+                # is re-run rather than repaired in place, because no ordering of two
+                # syscalls closes a window between them; every attempt goes through
+                # the ONE descriptor pinned above the loop, so a retry re-resolves no
+                # name and cannot be steered, and the ``ELOOP``/``ENOTDIR`` refusal
+                # below is re-asked on each attempt. Re-creating is safe on this
+                # surface for the same reason it is in
+                # :mod:`kiro_crew.platform_log_append`: the destination is a container
+                # for this module's own append-only files, so a fresh empty directory
+                # merges with nothing and hides nothing -- while the alternative, one
+                # escaped ``ENOENT``, retires recording for the life of the process.
+                lost = exc
+                continue
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise OSError(
+                        f"recording destination {directory} is a symbolic link or not a "
+                        f"directory; set {ENV_RECORD_FRAMES} to a directory path"
+                    ) from exc
+                raise
+        else:
+            # A destination that keeps being removed is not a race being lost but
+            # something removing it repeatedly, which no number of attempts fixes and
+            # the stand-down log line has to say. The report stays in the class the
+            # kernel gave and gains the FULL path the kernel could not name: a bare
+            # relative leaf in the log reads as a working-directory bug.
+            raise FileNotFoundError(
+                errno.ENOENT,
+                f"the recording destination {normalised} was removed between its "
+                f"creation and its open, {_CREATE_ATTEMPTS} attempts in a row",
+                str(normalised),
+            ) from lost
     finally:
         os.close(parent_fd)
     try:

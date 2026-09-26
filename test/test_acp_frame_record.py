@@ -1302,6 +1302,131 @@ def test_a_hard_link_planted_inside_the_directory_is_refused(monkeypatch, tmp_pa
     assert _frame_record.recording_destination() == ""
 
 
+# ── the window between creating the destination and opening it ──────────────
+
+
+def _vanishing_mkdir(leaf: str, *, once: bool, counter: list[int], plant: Path | None = None):
+    """A ``mkdir`` that makes *leaf* and then removes it again, as a remover would.
+
+    The removal lands exactly where a concurrent one would: after the directory
+    exists and before anything has opened it. Deterministic, so the window is a
+    test fixture rather than something to reproduce under load. With *plant*, a
+    link to that path is left at the name instead of nothing, which is the other
+    thing an actor who won the race can do.
+    """
+    real_mkdir = os.mkdir
+
+    def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if name != leaf or (once and counter):
+            return
+        counter.append(1)
+        os.rmdir(name, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if plant is not None:
+            os.symlink(plant, name, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    return vanishing
+
+
+def test_a_destination_removed_between_its_mkdir_and_its_open_is_re_created(monkeypatch, tmp_path):
+    """Creating the destination and opening it are two syscalls (GH-12049).
+
+    A removal between them is an interleaving no ordering closes, and tolerating
+    only the `FileExistsError` half handled a concurrent writer while a concurrent
+    remover reached `_stand_down` -- one lost race retired recording for the life
+    of the process. The pair is re-run, so the frame lands.
+    """
+    _clean(monkeypatch)
+    dest = tmp_path / "frames"
+    removals: list[int] = []
+    monkeypatch.setattr(os, "mkdir", _vanishing_mkdir("frames", once=True, counter=removals))
+
+    _frame_record.write_frame("kas", {"jsonrpc": "2.0"}, str(dest))
+
+    assert removals == [1], "the race did not happen, so the retry is not what passed"
+    lines = (dest / "kas.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0]) == {"jsonrpc": "2.0"}
+
+
+def test_a_destination_removed_on_every_attempt_names_the_whole_path(monkeypatch, tmp_path):
+    """Exhaustion reports the PATH, not the bare leaf `openat` was handed.
+
+    `'frames'` on its own names no directory and reads as a working-directory
+    bug, which is the unreadable half of the class this recorder shares with the
+    decision log. The attempt count is asserted exactly: a destination something
+    keeps removing must be reported, not spun on.
+    """
+    _clean(monkeypatch)
+    dest = tmp_path / "frames"
+    removals: list[int] = []
+    monkeypatch.setattr(os, "mkdir", _vanishing_mkdir("frames", once=False, counter=removals))
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _frame_record._pin_destination(dest)
+
+    assert excinfo.value.filename == str(dest)
+    assert "removed between its creation and its open" in str(excinfo.value)
+    assert len(removals) == _frame_record._CREATE_ATTEMPTS == 3
+    assert not dest.exists()
+
+
+def test_a_parent_removed_under_its_pin_is_reported_rather_than_re_attempted(monkeypatch, tmp_path):
+    """Nothing can be created inside an unlinked directory, so this reports at once.
+
+    The retry is for a destination that was removed after it existed; a pinned
+    parent that is gone makes every further attempt fail identically, and the
+    report carries the whole path the errno omits.
+    """
+    _clean(monkeypatch)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    dest = parent / "frames"
+    attempts: list[int] = []
+    real_mkdir = os.mkdir
+
+    def removing_the_parent(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        if name == "frames":
+            attempts.append(1)
+            os.rmdir(parent)
+        real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "mkdir", removing_the_parent)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _frame_record._pin_destination(dest)
+
+    assert excinfo.value.filename == str(dest)
+    assert "cannot be created in it" in str(excinfo.value)
+    assert attempts == [1]
+
+
+def test_a_link_planted_at_the_destination_mid_sequence_is_refused_not_re_attempted(
+    monkeypatch, tmp_path
+):
+    """Only a REMOVAL is re-run. A link that replaces the directory is refused, once.
+
+    This is the property that makes the retry safe: it is reached from
+    `FileNotFoundError` alone, so an actor who removes the destination and plants
+    a link where it was meets `O_NOFOLLOW` on the first attempt and gets the
+    module's refusal, with nothing recorded through what the link points at.
+    """
+    _clean(monkeypatch)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    dest = tmp_path / "frames"
+    removals: list[int] = []
+    monkeypatch.setattr(
+        os, "mkdir", _vanishing_mkdir("frames", once=True, counter=removals, plant=victim)
+    )
+
+    with pytest.raises(OSError) as excinfo:
+        _frame_record._pin_destination(dest)
+
+    assert "symbolic link or not a directory" in str(excinfo.value)
+    assert removals == [1]
+    assert list(victim.iterdir()) == [], "the retry wrote through the planted link"
+
+
 # ── never raises ─────────────────────────────────────────────────────────────
 
 
