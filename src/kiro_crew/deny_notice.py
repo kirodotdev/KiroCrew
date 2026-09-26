@@ -29,6 +29,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
     STEER_NOTICE_BOUND_SECS,
 )
 from kiro_crew.deny_guidance import remediation_for
@@ -54,6 +55,15 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "use an allowed alternative (for a shell command, a read-only variant), use "
         "a different tool, or — if the block is correct and you genuinely cannot "
         "proceed — say so and stop with the reason.",
+    ),
+    DENY_CAUSE_SURFACE_POLICY: (
+        "was refused by the tool policy of the surface this turn runs on, not by a "
+        "safety rule about the call itself",
+        "the reason above says what this surface permits -- nothing at all, or only "
+        "calls provably read-only. Nothing about the action was judged, so do not "
+        "look for a sanctioned form of it here: continue with what you can do "
+        "without the tool, and if you genuinely cannot, say so and stop with the "
+        "reason.",
     ),
     DENY_CAUSE_INVALID_NAME: (
         "was refused because its tool name failed validation",
@@ -149,8 +159,9 @@ def build_refusal_steer_notice(
     # Class-specific remediation, for the policy cause only. The non-policy
     # causes judged nothing about the action — an invalid tool name is the
     # model's own malformed output, a hook fault is a host fault, a cascaded
-    # batch member was never reached, and an expired approval prompt was simply
-    # never answered — so naming a sanctioned alternative there would answer a
+    # batch member was never reached, an expired approval prompt was simply
+    # never answered, and a surface-policy refusal says only what the surface
+    # permits — so naming a sanctioned alternative there would answer a
     # question nobody asked and imply the action itself had been refused.
     remediation = (
         remediation_for(reason, title, credential_tool_hint=credential_tool_hint)

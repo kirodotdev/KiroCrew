@@ -296,6 +296,37 @@ once, at the shared reject branch, gated on the host-recorded provenance; a
 genuine user refusal records no cause, so kiro-cli's generic denial stays the
 true attribution there and no notice is sent.
 
+**The headless funnel steers the same notice.** `llm_helpers._resolve_permission`
+answers permissions for every surface without a dashboard slot — cron, Slack and
+channel turns driven through `stream_and_collect`, workflows, heartbeat, Meetings
+transcript turns — and `llm_helpers.run_bg_oneliner` answers them for the
+tool-free background one-liners (titles, labels, summaries). Each host deny there
+awaits `deny_notice.steer_refusal_notice` through the module's
+`_steer_host_deny` immediately before `reject_tool`, naming its cause per site:
+
+- `policy` — a safety rule judged the call itself: an always-deny pattern hit, a
+  hook `deny`, the shared permission floor refusing an `AUTO_APPROVE` call, a
+  name-based grant withheld with no approver to fall back to. Carries the class
+  remediation.
+- `surface_policy` — the SURFACE refused the call, not a rule about the call:
+  the reject-all and read-only tool policies, and the tool-free one-liner. No
+  remediation, because it is keyed off the reason and the model's own title, and
+  on a surface where no tool can run it would name a sanctioned command that
+  cannot run there.
+- `invalid_name` — the call carried no title, the one deny the model can fix.
+
+The one genuine user rejection on that funnel (the interactive approver said no)
+sends no notice. Two orderings are load-bearing at every site and are pinned by
+a source-walking test (`test_llm_helpers_deny_notice.py`): the SEL audit row is
+written BEFORE the steer and the reject (both await the ACP pipe, and a stalled
+pipe cancels the coroutine at the turn deadline — an audit sequenced after them
+never runs), and an audit that cannot be written is contained rather than
+allowed to strand the request (contained on the deny funnel only — an approval
+audits after the wire and keeps raising). A cancellation that lands inside the
+steer still answers the wire: the reject is scheduled as a strongly referenced
+task whose outcome is read when it settles, and the cancellation re-raises at
+once — the cancellation is the caller's deadline, so nothing waits past it.
+
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert

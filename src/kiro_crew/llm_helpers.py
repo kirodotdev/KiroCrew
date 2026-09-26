@@ -24,7 +24,13 @@ from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import (
+    DENY_CAUSE_INVALID_NAME,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
+)
 from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
     _normalize_tool_name,
@@ -1382,6 +1388,104 @@ class ToolApprovalPolicy(Enum):
     READ_ONLY = "read_only"
 
 
+#: Rejects scheduled while a deny site was being CANCELLED mid-steer. Strongly
+#: referenced so the event loop cannot drop them before they answer the wire.
+_orphan_rejects: set[asyncio.Task[Any]] = set()
+
+
+async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str) -> None:
+    """Tell the model, in-band, that the HOST denied this call -- not the person.
+
+    A rejected permission reaches the model as kiro-cli's fixed "User denied tool
+    execution", so without this it reads a refusal that never happened and
+    abandons or routes around a call nobody objected to. Awaited immediately
+    BEFORE each host-deny ``reject_tool`` in this module: while the permission
+    request is still unanswered the turn is provably in flight, which is what
+    gets the notice queued rather than dropped (see ``kiro_crew.deny_notice``).
+
+    Every deny in this module is a HOST verdict, but *cause* says which kind,
+    and it is REQUIRED because the wrong noun sends the model the wrong way.
+    ``DENY_CAUSE_POLICY`` is for a safety rule judging the call itself (an
+    always-deny pattern, a hook deny, a withheld name grant): its notice appends
+    class-specific remediation keyed off the reason and the model's own title.
+    ``DENY_CAUSE_SURFACE_POLICY`` is for the surface refusing the call (the
+    reject-all / read-only policies, the tool-free background one-liner): no
+    remediation, because on a surface where the tool cannot run at all, telling
+    the model which sanctioned command to run instead -- triggered by nothing
+    more than a credential-shaped word in its own title -- would be a second
+    wall. ``DENY_CAUSE_INVALID_NAME`` is for the empty title, the one deny the
+    model can simply fix. The one genuine USER rejection
+    (``interactive_rejected``) must NOT call this: there kiro-cli's wording is
+    the truth, and "this was NOT a user action" would be a lie.
+    ``test_llm_helpers_deny_notice`` walks the file to keep both halves honest.
+
+    *reason* may echo agent-authored text (a matched path, a hook's reason), so it
+    is redacted here; the shared helper redacts the title. The reason is
+    otherwise passed VERBATIM, as the chat runner does: a rule-authored refusal's
+    fixed lead (``Blocked by security policy: ``, the unverifiable-path stall
+    prefix) is the structural key ``deny_guidance.classify_deny`` reads before any
+    text scan, and trimming it would let an agent-spelled path move a stall into
+    the credential class. The synthetic reasons this module authors carry no lead
+    of their own, since the notice writes ``Blocked: <title>: <reason>`` itself,
+    and a title-less call (the empty-title deny) is named rather than left as a
+    bare colon. Best-effort by
+    construction: ``steer_refusal_notice`` probes ``supports_refusal_steer`` and swallows
+    every failure, so a backend without a steer channel behaves exactly as before
+    and the caller's reject always runs.
+
+    Cancellation mid-steer (a timed background turn, a stalled pipe hitting the
+    turn deadline) must still answer the wire: a stranded
+    ``session/request_permission`` blocks the backend forever and wedges every
+    later turn behind it, and the caller's own ``reject_tool`` is the statement
+    the cancellation skips. The reject is scheduled as a strongly referenced
+    task (``_orphan_rejects`` keeps it alive, ``_orphan_reject_done`` retires it
+    and reads its outcome) and this coroutine re-raises IMMEDIATELY. It does not
+    wait for the reject, not even bounded: the cancellation IS the caller's
+    deadline, and the pipe that stalled the steer is the pipe the reject drains
+    into, so any wait here runs after the caller's budget is spent and stretches
+    a declared bound (a 5 s ``run_bg_oneliner`` would resolve at 10 s). The
+    event loop steps the orphan task while the caller unwinds. Whether it still
+    reaches the wire depends on the caller's teardown: the multiplexed
+    ``_ProviderBgSession.destroy()`` only releases its turn semaphore and the
+    shared transport stays up, while a runtime-backed ``AcpSessionHandle`` is
+    terminated by its ``destroy()`` and the write then fails -- which
+    ``_orphan_reject_done`` reports as the unanswered request it is, the same
+    end state the caller's own skipped ``reject_tool`` would have left behind,
+    now visible in the log. The SEL row for the decision is already written --
+    every caller audits before this await.
+    """
+    safe_reason, _ = redact_exfiltration_urls(reason or "")
+    safe_reason, _ = redact_credentials(safe_reason)
+    title = str(getattr(event, "title", "") or "") or "unnamed tool call"
+    try:
+        await steer_refusal_notice(provider, title, safe_reason, cause=cause)
+    except asyncio.CancelledError:
+        reject = asyncio.ensure_future(provider.reject_tool(event.request_id))
+        _orphan_rejects.add(reject)
+        reject.add_done_callback(_orphan_reject_done)
+        raise
+
+
+def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
+    """Retire an orphan reject and RETRIEVE its outcome.
+
+    ``_steer_host_deny`` re-raises without awaiting this task; if the caller then
+    tears the transport down, the write fails after nobody is awaiting it.
+    Reading the exception here is what keeps
+    asyncio from reporting a bare "Task exception was never retrieved" at GC
+    instead of the real signal -- that a permission request went unanswered.
+    """
+    _orphan_rejects.discard(task)
+    if task.cancelled():
+        logger.debug("orphan reject_tool cancelled before it reached the wire")
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            "orphan reject_tool failed; the permission request may be unanswered: %r", exc
+        )
+
+
 # ── Stream and Collect ──
 
 
@@ -1508,12 +1612,27 @@ async def run_bg_oneliner(
                 # reject_tool transport failure must NOT skip the audit.
                 # ``sel_source`` carries a non-empty default so callers that
                 # don't attribute a feature still produce an audit record.
-                _sel().log_tool_invocation(
-                    session_key=sel_session_key,
-                    tool_name=getattr(event, "title", "unknown") or "unknown",
-                    outcome="denied",
-                    source=sel_source or "bg_oneliner",
-                    request_id=str(event.request_id),
+                # Contained for the same reason as _resolve_permission's funnel:
+                # an audit that cannot be written must not strand the request.
+                try:
+                    _sel().log_tool_invocation(
+                        session_key=sel_session_key,
+                        tool_name=getattr(event, "title", "unknown") or "unknown",
+                        outcome="denied",
+                        source=sel_source or "bg_oneliner",
+                        request_id=str(event.request_id),
+                    )
+                except Exception:
+                    logger.warning(
+                        "bg oneliner: permission audit write failed; rejecting anyway",
+                        exc_info=True,
+                    )
+                await _steer_host_deny(
+                    session,
+                    event,
+                    "this background one-liner is tool-free by contract; answer "
+                    "from the prompt alone",
+                    cause=DENY_CAUSE_SURFACE_POLICY,
                 )
                 await session.reject_tool(event.request_id)
             elif event.kind == EVENT_TOOL_CALL:
@@ -2644,9 +2763,40 @@ async def _resolve_permission(
             **extra,
         )
 
+    def _log_deny(outcome: str, **extra):
+        # The DENY funnel. Its audit precedes the wire (below), so an audit
+        # FAILURE must not strand the permission request: a SEL whose lazy init
+        # cannot reach its audit root raises here, and an uncontained raise
+        # would skip the reject and leave the backend blocked on an unanswered
+        # request. Fail loud in the log, then still answer the wire -- a denied
+        # tool with a missing audit row is recoverable noise; an unanswered
+        # request wedges the turn. Containment is deliberately NOT in ``_log``:
+        # the approval sites audit AFTER ``approve_tool`` has answered, and an
+        # audit failure there must keep raising, or an unattended AUTO_APPROVE
+        # turn would go on approving tools with no audit row at all.
+        try:
+            _log(outcome, **extra)
+        except Exception:
+            logger.warning(
+                "tool-permission audit write failed (outcome=%s); answering the wire anyway",
+                outcome,
+                exc_info=True,
+            )
+
+    # Audit FIRST, before any wire I/O for this decision, at every deny below:
+    # the steer and the rejection both await the ACP pipe, and a backend that
+    # stops reading stdin blocks those awaits until the turn deadline cancels
+    # this coroutine -- an SEL write sequenced after them never runs (see
+    # test_deny_audit_first for the chat runner's statement of the same rule).
     if policy == ToolApprovalPolicy.REJECT_ALL:
+        _log_deny("rejected", metadata={"reason": "reject_all_policy"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface runs under a reject-all tool policy",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
         await provider.reject_tool(event.request_id)
-        _log("rejected", metadata={"reason": "reject_all_policy"})
         return False
 
     # ── Always-enforced deny checks (regardless of approval policy) ──
@@ -2655,8 +2805,13 @@ async def _resolve_permission(
     # be bypassed by callers that skip HookManager wiring.
     normalized = event.title or ""
     if not normalized:
+        _log_deny(
+            "denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"}
+        )
+        await _steer_host_deny(
+            provider, event, "the tool call carried no title", cause=DENY_CAUSE_INVALID_NAME
+        )
         await provider.reject_tool(event.request_id)
-        _log("denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"})
         return False
     # Honor the user's Settings>Security opt-out + governance pins on this
     # surface too (cron / Slack / workflow / heartbeat). Without threading the
@@ -2815,22 +2970,30 @@ async def _resolve_permission(
     _hit = await asyncio.to_thread(_scan_off_loop)
     if _hit is not None:
         _kind, _reason, _matched, _tier = _hit
-        await provider.reject_tool(event.request_id)
-        _log(
+        _log_deny(
             "denied",
             error=_reason,
             metadata={
                 "mechanism": (_regex_deny_mechanism(_matched, _tier) if _kind == "regex" else _tier)
             },
         )
+        await _steer_host_deny(provider, event, _reason, cause=DENY_CAUSE_POLICY)
+        await provider.reject_tool(event.request_id)
         return False
 
     if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
         # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
         # there is no way to prove a call read-only, so the policy degrades to
         # REJECT_ALL rather than to the caller-less auto-approve below.
+        _log_deny("rejected", metadata={"reason": "read_only_policy_no_hooks"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface is read-only and has no hook gate to prove a call "
+            "read-only, so every tool call is refused",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
         await provider.reject_tool(event.request_id)
-        _log("rejected", metadata={"reason": "read_only_policy_no_hooks"})
         return False
 
     if policy == ToolApprovalPolicy.AUTO_APPROVE:
@@ -2843,11 +3006,15 @@ async def _resolve_permission(
             security_only=False,
         )
         if reason is not None:
-            _log(
+            # The permission floor's verdict is a host deny on the call itself
+            # (a TOOL_DENY from the shared gate, or the gate failing closed):
+            # policy wording, audited first, steered before the wire.
+            _log_deny(
                 "denied",
                 error=reason,
                 metadata={"mechanism": "policy_deny"},
             )
+            await _steer_host_deny(provider, event, reason, cause=DENY_CAUSE_POLICY)
             await provider.reject_tool(event.request_id)
             return False
 
@@ -2869,12 +3036,11 @@ async def _resolve_permission(
             classifier_only=policy == ToolApprovalPolicy.READ_ONLY,
         )
         if tool_result.action == TOOL_DENY:
-            await provider.reject_tool(event.request_id)
             # A hook deny is either a hard security check or the governance
             # ceiling. Only the former says the attempt itself was the problem,
             # and the distinction rides on the result's own field rather than
             # its reason text.
-            _log(
+            _log_deny(
                 "denied",
                 error=tool_result.reason,
                 metadata={
@@ -2883,6 +3049,8 @@ async def _resolve_permission(
                     )
                 },
             )
+            await _steer_host_deny(provider, event, tool_result.reason, cause=DENY_CAUSE_POLICY)
+            await provider.reject_tool(event.request_id)
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
             if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
@@ -2896,8 +3064,14 @@ async def _resolve_permission(
                 # carry the tag — a double, a tier that omits it — and this
                 # surface has no approver to hand it to. Refuse, as policy
                 # state: the same call is allowed where a card exists.
+                _log_deny("rejected", metadata={"reason": "read_only_policy_unclassified"})
+                await _steer_host_deny(
+                    provider,
+                    event,
+                    "this surface is read-only and the call could not be proven " "read-only",
+                    cause=DENY_CAUSE_SURFACE_POLICY,
+                )
                 await provider.reject_tool(event.request_id)
-                _log("rejected", metadata={"reason": "read_only_policy_unclassified"})
                 return False
             # The hook granted this by NAME (its `auto_approve_tools` globs, or
             # the read-only allowlist). Verify it UNCONDITIONALLY: this helper
@@ -2938,8 +3112,15 @@ async def _resolve_permission(
             # only positive authorization and it was withheld, so fall through
             # to deny-by-default rather than the caller-less auto-approve below.
             if on_tool_approval is None:
+                _log_deny("rejected", metadata={"reason": "name_grant_headless_reject"})
+                await _steer_host_deny(
+                    provider,
+                    event,
+                    "the hook's name-based grant was withheld ("
+                    f"{_ng_refusal.log_text}) and this surface has no approver",
+                    cause=DENY_CAUSE_POLICY,
+                )
                 await provider.reject_tool(event.request_id)
-                _log("rejected", metadata={"reason": "name_grant_headless_reject"})
                 return False
 
     if policy == ToolApprovalPolicy.READ_ONLY:
@@ -2951,16 +3132,24 @@ async def _resolve_permission(
         # approval card, this policy refuses — reject is the fallback, and it
         # runs BEFORE the interactive callback so a caller passing one cannot
         # widen the policy.
+        _log_deny("rejected", metadata={"reason": "read_only_policy"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface is read-only and the call was not classified read-only",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
         await provider.reject_tool(event.request_id)
-        _log("rejected", metadata={"reason": "read_only_policy"})
         return False
 
     # Interactive approval if callback provided
     if on_tool_approval:
         approved = await on_tool_approval(event)
         if not approved:
+            # The person said no: no notice (kiro-cli's wording is the truth
+            # here), but the audit still precedes the wire like every other deny.
+            _log_deny("rejected", metadata={"reason": "interactive_rejected"})
             await provider.reject_tool(event.request_id)
-            _log("rejected", metadata={"reason": "interactive_rejected"})
             return False
 
     # Default: auto-approve
