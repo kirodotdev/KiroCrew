@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ErrorNotice from '../components/ErrorNotice'
 import { mergeIntoDraft } from '../utils/chatDrafts'
@@ -446,6 +446,39 @@ describe('ErrorNotice', () => {
     render(<ErrorNotice message="disk is full" askAgent />)
     expect(screen.getByRole('alert')).toHaveTextContent('disk is full')
     expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('names the dismiss control from dismissLabel when given, "Dismiss" otherwise, as its label AND its tooltip', () => {
+    // The icon-only ✕ carries one name two ways: `aria-label` for the
+    // accessibility tree and `title` as the tooltip, so a sighted user hovering
+    // it reads the same promise a screen reader announces -- the one place a
+    // REMEMBERED dismissal can say what it commits to before the click.
+    const onDismiss = vi.fn()
+    const { unmount } = render(<ErrorNotice message="disk is full" onDismiss={onDismiss} dismissLabel="Dismiss: hide this until it changes" />)
+    const control = screen.getByRole('button', { name: 'Dismiss: hide this until it changes' })
+    expect(control).toHaveAttribute('title', 'Dismiss: hide this until it changes')
+    fireEvent.click(control)
+    expect(onDismiss).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+    unmount()
+    render(<ErrorNotice message="disk is full" onDismiss={onDismiss} variant="inline" />)
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toHaveAttribute('title', 'Dismiss')
+  })
+
+  it('is always the alert in the danger tone: there is no muted or status register for an error', () => {
+    // `errors-use-error-notice`: a failure toned down to a polite status is
+    // still a failure. Whatever a caller passes, the notice renders as
+    // `role="alert"` in the danger tone; a caller that does not want it seen
+    // does not render it.
+    for (const variant of ['block', 'inline'] as const) {
+      const { unmount } = render(<ErrorNotice message="disk is full" askAgent onDismiss={() => {}} variant={variant} />)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      const alert = screen.getByRole('alert')
+      expect(alert.className).toContain('text-danger')
+      expect(alert.className).not.toContain('text-muted')
+      expect(alert).not.toHaveAttribute('data-tone')
+      unmount()
+    }
   })
 
   it('renders with no Redux or Router context — the crash-fallback contract', () => {

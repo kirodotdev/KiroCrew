@@ -13,6 +13,7 @@ import { PIERRE_TREE_STATE_ROW_CSS } from '../pierre/config'
 const LABELS = {
   empty: 'Empty folder',
   'hidden-only': 'Contains only hidden items (dotfiles, caches)',
+  linked: 'Link to another folder: contents not listed',
   truncated: 'Files not shown',
 } as const
 const M = STATE_ROW_MARKER
@@ -44,6 +45,19 @@ describe('planTreeStateRows', () => {
     expect([...plan.folders]).toEqual(['empty', 'onlyhidden', 'cut'])
     expect(plan.folders.has('src')).toBe(false)
     expect(plan.folders.has('locked')).toBe(false)
+  })
+
+  it('says a link to another folder is not followed, and leaves the folder holding it without a row', () => {
+    // A symlink to a directory is a visible entry the server lists as a row of
+    // its own (`linkedDirectories`) but never walks into: the link gets the
+    // linked row, never "Empty folder", and `deploy` -- whose only entry it
+    // is -- has a child and gets no row (it is not hidden-only either).
+    const plan = planTreeStateRows(
+      { paths: [], directories: ['deploy', 'deploy/current'], linkedDirectories: ['deploy/current'] },
+      LABELS,
+    )
+    expect([...plan.paths]).toEqual([`deploy/current/Link to another folder: contents not listed${M}`])
+    expect([...plan.folders]).toEqual(['deploy/current'])
   })
 
   it('plans no row under an unreadable folder, and none for its parent either', () => {

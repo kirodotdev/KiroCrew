@@ -74,6 +74,7 @@ export default function ErrorNotice({
   report,
   title,
   onDismiss,
+  dismissLabel,
   variant = 'block',
   askAgent = false,
   askAgentLabel,
@@ -98,6 +99,18 @@ export default function ErrorNotice({
   title?: string
   /** Renders a dismiss affordance when provided. */
   onDismiss?: () => void
+  /**
+   * Name of the dismiss control — its accessible name AND its tooltip — when
+   * the bare "Dismiss" would leave out what the click commits to: a notice
+   * whose dismissal is REMEMBERED (it stays away on the next visit until its
+   * condition changes) owes the user that promise where they can read it
+   * before clicking, sighted or not. Ignored without `onDismiss`. The control
+   * only ever removes the notice; there is no toned-down or muted register
+   * for an error (a failure toned down to a polite status is still a failure
+   * — see `errors-use-error-notice`), so a caller that wants the notice gone
+   * hides it, and one that wants it seen renders it exactly like this.
+   */
+  dismissLabel?: string
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
   /**
@@ -168,6 +181,11 @@ export default function ErrorNotice({
 }) {
   if (!message) return null
 
+  // One name for the dismiss control, read two ways: `aria-label` for the
+  // accessibility tree and `title` as the tooltip, so a sighted user hovering
+  // the icon-only ✕ sees the same promise a screen reader announces.
+  const dismissName = dismissLabel ?? i18nT('components.errorNotice.dismiss')
+
   if (variant === 'inline') {
     return (
       <span
@@ -191,7 +209,8 @@ export default function ErrorNotice({
           <button
             type="button"
             className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-            aria-label={i18nT('components.errorNotice.dismiss')}
+            aria-label={dismissName}
+            title={dismissName}
             onClick={onDismiss}
           >
             <X size={13} aria-hidden="true" />
@@ -231,7 +250,8 @@ export default function ErrorNotice({
         <button
           type="button"
           className="shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors"
-          aria-label={i18nT('components.errorNotice.dismiss')}
+          aria-label={dismissName}
+          title={dismissName}
           onClick={onDismiss}
         >
           <X size={14} aria-hidden="true" />
