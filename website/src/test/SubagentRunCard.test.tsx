@@ -508,4 +508,13 @@ describe('SubagentRunCard — a run parked on a spawn approval is not running', 
     expect(screen.getByText('2 agents running')).toBeTruthy()
     expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
   })
+  it('neither awaits nor runs a member whose approval is gone', () => {
+    // A terminal refusal withdrew the decision everywhere it is offered, and no
+    // outcome is known: not owed to the user, and not a launched process.
+    const gone = { ...parked('a1'), approvalGone: 'spawn:a1' } as SubagentActivity
+    const store = storeWith({ a1: gone, a2: agent('a2', 'running') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('1 agent running')).toBeTruthy()
+    expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
+  })
 })

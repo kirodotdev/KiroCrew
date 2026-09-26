@@ -3962,9 +3962,17 @@ const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
  * `approval_id` is the load-bearing half — `sseSubagentPending` is the only
  * writer of `'pending'` and always sets it, so its absence means a card built
  * some other way and must not be claimed as blocked on the user.
+ *
+ * A gone approval (`markSubagentApprovalGone`) is excluded: once a resolve has
+ * proved it decided or expired, no surface can take the decision, so none may
+ * say the user owes it. Such a run launched nothing either, so a tally that
+ * would otherwise fall through to "running" must check `isSpawnApprovalGone`.
  */
+export const isSpawnApprovalGone = (a: SubagentActivity) =>
+  !!a.approval_id && a.approvalGone === a.approval_id
+
 export const isAwaitingSpawnApproval = (a: SubagentActivity) =>
-  a.status === 'pending' && !!a.approval_id
+  a.status === 'pending' && !!a.approval_id && !isSpawnApprovalGone(a)
 
 /** Counts subagents pending spawn approval in a subagent map. */
 const countPendingApprovals = (m?: Record<string, SubagentActivity>) => {
@@ -3996,9 +4004,7 @@ export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string |
   if (!slot) return _EMPTY_PENDING_SPAWNS
   const subs = getSlotSubs(state.chat, slot)
   if (!subs) return _EMPTY_PENDING_SPAWNS
-  // A gone approval is still parked (the run tallies keep counting it), but the
-  // banner's buttons can only re-send a refusal, so it leaves this list.
-  const out = Object.values(subs).filter(a => isAwaitingSpawnApproval(a) && a.approvalGone !== a.approval_id)
+  const out = Object.values(subs).filter(isAwaitingSpawnApproval)
   return out.length ? out : _EMPTY_PENDING_SPAWNS
 }
 

@@ -687,9 +687,14 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     await waitFor(() => {
       expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
     })
-    expect(screen.getByRole('status')).toHaveTextContent(
+    // A rejected request is an error (AUTOSDE errors-use-error-notice), and the
+    // panel shows this same sentence through ErrorNotice: not the status strip.
+    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
     expect(api.resolveApproval).toHaveBeenCalledTimes(1)
     // No outcome is known, so the card is withdrawn, not terminated: an
     // approval decided elsewhere still converges on its own spawn stream.
@@ -708,6 +713,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     })
     expect(screen.getByRole('button', { name: /^Approve$/ })).toBeInTheDocument()
     expect(screen.queryByText(i18nT('components.approvalCard.approval_no_longer_pending'))).not.toBeInTheDocument()
+    expect(screen.queryByTestId('approval-decision-error')).not.toBeInTheDocument()
   })
 
   it('withdraws only the gone sub-agent from a multi-agent banner', async () => {

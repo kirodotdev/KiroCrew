@@ -1328,7 +1328,9 @@ function ChatInput({
       // instead of leaving buttons that can only re-send it.
       if (isTerminalApprovalRefusal(err) && a.approval_id) {
         dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
-        setApprovalNoticeKind('status')
+        // A rejected request, so an error surface; the panel shows this same
+        // sentence through ErrorNotice too.
+        setApprovalNoticeKind('error')
         setApprovalNotice(i18nT('components.approvalCard.approval_no_longer_pending'))
         return
       }

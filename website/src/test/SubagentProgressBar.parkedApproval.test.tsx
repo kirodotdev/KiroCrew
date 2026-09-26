@@ -22,6 +22,7 @@ import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
   setActiveSlot, sseSubagentPending, sseSubagentSpawn, sseSubagentStalled,
+  markSubagentApprovalGone, selectSidebarApprovalCounts,
 } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
@@ -123,5 +124,40 @@ describe('subagent parked on a spawn approval', () => {
     })
     expect(runningCount(container)).toBe('2')
     expect(container.querySelector('[data-testid="subagent-awaiting-count"]')).toBeNull()
+  })
+})
+
+/**
+ * A resolve that came back terminal (404 / 400 "no pending approval") records the
+ * approval as gone. The composer and the activity panel both withdraw its
+ * buttons, so no other surface may keep telling the user they owe that decision
+ * -- and since nothing proves the run launched, it must not turn into a running
+ * one either (#7318).
+ */
+describe('subagent whose spawn approval is gone', () => {
+  const goneSeed = (d: (a: unknown) => void) => d(markSubagentApprovalGone({ id: 'p0', approval_id: 'spawn:p0' }))
+
+  it('is neither awaiting nor running, and its row no longer asks for approval', () => {
+    const { container } = chip({ parked: 1, running: 1, seed: goneSeed })
+    expect(runningCount(container)).toBe('1')
+    expect(container.querySelector('[data-testid="subagent-awaiting-count"]')).toBeNull()
+    expect(container.textContent).not.toContain(PARKED_LABEL)
+  })
+
+  it('leaves the sidebar approval count', () => {
+    const { store } = chip({ parked: 2, seed: goneSeed })
+    expect(selectSidebarApprovalCounts(store.getState())).toEqual({ [SLOT]: 1 })
+  })
+
+  it('counts again once the card carries a fresh approval', () => {
+    const { container } = chip({
+      parked: 1,
+      seed: d => {
+        goneSeed(d)
+        d(sseSubagentPending({ slot: SLOT, id: 'p0', task: 'parked 0', approval_id: 'spawn:p0:2' }))
+      },
+    })
+    expect(awaitingCount(container)).toBe('1')
+    expect(container.textContent).toContain(PARKED_LABEL)
   })
 })

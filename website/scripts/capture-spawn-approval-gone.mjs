@@ -34,7 +34,8 @@ for (const theme of ['dark', 'light']) {
   await page.waitForTimeout(600)
 
   const banner = await composer.getByText(/awaiting your approval to run/).count()
-  const status = (await composer.getByRole('status').allInnerTexts()).join(' ')
+  // The refusal is an error, so the composer shows it through ErrorNotice.
+  const status = (await composer.getByRole('alert').allInnerTexts()).join(' ')
   const panelLive = await panel.locator('button', { hasText: /^\s*(Approve|Reject)\s*$/ }).count()
   const panelNotice = (await panel.getByRole('alert').allInnerTexts()).join(' ')
 

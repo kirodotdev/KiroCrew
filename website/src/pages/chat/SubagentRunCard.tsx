@@ -17,7 +17,7 @@ import { memo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, Hand } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval, isSpawnApprovalGone } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
@@ -153,6 +153,9 @@ function tally(agents: (SubagentActivity | undefined)[]) {
     // (#7318). A `'pending'` entry with no approval_id keeps the old treatment:
     // it is active but not attributable to an approval.
     if (isAwaitingSpawnApproval(a)) awaiting++
+    // Its approval proved gone: decided or expired unseen, so neither owed to
+    // the user nor known to have launched. Outcome unknown, like a dropped id.
+    else if (a.status === 'pending' && isSpawnApprovalGone(a)) unknown++
     else if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') running++
     else if (a.status === 'done') done++
     else if (a.status === 'error') failed++

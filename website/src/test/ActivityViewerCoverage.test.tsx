@@ -51,7 +51,7 @@ import ActivityViewer from '../pages/chat/ActivityViewer'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
-import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals } from '../store/chatSlice'
+import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals, markSubagentApprovalGone } from '../store/chatSlice'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { SubagentActivity, ToolActivity, Artifact } from '../types'
 import type { ExtractedLink } from '../utils/extractChatLinks'
@@ -356,6 +356,33 @@ describe('ActivityViewer — subagent card controls', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+  })
+
+  it('a terminal verdict from the store outranks an older transient failure here', async () => {
+    // First press fails transiently: the card keeps its buttons and says retry.
+    vi.mocked(api.resolveApproval).mockRejectedValue(new Error('boom'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store, rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    const retry = i18nT('components.approvalCard.decision_not_recorded_error', { error: 'boom' })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(retry))
+
+    // Then the composer finds the SAME approval gone and records it in the
+    // store; SidePanel feeds the pane from that store (selectSlotSubagents).
+    act(() => { store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' })) })
+    const fromStore = store.getState().chat.subagents.p1!
+    expect(fromStore.approvalGone).toBe('ap-1')
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: fromStore }} />)
+
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    expect(screen.getByRole('alert')).not.toHaveTextContent(retry)
   })
 
   it('re-offers the buttons when the pane gets a NEW approval id (#11180)', async () => {

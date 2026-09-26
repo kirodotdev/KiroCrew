@@ -18,7 +18,7 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { markSubagentApproving, markSubagentApprovalGone, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
+import { markSubagentApproving, markSubagentApprovalGone, isSpawnApprovalGone, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { PanelSectionHeader } from '../../components/ui'
 import SideChat from './SideChat'
@@ -167,9 +167,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   }, [a.approval_id, a.id, slot, dispatch])
 
   // A refusal found through the composer banner lands here via the store, so
-  // this card withdraws the same approval and says why.
-  const storeGone = isPending && !!a.approval_id && a.approvalGone === a.approval_id
-  const shownError = actionError ?? (storeGone ? i18nT('components.approvalCard.approval_no_longer_pending') : null)
+  // this card withdraws the same approval and says why. The terminal verdict
+  // outranks an older transient failure from a press here, which it supersedes.
+  const storeGone = isPending && isSpawnApprovalGone(a)
+  const shownError = storeGone ? i18nT('components.approvalCard.approval_no_longer_pending') : actionError
 
   // Live elapsed timer for running subagents
   const [elapsed, setElapsed] = useState(0)
