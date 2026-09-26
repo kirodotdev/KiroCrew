@@ -1523,8 +1523,8 @@ _CHIP_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
 
 
 _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
-# FIFO ceiling on a slot's pending-context queue (app-kit context inject +
-# Slack thread backfill). Shared so the two eviction sites cannot drift.
+# An arrival over this is refused, not admitted by evicting a seated entry
+# the caller already holds a 200 for.
 _MAX_PENDING_CONTEXT = 50
 
 
@@ -4154,14 +4154,49 @@ class _ChatSlot:
         """Drop finalized stream chunks from the transcript and live queue."""
         return self._buffers.purge_chunks(self)
 
-    def append_pending_context(self, entry: dict[str, Any]) -> None:
-        """Append one live context entry after expiry pruning and FIFO eviction."""
-        self._buffers.append_pending_context(
-            self,
-            entry,
-            max_pending_context=_MAX_PENDING_CONTEXT,
-            entry_expired=context_entry_expired,
-        )
+    def has_pending_context_seat(self) -> bool:
+        """True if one more entry fits the queue's seat ceiling.
+
+        Counts live entries plus each held note's context half, because the
+        deferred-note flush promotes that half into this same queue -- without the
+        reservation a later arrival takes the seat the flush needs and the note's
+        context is lost after its 200.
+        """
+        now = time.time()
+        seats = sum(1 for e in self._pending_context if not context_entry_expired(e, now))
+        for note in self._deferred_notes:
+            ctx = note.get("context")
+            if isinstance(ctx, dict) and not context_entry_expired(ctx, now):
+                seats += 1
+        return seats + 1 <= _MAX_PENDING_CONTEXT
+
+    def append_pending_context(self, entry: dict[str, Any]) -> bool:
+        """Append one built context entry, pruning expired ones and refusing overflow.
+
+        Returns whether the entry was seated. Shared by /context, /note and the
+        deferred-note promotion, so the three cannot drift on the ceiling. Expired
+        entries are pruned first, which is what frees capacity; an entry that still
+        does not fit is refused rather than evicting a live one, and one that arrives
+        already expired is dropped rather than seated.
+
+        Every caller must branch on the return: seating is the only thing that makes
+        the entry reachable by the drain, so ignoring a ``False`` acknowledges content
+        the turn will never see.
+        """
+        now = time.time()
+        # A held note's maxAge can elapse while its turn runs, so an entry can
+        # arrive dead; seating it would take a seat from a live one.
+        if context_entry_expired(entry, now):
+            return False
+        self._pending_context[:] = [
+            e for e in self._pending_context if not context_entry_expired(e, now)
+        ]
+        # NO DEDUPLICATION, DELIBERATELY: identical content posted twice on purpose is
+        # legitimate, and collapsing it would drop context already answered 200.
+        if not self.has_pending_context_seat():
+            return False
+        self._pending_context.append(entry)
+        return True
 
     def drop_foreign_authorized_notes(self) -> int:
         """Drop note content whose authorization belongs to another session."""
