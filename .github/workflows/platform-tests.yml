@@ -76,13 +76,22 @@ jobs:
   backend-test-macos:
     name: Backend Tests (macOS)
     runs-on: macos-15
-    # 40, matching backend-test-windows. MEASURED on the first full-suite run of
-    # this branch (run 34288884863): shards 1 and 2 finished their pytest step in
-    # 20.3 and 20.1 minutes, and shard 3 was still running past 27, so a 30-minute
-    # cap cancelled it. 1.5x the slowest observed shard is therefore at least 40.
-    # This is still a spend guard, not just a hang guard: a runaway macOS shard
-    # costs about ten times a Linux one.
-    timeout-minutes: 40
+    # 60 = 1.5x the slowest observed shard, RE-MEASURED 2026-09-26 on the six
+    # nightlies from 09-22 to 09-26 (runs 35693631271 .. 36223077241): whole-job
+    # times climbed from 27-32 minutes to 32-39, and the last two runs each had a
+    # shard CANCELLED at the old 40-minute cap while still passing -- 36223077241
+    # shard 2 was at 98% of its tests when the clock fired. That cancellation
+    # skips every publish job (they `needs:` this lane), so an ordinary green
+    # suite shipped nothing and filed a failure issue (#13720) for a cap the
+    # suite had simply outgrown. The first measurement (run 34288884863: shards
+    # at 20.3, 20.1 and 27+ minutes) set 40 by the same 1.5x rule; 60 is that
+    # rule applied to today's slowest shard. When a shard passes 40 minutes
+    # again, add a fourth shard rather than raising this further: the shard
+    # count is the billing knob, the cap is the hang guard.
+    #
+    # Still a spend guard, not just a hang guard: a runaway macOS shard costs
+    # about ten times a Linux one, which is why this is not 120.
+    timeout-minutes: 60
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
@@ -181,7 +190,7 @@ jobs:
           fi
 
       - name: Run tests (macOS shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
-        # Flags copied verbatim from backend-test-windows, including
+        # Flags copied from backend-test-windows, including
         # --max-worker-restart=0. That flag's stated reason is Windows-specific
         # (no SIGALRM, so pytest-timeout kills the whole xdist worker), but the
         # xdist node-replacement path it avoids -- #2803's broken invariant, and
@@ -189,15 +198,33 @@ jobs:
         # platform-independent, and a burnt cap costs 10x here. --no-cov because
         # coverage-combine merges ubuntu shards only.
         #
-        # No surface selector and nothing deselected, same as the Windows job:
-        # `-n auto` already saturates the runner, so a shorter file list does not
-        # shorten a shard. Residual darwin gaps are node ids in
-        # test/macos-expected-failures.txt, applied by the rootdir conftest through
-        # the same matcher as the Windows list.
+        # `-n 2`, NOT `-n auto`. The budget plugin behind `-n auto`
+        # (xdist_budget.py, registered in the rootdir conftest) sizes workers by
+        # free memory, and on a macos-15 runner (3 cores, 7 GiB, ~3 GiB free
+        # after the OS and toolchain) it has answered ONE worker on every nightly
+        # since at least 09-16 -- the log's own line is
+        #   xdist worker budget: 1 of 3 workers (3.0 GiB free, 7 GiB installed)
+        # so each shard ran ~45k tests serially on a 3-core machine, about 23
+        # tests a second, 32-39 minutes a shard, and grew past the old 40-minute
+        # cap as the suite grew (35.9k -> 45.7k items per shard, 09-16 -> 09-26).
+        # The plugin is right for a developer laptop it does not know; this
+        # runner is a fixed shape it can be told about. An explicit count skips
+        # the budget entirely (it hooks pytest_xdist_auto_num_workers only). 2
+        # rather than 3: a single worker completed inside 7 GiB, so two should
+        # fit and three may not -- each worker imports the app and collects the
+        # whole suite, and the 16 GiB/worker figure the plugin carries for macOS
+        # (#10061) was measured on a 36 GiB laptop under Python 3.14, not here.
+        # If a shard shows swap pressure or a jetsam kill, this goes back to 1;
+        # if two workers hold well under the cap, 3 is the next measurement.
+        #
+        # No surface selector and nothing deselected, same as the Windows job.
+        # Residual darwin gaps are node ids in test/macos-expected-failures.txt,
+        # applied by the rootdir conftest through the same matcher as the
+        # Windows list.
         # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
-        # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
-        # pytest command line, and the runner then reaped nine orphan bash and two
-        # Python processes. A hang that leaves no output is a lost run, not a
+        # 3 on macos-15 hit the (then 40-minute) cap having printed NOTHING after
+        # the pytest command line, and the runner then reaped nine orphan bash and
+        # two Python processes. A hang that leaves no output is a lost run, not a
         # failed test (testing-conventions.md, class 6). faulthandler fires at
         # 150 s, while the test is still stuck, and dumps every thread's traceback
         # to stderr naming the frame; the per-test --timeout then fails it by
@@ -214,7 +241,7 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+          pytest -q -n 2 --timeout=180 --no-cov --max-worker-restart=0 \
             -o faulthandler_timeout=150 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
             2>&1 | tee "shard-macos-${{ matrix.group }}.log"
@@ -224,7 +251,7 @@ jobs:
       # mac runner.
       #
       # `if: always()` and not `failure()`: a shard that times out at the
-      # 40-minute cap is `cancelled`, which is exactly the outcome whose node ids
+      # job-level cap is `cancelled`, which is exactly the outcome whose node ids
       # a human most needs, and `failure()` would drop it. `tee` has already
       # written whatever ran before the cap.
       - name: Upload the shard's pytest log
