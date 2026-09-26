@@ -10112,7 +10112,9 @@
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
-        "turn_other": "{{count}} Züge"
+        "turn_other": "{{count}} Züge",
+        "send_to_main": "An Hauptchat senden",
+        "send_to_main_tip": "Im Editor des Hauptchats ablegen, um dort daran zu arbeiten"
       },
       "sidePanel": {
         "close_panel": "Panel schließen",

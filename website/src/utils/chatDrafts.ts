@@ -55,6 +55,35 @@ export function mergeIntoDraft(draft: string | null | undefined, prompt: string)
 }
 
 /**
+ * Should the dashboard ChatPage's single-session composer consume a Side Chat
+ * hand-off staged in `chat.mainComposerAppend`?
+ *
+ * A hand-off names the slot it belongs to. ChatPage consumes it only when the
+ * staged slot is the one it is showing — a Crew Member hand-off (consumed by
+ * that member's ChatPane) is left alone rather than leaking into the dashboard
+ * composer.
+ *
+ * The `splitMode` guard is the important one. In split view ChatPage unmounts
+ * its single composer and the SessionGridView renders a ChatPane per cell; the
+ * anchor pane's `slotKey` IS `activeSlot`, so the slot match alone is true for
+ * BOTH this consumer and that pane. Both would then merge the same hand-off in
+ * one flush — the pane shows it while ChatPage also persists it into the hidden
+ * single-session draft, resurfacing as a duplicate when split view collapses.
+ * While split view is active the grid pane is the sole consumer, so ChatPage
+ * must skip. See website/src/pages/ChatPage.tsx (the mainComposerAppend effect).
+ */
+export function chatPageShouldConsumeHandoff(
+  splitMode: boolean,
+  activeSlot: string | null | undefined,
+  staged: { slot: string } | null | undefined,
+): boolean {
+  if (splitMode) return false
+  if (!staged) return false
+  if (!activeSlot || staged.slot !== activeSlot) return false
+  return true
+}
+
+/**
  * Put the payload of a send the server never accepted back into the composer.
  *
  * The same append-merge as `mergeIntoDraft` — a send is in flight for seconds and

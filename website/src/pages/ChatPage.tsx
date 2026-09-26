@@ -27,7 +27,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone, switchSlotNoticeCopy,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
   selectTurnInterrupted,
@@ -323,7 +323,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import ChatSidebar from './ChatSidebar'
 import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth'
 import { resolveMsgIndex } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft, chatPageShouldConsumeHandoff } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
@@ -855,6 +855,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => document.removeEventListener('keydown', onKey)
   }, [showHistorySuggestions])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
+  const mainComposerAppend = useAppSelector(s => s.chat.mainComposerAppend)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
   useEffect(() => {
@@ -1597,6 +1598,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
   }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint])
+
+  // Consume Side Chat → main composer hand-offs staged for THIS slot. APPEND
+  // against the live input, never replace: the merge runs here because
+  // `inputRef` is the only holder of unsent text, mirroring the follow-up
+  // card's "add to this session". The `slot` guard means a hand-off staged in
+  // a Crew Member's Side Chat (consumed by that member's ChatPane) is left
+  // untouched here rather than landing in the dashboard composer. Pre-fills and
+  // stops — the user sends when they choose, so it never touches a live turn.
+  //
+  // In split view this composer is unmounted (SessionGridView renders a
+  // ChatInput per cell) and the grid ChatPane whose `slotKey === activeSlot`
+  // is the real consumer. Since the anchor pane's slot IS `activeSlot`, the
+  // slot guard alone would let both this effect and that pane consume the same
+  // hand-off in one flush — the pane shows it while this effect also persists
+  // it into the hidden single-session draft, resurfacing as a duplicate when
+  // split view collapses. Skip entirely while split view is active so the grid
+  // pane is the sole consumer.
+  useEffect(() => {
+    if (!chatPageShouldConsumeHandoff(splitMode, activeSlot, mainComposerAppend)) return
+    const text = mainComposerAppend!.text
+    dispatch(stageToMainComposer(null))
+    const merged = mergeIntoDraft(inputRef.current, text)
+    setDraft(drafts.current, activeSlot!, merged)
+    saveDraftsDebounced()
+    setInput(merged)
+    raisePrefillHint()
+  }, [splitMode, mainComposerAppend, activeSlot, dispatch, saveDraftsDebounced, raisePrefillHint])
 
   // Consume ?prefill= — the no-main-window fallback path for navigation
   // intents forwarded from a popout (see utils/popoutController.ts). The

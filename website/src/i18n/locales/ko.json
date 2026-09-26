@@ -9972,7 +9972,9 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "턴이 끝나 대기열에 추가했습니다",
         "thinking": "생각 중…",
-        "turn_other": "{{count}}턴"
+        "turn_other": "{{count}}턴",
+        "send_to_main": "메인 채팅으로 보내기",
+        "send_to_main_tip": "메인 채팅 입력창에 넣어 거기서 처리하세요"
       },
       "sidePanel": {
         "close_panel": "패널 닫기",

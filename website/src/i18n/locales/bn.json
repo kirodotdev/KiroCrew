@@ -10112,7 +10112,9 @@
         "steer_demoted_to_queue": "টার্ন শেষ হয়েছে — পরিবর্তে কিউ করা হয়েছে",
         "thinking": "ভাবছে…",
         "turn_one": "{{count}}টি টার্ন",
-        "turn_other": "{{count}}টি টার্ন"
+        "turn_other": "{{count}}টি টার্ন",
+        "send_to_main": "মূল চ্যাটে পাঠান",
+        "send_to_main_tip": "এটি নিয়ে কাজ করতে মূল চ্যাটের কম্পোজারে রাখুন"
       },
       "sidePanel": {
         "close_panel": "প্যানেল বন্ধ করুন",

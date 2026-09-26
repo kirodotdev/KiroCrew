@@ -9972,7 +9972,9 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "ターンが終了したためキューに入れました",
         "thinking": "考え中…",
-        "turn_other": "{{count}} ターン"
+        "turn_other": "{{count}} ターン",
+        "send_to_main": "メインチャットに送る",
+        "send_to_main_tip": "メインチャットの入力欄に置いて、そこで対応します"
       },
       "sidePanel": {
         "close_panel": "パネルを閉じる",

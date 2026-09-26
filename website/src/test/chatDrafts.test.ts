@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, __resetForTests } from '../utils/chatDrafts'
+import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, chatPageShouldConsumeHandoff, __resetForTests } from '../utils/chatDrafts'
 import { DRAFT_MAX_STORE_BYTES } from '../utils/draftConstants'
 
 describe('chatDrafts', () => {
@@ -334,5 +334,34 @@ describe('draft merges keep the draft verbatim except for the newlines they repl
     // treating that as already restored drops the message the user must retry.
     expect(mergeRecoveredDraft('please run tests first', 'run tests'))
       .toBe('please run tests first\n\nrun tests')
+  })
+})
+
+describe('chatPageShouldConsumeHandoff', () => {
+  const staged = { slot: 'slot-a', text: 'do the thing' }
+
+  it('consumes a hand-off staged for the active slot in single-session view', () => {
+    expect(chatPageShouldConsumeHandoff(false, 'slot-a', staged)).toBe(true)
+  })
+
+  it('ignores a hand-off staged for a different slot (Crew Member pane owns it)', () => {
+    expect(chatPageShouldConsumeHandoff(false, 'slot-a', { slot: 'member-x', text: 't' })).toBe(false)
+  })
+
+  it('ignores when there is nothing staged', () => {
+    expect(chatPageShouldConsumeHandoff(false, 'slot-a', null)).toBe(false)
+  })
+
+  it('ignores when there is no active slot', () => {
+    expect(chatPageShouldConsumeHandoff(false, null, staged)).toBe(false)
+  })
+
+  it('does NOT consume in split view even when the staged slot IS the active slot', () => {
+    // The regression this pins: in split view the anchor grid pane's slotKey IS
+    // activeSlot, so the slot match is true. Without the splitMode guard ChatPage
+    // would consume the same hand-off the pane already merged, persisting a
+    // duplicate into the hidden single-session draft that resurfaces on collapse.
+    // The grid pane must be the sole consumer while split view is active.
+    expect(chatPageShouldConsumeHandoff(true, 'slot-a', staged)).toBe(false)
   })
 })

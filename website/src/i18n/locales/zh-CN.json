@@ -9972,7 +9972,9 @@
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "steer_demoted_to_queue": "本轮已结束 — 已改为排队",
         "thinking": "思考中…",
-        "turn_other": "{{count}} 轮"
+        "turn_other": "{{count}} 轮",
+        "send_to_main": "发送到主聊天",
+        "send_to_main_tip": "将其放入主聊天的输入框，在那里处理"
       },
       "sidePanel": {
         "close_panel": "关闭面板",

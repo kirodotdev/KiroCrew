@@ -10252,7 +10252,9 @@
         "thinking": "Pensando…",
         "turn_many": "{{count}} turnos",
         "turn_one": "{{count}} turno",
-        "turn_other": "{{count}} turnos"
+        "turn_other": "{{count}} turnos",
+        "send_to_main": "Enviar para o chat principal",
+        "send_to_main_tip": "Coloque no compositor do chat principal para agir sobre isso lá"
       },
       "sidePanel": {
         "close_panel": "Fechar painel",

@@ -10112,7 +10112,9 @@
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
-        "turn_other": "{{count}} टर्न"
+        "turn_other": "{{count}} टर्न",
+        "send_to_main": "मुख्य चैट में भेजें",
+        "send_to_main_tip": "इसे मुख्य चैट कम्पोज़र में रखो ताकि तुम वहाँ इस पर काम कर सको"
       },
       "sidePanel": {
         "close_panel": "पैनल बंद करें",

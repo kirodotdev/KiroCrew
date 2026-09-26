@@ -10392,7 +10392,9 @@
         "turn_few": "{{count}} хода",
         "turn_many": "{{count}} ходов",
         "turn_one": "{{count}} ход",
-        "turn_other": "{{count}} хода"
+        "turn_other": "{{count}} хода",
+        "send_to_main": "Отправить в основной чат",
+        "send_to_main_tip": "Помести это в поле ввода основного чата, чтобы поработать с этим там"
       },
       "sidePanel": {
         "close_panel": "Закрыть панель",

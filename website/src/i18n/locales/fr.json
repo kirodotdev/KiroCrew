@@ -10252,7 +10252,9 @@
         "thinking": "Réflexion…",
         "turn_many": "{{count}} tours",
         "turn_one": "{{count}} tour",
-        "turn_other": "{{count}} tours"
+        "turn_other": "{{count}} tours",
+        "send_to_main": "Envoyer au chat principal",
+        "send_to_main_tip": "Place-le dans le champ de saisie du chat principal pour agir dessus là-bas"
       },
       "sidePanel": {
         "close_panel": "Fermer le panneau",
