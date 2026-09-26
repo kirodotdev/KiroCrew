@@ -837,6 +837,46 @@ def test_extract_log_redirect_target():
     assert extract_log_redirect_target("plain command") == ""
 
 
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # The redirect operator must open a token: the `>` inside `->` / `=>`
+        # (Markdown prose, JS fat arrows) is not a redirect.
+        ("... then spawn MERGE (lane files -> findings/FINAL.tsv) and RECALL ...", ""),
+        ("step 1 -> step 2", ""),
+        ("const f = (x) => x + 1", ""),
+        ('cmd && echo "a -> b"', ""),
+        # Real redirects keep working, including an fd digit or `&>` before the
+        # operator and an operator at the very start of the text.
+        ("npm test > test.log 2>&1", "test.log"),
+        ("make all >> build.log", "build.log"),
+        ("cmd 2> err.log", "err.log"),
+        ("cmd 1>> app.log", "app.log"),
+        ("cmd &> both.log", "both.log"),
+        ("> out.txt", "out.txt"),
+        # fd-dup forms have no file target; a redirect after one is still found.
+        ("cmd 2>&1", ""),
+        ("cmd >&2", ""),
+        ("cmd 2>&1 > out.log", "out.log"),
+        # A target never carries a closing parenthesis along.
+        ("(cmd > out.log)", "out.log"),
+    ],
+)
+def test_extract_log_redirect_target_operator_opens_a_token(text, expected):
+    assert extract_log_redirect_target(text) == expected
+
+
+def test_build_tool_stall_recovery_prompt_file_write_content_has_no_redirect_hint():
+    # The stalled tool's raw input is scanned whatever the tool's kind; for a
+    # file write that is the file's content, and an arrow in it is not a redirect.
+    body = build_tool_stall_recovery_prompt(
+        "Editing notes.md", 1802, command="merge lane files -> findings/FINAL.tsv) then report"
+    )
+    assert "redirected to" not in body
+    assert "FINAL.tsv" not in body
+    assert "partial results" in body.lower()
+
+
 # ── F2: TOCTOU race — progress frame during oracle must prevent cancel ────────
 
 

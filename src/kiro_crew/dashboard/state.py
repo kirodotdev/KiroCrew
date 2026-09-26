@@ -1962,8 +1962,15 @@ def build_stale_recovery_prompt() -> str:
 
 
 # Shell output-redirection target, e.g. `> build.log` / `>> build.log`. The
-# character class excludes `&` so fd-dup forms (`2>&1`, `>&2`) self-exclude.
-_REDIRECT_TARGET_RE = re.compile(r">>?\s*([^\s;|&]+)")
+# operator must open a token: nothing but whitespace (or the start of the
+# string) may precede it, optionally through a single fd digit (`2>`, `1>>`)
+# or the both-streams `&>`. That keeps the `>` inside `->` and `=>` — Markdown
+# prose, JS fat arrows — from reading as a redirect, which matters because the
+# scanned text is the stalled tool's raw input and is a file's content when the
+# tool is a file write. The target class excludes `&` so fd-dup forms (`2>&1`,
+# `>&2`) self-exclude, and `)` so a path at the end of a parenthesis does not
+# carry the parenthesis along.
+_REDIRECT_TARGET_RE = re.compile(r"(?<![^\s])(?:\d|&)?>>?\s*([^\s;|&)]+)")
 
 
 def extract_log_redirect_target(command: str) -> str:
@@ -1972,7 +1979,9 @@ def extract_log_redirect_target(command: str) -> str:
     Used by the tool-stall recovery nudge: when a long command redirected its
     output (long commands typically redirect, e.g. ``> build.log 2>&1``), the model
     should inspect that file's tail instead of blindly re-running the command.
-    ``/dev/null`` and fd-dups (``2>&1``) are ignored.
+    ``/dev/null`` and fd-dups (``2>&1``) are ignored, and so is a ``>`` that is
+    part of another token (``->``, ``=>``): the text scanned is whatever input the
+    stalled tool received, which for a file write is the file's content.
     """
     for m in _REDIRECT_TARGET_RE.finditer(command or ""):
         target = m.group(1).strip("\"'")
