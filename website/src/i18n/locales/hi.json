@@ -5723,7 +5723,10 @@
       "rejected": "अस्वीकृत",
       "running": "चल रहा है:",
       "tool_approval_requested": "टूल स्वीकृति का अनुरोध:",
-      "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे"
+      "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे",
+      "trusted_channel_all": "विश्वसनीय — इस चैनल के सभी टूल स्वतः स्वीकृत होंगे, रीस्टार्ट के बाद भी बना रहता है",
+      "trusted_channel_base": "विश्वसनीय — {{base}} कमांड @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होंगे",
+      "trusted_channel_command": "विश्वसनीय — «{{cmd}}» @{{role}} के लिए {{productName}} के रीस्टार्ट तक स्वतः स्वीकृत होगा"
     },
     "approvalModePicker": {
       "nudge_body": "यहाँ आप समायोजित कर सकते हैं कि {{productName}} अनुमोदन कैसे माँगता है। यहाँ \"ट्रस्ट\" चुनने पर यह इस चैट में बिना पहले पूछे काम कर सकता है — आप कभी भी वापस बदल सकते हैं।",
@@ -8206,9 +8209,11 @@
     "trustDropdown": {
       "trust": "भरोसा करें",
       "trust_all_base": "सभी <mono>{{base}}</mono> कमांड पर भरोसा करें",
+      "trust_all_base_channel": "सभी <mono>{{base}}</mono> कमांड पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
       "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
       "trust_all_tools_channel": "इस चैनल के सभी टूल पर भरोसा करें — रीस्टार्ट के बाद भी बना रहता है",
-      "trust_this_command": "«<mono>{{cmd}}</mono>» पर भरोसा करें"
+      "trust_this_command": "«<mono>{{cmd}}</mono>» पर भरोसा करें",
+      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक"
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",

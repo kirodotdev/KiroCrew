@@ -5813,7 +5813,10 @@
       "rejected": "Rechazado",
       "running": "Ejecutando:",
       "tool_approval_requested": "Aprobación de herramienta solicitada:",
-      "trusted_auto_approving_future_calls": "De confianza — se aprobarán automáticamente las llamadas futuras"
+      "trusted_auto_approving_future_calls": "De confianza — se aprobarán automáticamente las llamadas futuras",
+      "trusted_channel_all": "De confianza — todas las herramientas de este canal se aprobarán automáticamente, persiste tras reiniciar",
+      "trusted_channel_base": "De confianza — los comandos {{base}} se aprobarán automáticamente para @{{role}} hasta que {{productName}} se reinicie",
+      "trusted_channel_command": "De confianza — «{{cmd}}» se aprobará automáticamente para @{{role}} hasta que {{productName}} se reinicie"
     },
     "approvalModePicker": {
       "nudge_body": "Aquí puedes ajustar cómo {{productName}} pide aprobación. Si eliges «Confianza» aquí, podrá trabajar en este chat sin preguntar antes; puedes volver a cambiarlo cuando quieras.",
@@ -8323,9 +8326,11 @@
     "trustDropdown": {
       "trust": "Confiar",
       "trust_all_base": "Confiar en todos los comandos <mono>{{base}}</mono>",
+      "trust_all_base_channel": "Confiar en todos los comandos <mono>{{base}}</mono> para @{{role}} — hasta que {{productName}} se reinicie",
       "trust_all_tools": "Confiar en todas las herramientas de esta sesión",
       "trust_all_tools_channel": "Confiar en todas las herramientas de este canal — persiste tras reiniciar",
-      "trust_this_command": "Confiar en «<mono>{{cmd}}</mono>»"
+      "trust_this_command": "Confiar en «<mono>{{cmd}}</mono>»",
+      "trust_this_command_channel": "Confiar en «<mono>{{cmd}}</mono>» para @{{role}} — hasta que {{productName}} se reinicie"
     },
     "tunnelStatus": {
       "connected": "Conectado",

@@ -5723,7 +5723,10 @@
       "rejected": "Abgelehnt",
       "running": "Läuft:",
       "tool_approval_requested": "Werkzeuggenehmigung angefordert:",
-      "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt"
+      "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt",
+      "trusted_channel_all": "Vertrauenswürdig — alle Werkzeuge in diesem Kanal werden automatisch genehmigt, bleibt nach Neustarts bestehen",
+      "trusted_channel_base": "Vertrauenswürdig — {{base}}-Befehle werden für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
+      "trusted_channel_command": "Vertrauenswürdig — „{{cmd}}“ wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt"
     },
     "approvalModePicker": {
       "nudge_body": "Hier stellst du ein, wie {{productName}} um Genehmigung bittet. Wählst du hier „Vertrauen“, arbeitet es in diesem Chat, ohne vorher zu fragen – du kannst jederzeit zurückwechseln.",
@@ -8206,9 +8209,11 @@
     "trustDropdown": {
       "trust": "Vertrauen",
       "trust_all_base": "Allen <mono>{{base}}</mono>-Befehlen vertrauen",
+      "trust_all_base_channel": "Allen <mono>{{base}}</mono>-Befehlen für @{{role}} vertrauen — bis {{productName}} neu startet",
       "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
       "trust_all_tools_channel": "Allen Werkzeugen in diesem Kanal vertrauen — bleibt nach Neustarts bestehen",
-      "trust_this_command": "„<mono>{{cmd}}</mono>“ vertrauen"
+      "trust_this_command": "„<mono>{{cmd}}</mono>“ vertrauen",
+      "trust_this_command_channel": "„<mono>{{cmd}}</mono>“ für @{{role}} vertrauen — bis {{productName}} neu startet"
     },
     "tunnelStatus": {
       "connected": "Verbunden",

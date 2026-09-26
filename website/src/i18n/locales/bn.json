@@ -5723,7 +5723,10 @@
       "rejected": "প্রত্যাখ্যাত",
       "running": "চলছে:",
       "tool_approval_requested": "টুলের অনুমোদন চাওয়া হয়েছে:",
-      "trusted_auto_approving_future_calls": "বিশ্বস্ত — ভবিষ্যতের কলগুলি স্বয়ংক্রিয়ভাবে অনুমোদন করা হচ্ছে"
+      "trusted_auto_approving_future_calls": "বিশ্বস্ত — ভবিষ্যতের কলগুলি স্বয়ংক্রিয়ভাবে অনুমোদন করা হচ্ছে",
+      "trusted_channel_all": "বিশ্বস্ত — এই চ্যানেলের সব টুল স্বয়ংক্রিয়ভাবে অনুমোদিত হবে, রিস্টার্টের পরেও বজায় থাকে",
+      "trusted_channel_base": "বিশ্বস্ত — {{base}} কমান্ড @{{role}}-এর জন্য {{productName}} রিস্টার্ট পর্যন্ত স্বয়ংক্রিয়ভাবে অনুমোদিত হবে",
+      "trusted_channel_command": "বিশ্বস্ত — «{{cmd}}» @{{role}}-এর জন্য {{productName}} রিস্টার্ট পর্যন্ত স্বয়ংক্রিয়ভাবে অনুমোদিত হবে"
     },
     "approvalModePicker": {
       "nudge_body": "এখানে আপনি সামঞ্জস্য করতে পারেন {{productName}} কীভাবে অনুমোদন চায়। এখানে \"ট্রাস্ট\" বেছে নিলে এটি এই চ্যাটে আগে জিজ্ঞাসা না করে কাজ করতে পারবে — যেকোনো সময় ফিরিয়ে নিতে পারেন।",
@@ -8206,9 +8209,11 @@
     "trustDropdown": {
       "trust": "বিশ্বাস করুন",
       "trust_all_base": "সব <mono>{{base}}</mono> কমান্ড বিশ্বাস করুন",
+      "trust_all_base_channel": "সব <mono>{{base}}</mono> কমান্ড @{{role}}-এর জন্য বিশ্বাস করো — {{productName}} রিস্টার্ট পর্যন্ত",
       "trust_all_tools": "এই সেশনের সব টুল বিশ্বাস করুন",
       "trust_all_tools_channel": "এই চ্যানেলের সব টুল বিশ্বাস করুন — রিস্টার্টের পরেও বজায় থাকে",
-      "trust_this_command": "«<mono>{{cmd}}</mono>» বিশ্বাস করুন"
+      "trust_this_command": "«<mono>{{cmd}}</mono>» বিশ্বাস করুন",
+      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» @{{role}}-এর জন্য বিশ্বাস করো — {{productName}} রিস্টার্ট পর্যন্ত"
     },
     "tunnelStatus": {
       "connected": "সংযুক্ত",
