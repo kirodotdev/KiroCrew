@@ -137,7 +137,9 @@
     "parentChange_changed": "La plantilla principal cambió esto",
     "discardDraftTitle": "¿Descartar el borrador de Capacidades?",
     "discardDraftBody": "Descartar los cambios de capacidades de {{name}} mantiene el editor abierto. Los valores guardados y las credenciales ocultas no cambian. Ningún otro miembro se ve afectado.",
-    "discardDraftConfirm": "Descartar borrador"
+    "discardDraftConfirm": "Descartar borrador",
+    "driftHint": "El archivo de agente de {{member}} se editó fuera de esta página. Pulsa Revisar cambios para ver esa edición externa junto con tu propio borrador. Después de revisar, Guardar escribe la corrección o te dice por qué no puede.",
+    "unreviewableDrift": "El archivo de agente {{file}} de {{member}} se editó fuera de esta página en un ajuste que esta página no puede mostrar, así que esta página no puede escribir la corrección y Revisar cambios queda desactivado. Deshaz esa edición externa en ~/.kiro/agents/{{file}} y luego pulsa Recargar desde el servidor."
   },
   "api": {
     "client": {
@@ -10148,7 +10150,9 @@
         "sign_in_hint": "Abre Ajustes → Resumen → Inicio de sesión en Kiro, vuelve a iniciar sesión y envía tu mensaje de nuevo.",
         "feature_request_form": "Abrir el formulario de GitHub (no consume uso mensual)",
         "feature_request_form_hint": "Tu uso mensual está agotado — envía tu solicitud en GitHub con este formulario en su lugar. Este formulario omite al agente: abre el formulario de incidencias de GitHub para que lo rellenes tú y no consume nada de tu uso mensual.",
-        "session_start_repeat_hint": "La sesión del agente no ha podido iniciarse varias veces seguidas, así que reanudar solo repetiría el mismo inicio. Reinicia el gateway desde un terminal con {{command}} y envía tu mensaje de nuevo."
+        "session_start_repeat_hint": "La sesión del agente no ha podido iniciarse varias veces seguidas, así que reanudar solo repetiría el mismo inicio. Reinicia el gateway desde un terminal con {{command}} y envía tu mensaje de nuevo.",
+        "capabilities_changed": "El archivo de agente de este miembro de la crew cambió fuera de la página Capabilities, así que no se pueden iniciar chats nuevos. Abre Capabilities, revisa el cambio y guárdalo; luego inicia un chat nuevo.",
+        "open_capabilities": "Abrir Capabilities"
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

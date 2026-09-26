@@ -136,7 +136,9 @@
     "parentChange_changed": "Parent changed this",
     "discardDraftTitle": "Discard the Capabilities draft?",
     "discardDraftBody": "Discarding the capability edits for {{name}} keeps the editor open. Saved values and hidden credentials are unchanged. No other member is affected.",
-    "discardDraftConfirm": "Discard draft"
+    "discardDraftConfirm": "Discard draft",
+    "driftHint": "{{member}}'s agent file was edited outside this page. Press Review changes to see that outside edit together with any draft of your own. After reviewing, Save writes the fix or tells you why it cannot.",
+    "unreviewableDrift": "{{member}}'s agent file {{file}} was edited outside this page in a setting this page cannot show, so this page cannot write the fix and Review changes stays turned off. Undo that outside edit in ~/.kiro/agents/{{file}}, then press Reload from server."
   },
   "api": {
     "client": {
@@ -4327,7 +4329,9 @@
         "feature_request_form_hint": "Your monthly usage is used up — file your request on GitHub with this form instead. This form skips the agent: it opens the GitHub issue form for you to fill in yourself and uses none of your monthly usage.",
         "sign_in": "Sign in to Kiro",
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again.",
-        "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again."
+        "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again.",
+        "capabilities_changed": "This crew member's agent file changed outside the Capabilities page, so new chats cannot start. Open Capabilities, review the change and save it, then start a new chat.",
+        "open_capabilities": "Open Capabilities"
       },
       "crewLog": {
         "section_status": "Status",

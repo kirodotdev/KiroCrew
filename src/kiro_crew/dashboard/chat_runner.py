@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
+from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import (
     agent_welcome_message,
     session_skill_globs,
@@ -19028,6 +19029,17 @@ async def _run_chat(
         _err_meta: dict | None = None
         if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
             _err_meta = {"code": "memory_unavailable"}
+        elif isinstance(exc, CapabilityError) and exc.code == "materialization_changed":
+            # The member's private agent file differs from what was last
+            # reviewed. A retry re-runs the same check, so the row names the
+            # fix (review it in Capabilities) and the card links there instead
+            # of offering Resume. The tamper check itself is unchanged.
+            _err_text = (
+                "materialization_changed: This crew member's agent file changed "
+                "outside the Capabilities page. Open Capabilities, review the "
+                "change and save it, then start a new chat."
+            )
+            _err_meta = {"code": "materialization_changed", "member": exc.member}
         else:
             # A session start on the SHARED runtime lands here (see the sibling
             # note below), and its ``session_start_failed`` tag is what lets the

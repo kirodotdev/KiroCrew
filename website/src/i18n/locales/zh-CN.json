@@ -135,7 +135,9 @@
     "parentChange_changed": "父模板更改了这一项",
     "discardDraftTitle": "放弃能力草稿？",
     "discardDraftBody": "放弃 {{name}} 的能力编辑后，编辑器会保持打开。已保存的值和隐藏的凭据不会改变。其他成员不受影响。",
-    "discardDraftConfirm": "放弃草稿"
+    "discardDraftConfirm": "放弃草稿",
+    "driftHint": "{{member}} 的 agent 文件在此页面之外被编辑过。点击“评审变更”，即可把那次外部编辑和你自己的草稿一起看到。评审之后，保存会写入修复，或告诉你为何无法写入。",
+    "unreviewableDrift": "{{member}} 的 agent 文件 {{file}} 在此页面之外被编辑过，改动的设置此页面无法显示，因此此页面无法写入修复，“评审变更”保持禁用。请在 ~/.kiro/agents/{{file}} 中撤销那次外部编辑，然后点击“从服务器重新加载”。"
   },
   "api": {
     "client": {
@@ -9868,7 +9870,9 @@
         "sign_in_hint": "打开“设置 → 概览 → Kiro 登录”重新登录，然后重新发送消息。",
         "feature_request_form": "打开 GitHub 表单（不消耗本月用量）",
         "feature_request_form_hint": "本月用量已用完 — 可以改为通过此表单在 GitHub 上提交请求。此表单不经过代理：它会打开 GitHub 的 Issue 表单，由你自行填写，不消耗本月用量。",
-        "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。"
+        "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。",
+        "capabilities_changed": "这个成员的 agent 文件在 Capabilities 页面之外被改动了，所以新对话无法启动。打开 Capabilities，查看改动并保存，然后开始新对话。",
+        "open_capabilities": "打开 Capabilities"
       },
       "folderPanel": {
         "clear_search": "清除搜索",

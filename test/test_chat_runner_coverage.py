@@ -263,6 +263,25 @@ async def test_memory_refusal_preserves_diagnostic_without_initialization_recove
 
 
 @pytest.mark.asyncio
+async def test_changed_member_spec_names_the_capabilities_fix(tmp_path):
+    """A drifted private spec says where to fix it, not a bare machine code."""
+    from kiro_crew.agent_capabilities import CapabilityError
+
+    state, _client = _runner_state(tmp_path)
+    slot = _slot()
+    refusal = CapabilityError("materialization_changed")
+    refusal.member = "reviewer"
+    state.sessions.get_or_create = AsyncMock(side_effect=refusal)
+    await _drive(state, slot)
+
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["content"].startswith("materialization_changed: ")
+    assert "Capabilities" in error["content"]
+    assert error["meta"]["code"] == "materialization_changed"
+    assert error["meta"]["member"] == "reviewer"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("damaged_record", [False, True])
 async def test_canonical_member_context_outranks_slot_alias_and_corruption_refuses(
     tmp_path, monkeypatch, damaged_record

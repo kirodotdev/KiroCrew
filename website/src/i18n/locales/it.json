@@ -137,7 +137,9 @@
     "parentChange_changed": "Il modello padre ha modificato questo",
     "discardDraftTitle": "Annullare la bozza delle Capacità?",
     "discardDraftBody": "Annullare le modifiche alle capacità di {{name}} lascia l’editor aperto. I valori salvati e le credenziali nascoste non cambiano. Nessun altro membro è coinvolto.",
-    "discardDraftConfirm": "Annulla bozza"
+    "discardDraftConfirm": "Annulla bozza",
+    "driftHint": "Il file agente di {{member}} è stato modificato fuori da questa pagina. Premi Rivedi le modifiche per vedere quella modifica esterna insieme alla tua bozza. Dopo la revisione, Salva scrive la correzione o ti dice perché non può.",
+    "unreviewableDrift": "Il file agente {{file}} di {{member}} è stato modificato fuori da questa pagina in un’impostazione che questa pagina non può mostrare, quindi questa pagina non può scrivere la correzione e Rivedi le modifiche resta disattivato. Annulla quella modifica esterna in ~/.kiro/agents/{{file}}, poi premi Ricarica dal server."
   },
   "api": {
     "client": {
@@ -10148,7 +10150,9 @@
         "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio.",
         "feature_request_form": "Apri il modulo GitHub (non consuma utilizzo mensile)",
         "feature_request_form_hint": "Il tuo utilizzo mensile è esaurito — invia invece la richiesta su GitHub con questo modulo. Questo modulo salta l’agente: apre il modulo delle issue di GitHub che compili tu e non consuma nulla del tuo utilizzo mensile.",
-        "session_start_repeat_hint": "La sessione dell’agente non è riuscita ad avviarsi più volte di seguito, quindi riprendere ripeterebbe solo lo stesso avvio. Riavvia il gateway da un terminale con {{command}} e reinvia il messaggio."
+        "session_start_repeat_hint": "La sessione dell’agente non è riuscita ad avviarsi più volte di seguito, quindi riprendere ripeterebbe solo lo stesso avvio. Riavvia il gateway da un terminale con {{command}} e reinvia il messaggio.",
+        "capabilities_changed": "Il file agente di questo membro della crew è stato modificato fuori dalla pagina Capabilities, quindi le nuove chat non possono avviarsi. Apri Capabilities, controlla la modifica e salvala, poi avvia una nuova chat.",
+        "open_capabilities": "Apri Capabilities"
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",
