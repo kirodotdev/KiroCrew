@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 _REPO = Path(__file__).resolve().parents[1]
 _SETUP_CFG = _REPO / "setup.cfg"
 
@@ -109,6 +111,13 @@ class TestBlockingSurvivesAnUnimportablePlugin:
         return project, {"PYTHONPATH": str(site)}
 
     def _run(self, project: Path, env: dict[str, str], *extra: str) -> subprocess.CompletedProcess:
+        # _BLOCK is passed to the CHILD as well, and it is not the thing under
+        # test here: `brokenplug` is. The child runs in a throwaway tree with
+        # PYTEST_ADDOPTS cleared, so setup.cfg cannot reach it, and on a host
+        # whose own platformdirs plugin will not import the child would die on
+        # that instead of on the synthetic subject. Blocking it keeps
+        # `brokenplug` the only variable, so both directions below mean what
+        # they say.
         return subprocess.run(
             [
                 sys.executable,
@@ -116,6 +125,7 @@ class TestBlockingSurvivesAnUnimportablePlugin:
                 "pytest",
                 "-p",
                 "no:cacheprovider",
+                *_BLOCK.split(),
                 "-q",
                 *extra,
                 "test_probe.py",
@@ -123,8 +133,8 @@ class TestBlockingSurvivesAnUnimportablePlugin:
             cwd=project,
             env={**os.environ, **env, "PYTEST_ADDOPTS": ""},
             capture_output=True,
-            text=True,
             timeout=180,
+            **UTF8_TEXT,
         )
 
     def test_an_unimportable_entry_point_kills_the_run(self, tmp_path: Path) -> None:

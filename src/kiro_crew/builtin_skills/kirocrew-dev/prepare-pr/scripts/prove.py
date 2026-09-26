@@ -256,6 +256,17 @@ def run_pytest(worktree: Path, test_files: list[str], report: Path) -> Optional[
     mutation never reaches the interpreter, the test passes, and a strong test is
     reported NOT_PROVEN.  Writing no bytecode at all removes the failure mode
     rather than racing it.
+
+    ``-p no:platformdirs`` is a consequence of the addopts override above, and it
+    is what keeps a verdict about the change from depending on the host's
+    installed packages.  ``platformdirs`` declares a ``pytest11`` entry point, so
+    pytest imports it at startup; an entry point that raises on import aborts the
+    run before collection.  This child runs with ``addopts`` replaced and often
+    in a throwaway worktree, so neither the repo config nor the target repo's own
+    config can refuse that plugin on its behalf.  A child killed that way exits
+    non-zero having asserted nothing, which ``prove`` cannot tell from a genuine
+    baseline failure -- so it would report BASELINE_RED for a reason that has
+    nothing to do with the diff under test.
     """
     plugin_dir = report.parent
     (plugin_dir / "_prove_reporter.py").write_text(_REPORTER_PLUGIN, encoding="utf-8")
@@ -266,6 +277,8 @@ def run_pytest(worktree: Path, test_files: list[str], report: Path) -> Optional[
         "-q",
         "-p",
         "no:cacheprovider",
+        "-p",
+        "no:platformdirs",
         "-p",
         "_prove_reporter",
         "-n0",
