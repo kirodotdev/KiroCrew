@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -835,14 +836,23 @@ class TestStateFilePermissions:
             _save_state(TipsState(tips=[{"id": "x", "why": "references user projects"}]))
             st_file = tmp_path / "tips_state.json"
             assert st_file.is_file()
+            if sys.platform == "win32":
+                # No POSIX bits on Windows; the DACL half is covered by
+                # test_lockdown_precedes_content. The write itself must land.
+                assert json.loads(st_file.read_text())["tips"][0]["id"] == "x"
+                return
             assert (st_file.stat().st_mode & 0o777) == 0o600
 
     def test_existing_world_readable_file_corrected_on_rewrite(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             st_file = tmp_path / "tips_state.json"
             st_file.write_text("{}")
-            st_file.chmod(0o644)
+            if sys.platform != "win32":
+                st_file.chmod(0o644)
             _save_state(TipsState())
+            if sys.platform == "win32":
+                assert st_file.is_file()
+                return
             assert (st_file.stat().st_mode & 0o777) == 0o600
 
     def test_lockdown_precedes_content(self, tmp_path: Path, monkeypatch) -> None:

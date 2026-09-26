@@ -179,8 +179,6 @@ test/test_subagent_sizing.py::TestMacosMemoryProbe::test_nonpositive_page_size_f
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_sysconf_error_fails_open
 test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_open
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
-test/test_tips.py::TestStateFilePermissions::test_existing_world_readable_file_corrected_on_rewrite
-test/test_tips.py::TestStateFilePermissions::test_state_file_written_mode_600
 test/test_voice_reply.py::TestResolvePiperBinary::test_configured_expanduser
 test/test_voice_reply.py::TestResolvePiperBinary::test_configured_path_not_executable_returns_none
 test/test_voice_reply.py::TestResolvePiperBinary::test_falls_back_to_venv
