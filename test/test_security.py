@@ -335,11 +335,11 @@ class TestRedactCredentials:
         to be missed. This ratchet makes that omission fail here instead of
         silently degrading a user-facing warning.
         """
-        from kiro_crew import security
+        from kiro_crew.security import redaction
 
         declared = {
             name: value
-            for name, value in vars(security).items()
+            for name, value in vars(redaction).items()
             if name.startswith("_REDACTED_") and name.endswith("_TAG")
             if isinstance(value, str)
         }
@@ -348,7 +348,7 @@ class TestRedactCredentials:
         unregistered = {
             name: value
             for name, value in declared.items()
-            if value not in security.CREDENTIAL_REDACTION_TAGS
+            if value not in redaction.CREDENTIAL_REDACTION_TAGS
         }
         assert not unregistered, (
             "redaction tag(s) not in CREDENTIAL_REDACTION_TAGS: "
@@ -4396,6 +4396,7 @@ class TestOperatorOAuthEndpointExtension:
         self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from kiro_crew import security
+        from kiro_crew.security import exfil
 
         logged: list = []
 
@@ -4403,7 +4404,7 @@ class TestOperatorOAuthEndpointExtension:
             def log(self, event: object) -> None:
                 logged.append(event)
 
-        monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
+        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
         security._emit_oauth_extension_used_event(self.HOST, self.PATH)
         security._emit_oauth_extension_used_event(self.HOST, self.PATH)
         assert len(logged) == 1
@@ -4420,13 +4421,13 @@ class TestOperatorOAuthEndpointExtension:
     def test_audit_failure_does_not_break_the_approval(
         self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew import security
+        from kiro_crew.security import exfil
 
         class _BrokenLog:
             def log(self, event: object) -> None:
                 raise RuntimeError("SEL unavailable")
 
-        monkeypatch.setattr(security, "SecurityEventLog", lambda: _BrokenLog())
+        monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _BrokenLog())
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
         assert oauth_url_contains_credential(self.CONSENT_URL) is False
 
