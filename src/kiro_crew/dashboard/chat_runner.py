@@ -63,7 +63,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.agent_sdk.spec_hooks import crew_fired_spec_hooks
+from kiro_crew.agent_sdk.spec_hooks import crew_fired_spec_hooks, spec_hook_tool_names
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -9450,8 +9450,15 @@ async def _run_chat(
         tool_input: dict | None = None,
         tool_response: dict | None = None,
         hook_continuation_count: int = 0,
+        tool_id: str | None = None,
     ) -> list[str]:
-        """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection)."""
+        """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
+
+        ``tool_id`` is the id the harness stated for the call
+        (``AcpEvent.harness_tool_id``). The spec's own hooks match their tool
+        matcher against it, translated by ``spec_hook_tool_names``, because their
+        matchers name tools and ``tool_name`` is the call's title.
+        """
         injected: list[str] = []
         if state._hook_store is None:
             if event == HOOK_EVENT_PRE_TOOL_USE:
@@ -9463,6 +9470,8 @@ async def _run_chat(
             logger.error("Agent spec hooks unreadable for PRE_TOOL_USE - blocking tool")
             return injected
         try:
+            # A call KAS named no tool for keeps title matching (None).
+            _spec_tool_names = spec_hook_tool_names(tool_id or "") if _spec_hooks else None
             results = await state._hook_store.fire(
                 event,
                 context,
@@ -9473,6 +9482,7 @@ async def _run_chat(
                 hook_continuation_count=hook_continuation_count,
                 extra_hooks=_spec_hooks,
                 extra_hooks_cwd=_spec_hooks_cwd,
+                extra_hooks_tool_names=_spec_tool_names,
             )
             for r in results:
                 # Anchoring rule for the bounded hook excerpts below: text the
@@ -14072,6 +14082,7 @@ async def _run_chat(
                                     HOOK_EVENT_PRE_TOOL_USE,
                                     tool_name=validated_tool,
                                     tool_input=_parsed_input,
+                                    tool_id=event.harness_tool_id,
                                 )
                             except Exception as hook_exc:
                                 await _reject_hook_error(
@@ -14151,6 +14162,7 @@ async def _run_chat(
                             HOOK_EVENT_PRE_TOOL_USE,
                             tool_name=validated_tool,
                             tool_input=_parsed_input,
+                            tool_id=event.harness_tool_id,
                         )
                     except Exception as hook_exc:
                         await _reject_hook_error(
@@ -14448,6 +14460,7 @@ async def _run_chat(
                                 HOOK_EVENT_PRE_TOOL_USE,
                                 tool_name=validated_tool,
                                 tool_input=_parsed_input,
+                                tool_id=event.harness_tool_id,
                             )
                         except Exception as hook_exc:
                             await _reject_hook_error(
@@ -15039,6 +15052,7 @@ async def _run_chat(
                             HOOK_EVENT_PRE_TOOL_USE,
                             tool_name=validated_tool,
                             tool_input=_parsed_input,
+                            tool_id=event.harness_tool_id,
                         )
                     except Exception as hook_exc:
                         await _reject_hook_error(

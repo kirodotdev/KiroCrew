@@ -18,6 +18,7 @@ import pytest
 
 import kiro_crew.config.paths as paths_mod
 import kiro_crew.hooks as hooks_mod
+from kiro_crew.acp.kas_permissions import kas_tool_match_names
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -72,7 +73,7 @@ def notices(monkeypatch) -> list:
     return seen
 
 
-_OBJECT_HOOKS = {"preToolUse": [{"matcher": "shell", "command": "guard.sh"}]}
+_OBJECT_HOOKS = {"preToolUse": [{"matcher": "execute_bash", "command": "guard.sh"}]}
 
 
 def test_membership_is_kas_only():
@@ -91,7 +92,7 @@ def test_a_kas_session_gets_the_spec_hooks(agents_dir, notices):
     hooks, unreadable, _ = _prepare(_client(ACP_BACKEND_KAS), "a1")
     assert unreadable is False
     assert [(h.event, h.matcher, h.command) for h in hooks] == [
-        (HOOK_EVENT_PRE_TOOL_USE, "shell", "guard.sh")
+        (HOOK_EVENT_PRE_TOOL_USE, "execute_bash", "guard.sh")
     ]
 
 
@@ -180,12 +181,12 @@ def test_an_oversized_or_unsafe_matcher_drops_the_hook_and_retains_nothing():
                 "preToolUse": [
                     {"matcher": long, "command": "x"},
                     {"matcher": "sh;rm", "command": "y"},
-                    {"matcher": "sh*", "command": "z"},
+                    {"matcher": "exec*", "command": "z"},
                 ]
             }
         },
     )
-    assert [(h.command, h.matcher) for h in hooks] == [("z", "sh*")]
+    assert [(h.command, h.matcher) for h in hooks] == [("z", "exec*")]
 
 
 def test_conversion_stops_at_the_hook_cap():
@@ -256,6 +257,7 @@ def test_a_governance_denied_spec_hook_does_not_spawn(tmp_path, monkeypatch):
             tool_name="shell",
             parent_session_key="s1",
             extra_hooks=hooks,
+            extra_hooks_tool_names=kas_tool_match_names("run_command"),
         )
     )
     assert [r.blocked for r in results] == [True]

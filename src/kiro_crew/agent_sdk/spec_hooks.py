@@ -24,6 +24,16 @@ Both spec shapes are read:
   so is ``confirm: true``, because no prompt can be shown from here; an ``agent``
   action and a trigger with no Crew event are skipped too.
 
+A tool matcher is written in kiro-cli's tool names (``execute_bash``, ``fs_write``),
+and KAS names its tools differently. On a PreToolUse permission request the turn
+loop therefore matches these hooks against
+:func:`spec_hook_tool_names` of the id KAS states for the call, not against the
+call's title; a call KAS names no tool for is matched on
+its title, as a Hooks-page hook is. A PostToolUse still sees the
+title, because KAS's tool-call frames carry no tool id. A PreToolUse matcher the
+table does not know is kept, matched against KAS's id as written, and warned about
+once.
+
 The result is cached by the field's content, so a spec that stays the same costs
 one conversion and logs its warnings once, not once per turn.
 """
@@ -91,6 +101,34 @@ def _matcher_ok(matcher: object) -> bool:
     return _hook_matcher_ok(matcher)
 
 
+def _matcher_names_a_kas_tool(matcher: str) -> bool:
+    """Whether ``matcher`` can match any name in the kiro-cli/KAS tool table."""
+    # circular import: the ACP layer imports the config loader, which sits below
+    # this module; resolved at call time like the other driver seams here.
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_MATCH_VOCABULARY
+    from kiro_crew.hooks import _tool_matches
+
+    return matcher == "*" or any(_tool_matches(matcher, name) for name in KAS_TOOL_MATCH_VOCABULARY)
+
+
+def spec_hook_tool_names(tool_id: str) -> tuple[str, ...] | None:
+    """The names a spec hook's tool matcher meets for a KAS call to ``tool_id``.
+
+    :func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` of the id, read
+    through this module because application code reaches the ACP layer only via
+    ``agent_sdk``. ``None`` when KAS named no tool, so the caller keeps matching on
+    the call's title, as for a Hooks-page hook, rather than treating the hook as
+    not applying.
+    """
+    if not tool_id:
+        return None
+    # circular import: the ACP layer imports the config loader, which sits below
+    # this module; resolved at call time like the other driver seams here.
+    from kiro_crew.acp.kas_permissions import kas_tool_match_names
+
+    return kas_tool_match_names(tool_id)
+
+
 def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     """Warn about, and SEL-audit, a spec hook that will not run.
 
@@ -122,6 +160,33 @@ def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> S
         # hook with no matcher would widen it to every tool.
         _reject(agent_id, event, command, "invalid matcher")
         return None
+    if (
+        event == HOOK_EVENT_PRE_TOOL_USE
+        and isinstance(matcher, str)
+        and matcher
+        and not _matcher_names_a_kas_tool(matcher)
+    ):
+        # Kept, not dropped: the matcher still meets a KAS id of that name (an MCP
+        # tool, a built-in the table has no row for), and dropping it would retire
+        # a guard KAS can serve. Said once, since a kiro-cli-only name (``use_aws``)
+        # never meets a KAS call.
+        logger.warning(
+            "agent %r: spec hook matcher %s on %s names no tool in Crew's kiro-cli/KAS "
+            "table; it runs only for a KAS tool id it matches as written",
+            agent_id,
+            _diagnostic(matcher),
+            _diagnostic(event),
+        )
+    if event == HOOK_EVENT_POST_TOOL_USE and isinstance(matcher, str) and matcher not in ("", "*"):
+        # KAS's tool-call frames name no tool, so a PostToolUse is matched on the
+        # call's title, which a kiro-cli tool name rarely matches. Said once here
+        # rather than left to miss silently.
+        logger.warning(
+            "agent %r: spec postToolUse matcher %s is compared with the KAS call's "
+            "title, since KAS names no tool on a finished call",
+            agent_id,
+            _diagnostic(matcher),
+        )
     return ScriptHook(
         id=f"spec:{agent_id}:{event}:{index}",
         name=f"{agent_id} spec hook ({event} #{index + 1})",

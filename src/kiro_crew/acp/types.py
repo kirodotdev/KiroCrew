@@ -902,6 +902,11 @@ class AcpEvent:
     # callers that gate on these get no match).
     tool_name: str = ""
     mcp_server_name: str = ""
+    #: The tool id a harness states on a ``session/request_permission`` in
+    #: ``_meta.kiro.toolId`` (KAS: ``run_command`` for a shell command). Set only
+    #: on a permission event, and only from that engine-written field, never from
+    #: the title or the model's arguments. Empty when the frame carries none.
+    harness_tool_id: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the
