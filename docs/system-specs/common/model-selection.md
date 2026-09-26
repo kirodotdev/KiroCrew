@@ -297,6 +297,11 @@ its own once the cache refreshes with a list that carries it.
   id being tested, and callers gate on that. Comparing ids across two harnesses'
   namespaces calls every legitimate model unusable (harness-parity invariant `H12`).
 
+Member create and update validation pass the configured backend to the shared
+model-pin check. Entitlement evidence comes from live providers sharing its
+model-registry namespace: `kiro` (including the empty default backend) and `kas`
+share `acp`. Providers with unknown identity or another namespace are skipped.
+
 ## The one allowed concrete fallback
 
 The `claude_code` seam's `cc_model` (`_BACKGROUND_CC_MODEL` in `agent.py`) is the one

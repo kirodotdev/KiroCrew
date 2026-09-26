@@ -4825,7 +4825,33 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
     )
 
 
-def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str | None:
+def _pin_entitlement_backend(cfg: Any) -> str | None:
+    """The harness whose live catalog may judge a crew's model pin, or ``None``.
+
+    Every agent created or updated here is a Crew Member whose DM slot
+    (``member-<slug>``) routes through ``agent.member_acp_backend`` — not
+    through the configured default harness ``agent.acp_backend``. When the two
+    share a model-registry namespace, the default backend scopes the
+    entitlement evidence correctly (kiro, including the empty default backend,
+    and kas share ``acp``). When they do not, the default's catalog cannot
+    establish whether the pin the DM thread will actually run is usable — a
+    live kiro session's catalog would deterministically reject a
+    claude-advertised id — so the answer is ``None``: entitlement unknown, and
+    the check consults any active provider instead of accusing on no evidence.
+    """
+    default_backend = getattr(cfg.agent, "acp_backend", "")
+    member_backend = getattr(cfg.agent, "member_acp_backend", "")
+    if (
+        capabilities_for(member_backend).model_id_namespace
+        != capabilities_for(default_backend).model_id_namespace
+    ):
+        return None
+    return default_backend
+
+
+def _model_pin_rejected(
+    model: str, request: web.Request, provider: str, *, backend: str | None = None
+) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
     An agent's ``model`` is read by kiro-cli when the child starts, so a pin the
@@ -4880,7 +4906,7 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
     # so importing it at module scope would close the cycle.
     from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-    return _validate_role_model(model, request, provider=provider)
+    return _validate_role_model(model, request, provider=provider, backend=backend)
 
 
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
@@ -5074,7 +5100,9 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
             )
-        model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
+        model_reason = _model_pin_rejected(
+            model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
+        )
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         # Checked INSIDE the config lock, immediately before the binding is
@@ -5346,7 +5374,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "model" in body:
             # Validated before the write, reusing the config loaded just above so
             # this costs no extra read.
-            model_reason = _model_pin_rejected(pending_model, request, cfg.agent.provider)
+            model_reason = _model_pin_rejected(
+                pending_model,
+                request,
+                cfg.agent.provider,
+                backend=_pin_entitlement_backend(cfg),
+            )
             if model_reason:
                 return web.json_response(
                     {"error": model_reason, "code": "invalid_model"}, status=400

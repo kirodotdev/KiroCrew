@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.model_registry import acp_id_correction
 
 
@@ -296,6 +297,14 @@ def _crud_app() -> web.Application:
     return app
 
 
+def _catalog_provider(backend: str, model_id: str) -> SimpleNamespace:
+    """A live provider exposing one backend-specific entitlement catalog."""
+    return SimpleNamespace(
+        client=SimpleNamespace(backend=backend),
+        available_models=lambda: [{"modelId": model_id}],
+    )
+
+
 @pytest.fixture()
 def seeded_agent():
     """One stored agent, written through the real config API.
@@ -314,6 +323,117 @@ def seeded_agent():
 
 
 class TestSavePathRefusesAnUnusablePin:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    @pytest.mark.parametrize(
+        "target_backend, live_backend",
+        [("kas", "kas"), ("", "kas"), ("kas", ACP_BACKEND_KIRO)],
+    )
+    @pytest.mark.parametrize(
+        "model, status", [("target-backend-model", 200), ("other-backend-model", 400)]
+    )
+    async def test_mutations_use_the_target_backend_catalog(
+        self,
+        seeded_agent,
+        method: str,
+        target_backend: str,
+        live_backend: str,
+        model: str,
+        status: int,
+    ) -> None:
+        """Another live harness must not decide a regular agent's entitlement."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = target_backend
+        cfg.save()
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(
+                active_providers=lambda: [
+                    _catalog_provider("codex", "other-backend-model"),
+                    _catalog_provider(live_backend, "target-backend-model"),
+                ]
+            )
+        )
+        body = {"model": model}
+        if method == "post":
+            body.update({"name": "target", "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{seeded_agent}",
+                json=body,
+            )
+            assert response.status == status
+            if status == 400:
+                assert (await response.json())["code"] == "invalid_model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_mutations_fail_open_without_a_target_backend_catalog(
+        self, seeded_agent, method: str
+    ) -> None:
+        """No live catalog at all: entitlement is unknown, not denied."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = "codex"
+        cfg.agent.member_acp_backend = "kas"
+        cfg.save()
+        app = _crud_app()
+        app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: []))
+        body = {"model": "regular-model"}
+        if method == "post":
+            body.update({"name": "regular", "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{seeded_agent}",
+                json=body,
+            )
+
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    @pytest.mark.parametrize("model, status", [("member-model", 200), ("other-model", 400)])
+    async def test_a_member_whose_dm_backend_differs_is_judged_by_that_backend(
+        self, seeded_agent, method: str, model: str, status: int
+    ) -> None:
+        """The member's DM slot runs on `member_acp_backend`, not the default.
+
+        When the two harnesses do not share a model-registry namespace, the
+        default backend's catalog cannot establish the pin's entitlement, so
+        validation consults any active provider — which, for this member, is
+        the member backend's own catalog: it admits what it advertises and
+        rejects what it does not.
+        """
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = "codex"
+        cfg.agent.member_acp_backend = "kas"
+        cfg.save()
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(
+                active_providers=lambda: [_catalog_provider("kas", "member-model")]
+            )
+        )
+        body = {"model": model}
+        if method == "post":
+            body.update({"name": "member", "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{seeded_agent}",
+                json=body,
+            )
+            assert response.status == status
+            if status == 400:
+                assert (await response.json())["code"] == "invalid_model"
+
     @pytest.mark.asyncio
     async def test_create_refuses_and_carries_an_error_code(self, seeded_agent):
         from kiro_crew.config.loader import KiroCrewConfig
