@@ -138,6 +138,10 @@ concurrency:
   # fork -- keying on it degraded every fork burst to one group per run. That
   # triple identifies the same PR, since only one open PR can exist per source
   # repository + branch.
+  #
+  # An `in_progress` run still cancels a running evaluation, and that is the
+  # merge guard's other half: the cancelled run's reads predate the re-run, so
+  # it must not publish; the evaluation this run does instead sees the re-run.
   group: >-
     ${{
       github.event_name == 'pull_request_target'
@@ -180,6 +184,14 @@ jobs:
       || github.event.workflow_run.event == 'dynamic'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # The same-repo workflow-run lanes of the verdict step's spec list, read
+      # by the publish step's pre-success re-check.
+      MONITORED_LANES: >-
+        ci.yml fast-gate.yml build.yml code-review.yml
+        internal-content-scan-gate.yml claude-review.yml codex-review.yml
+        design-review.yml ux-review.yml first-principles-review.yml
+        security-scope-review.yml
     steps:
       # Transient network/TLS errors between the runner and api.github.com can
       # abort a single-shot `gh` call, and under `set -e` that ended the whole
@@ -287,6 +299,7 @@ jobs:
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
@@ -374,7 +387,12 @@ jobs:
           # A PR whose base is any other branch -- a stacked PR sitting on
           # another feature branch -- can never start those lanes, so the
           # verdict step marks them ineligible instead of pending-forever.
-          DEFAULT_BRANCH="$(gh_retry gh api "repos/$REPO" --jq '.default_branch')"
+          # Every trigger here carries it in `github.event.repository`, so the
+          # request is only the fallback for a payload that does not.
+          DEFAULT_BRANCH="${EVENT_DEFAULT_BRANCH:-}"
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            DEFAULT_BRANCH="$(gh_retry gh api "repos/$REPO" --jq '.default_branch')"
+          fi
 
           {
             echo "pr=$PR"
@@ -454,7 +472,9 @@ jobs:
       # persist-credentials: false leaves no token in the worktree -- nothing
       # here runs git against the remote.
       - name: Check out the disposition evaluator from the default branch
-        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        if: >-
+          steps.context.outputs.stale != 'true'
+          && steps.context.outputs.state == 'OPEN'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || github.ref_name }}
@@ -493,7 +513,9 @@ jobs:
       # update per uncollapsed event, not once per monitored workflow.
       - name: Evaluate disposition records
         id: dispositions
-        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        if: >-
+          steps.context.outputs.stale != 'true'
+          && steps.context.outputs.state == 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -540,7 +562,9 @@ jobs:
 
       - name: Evaluate current revision
         id: verdict
-        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        if: >-
+          steps.context.outputs.stale != 'true'
+          && steps.context.outputs.state == 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1395,7 +1419,9 @@ jobs:
           } > "$RUNNER_TEMP/pr-readiness-summary.md"
 
       - name: Publish status and label
-        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        if: >-
+          steps.context.outputs.stale != 'true'
+          && steps.context.outputs.state == 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -1405,6 +1431,11 @@ jobs:
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
           DESCRIPTION: ${{ steps.verdict.outputs.description }}
+          FORK: ${{ steps.context.outputs.fork }}
+          HEAD_REPO: ${{ steps.context.outputs.head_repo }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          WR_ACTION: ${{ github.event.action }}
+          WR_NAME: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
@@ -1418,6 +1449,156 @@ jobs:
           if [ "$current_sha" != "$SHA" ]; then
             echo "Ignoring publish for stale revision $SHA; PR #$PR is now at $current_sha."
             exit 0
+          fi
+
+          # Re-check before publishing a SUCCESS. The verdict was scored from a
+          # runs page read before the checkout and the disposition gate, and a
+          # run in an isolated group (pull_request_target) is never cancelled
+          # by a lane re-run's own readiness run. A lane that started since
+          # would otherwise be published over as success -- the one write
+          # that lets armed auto-merge land while a lane runs. One read, and
+          # only on a same-repo success; any open monitored lane downgrades
+          # this publish to pending, and a failed read does too (stamped, so
+          # the self-heal sweep re-fires it).
+          #
+          # The event-only downgrade below is NOT restricted to same-repo PRs.
+          # The restriction exists for the API re-checks, whose runs-page filter
+          # matches on this PR's own head repository and branch and so answers
+          # nothing for a fork. This one asks no API: the event itself says a
+          # monitored lane is running, and that is as true of a fork lane.
+          if [ "$STATUS_STATE" = "success" ]; then
+            # An `in_progress` event MEANS a monitored lane is running, so this
+            # run can never honestly publish success -- and the runs page is
+            # the wrong thing to ask, because the lag between that webhook and
+            # the page is exactly what would answer "green". The step already
+            # compensates for that lag on `completed` by patching the
+            # triggering run's row from the event; the same event answers this
+            # one outright. A lane that finished in between makes this pending
+            # briefly stale, which only ever blocks, and its own completion
+            # recomputes.
+            if [ "${WR_ACTION:-}" = "in_progress" ]; then
+              echo "pr-readiness: publish re-check -- triggered by ${WR_NAME:-a lane} starting; success is not publishable"
+              STATUS_STATE=pending
+              TARGET_LABEL="readiness: checking"
+              DESCRIPTION="readiness check(s) changed since evaluation; re-checking ${WR_NAME:-a monitored lane}"
+            fi
+          fi
+          if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ]; then
+            if recheck="$(gh_retry gh api --method GET --paginate \
+              "repos/$REPO/actions/runs?event=pull_request&head_sha=$SHA&per_page=100" \
+              | jq -rs --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" --arg lanes "$MONITORED_LANES" '
+                ($lanes | split(" ") | map(select(. != "")) | map(".github/workflows/" + .)) as $l
+                | [.[].workflow_runs[]
+                   | select((.path | IN($l[]))
+                            and (.head_repository.full_name // "") == $repo
+                            and (.head_branch // "") == $ref)]
+                | group_by(.path) | map(max_by(.id))
+                | (map(select(.status == "completed"
+                              and ((.conclusion // "") | IN("success","neutral","skipped") | not))
+                        | (.name // .path)) | join(", ")) as $red
+                | (map(select(.status != "completed") | (.name // .path)) | join(", ")) as $open
+                | "\($red)|\($open)"
+              ')"; then
+              IFS='|' read -r red_lanes open_lanes <<<"$recheck"
+              # A red lane publishes red: a pending here would overwrite the
+              # failure that lane's own evaluation already published.
+              if [ -n "$red_lanes" ]; then
+                echo "pr-readiness: publish re-check -- lane(s) red since the evaluation: $red_lanes"
+                STATUS_STATE=failure
+                TARGET_LABEL="readiness: action required"
+                DESCRIPTION="blocking readiness item(s) since evaluation: $red_lanes"
+              elif [ -n "$open_lanes" ]; then
+                echo "pr-readiness: publish re-check -- lane(s) started since the evaluation: $open_lanes"
+                STATUS_STATE=pending
+                TARGET_LABEL="readiness: checking"
+                DESCRIPTION="readiness check(s) changed since evaluation; re-checking $open_lanes"
+              fi
+            else
+              STATUS_STATE=pending
+              TARGET_LABEL="readiness: checking"
+              DESCRIPTION="[read-failed] Readiness could not be re-checked before publishing success; it will be re-evaluated"
+            fi
+            # CodeQL is a `dynamic` run, so the re-check above -- filtered to
+            # `event=pull_request` and MONITORED_LANES -- is structurally blind
+            # to it. Without this, a CodeQL re-run had no
+            # way to hold the publish: the delayed publisher saw only green
+            # pull-request lanes and wrote success over the pending that re-run's
+            # own readiness run had published, opening a merge window while the
+            # code-scanning verdict for the revision was in flight. Read on the
+            # same two reads the verdict step scores CodeQL from, and only while
+            # this publish is still a success. An empty dynamic page holds
+            # nothing: CodeQL either does not apply to this base or has not
+            # started, and in the latter case the verdict step said pending.
+            # Each conclusion is mapped to the verdict step's own reading of it,
+            # arm for arm: `success` goes on to the result check-run, `skipped`
+            # is that step's `passed` (default setup did not scan this base),
+            # and every other completed conclusion is its `failed`. Reading one
+            # of them differently here makes the re-check disagree with the
+            # evaluation it is re-checking -- either restoring a success that
+            # evaluation rejected, or blocking a verdict it passed.
+            if [ "$STATUS_STATE" = "success" ]; then
+              if codeql_state="$(gh_retry gh api --method GET \
+                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100" \
+                | jq -r '
+                  [.workflow_runs[]
+                   | select(.path == "dynamic/github-code-scanning/codeql")]
+                  | max_by(.id) as $r
+                  | if $r == null then "none|"
+                    elif ($r.status // "") != "completed" then "open|CodeQL (\($r.status // "queued"))"
+                    elif ($r.conclusion // "") == "success" then "results|"
+                    elif ($r.conclusion // "") == "skipped" then "none|"
+                    else "red|CodeQL (\($r.conclusion))" end
+                ')"; then
+                IFS='|' read -r codeql_verdict codeql_lane <<<"$codeql_state"
+                # A successful managed workflow says the analyses ran, not that
+                # their results passed: that verdict is a separate exact-SHA
+                # check-run owned by github-advanced-security, and it is the one
+                # a re-scan re-opens. Bound by app as well as name, as the
+                # verdict step does, so another app's `CodeQL` cannot answer.
+                if [ "$codeql_verdict" = "results" ]; then
+                  if codeql_state="$(gh_retry gh api --method GET \
+                    "repos/$REPO/commits/$SHA/check-runs?check_name=CodeQL&per_page=100" \
+                    | jq -r '
+                      [.check_runs[]?
+                       | select((.app.slug // "") == "github-advanced-security")]
+                      | max_by(.id) as $c
+                      | if $c == null then "open|CodeQL (results not reported)"
+                        elif ($c.status // "") != "completed" then "open|CodeQL (results \($c.status))"
+                        elif (($c.conclusion // "") | IN("success")) then "none|"
+                        elif (($c.conclusion // "") | IN("neutral","")) then "open|CodeQL (results pending)"
+                        else "red|CodeQL (\($c.conclusion))" end
+                    ')"; then
+                    IFS='|' read -r codeql_verdict codeql_lane <<<"$codeql_state"
+                  else
+                    codeql_verdict=unreadable
+                  fi
+                fi
+                case "$codeql_verdict" in
+                  red)
+                    echo "pr-readiness: publish re-check -- $codeql_lane since the evaluation"
+                    STATUS_STATE=failure
+                    TARGET_LABEL="readiness: action required"
+                    DESCRIPTION="blocking readiness item(s) since evaluation: $codeql_lane"
+                    ;;
+                  open)
+                    echo "pr-readiness: publish re-check -- $codeql_lane since the evaluation"
+                    STATUS_STATE=pending
+                    TARGET_LABEL="readiness: checking"
+                    DESCRIPTION="readiness check(s) changed since evaluation; re-checking $codeql_lane"
+                    ;;
+                  unreadable)
+                    STATUS_STATE=pending
+                    TARGET_LABEL="readiness: checking"
+                    DESCRIPTION="[read-failed] Readiness could not be re-checked before publishing success; it will be re-evaluated"
+                    ;;
+                esac
+              else
+                STATUS_STATE=pending
+                TARGET_LABEL="readiness: checking"
+                DESCRIPTION="[read-failed] Readiness could not be re-checked before publishing success; it will be re-evaluated"
+              fi
+            fi
+            DESCRIPTION="${DESCRIPTION:0:140}"
           fi
 
           # The commit status IS the verdict, and `PR Readiness` is the only
@@ -1529,3 +1710,14 @@ jobs:
           fi
 
           cat "$RUNNER_TEMP/pr-readiness-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # One line for measuring this workflow's draw on the shared pool.
+      # `GET /rate_limit` is not counted against the limit it reports.
+      - name: Log the remaining REST budget
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          timeout 60 gh api rate_limit --jq '.resources.core
+            | "pr-readiness: core rate limit -- \(.remaining)/\(.limit) remaining, resets \(.reset | todate)"' \
+            || echo "pr-readiness: core rate limit could not be read"

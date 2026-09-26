@@ -2385,6 +2385,30 @@ Two subtleties:
   `pr-readiness-sweep.yml` backstop, which re-fires by PR number. Two fences hold the rule
   — the trigger allowlist and the job gate's event check — and
   `test_ai_review_workflows.py` pins both.
+- **A run triggered by an `in_progress` event never publishes success.** That event MEANS
+  a monitored lane is running, and the runs page is the wrong thing to ask, because the
+  lag between the webhook and that page is exactly what would answer green; the step
+  already compensates for the same lag on `completed` by patching the triggering run's
+  row from the event, and the event answers this one outright. A lane that finished in
+  between leaves the pending briefly stale, which only ever blocks, and its own
+  completion recomputes.
+
+  A same-repo `success` is re-checked before it is published: the publish step reads the
+  runs page once more and downgrades to `pending` if a monitored lane has started since
+  (to `failure` if one has turned red), so a run in an isolated `pull_request_target`
+  group cannot land a stale success over a re-run. CodeQL is read there too -- it is a
+  `dynamic` run, invisible to a re-check filtered to `event=pull_request`, and its
+  security verdict is a separate exact-SHA check-run a re-scan re-opens.
+
+  Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
+  (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
+  Screening events before the evaluation was measured and then withdrawn: settling an
+  event skips the publish, and the publish is the only write that corrects an isolated,
+  never-cancelled publisher's stale success, so every screened shape moved that write
+  earlier and widened the window in which such a success is the last write on the sole
+  required status. Commit statuses are last-write-wins with no conditional write, so no
+  read closes it. Cutting how many readiness runs are DISPATCHED carries no such
+  exposure and is where the remaining reduction belongs.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so
@@ -2417,7 +2441,10 @@ Two subtleties:
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
-  remains only for an event that carries neither field.
+  remains only for an event that carries neither field. The default branch comes from
+  the event payload, and `pr_status.py --disposition-gate` reads the PR's comment pages
+  once for both the disposition records and the reviewer markers (it walked them twice),
+  and `pr_findings.py` uses the same shared read.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
   attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails

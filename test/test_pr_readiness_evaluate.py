@@ -57,6 +57,7 @@ url=""
 for arg in "$@"; do
   case "$arg" in repos/*|*/actions/*) url="$arg" ;; esac
 done
+printf '%s\n' "$url" >> "$FIXTURES/calls"
 if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   count=0
   [ -f "$FIXTURES/flaky_count" ] && count="$(cat "$FIXTURES/flaky_count")"
@@ -140,6 +141,11 @@ def _evaluate_script() -> str:
         if step.get("id") == "verdict":
             return step["run"]
     raise AssertionError("evaluate step not found")
+
+
+def _monitored_lanes() -> str:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return spec["jobs"]["readiness"]["env"]["MONITORED_LANES"]
 
 
 # The consolidated runs read (`actions/runs?event=pull_request&head_sha=`) is
@@ -261,6 +267,7 @@ class Runner:
             "DEFAULT_BRANCH": "main",
             "TRIGGER_EVENT": "workflow_run",
             "TRIGGER_ACTION": "completed",
+            "MONITORED_LANES": _monitored_lanes(),
         }
         # Materialize the helper exactly as CI does: run the install step.
         # cwd pins the children under this runner's own temp dir so a
@@ -1686,3 +1693,12 @@ class TestDispositionViolationsBlockTheVerdict:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["description"] == "1 blocking readiness item(s)"
+
+
+class TestTheTickReportsItsRemainingBudget:
+    """The one reading that makes the pool's draw measurable rather than guessed."""
+
+    def test_the_remaining_rest_budget_is_logged(self):
+        last = _steps()[-1]
+        assert last["if"] == "always()"
+        assert "gh api rate_limit" in last["run"]
