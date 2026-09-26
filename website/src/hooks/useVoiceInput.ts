@@ -206,11 +206,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
 
   // Stop any in-flight streaming session when the user toggles streaming off
   // mid-session. Without this, the WebSocket + Transcribe session leak until
-  // unmount — Transcribe bills for the whole idle window. Must live here
-  // (not ChatPage) to read `streamRecording` directly: routing through the
-  // returned `recording` property is racy because `useVoiceInput` flips it
-  // to the batch `recording` (false) on the same render where `streamEnabled`
-  // goes false, so the caller's `voice.recording` is already false.
+  // unmount — Transcribe bills for the whole idle window. Must live here (not
+  // ChatPage) because this hook owns the socket: it reads the socket's own
+  // `streamRecording` and calls the socket's own stop, so the session closes on
+  // the setting change itself rather than waiting for a caller to observe it.
   useEffect(() => {
     if (!streamEnabled && streamRecording) streamStop()
   }, [streamEnabled, streamRecording, streamStop])
@@ -570,7 +569,17 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   }, [streamEnabled, streamStart, streamStop, acquireWarm])
 
   const stop = useCallback(() => {
-    if (streamEnabled) { streamStop(); return }
+    // Routed on the utterance in flight, never on the preference: the preference
+    // names the transport the NEXT utterance will take, so a flip mid-utterance
+    // sends the commit to the other transport's mechanism — closing a socket that
+    // was never opened while the live recorder keeps capturing, and the press
+    // clears the UI while the microphone stays hot. A startup counts as in flight
+    // and is consulted second, because between the awaits in `start()` there is no
+    // socket and no recorder for the live read to see. Only with neither does the
+    // preference decide, and there the press has no capture to end.
+    const startupTransport = startingRef.current ? startupTransportRef.current : null
+    const transport = ownTransportRef.current ?? startupTransport
+    if (transport ? transport === 'stream' : streamEnabled) { streamStop(); return }
     setPartial('')
     levelStopRef.current?.()
     levelStopRef.current = null
@@ -632,7 +641,19 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     if (streamEnabled && !streamRecording && !streamDraining && !startingRef.current) setSessionOwner(null)
   }, [streamEnabled, streamRecording, streamDraining])
 
-  const isRecording = streamEnabled ? streamRecording : recording
+  /**
+   * Whether THIS hook's own capture is live.
+   *
+   * Routed on the transport in flight rather than on the preference, for the same
+   * reason `stop()` and `cancel()` are: with the preference flipped mid-utterance
+   * the flag belonging to the other transport is idle, so this reads false while
+   * the microphone is still capturing — and every control gated on it, up to and
+   * including `toggle`'s choice of stop over start, stops reaching the capture.
+   *
+   * Draining is not capture: a stream that has stopped recording reads false here
+   * and surfaces through `transcribing` instead.
+   */
+  const isRecording = ownTransport === 'stream' ? streamRecording : ownTransport === 'batch' ? recording : false
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
   /**
    * Change the capture device from the in-chat picker.
