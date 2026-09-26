@@ -585,12 +585,14 @@ log.flush()
     def test_appends_survive_when_the_trust_dir_is_uncreatable(self, tmp_path):
         """A legacy install that cannot create trust/ must keep auditing.
 
-        When the key loader falls back to the deny-list-protected legacy key
-        (read-only config dir, uncreatable trust dir), the chain lock must
-        follow it there — locking the legacy key file itself — instead of
-        retrying the mkdir on every append, which would drop every best-effort
-        audit and deny every critical action on an install that is otherwise
-        signing fine.
+        The sidecar's directory is uncreatable here, so the chain lock falls
+        back to the deny-list-protected legacy key file instead of failing every
+        acquire, which would drop every best-effort audit and deny every
+        critical action on an install that is otherwise signing fine. The
+        fallback keys off the DIRECTORY's permissions, a filesystem fact every
+        writer on the install reads alike, never off this process's own key
+        migration state, which differs between processes and would hand two
+        writers locks on different inodes.
         """
         legacy = tmp_path / kiro_crew_sel._HMAC_KEY_FILE
         # Windows' CRT text mode treats a trailing 0x1A as DOS EOF. Keep this
@@ -609,6 +611,9 @@ log.flush()
         with patch.object(Path, "mkdir", uncreatable_trust):
             log = SecurityEventLog(base_dir=tmp_path, sync=True)
             assert log._hmac_key_file == legacy, "precondition: fallback not taken"
+            assert log._chain_lock_target() == (legacy, False), (
+                "the fallback must lock the existing legacy key and never create it"
+            )
             log.log(_make_event(event_id="legacy-lock-crit"), critical=True)
             log.log(_make_event(event_id="legacy-lock-soft"))
 
@@ -618,6 +623,62 @@ log.flush()
         assert (total, valid) == (2, 2)
         # The key bytes are untouched: the lock fd is never written through.
         assert legacy.read_bytes() == log._hmac_key
+
+    def test_lock_path_does_not_vary_with_the_keys_migration_state(self, tmp_path):
+        """Two processes on one log directory must lock the SAME inode.
+
+        The key's location differs BETWEEN processes mid-migration: one whose
+        migration failed keeps signing from the legacy path while a sibling that
+        completed it reads the relocated one. A lock path derived from the key
+        hands those two writers locks on different inodes, and both then append
+        to one log unserialized -- the chain fork this serialization exists to
+        prevent. The sidecar's path is a function of the log directory alone, so
+        both states yield one value.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        migrated = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._HMAC_KEY_FILE
+        legacy = tmp_path / kiro_crew_sel._HMAC_KEY_FILE
+        sidecar = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+
+        log._hmac_key_file = migrated
+        as_migrated = log._chain_lock_path()
+        log._hmac_key_file = legacy
+        as_legacy = log._chain_lock_path()
+
+        assert (
+            as_migrated == as_legacy
+        ), "the chain lock path diverges between two processes on one log dir"
+        assert as_legacy == sidecar
+        assert as_legacy != legacy, "the lock is taken on the HMAC key itself"
+
+    def test_the_fallback_never_creates_a_file_at_the_legacy_key_path(self, tmp_path):
+        """No acquire may leave a 0-byte file where the HMAC key belongs.
+
+        That artifact is what destroys the key: the migration block promotes a
+        legacy file over the destination, so a 0-byte one created here replaces
+        the key that signed every existing record, and the minimum-length check
+        then fails init on every later boot. With the sidecar's directory gone
+        and no legacy key to fall back to, the acquire must fail instead of
+        creating one.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="nocreate-1"))
+        legacy = tmp_path / kiro_crew_sel._HMAC_KEY_FILE
+        trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
+        assert not legacy.exists(), "precondition: the key migrated out of the log dir"
+
+        real_mkdir = Path.mkdir
+
+        def uncreatable_trust(self, *args, **kwargs):
+            if self == trust:
+                raise PermissionError("read-only config dir")
+            return real_mkdir(self, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", uncreatable_trust):
+            with pytest.raises(OSError):
+                log._chain_lock_target()
+
+        assert not legacy.exists(), "an empty file was created at the legacy key path"
 
     def test_a_byte_range_lock_excludes_on_a_zero_length_file(self, tmp_path):
         """The premise the empty lock sidecar rests on.
@@ -2265,6 +2326,42 @@ class TestHmacKeyTrustDirMigration:
         assert not (tmp_path / "sel_hmac.key").exists()
         assert any("replaced by the legacy" in r.message for r in caplog.records)
 
+    def test_short_legacy_file_does_not_destroy_a_usable_migrated_key(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 0-byte legacy file must not replace the key that signed the chain.
+
+        A mixed-binary upgrade window produces exactly this pair: a writer that
+        derives its chain lock from the key location opens the legacy path with
+        ``O_CREAT`` and leaves a 0-byte file behind once a sibling has relocated
+        the real key. Promoting that file destroys the only copy of the signing
+        key, and the minimum-length check then fails init on every later boot, so
+        the loss is unrecoverable rather than merely wrong.
+        """
+        log1 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log1.log_tool_invocation(session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok")
+        real_key = log1._hmac_key
+        assert len(real_key) >= 32, "precondition: the migrated key is usable"
+        # The artifact an old writer leaves at the legacy path: created, never written.
+        (tmp_path / "sel_hmac.key").write_bytes(b"")
+        self._reset()
+
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+
+        assert (
+            tmp_path / "trust" / "sel_hmac.key"
+        ).read_bytes() == real_key, "the 0-byte legacy file was promoted over the real key"
+        assert log2._hmac_key == real_key
+        total, valid = log2.verify_integrity()
+        assert (total, valid) == (1, 1), "the pre-existing chain no longer verifies"
+        assert any("too short to be a key" in r.message for r in caplog.records)
+
+        # The next boot still initializes, because the key was never lost.
+        self._reset()
+        log3 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log3._hmac_key == real_key
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
     def test_linked_trust_dir_is_removed_not_followed(self, tmp_path: Path) -> None:
         """A ``trust`` symlink planted before the upgrade must be removed
@@ -2408,6 +2505,59 @@ class TestHmacKeyTrustDirMigration:
         assert sel_hmac_key_path() == tmp_path / "sel_hmac.key"
         # Nothing was ever written through the planted link.
         assert list(target.iterdir()) == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_unremovable_planted_link_never_hosts_the_chain_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The APPEND path must not create the lock sidecar through the link.
+
+        ``test_unremovable_planted_link_falls_back_to_legacy`` covers init only,
+        and the chain lock is taken on the first APPEND, so a clean target there
+        says nothing about the lock. ``Path.mkdir``'s ``exist_ok`` check is
+        ``is_dir()``, which follows the planted link and reports the agent's
+        directory as usable, so the ``FileExistsError`` is swallowed and without
+        a parent-link refusal the sidecar is created inside storage the audited
+        agent controls -- where it can be unlinked and recreated between two
+        writers' acquires, giving them flocks on different inodes and forking
+        the hash chain permanently.
+        """
+        legacy_key = b"l" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(legacy_key)
+        target = tmp_path / "agent-readable"
+        target.mkdir()
+        (tmp_path / "trust").symlink_to(target)
+
+        def _deny_unlink(path):
+            raise PermissionError(30, "Read-only file system", str(path))
+
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.unlink_link_or_junction", _deny_unlink
+        )
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == legacy_key
+
+        # The lock falls back to the deny-list-protected legacy key, and must
+        # NOT be allowed to create it (a 0-byte key would be promoted over the
+        # real one by the migration block).
+        assert log._chain_lock_target() == (tmp_path / "sel_hmac.key", False)
+
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="execute_bash",
+            tool_kind="shell",
+            outcome="approved",
+            resources="ls -la",
+        )
+
+        # The append landed...
+        assert (tmp_path / "security_events.jsonl").read_text(
+            encoding="utf-8"
+        ).strip()
+        # ...and still nothing was created through the planted link.
+        assert list(target.iterdir()) == []
+        # The legacy key was locked, never rewritten.
+        assert (tmp_path / "sel_hmac.key").read_bytes() == legacy_key
 
     def test_migrated_short_key_still_hard_fails(self, tmp_path: Path) -> None:
         """Validation applies to the migrated file exactly as to a fresh one."""
