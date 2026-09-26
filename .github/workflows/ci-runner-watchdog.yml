@@ -34,9 +34,14 @@ name: CI Runner Watchdog
 # actually carries the fleet label. One listing per status covers the whole
 # watched set as a client-side filter and reaches more than a per-workflow loop
 # would; live paging is bounded at 8 pages, and each live classification
-# sweep reads jobs for at most 50 runs: 40 to the oldest, which are the only
-# actionable ones, and 10 reserved for the newest, whose prompt CodeBuild starts
-# are the dispatch evidence a saturation hold is judged by. Cancelled-run recovery
+# sweep reads jobs for at most 50 runs: UP TO 10 reserved for the newest runs that
+# are THEMSELVES at least one saturation wait old (a younger run cannot hold a
+# served start that waited that long and so could only ever report the fleet
+# dispatching), falling back to the newest runs when none qualifies, since an empty
+# reserve reads as an outage; the REST go to the classify slice, ranked
+# actionable-shaped first (a `push` run of a heal-safe workflow past the orphan
+# threshold) then oldest. The split is dynamic: a reserve that comes back short
+# hands its unused reads to the classify slice rather than leaving them unspent. Cancelled-run recovery
 # has a separate 16-page reach because GitHub indexes that status by creation
 # time while the pass selects by cancellation time. That reach is about eight
 # hours at this repo's measured 200 cancellations an hour, and the 2026-09-20
@@ -99,18 +104,26 @@ name: CI Runner Watchdog
 # the OTHER routed jobs are doing, counting only starts AFTER the orphaned job
 # queued (a fleet that was fine before the orphan queued says nothing about the
 # fleet it is waiting on): if a CodeBuild job that did get a runner started in
-# that window, inside the last 30 minutes, after waiting 5 minutes or more, CodeBuild
-# is queueing, every queued job is presumed alive, and the tick reports the runs
-# as `skipped-saturated` and heals nothing. When recent starts were prompt --
-# the normal case here, measured in seconds -- a job that has waited a quarter
-# of an hour is in no queue at all. And when NOTHING has started on CodeBuild
-# in that window (live runs first, then the ten newest completed runs), the
-# evidence is inconclusive: a total fleet outage looks exactly like an orphan
+# that window, inside the last 30 minutes, after waiting a third of the orphan
+# threshold or more, CodeBuild is queueing, every queued job is presumed alive, and
+# the tick reports the runs as `skipped-saturated` and heals nothing. That line is
+# deliberately low because this evidence is label-blind: a start served quickly on
+# another CodeBuild label says nothing about the queue the orphaned job is in, so
+# raising the line would widen the window in which a queued-but-alive job is
+# cancelled. A tick that observed any served CodeBuild start logs the slowest of
+# them against the line, which is the drift a raise has to be calibrated from
+# (#13644); a tick that saw none has nothing to measure and logs nothing. And when NOTHING has started
+# on CodeBuild in that window (live runs first, then the ten newest completed runs),
+# the evidence is inconclusive: a total fleet outage looks exactly like an orphan
 # from the queued side, and re-running into an outage only discards finished
 # work, so the tick reports `skipped-no-dispatch-evidence`, heals nothing, and
-# points at the documented rollback. A sweep that exceeded its job-read bound
-# reports `skipped-partial-dispatch-evidence` rather than acting: the dropped band
-# is the middle of the sweep, so a slow start there was never read.
+# points at the documented rollback. A sweep that left a run old enough to hold a
+# served start past the threshold unread reports `skipped-partial-dispatch-evidence`
+# rather than acting: the completed-run sample cannot close that gap, since it reads
+# the newest completions and a fleet serving some jobs promptly while queueing others
+# past the threshold puts a prompt start there. The premise is the unread
+# saturation-capable runs, not that the bound was reached, so a sweep whose unread
+# band is all too young to have carried such a start may still act.
 #
 # Mutations are verified after the fact, because the API has no conditional
 # cancel or re-run: once a cancel lands the run's attempt and conclusion are
@@ -135,8 +148,13 @@ name: CI Runner Watchdog
 # explain (nobody else re-ran it) reds the tick the same way.
 #
 # Guard rails, all in the script and all unit-tested (test/test_ci_runner_watchdog.py):
-#   - runs younger than 15 minutes are never actionable (their jobs are still
-#     read, because a slow start inside one is saturation evidence);
+#   - runs younger than the orphan threshold are never actionable, and the two age
+#     bands differ: a run at least a third of that threshold old is what the evidence
+#     reserve is spent on; a younger one is not reserved a read while any run qualifies
+#     and is read only if a classify slot remains after the actionable-shaped and older
+#     runs, because a prompt start inside one is dispatch evidence. The exception is the
+#     reserve's fallback: when NO run can carry a slow start the newest are reserved
+#     anyway, because an empty reserve reads as an outage;
 #   - immediately before every re-run, the run must still be the newest run of
 #     its branch and event; the check is unconditional for every heal-safe run;
 #   - fork runs are reported, never touched (forks are never routed to

@@ -481,7 +481,12 @@ def test_a_recent_slow_codebuild_start_means_saturation_and_nothing_is_healed() 
 
 
 def test_saturation_evidence_inside_a_young_run_still_counts() -> None:
-    """A 6-minute wait on a job that started 2 minutes ago, in a run created 9 minutes ago."""
+    """A 6-minute wait on a job that started 2 minutes ago, in a run created 9 minutes ago.
+
+    The run is younger than the orphan threshold, so nothing will be done to it, but
+    it is older than the saturation line, so it CAN hold a served start that crossed
+    it -- and that start holds the watchdog back from run 1.
+    """
     young = _run(2, minutes_ago=9, branch="other")
     slow = _job(
         21, status="in_progress", minutes_ago=8, started_minutes_ago=2, runner_name="r", run_id=2
@@ -492,6 +497,26 @@ def test_saturation_evidence_inside_a_young_run_still_counts() -> None:
     assert _verdict_of(verdicts, 2).verdict == wd.SKIPPED_YOUNG
     assert outcomes == {}
     assert api.posts == []
+
+
+def test_a_young_runs_start_still_counts_as_evidence_though_the_run_is_not_actionable() -> None:
+    """A run the classifier refuses to act on still feeds the evidence set.
+
+    Run 2 is 3 minutes old, so it is SKIPPED_YOUNG and nothing will be done to it,
+    but its served start is what the hold on run 1 is judged against. It is also
+    younger than the saturation line, so it cannot hold a wait that crossed it and can
+    only ever report the fleet dispatching -- which is why the evidence reserve
+    prefers runs old enough to report the other way.
+    """
+    young = _run(2, minutes_ago=3, branch="other")
+    prompt = _job(
+        21, status="in_progress", minutes_ago=3, started_minutes_ago=2.8, runner_name="r", run_id=2
+    )
+    api = FakeApi({"in_progress": [_run(1), young]}, {1: [_job(11)], 2: [prompt]})
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert _verdict_of(verdicts, 2).verdict == wd.SKIPPED_YOUNG
+    assert outcomes == {1: wd.OUTCOME_HEALED}
 
 
 def _jobs_change_on_later_reads(api: FakeApi, run_id: int, later: list[dict[str, Any]]) -> None:
@@ -1959,13 +1984,13 @@ def test_a_chain_of_superseding_pushes_is_not_chased_past_the_depth_cap() -> Non
 def _saturation_band_api() -> FakeApi:
     """An orphan, a MIDDLE run holding the only slow start, and a young prompt start.
 
-    Under a narrow bound the middle run is the band that gets dropped, so the sweep
-    sees prompt starts and nothing slow. Under a wide bound it reads the slow start
-    and holds as saturated, which is what proves the fixture really does contain
-    saturation and the narrow-bound hold is not an artefact of an empty fixture.
+    The middle run is 20 minutes old and its routed job waited 8 for a runner, so it
+    is both old enough to be reserved for evidence and slow enough to hold. The young
+    run is 3 minutes old, under the 5-minute saturation line, so it cannot contain a
+    wait that crossed it and can only ever show the fleet dispatching.
     """
     middle = _run(2, minutes_ago=20, branch="middle")
-    young = _run(3, minutes_ago=9, branch="young")
+    young = _run(3, minutes_ago=3, branch="young")
     slow = _job(
         21, status="in_progress", minutes_ago=8, started_minutes_ago=2, runner_name="r", run_id=2
     )
@@ -2019,20 +2044,23 @@ def test_a_successor_we_cancelled_and_will_not_restore_is_lost_not_a_clean_hando
     assert any("::error::" in line and "gh run rerun 2" in line for line in logged)
 
 
-def test_partial_dispatch_evidence_holds_instead_of_authorizing_a_heal(
+def test_a_narrow_bound_still_reads_the_slow_start_because_the_reserve_is_age_aware(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sweep that read only part of its listing must not rule saturation out.
+    """A bound too small to read everything must still be able to see saturation.
 
-    The bound drops the MIDDLE band, so the slow CodeBuild start there is never read
-    and "prompt starts, nothing slow" is not established. The paired wide bound reads
-    it and holds as saturated, proving the saturation is really in the fixture.
+    The reserve takes the newest run at least ``saturation_wait`` old, so under a
+    one-slot reserve it takes the 20-minute middle run holding the slow start and
+    holds. The reverted rule -- reserve the newest run outright -- would take the
+    3-minute young run, which is too young to contain a wait past the threshold and
+    so can only report the fleet dispatching. Both bounds reach the same verdict
+    here, which is the point: the hold now rests on evidence that was read.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
     narrow = _saturation_band_api()
     verdicts, outcomes = _sweep(narrow)
-    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_SATURATED
     assert narrow.posts == []
 
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 50)
@@ -2042,6 +2070,35 @@ def test_partial_dispatch_evidence_holds_instead_of_authorizing_a_heal(
     assert _verdict_of(wide_verdicts, 1).verdict == wd.SKIPPED_SATURATED
     assert wide.posts == []
     assert outcomes is not None
+
+
+def test_the_evidence_reserve_prefers_runs_old_enough_to_show_a_slow_start() -> None:
+    """The reserve slice, and the negative control that the reverted rule fails.
+
+    A run younger than ``saturation_wait`` cannot hold a start that waited that
+    long, so reserving the newest runs outright is blind to the one signal that
+    holds. Measured on this repository the newest ten live runs spanned 0.0 to 0.6
+    minutes while 352 runs could carry one, so this is the normal shape, not an
+    edge case.
+
+    The straddling pair is what pins the line at ``saturation_wait`` and not at
+    ``orphan_after``: 8 minutes is in, 4 minutes is out, so swapping the constant
+    reds this test.
+    """
+    policy = _policy()
+    assert policy.saturation_wait == timedelta(minutes=5)
+    runs = [_run(i, minutes_ago=age) for i, age in enumerate([25, 20, 8, 6, 4, 1], start=1)]
+    reserve = [run["id"] for run in wd._evidence_reserve(runs, policy)]
+    # Every run at or past 5 minutes, newest last; the 4- and 1-minute runs are out.
+    assert reserve == [1, 2, 3, 4]
+    assert wd._can_carry_a_slow_start(runs[2], policy) is True  # 8 min, over the line
+    assert wd._can_carry_a_slow_start(runs[4], policy) is False  # 4 min, under it
+    # The reverted rule takes the tail outright, so its newest slot is the 1-minute
+    # run, which cannot carry a wait that crossed the line: that reserve can only ever
+    # answer "dispatching" and is blind to the signal that holds.
+    assert runs[-wd.LIVE_EVIDENCE_RESERVE :][-1]["id"] == 6
+    young_only = [_run(7, minutes_ago=3), _run(8, minutes_ago=1)]
+    assert [run["id"] for run in wd._evidence_reserve(young_only, policy)] == [7, 8]
 
 
 def test_the_successor_is_not_judged_while_our_own_rerun_is_still_cancelling() -> None:
@@ -3440,12 +3497,45 @@ def test_the_summary_reports_a_saturated_hold() -> None:
 
 
 def test_the_summary_reports_a_partial_evidence_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The partial hold must reach the summary, or a held tick renders "Nothing stuck.".
+
+    This is the only path that renders SKIPPED_PARTIAL_EVIDENCE through
+    `render_summary`, so without it dropping the verdict from that function's
+    `reported` tuple reds nothing and a tick that deliberately held reports itself as
+    quiet -- the regression this pins.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    prompt = _job(
+        21, status="in_progress", minutes_ago=20, started_minutes_ago=19, runner_name="r", run_id=2
+    )
+    api = FakeApi(
+        {
+            "in_progress": [
+                _run(1),
+                _run(500, minutes_ago=30, status="queued", branch="older"),
+                _run(2, minutes_ago=20, branch="other"),
+            ]
+        },
+        {1: [_job(11)], 2: [prompt], 500: []},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    summary = wd.render_summary(verdicts, outcomes, _policy())
+    assert wd.SKIPPED_PARTIAL_EVIDENCE in summary
+    assert "Nothing stuck." not in summary
+    assert api.posts == []
+
+
+def test_the_summary_reports_a_hold_taken_under_a_narrow_read_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A hold the watchdog deliberately took must not read as "Nothing stuck."."""
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
     verdicts, outcomes = _sweep(_saturation_band_api())
     summary = wd.render_summary(verdicts, outcomes, _policy())
-    assert wd.SKIPPED_PARTIAL_EVIDENCE in summary
+    assert wd.SKIPPED_SATURATED in summary
     assert "Nothing stuck." not in summary
 
 
@@ -4255,6 +4345,225 @@ def test_live_job_read_bound_keeps_the_oldest_and_the_newest(
     assert any("live job-read cap of 3" in line for line in logged)
 
 
+def test_a_short_reserve_does_not_leave_the_read_bound_unspent() -> None:
+    """The classify slice is sized off the reserve taken, not off the constant.
+
+    `_evidence_reserve` returns `source[-LIVE_EVIDENCE_RESERVE:]` where `source` is the
+    CAPABLE runs, so a listing far over the bound still yields a short reserve whenever
+    few of its runs are old enough -- a burst of fresh pushes is exactly that shape.
+    Subtracting the constant would then leave the difference unspent: the sweep reads
+    fewer runs than the bound allows, classifies fewer orphans, and leaves more unread
+    capable runs holding the heal back, which is the opposite of the bound's purpose.
+
+    Negative control below: sizing off the constant reads 7 fewer runs on this fixture.
+    """
+    policy = _policy()
+    # Over the bound so the whole-listing early return cannot apply, but with only
+    # three runs old enough to be capable.
+    capable = [_run(i, minutes_ago=30 + i) for i in range(1, 4)]
+    young = [_run(100 + i, minutes_ago=1) for i in range(wd.LIVE_CLASSIFY_READS + 10)]
+    runs = capable + young
+    assert len(runs) > wd.LIVE_CLASSIFY_READS
+
+    logged: list[str] = []
+    bounded, _ = wd.live_runs_within_read_bound(runs, policy, logged.append)
+
+    # Three reserved plus a classify slice of 47 spends the bound exactly. Sizing off
+    # the constant would have given 3 + 40 = 43.
+    assert len(bounded) == wd.LIVE_CLASSIFY_READS, (
+        f"the bound allows {wd.LIVE_CLASSIFY_READS} reads and a short reserve must not "
+        f"shrink that; got {len(bounded)}"
+    )
+
+    # The budget line must name the split this tick actually took -- 47/3, not the
+    # constants' 40/10 -- and it is emitted once, after the reserve is computed.
+    cap_lines = [line for line in logged if "live job-read cap" in line]
+    assert len(cap_lines) == 1, "the read budget must be reported exactly once"
+    assert f"the {wd.LIVE_CLASSIFY_READS - 3} classified" in cap_lines[0]
+    assert "3 reads are reserved" in cap_lines[0]
+    assert "(3 of them can)" in cap_lines[0]
+    assert "shortfall" not in cap_lines[0]
+    assert str(wd.LIVE_EVIDENCE_RESERVE) + " reads are reserved" not in cap_lines[0]
+
+
+def test_the_reserve_log_names_the_fallback_when_no_run_can_carry_a_slow_start() -> None:
+    """The log must not claim an age band it did not get.
+
+    With nothing old enough, `_evidence_reserve` falls back to the newest runs. Those
+    report the fleet dispatching but cannot show a slow start, and a line asserting the
+    age band unconditionally would misdescribe exactly the case an operator reading it
+    needs to tell apart.
+    """
+    policy = _policy()
+    young = [_run(i, minutes_ago=1) for i in range(1, wd.LIVE_CLASSIFY_READS + 12)]
+    logged: list[str] = []
+    wd.live_runs_within_read_bound(young, policy, logged.append)
+
+    cap_lines = [line for line in logged if "live job-read cap" in line]
+    assert cap_lines
+    assert "(0 of them can)" in cap_lines[0]
+    assert "shortfall" in cap_lines[0]
+
+
+def test_a_pending_run_is_not_saturation_capable_however_old_it_is() -> None:
+    """A jobless run can hold no start, so it must not hold a heal back.
+
+    A ``pending`` run is held by its concurrency group with no jobs created, so it
+    can carry no served start at any age. Counting it as capable would hold the heal
+    over a run that could never have held the evidence, and `pending` is exactly what
+    grows during the saturation this hold exists for.
+
+    Negative control: age alone admits it, both into the reserve and into the unread
+    count that the partial hold turns on.
+    """
+    policy = _policy()
+    pending = _run(9, minutes_ago=90, status="pending")
+    live = _run(8, minutes_ago=20, status="queued")
+    assert wd._can_carry_a_slow_start(live, policy) is True
+    assert wd._can_carry_a_slow_start(pending, policy) is False
+    # Age alone -- the reverted rule -- would call the 90-minute pending run capable.
+    assert policy.now - wd.parse_timestamp(pending["created_at"]) >= policy.saturation_wait
+
+    # The reserve prefers the live run even though the pending one is older, and with
+    # only the pending run present it falls back rather than reserving nothing.
+    assert [int(run["id"]) for run in wd._evidence_reserve([pending, live], policy)] == [8]
+    assert [int(run["id"]) for run in wd._evidence_reserve([pending], policy)] == [9]
+
+
+def test_the_tick_logs_the_slowest_served_wait_against_the_saturation_line() -> None:
+    """Drift toward the line has to be visible without re-measuring by hand.
+
+    The reading is reported whether or not it crosses the line, because the MARGIN is
+    the signal: a wait climbing toward it means the hold is about to fire on ordinary
+    traffic, one far below it means the line could be raised. Here the slowest served
+    wait is 2 minutes against a 5-minute line, so no hold is taken and the reading is
+    logged anyway. It reads in SECONDS: the waits this exists to watch are 27s median
+    and 47s at p90 here, and whole minutes would print every one of them as zero.
+    """
+    sibling = _job(
+        21, status="in_progress", minutes_ago=4, started_minutes_ago=2, runner_name="r", run_id=2
+    )
+    api = FakeApi(
+        {"in_progress": [_run(1), _run(2, minutes_ago=40, branch="other")]},
+        {1: [_job(11)], 2: [sibling]},
+    )
+    logged: list[str] = []
+    clock = _Clock()
+    verdicts, _ = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append
+    )
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED  # 2 min is under the line
+    line = next(line for line in logged if "slowest served CodeBuild wait" in line)
+    assert "120s" in line and "300s" in line
+
+    # A sub-minute wait -- the normal case here -- prints a real number, not zero.
+    brief = _job(
+        31, status="in_progress", minutes_ago=2.5, started_minutes_ago=2, runner_name="r", run_id=2
+    )
+    api2 = FakeApi(
+        {"in_progress": [_run(1), _run(2, minutes_ago=40, branch="other")]},
+        {1: [_job(11)], 2: [brief]},
+    )
+    brief_log: list[str] = []
+    clock2 = _Clock()
+    wd.run_watchdog(api2, _policy(), clock=clock2.now, sleep=clock2.sleep, log=brief_log.append)
+    brief_line = next(line for line in brief_log if "slowest served CodeBuild wait" in line)
+    assert "30s" in brief_line and "0 min" not in brief_line
+
+    # Nothing served at all: no reading is invented.
+    quiet = wd.DispatchEvidence()
+    assert quiet.slowest_served_wait() is None
+
+
+def test_a_tick_that_saw_no_served_start_logs_no_calibration_reading() -> None:
+    """Absent evidence is not a fast queue, so a quiet tick reports nothing.
+
+    The one run here is young with a job that never got a runner, so nothing was
+    served and no orphan exists to trigger the completed-run sample. A zero reading
+    would read as an instantly-dispatching fleet, which is the opposite of what the
+    tick knows.
+    """
+    api = FakeApi({"in_progress": [_run(1, minutes_ago=2)]}, {1: [_job(11, minutes_ago=2)]})
+    logged: list[str] = []
+    clock = _Clock()
+    wd.run_watchdog(api, _policy(), clock=clock.now, sleep=clock.sleep, log=logged.append)
+    assert not any("slowest served CodeBuild wait" in line for line in logged)
+
+
+def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hold's premise is what went unread, not that the bound was reached.
+
+    A run at least ``saturation_wait`` old can hold a served start that waited that
+    long; a younger one cannot. So a sweep whose unread runs are all too young has
+    seen every run that could have held it and may act, while one unread run old
+    enough to carry such a start holds -- the completed-run sample cannot close that
+    gap, since it reads the newest completions and a fleet serving some jobs promptly
+    while queueing others past the threshold puts a prompt start there.
+
+    Negative control: keying the hold on the bound alone holds in both halves, which
+    at this repository's listing size is every tick.
+    """
+    prompt = _job(
+        21, status="in_progress", minutes_ago=20, started_minutes_ago=19, runner_name="r", run_id=2
+    )
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+
+    # Unread: two runs of 3 and 2 minutes. Neither can hold a 15-minute wait.
+    young = [_run(400 + i, minutes_ago=3 - i, status="queued", branch=f"y{i}") for i in range(2)]
+    cleared = FakeApi(
+        {"in_progress": [_run(1), _run(2, minutes_ago=20, branch="other")] + young},
+        {1: [_job(11)], 2: [prompt], 400: [], 401: []},
+    )
+    verdicts, outcomes = _sweep(cleared)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+
+    # Unread: one 30-minute run, which could have held a served 15-minute wait.
+    older = _run(500, minutes_ago=30, status="queued", branch="older")
+    held = FakeApi(
+        {"in_progress": [_run(1), older, _run(2, minutes_ago=20, branch="other")]},
+        {1: [_job(11)], 2: [prompt], 500: []},
+    )
+    held_verdicts, held_outcomes = _sweep(held)
+    assert _verdict_of(held_verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert held_outcomes == {}
+    assert held.posts == []
+
+
+def test_the_reserve_takes_the_age_band_not_this_minutes_pushes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserved read goes to a run that could report saturation, not the newest.
+
+    Three pushes landed in the last three minutes. None of them can hold a wait past
+    the orphan threshold, so reserving a slot for one answers only "dispatching".
+    The 20-minute run can answer either way, so it takes the slot; the six-hour
+    orphan still takes its classify slot, and the selection stays chronological.
+
+    Negative control: the reverted rule -- reserve the newest runs outright -- takes
+    a 3-minute run and leaves the 20-minute one unread.
+    """
+    stuck = _run(7, minutes_ago=360, status="queued", event="push", workflow="fast-gate.yml")
+    fresh = [
+        _run(300 + i, minutes_ago=3 - i * 0.1, status="queued", event="push", workflow="ci.yml")
+        for i in range(3)
+    ]
+    mid = _run(50, minutes_ago=20, status="queued", event="pull_request", branch="pr")
+    candidates = sorted([stuck, mid] + fresh, key=lambda run: run["created_at"])
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 3)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    bounded, _ = wd.live_runs_within_read_bound(candidates, _policy(), lambda _line: None)
+    ids = [int(run["id"]) for run in bounded]
+    assert 7 in ids and 50 in ids
+    assert [run["created_at"] for run in bounded] == sorted(run["created_at"] for run in bounded)
+
+    reverted = [int(run["id"]) for run in candidates[-wd.LIVE_EVIDENCE_RESERVE :]]
+    assert reverted == [302] and 50 not in reverted
+
+
 def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4274,20 +4583,27 @@ def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
         for i in range(4)
     ]
     healable = _run(7, minutes_ago=360, status="queued", event="push", workflow="fast-gate.yml")
+    # Old enough to be reserved for evidence, so the healable run must win a classify
+    # slot on priority rather than riding in on the reserve.
+    mid = _run(50, minutes_ago=20, status="queued", event="pull_request", branch="pr")
     young = [_run(200 + i, minutes_ago=2 - i * 0.1, status="queued") for i in range(2)]
-    candidates = zombies + [healable] + young  # oldest first, as the gather returns them
+    candidates = zombies + [healable, mid] + young  # oldest first, as the gather returns them
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 4)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
     logged: list[str] = []
-    bounded, partial = wd.live_runs_within_read_bound(candidates, logged.append)
-    assert partial is True
+    bounded, unread_capable = wd.live_runs_within_read_bound(candidates, _policy(), logged.append)
+    # The unread zombies count: they are `queued` and far past the line, so the
+    # listing cannot tell them from a run whose job has been queued that whole time.
+    assert unread_capable == 2
     assert 7 in {int(run["id"]) for run in bounded}
     # Still oldest first, so the sweep's log stays chronological.
     assert [run["created_at"] for run in bounded] == sorted(run["created_at"] for run in bounded)
-    # The newest run keeps its reserved slot: dispatch evidence is not sacrificed
-    # to make room for the healable one.
-    assert int(bounded[-1]["id"]) == int(candidates[-1]["id"])
-    assert any("heal-eligible first" in line for line in logged)
+    # The reserved slot goes to the newest run old enough to hold a wait past the
+    # threshold, not to the newest run outright: a 2-minute run could only report
+    # the fleet dispatching.
+    assert int(bounded[-1]["id"]) == 50
+    assert not {int(run["id"]) for run in young} & {int(run["id"]) for run in bounded}
+    assert any("actionable-shaped first" in line for line in logged)
 
     oldest = wd.LIVE_CLASSIFY_READS - wd.LIVE_EVIDENCE_RESERVE
     control = candidates[:oldest] + candidates[-wd.LIVE_EVIDENCE_RESERVE :]  # the reverted rule
