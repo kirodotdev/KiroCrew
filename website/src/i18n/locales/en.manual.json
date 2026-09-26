@@ -5195,7 +5195,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Extraction effort",
+        "effort_hint": "Default runs High effort until you pick a level.",
+        "effort_model_unknown_hint": "The model is picked at run time, so effort applies only when the resolved model supports it. Default runs High effort."
       }
     },
     "libraryPage": {

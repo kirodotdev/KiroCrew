@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.knowledge.llm_pool import (
+    DEFAULT_EXTRACTION_EFFORT,
     DEFAULT_IDLE_TTL_SECS,
     WORKER_RECYCLE_CALLS,
     WORKER_RECYCLE_PCT,
@@ -22,6 +23,7 @@ from kiro_crew.knowledge.llm_pool import (
     _get_idle_ttl,
     _get_provider_type,
     _get_sandbox_mode,
+    _get_workload_effort,
     _read_config,
 )
 
@@ -973,7 +975,9 @@ class TestLLMPoolEffort:
 
     @pytest.mark.asyncio
     async def test_fetch_sized_pool_ignores_extraction_size_config(self):
-        pool = LLMPool(pool_size=1, use_config_pool_size=False)
+        # No config_pool_size_key bound: knowledge.extraction_pool_size must
+        # not resize this pool (the fetch pool has exactly one worker).
+        pool = LLMPool(pool_size=1)
         created: list[FakeWorker] = []
 
         async def _mock_create():
@@ -990,6 +994,154 @@ class TestLLMPoolEffort:
 
         assert pool._pool_size == 1
         assert len(created) == 1
+
+    @pytest.mark.asyncio
+    async def test_bound_key_resizes_from_config_when_explicit(self):
+        pool = LLMPool(pool_size=3, config_pool_size_key="extraction_pool_size")
+        created: list[FakeWorker] = []
+
+        async def _mock_create():
+            worker = FakeWorker()
+            created.append(worker)
+            return worker
+
+        pool._create_worker = _mock_create  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.knowledge.llm_pool._read_config",
+            return_value={"knowledge": {"extraction_pool_size": 5}},
+        ):
+            await pool.start()
+
+        assert pool._pool_size == 5
+        assert pool._semaphore._value == 5
+        assert len(created) == 5
+
+    @pytest.mark.asyncio
+    async def test_unbound_pool_ignores_extraction_size_config(self):
+        # auto_research_llm_pool (no bound key) is unaffected by the knowledge
+        # pool-size config even when the key is explicitly present.
+        pool = LLMPool(pool_size=2)
+        created: list[FakeWorker] = []
+
+        async def _mock_create():
+            worker = FakeWorker()
+            created.append(worker)
+            return worker
+
+        pool._create_worker = _mock_create  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.knowledge.llm_pool._read_config",
+            return_value={"knowledge": {"extraction_pool_size": 4}},
+        ):
+            await pool.start()
+
+        assert pool._pool_size == 2
+        assert len(created) == 2
+
+
+class TestLLMPoolEffortResolution:
+    """``_get_workload_effort`` — the pure per-workload resolution chain."""
+
+    @pytest.mark.parametrize("explicit", ["low", "medium", "high"])
+    def test_explicit_key_wins_over_fallback_and_role(self, explicit):
+        # The pin wins, and a background-role pin on the SAME config never
+        # moves it: extraction effort is independent of the role policy.
+        config = {
+            "knowledge": {"extraction_effort": explicit},
+            "agent": {"role_efforts": {"background": "high"}},
+        }
+        assert _get_workload_effort(config, "extraction_effort", "high") == explicit
+
+    @pytest.mark.parametrize("role", ["low", "medium", "high"])
+    def test_empty_key_ignores_background_role_lands_on_fallback(self, role):
+        # No role-policy leg in the chain: an unset key keeps the historical
+        # high regardless of agent.role_efforts.background.
+        config = {
+            "knowledge": {"extraction_effort": ""},
+            "agent": {"role_efforts": {"background": role}},
+        }
+        assert _get_workload_effort(config, "extraction_effort", "high") == "high"
+
+    def test_empty_key_with_role_unset_lands_on_fallback(self):
+        config = {"knowledge": {"extraction_effort": ""}, "agent": {}}
+        assert (
+            _get_workload_effort(config, "extraction_effort", DEFAULT_EXTRACTION_EFFORT) == "high"
+        )
+
+    @pytest.mark.parametrize("bad", ["ultra", 7, True, []])
+    def test_invalid_key_lands_on_fallback(self, bad):
+        # Garbage in the key never changes cost silently: it logs and lands on
+        # the same fallback an absent key would (here the role value is low —
+        # still ignored).
+        config = {
+            "knowledge": {"extraction_effort": bad},
+            "agent": {"role_efforts": {"background": "low"}},
+        }
+        assert _get_workload_effort(config, "extraction_effort", "high") == "high"
+
+    def test_chain_absent_lands_on_fallback(self):
+        assert _get_workload_effort({}, "extraction_effort", DEFAULT_EXTRACTION_EFFORT) == "high"
+        assert _get_workload_effort({}, "other_key", "") is None
+
+    @pytest.mark.asyncio
+    async def test_pool_resolves_effort_from_config_at_start(self):
+        pool = LLMPool(
+            pool_size=1,
+            effort_key="extraction_effort",
+            fallback_effort=DEFAULT_EXTRACTION_EFFORT,
+        )
+        pool._create_worker = _mock_fake_create()  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.knowledge.llm_pool._read_config",
+            return_value={"knowledge": {"extraction_effort": "low"}},
+        ):
+            await pool.start()
+
+        assert pool._effort == "low"
+
+    @pytest.mark.asyncio
+    async def test_pool_without_effort_key_keeps_constructor_effort(self):
+        pool = LLMPool(pool_size=1, effort="medium")
+        pool._create_worker = _mock_fake_create()  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.knowledge.llm_pool._read_config",
+            return_value={"knowledge": {"extraction_effort": "low"}},
+        ):
+            await pool.start()
+
+        assert pool._effort == "medium"
+
+
+def _mock_fake_create():
+    created: list[FakeWorker] = []
+
+    async def _create():
+        worker = FakeWorker()
+        created.append(worker)
+        return worker
+
+    return _create
+
+
+class TestAcpWorkerEffortModelGate:
+    """The config-option backends gate on supports_config_option, not on the
+    served model id (the model heuristic was removed with the per-backend
+    effort option ids)."""
+
+    @pytest.mark.asyncio
+    async def test_config_option_backend_is_not_model_gated(self, tmp_path):
+        # The config-option backends keep their supports_config_option gate; a
+        # capable client pushes regardless of the model id heuristic.
+        client = _mock_effort_client(["low", "medium", "high"], claude=True)
+        client._model = "auto"
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        client.set_config_option.assert_awaited_once_with("effort", "high")
 
 
 # ---------------------------------------------------------------------------

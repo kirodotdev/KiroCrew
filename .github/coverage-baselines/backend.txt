@@ -68,7 +68,6 @@ src/kiro_crew/diagnostics.py 69.1   # 143/207
 src/kiro_crew/discord/gateway.py 19.6   # 10/51
 src/kiro_crew/emoji_list.py 0.0   # 0/1
 src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
-src/kiro_crew/knowledge/llm_pool.py 70.8   # 315/445
 src/kiro_crew/knowledge/readers.py 61.7   # 74/120
 src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
 src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530

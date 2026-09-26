@@ -2355,7 +2355,8 @@
         "import_chunk_budget": 0,
         "embed_rate_limit": 120,
         "extraction_model": "",
-        "extraction_pool_size": 3
+        "extraction_pool_size": 3,
+        "extraction_effort": ""
       }
     },
     {
@@ -2600,6 +2601,28 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "knowledge.extraction_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extraction Effort",
+      "help": "Reasoning effort for the document-extraction LLM pool. Empty runs the default high. Only applies on reasoning-capable models.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "skills",

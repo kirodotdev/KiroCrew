@@ -3177,6 +3177,7 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
                 _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3),
             ),
         ),
+        extraction_effort=coerce_effort(knowledge_data.get("extraction_effort", "")),
     )
 
 

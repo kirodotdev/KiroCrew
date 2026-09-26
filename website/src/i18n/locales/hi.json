@@ -12177,7 +12177,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "एक्सट्रैक्शन एफ़र्ट",
+        "effort_hint": "कोई स्तर चुनने तक, डिफ़ॉल्ट रूप से High effort चलता है।",
+        "effort_model_unknown_hint": "मॉडल रनटाइम पर चुना जाता है, इसलिए effort तभी लागू होता है जब चुना गया मॉडल उसे सपोर्ट करता हो। डिफ़ॉल्ट High effort चलता है।"
       }
     },
     "localStorageDebug": {
