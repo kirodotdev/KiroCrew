@@ -952,6 +952,10 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
         "config.local.json",
         "playwright-cli-config.json",
         "subagents",
+        # background: gateway-owned command records and logs. Readable so an agent
+        # can open a run's log; never writable, or a forged record would aim the
+        # gateway's kill at another process.
+        "background",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write

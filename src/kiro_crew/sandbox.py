@@ -545,6 +545,9 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # The second root holds the same authority for retained V1 runs only.
     "subagents",
     "member-memory-bindings",
+    # Background command records, exit statuses and logs. Agents read the logs;
+    # only the gateway writes, so a forged record cannot aim its kill or unlink.
+    "background",
     # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
     # code from rewriting that learning authority while allowing reads; this
     # ordinary sandbox rule is not a cross-member confidentiality boundary.
@@ -910,6 +913,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # effect: this leaf is not on the read-gate floor, so the mask never covers it and
     # neither classification changes what any child can open.
     "subagents",
+    # Background command records and logs: the same shape, read by the agent and
+    # written only by the gateway.
+    "background",
     # The decision log. Same shape as the entry above, and for the reason this module
     # gives it: read stays open on purpose, every legitimate writer is the gateway
     # outside the sandbox, and nothing writes a decision row from inside one. Also off
@@ -1396,6 +1402,7 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # gateway records without letting a sandbox create the missing root.
     "subagents",
     "member-memory-bindings",
+    "background",
     "memory_stores",
     "profiles",
     # The crew webview template directory. A fence only fences an EXISTING path:
@@ -1431,6 +1438,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "playwright-cli",
     "subagents",
     "member-memory-bindings",
+    "background",
     "decisions",
     "pi-gate",
 )
@@ -1475,6 +1483,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed run records",
         "the agent could rewrite the app owner a retained V1 run restores its "
         "authorization from",
+    ),
+    "background": (
+        "sealed background command records",
+        "the agent could forge the pid the gateway signals or the exit status a run " "reports",
     ),
     # Sealing the seam that turns the feature on without sealing the record it writes
     # would be half a control: appending one feedback row is enough to put a verdict

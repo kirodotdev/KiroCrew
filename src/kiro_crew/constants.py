@@ -1343,3 +1343,10 @@ DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
 #: on a backpressured ACP stdin would stall the reject that unblocks the turn.
 #: One number so the three surfaces cannot drift apart.
 STEER_NOTICE_BOUND_SECS = 5.0
+
+# ``background_run`` bounds, read by ``validation.py`` (a leaf) and enforced again
+# by ``background_commands``, so the tool schema and the gateway agree.
+BACKGROUND_RUN_MAX_COMMAND_CHARS = 8000
+BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS = 3600
+BACKGROUND_RUN_MIN_TIMEOUT_SECS = 10
+BACKGROUND_RUN_MAX_TIMEOUT_SECS = 7 * 86400

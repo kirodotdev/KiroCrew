@@ -32,6 +32,10 @@ from typing import Any, Iterable
 
 from kiro_crew import model_registry
 from kiro_crew.config.loader import config_dir, read_local_secret
+from kiro_crew.constants import (
+    BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS,
+    BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+)
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
@@ -90,6 +94,9 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The one tool on this server that is not a cron operation; see _background_run.
+BACKGROUND_RUN_TOOL = "background_run"
 
 
 def _sub_floor_timeout_note(timeout_secs_val: object) -> str:
@@ -1514,6 +1521,39 @@ def _list_tools() -> list[dict[str, Any]]:
                 "required": ["job_id", "secrets"],
             },
         },
+        {
+            "name": BACKGROUND_RUN_TOOL,
+            "description": (
+                "Run a shell command in the background, then END YOUR TURN: this chat is "
+                "woken automatically with the exit code and the last lines of output when "
+                "it finishes. Use it instead of sleep or poll loops for anything that "
+                "takes longer than a minute: CI (`gh pr checks <n> --watch --fail-fast`), "
+                "builds, test suites, training runs, or a watcher for a job running "
+                "elsewhere (`until grep -qE 'done|Error' train.log; do sleep 30; done` "
+                "-- match failure as well as success, or a crash waits out the timeout). "
+                "Runs in the same sandbox as your shell, in `cwd` (default: this chat's "
+                "project directory). Returns a run id and the log file receiving the full "
+                "output; check the run with workflow_status and stop it with "
+                f"workflow_cancel. Default timeout {BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS}s, "
+                f"maximum {BACKGROUND_RUN_MAX_TIMEOUT_SECS}s."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to run"},
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory; relative paths join the project",
+                    },
+                    "label": {"type": "string", "description": "Short name for the run"},
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Stop the command after this many seconds",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
     ]
 
 
@@ -1936,6 +1976,15 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
+    if name == BACKGROUND_RUN_TOOL:
+        return call_tool_with_logging(
+            name,
+            raw_args,
+            _validate_args,
+            _background_run,
+            session_key=_resolve_session_key() or "mcp_cron",
+            downstream_service="kirocrew-cron",
+        )
     # Managed callers use ordinary authenticated gateway routing, including
     # live restricted sessions whose execution record intentionally is not on disk.
     if current_caller() is not None or _resolve_session_key():
@@ -1988,6 +2037,43 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
             )
         return result
     return _call_tool_locally(name, raw_args)
+
+
+def _format_timeout(value: Any) -> str:
+    """``2h``, ``1h 30m``, ``5m`` or ``45s`` for a timeout in seconds."""
+    total = value if isinstance(value, int) and not isinstance(value, bool) else 0
+    hours, rest = divmod(max(0, total), 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = [f"{n}{unit}" for n, unit in ((hours, "h"), (minutes, "m"), (secs, "s")) if n]
+    return " ".join(parts) or "0s"
+
+
+def _background_run(_name: str, args: dict[str, Any]) -> str:
+    """Start a gateway-owned background command for the verified calling chat.
+
+    Lives on this server, not ``kirocrew-core``, because ``@kirocrew-core`` is
+    granted as a whole in ``allowedTools``: kiro-cli would approve the call
+    locally and it would never reach the approval ladder ``execute_bash`` and
+    ``cron_add`` walk. The gateway judges the command text itself.
+    """
+    session_key, refusal = require_strict_session_key(
+        "Cannot identify this chat for background_run. Reopen the conversation.",
+        server="kirocrew-cron",
+    )
+    if refusal:
+        return f"Error: {refusal}"
+    response = _post("/api/workflows/background", dict(args), session_key=session_key)
+    if response.get("error"):
+        return f"Error: {response['error']}"
+    run_id = response.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return "Error: the gateway returned no run id; check workflow_list before retrying."
+    return (
+        f"Started background command {run_id} ({response.get('name', '')}), timeout "
+        f"{_format_timeout(response.get('timeout_secs'))}. Full output: {response.get('log_path', '')}. End your turn now: "
+        "this chat is woken with the exit code and output tail when it finishes. "
+        f"Check it with workflow_status('{run_id}'); stop it with workflow_cancel('{run_id}')."
+    )
 
 
 def _call_tool_locally(name: str, raw_args: dict[str, Any]) -> str:

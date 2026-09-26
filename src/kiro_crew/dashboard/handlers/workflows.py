@@ -9,6 +9,8 @@ Routes (registered in dashboard/server.py):
   POST /api/workflows/author   {intent}           → {ok, source, meta} | {ok:false, errors}
   POST /api/workflows/run      {source, args?, name?, budget_total?, timeout_secs?}
                                                     → {run_id} | {error}
+  POST /api/workflows/background {command, cwd?, label?, timeout_secs?}
+                                                    → {run_id, name, log_path, timeout_secs}
   GET  /api/workflows/runs                          → [{run_id, name, status, ...}]
   GET  /api/workflows/runs/{id}                     → {…, events:[…], plan?}  (full)
                                                       ``?plan=1`` adds ``plan``
@@ -25,13 +27,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, effective_session_key
 from kiro_crew.dashboard.handlers._shared import internal_memory_scope, read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.preview import plan_from_source
 
 logger = logging.getLogger(__name__)
@@ -40,6 +44,10 @@ _OP_DEFINITION_CREATE = "workflow_definition_create"
 _OP_DEFINITION_UPDATE = "workflow_definition_update"
 _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
+_OP_BACKGROUND_RUN = "workflow_background_run"
+# How a background command is presented to the tool gate: as the agent's own
+# sandboxed shell call, carrying no MCP identity.
+_AGENT_SHELL_CALL: dict[str, Any] = {"tool_kind": "execute", "is_shell": True}
 
 
 def _redact_obj(obj):
@@ -513,6 +521,123 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     )
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
+
+
+def _background_cwd(raw: Any, slot: Any) -> tuple[str, Optional[str]]:
+    """Resolve the command's working directory; relative paths join the chat's project."""
+    base = Path(getattr(slot, "project", "") or Path.home()).expanduser()
+    if raw is None or raw == "":
+        candidate = base
+    elif isinstance(raw, str):
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+    else:
+        return "", "cwd must be a string"
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        return "", f"cwd is not a directory: {resolved}"
+    if is_sensitive_path(str(resolved)):
+        return "", "cwd is a protected location"
+    return str(resolved), None
+
+
+def _background_command_denial(state: DashboardState, slot: Any, command: str) -> Optional[str]:
+    """Judge ``command`` with the same gate that judges the agent's own shell calls.
+
+    The ACP permission path sees only the MCP tool call, never the command inside
+    it, so the shell tiers (deny floor, sensitive paths, exfiltration, governance
+    ``commands``) run here instead. A deny refuses; anything else only means the
+    command passed the floor, because approval already happened on the tool call.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
+
+    hooks = getattr(getattr(state, "context_builder", None), "hooks", None)
+    if hooks is None:
+        return "the tool gate is unavailable"
+    shell_call = SimpleNamespace(
+        raw_tool_params={"command": command}, shell_command=command, **_AGENT_SHELL_CALL
+    )
+    verdict = hooks.on_tool_call(
+        "execute_bash",
+        session_key=effective_session_key(slot),
+        agent=getattr(slot, "agent", "") or "",
+        app=getattr(slot, "_app", "") or "",
+        **hook_gate_kwargs(shell_call),
+    )
+    if verdict.action == TOOL_DENY:
+        return (verdict.reason or "blocked").strip()
+    return None
+
+
+async def api_workflow_background_run(request: web.Request) -> web.Response:
+    """POST /api/workflows/background — start a gateway-owned background command."""
+    from kiro_crew.background_commands import MAX_COMMAND_CHARS, BackgroundCommandError
+
+    if request.get("internal_auth") is not True:
+        _audit_authorization(
+            request, _OP_BACKGROUND_RUN, "denied", error="not an internal tool call"
+        )
+        return _error(
+            "background commands start only from a chat session's tool call",
+            "background_run_internal_only",
+            403,
+        )
+    state: DashboardState = request.app["state"]
+    service = getattr(state, "background_commands", None)
+    if _svc(request) is None or service is None:
+        return _error("background commands are not available", "background_run_unavailable", 503)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    command = body.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return _error("command is required", "background_run_command_required", 400)
+    if len(command) > MAX_COMMAND_CHARS or "\x00" in command:
+        return _error(
+            f"command must be at most {MAX_COMMAND_CHARS} characters with no NUL byte",
+            "background_run_command_invalid",
+            400,
+        )
+    label = body.get("label", "")
+    if not isinstance(label, str):
+        return _error("label must be a string", "background_run_label_invalid", 400)
+    refusal = await _private_memory_refusal(request, _OP_BACKGROUND_RUN)
+    if refusal is not None:
+        return refusal
+    session_key = request.headers.get("X-Session-Key", "")
+    slot = state.get_slot(dashboard_slot_key(session_key)) if session_key else None
+    if slot is None or effective_session_key(slot) != session_key:
+        return _error(
+            "background_run needs an open dashboard chat to deliver its result to",
+            "background_run_no_session",
+            409,
+        )
+    denial = _background_command_denial(state, slot, command)
+    if denial is not None:
+        _audit_authorization(request, _OP_BACKGROUND_RUN, "denied", error=denial)
+        return _error(
+            f"Blocked by security policy: {_redact_obj(denial)}", "background_run_denied", 403
+        )
+    cwd, cwd_error = await asyncio.to_thread(_background_cwd, body.get("cwd"), slot)
+    if cwd_error is not None:
+        return _error(_redact_obj(cwd_error), "background_run_cwd_invalid", 400)
+    try:
+        started = await service.start(
+            session_key=session_key,
+            command=command,
+            cwd=cwd,
+            label=label,
+            timeout_secs=_opt_int(body.get("timeout_secs")),
+            expected_store=request.get("workflow_expected_store"),
+        )
+    except BackgroundCommandError as exc:
+        return _error(_redact_obj(str(exc)), exc.code, exc.status)
+    _audit_authorization(request, _OP_BACKGROUND_RUN, "allowed")
+    return web.json_response(_redact_obj(started))
 
 
 async def api_workflow_run_intent(request: web.Request) -> web.Response:

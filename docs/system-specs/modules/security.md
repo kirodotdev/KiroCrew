@@ -31,6 +31,14 @@ and refusal of redirected roots. Results remain readable and Gateway writers
 remain functional. This protects app authorization integrity without a separate
 grant, duplicate execution record or cross-member read restriction.
 
+`background/` holds gateway-owned background command records, exit statuses and
+logs ([workflows](workflows.md#background-commands)) and takes the same
+disposition as `subagents/`: read-only to sandboxed processes, precreated,
+no-follow, and write-protected for the file tools. The gateway signals the pid a
+record names and reports the exit status beside it, so a writable record would let
+an agent aim that kill at another process; the command itself writes only through
+descriptors the gateway opened.
+
 Two crew-webview leaves carry their own dispositions. `crew-panels/` holds the
 per-crew published panel record and is HIDDEN from agent processes, precreated
 before the sandbox spawns for the same reason `memory_stores/` is: a directory

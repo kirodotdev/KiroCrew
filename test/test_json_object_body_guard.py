@@ -363,6 +363,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/workflows.py::api_workflow_author": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/workflows.py::api_workflow_run_intent": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/workflows.py::api_workflow_background_run": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/workflows.py::api_workflow_run_promote": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/workflows.py::api_workflow_run_rerun": ("None", _UNBOUNDED_USER_CONTENT),
     # handlers/files.py: bodies name paths and routing fields -- the file

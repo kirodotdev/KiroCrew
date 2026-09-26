@@ -6510,6 +6510,26 @@ def kill_pid(pid: int, sig: int = SIGTERM) -> bool:
     return True
 
 
+def kill_process_group(pgid: int, sig: int = SIGTERM) -> bool:
+    """Signal every member of process group ``pgid``; False when none is left.
+
+    The teardown for a group whose leader is already reaped, which
+    :func:`kill_process_tree` cannot resolve from the leader's pid. Carries the
+    same broadcast guard: ``pgid <= 1`` and this process's own group are refused.
+    A denied signal also answers False, since that group is not the caller's.
+    POSIX only; Windows has no process groups in this sense and answers False.
+    """
+    if not IS_POSIX:
+        return False
+    if type(pgid) is not int or pgid <= 1 or pgid == _OWN_PGID:
+        raise ValueError(f"kill_process_group: refusing reserved or own pgid {pgid!r}")
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
 def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     """Kill *pid* and all descendants. Returns True on success.
 

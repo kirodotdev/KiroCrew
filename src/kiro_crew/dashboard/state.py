@@ -4925,6 +4925,7 @@ class DashboardState:
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
         self.workflow_service: Any = None  # published only after complete recovery
+        self.background_commands: Any = None  # published with workflow_service
         self.workflow_startup_status = "pending"
         self.workflow_startup_stopping = False
         self.workflow_startup_task: asyncio.Task[None] | None = None

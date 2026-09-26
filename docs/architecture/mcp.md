@@ -1242,7 +1242,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 
 | Server | Process | Tools |
 |--------|---------|-------|
-| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
+| `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request`, `background_run` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 | `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `session_create`, `session_fork`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
@@ -1260,6 +1260,13 @@ it -- that list is built from configured connections, and an opt-in managed
 server is not one -- so this mount is the only path to it. The operator ceiling
 is `agent.crew_panel`; see the session-control module spec for the grant
 reasoning and the fail-closed behaviour.
+
+`kirocrew-cron` also carries `background_run`, the one tool on it that is not a
+cron operation. It lives there because `@kirocrew-core` is granted as a whole in
+the shipped `allowedTools`, while `@kirocrew-cron` is granted tool by tool: a
+core tool is approved by kiro-cli locally and never reaches the approval ladder,
+and a gateway-run shell command must reach it exactly as `execute_bash` and
+`cron_add` do. See [workflows](../system-specs/modules/workflows.md#background-commands).
 
 `kirocrew-dashboard` is one transport carrying **two** authorization models, which is
 what makes its assignment decision larger than its name suggests. The

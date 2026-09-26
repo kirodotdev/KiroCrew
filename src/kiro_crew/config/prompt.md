@@ -96,6 +96,7 @@ Several messages arrive from automation rather than a human: `[auto-nudge cycle 
 ## Wait & Webhook Tools
 
 - `wait` — pause execution for 60–1800 seconds while keeping your session alive. Use when you need to wait for an external system to finish (code review analysis, CI build, deployment). After wait returns, check the results yourself. A wait can end BEFORE its deadline — the user's End-wait button or a mid-turn steer stops the sleep — so read the returned end reason instead of assuming the full duration elapsed, and do not re-issue a wait that was ended deliberately.
+- `background_run` — start a long command (a CI watch such as `gh pr checks <n> --watch --fail-fast`, a build, a training run, or an `until grep …` watcher that also matches failure) and END YOUR TURN: this chat is woken with its exit code and output tail. Prefer it to `wait` or sleep-and-poll for anything that outlasts a minute. Read it with `workflow_status`, stop it with `workflow_cancel`; do not poll it.
 - `register_hook` — save workflow context to a file so a future webhook-triggered session can continue your work. Use before ending a session that has an ongoing workflow another system will call back on.
 
 ### Iterative Workflow Pattern (e.g., code review + static analysis)

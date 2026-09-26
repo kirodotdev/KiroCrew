@@ -17,6 +17,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
+from kiro_crew.background_commands import DRIVER, describe_outcome
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -55,6 +56,8 @@ def _redact(text: str) -> str:
 
 def _summarize(snapshot: dict) -> str:
     """Build the chat message body from a terminal run snapshot."""
+    if snapshot.get("driver") == DRIVER:
+        return _summarize_command(snapshot)
     name = snapshot.get("name") or snapshot.get("run_id", "")
     status = snapshot.get("status", "")
     run_id = snapshot.get("run_id", "")
@@ -103,6 +106,41 @@ def _summarize(snapshot: dict) -> str:
         f"\nUse workflow_result('{run_id}') for the full event stream, or "
         f"workflow_rerun_subtree('{run_id}', …) to restart from a step."
     )
+    return "\n".join(lines)
+
+
+def _summarize_command(snapshot: dict) -> str:
+    """Completion body for a background command run.
+
+    Keeps the workflow completion header so the chat renders it as the same
+    compact card; the body carries what the waiting agent needs to continue.
+    """
+    # The card's header parser takes a single-line, backtick-free name.
+    name = " ".join(str(snapshot.get("name") or snapshot.get("run_id", "")).split())
+    name = name.replace("`", "'")
+    status = snapshot.get("status", "")
+    run_id = snapshot.get("run_id", "")
+    result = snapshot.get("result")
+    result = result if isinstance(result, dict) else {}
+    lines = ["[Workflow completion event]", f"Workflow `{name}` ({run_id}) → **{status}**"]
+    if result:
+        command = " ".join(str(result.get("command", "")).split()).replace("`", "'")
+        lines.append(f"\nThe background command {describe_outcome(result)}.")
+        lines.append(f"Command: `{command}`")
+        tail = str(result.get("output_tail") or "")
+        if tail:
+            # A fence longer than any backtick run in the output, so command
+            # output can never close it and pass as message text.
+            longest = max((len(run) for run in re.findall(r"`+", tail)), default=0)
+            fence = "`" * max(3, longest + 1)
+            lines.append(f"\nLast lines of output:\n{fence}text\n{tail}\n{fence}")
+        else:
+            lines.append("\nThe command printed no output.")
+        if result.get("log_path"):
+            lines.append(f"Full output: `{result['log_path']}` (open with your file tools).")
+    elif snapshot.get("error"):
+        lines.append(f"\nError: {snapshot['error']}")
+    lines.append(f"\nUse workflow_result('{run_id}') for the run record.")
     return "\n".join(lines)
 
 

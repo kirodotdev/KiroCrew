@@ -840,6 +840,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Workflow progress summaries injected back into a session.",
     ),
     (
+        "Background command outcomes",
+        "background_commands.py",
+        "A background command's output tail and command echo before they are stored "
+        "on its run and injected into the chat that started it.",
+    ),
+    (
         "Structured monitor wakes",
         "monitoring/controller.py",
         "Provider-controlled canonical facts and operator-authored wake instructions "

@@ -35,6 +35,9 @@ from kiro_crew.config.sections import SUBAGENT_MAX_TURNS_CEILING
 from kiro_crew.constants import (
     ARTIFACT_MAX_CONTENT_BYTES,
     AWS_PROFILE_NAME_RE,
+    BACKGROUND_RUN_MAX_COMMAND_CHARS,
+    BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+    BACKGROUND_RUN_MIN_TIMEOUT_SECS,
     CHANNEL_OWNER_DM_NAMESPACES,
     MAX_BANNER_CHARS,
     SLACK_NAMESPACE,
@@ -3539,6 +3542,20 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
         fields=[
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
             FieldSpec("secrets", dict, required=True),
+        ],
+    ),
+    "background_run": ToolSchema(
+        tool_name="background_run",
+        fields=[
+            FieldSpec("command", str, required=True, max_len=BACKGROUND_RUN_MAX_COMMAND_CHARS),
+            FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+            FieldSpec("label", str, max_len=MAX_SHORT_STRING),
+            FieldSpec(
+                "timeout_secs",
+                int,
+                min_val=BACKGROUND_RUN_MIN_TIMEOUT_SECS,
+                max_val=BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+            ),
         ],
     ),
 }

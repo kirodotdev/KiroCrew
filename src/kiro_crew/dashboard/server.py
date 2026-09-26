@@ -2008,6 +2008,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # Dynamic Workflows (M6) — author, run, monitor, cancel, rerun
     from kiro_crew.dashboard.handlers.workflows import (
         api_workflow_author,
+        api_workflow_background_run,
         api_workflow_definition_get,
         api_workflow_definition_run,
         api_workflow_definition_update,
@@ -2025,6 +2026,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/workflows/author", api_workflow_author)
     app.router.add_post("/api/workflows/run", api_workflow_run)
     app.router.add_post("/api/workflows/run_intent", api_workflow_run_intent)
+    app.router.add_post("/api/workflows/background", api_workflow_background_run)
     app.router.add_get("/api/workflows/definitions", api_workflow_definitions)
     app.router.add_post("/api/workflows/definitions", api_workflow_definitions_create)
     app.router.add_post(
@@ -3147,6 +3149,8 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
     service = None
     attachment_started = False
     try:
+        from kiro_crew.background_commands import DRIVER as BACKGROUND_DRIVER
+        from kiro_crew.background_commands import BackgroundCommandService
         from kiro_crew.dashboard.handlers import workflows as wf_handlers
         from kiro_crew.dashboard.workflow_inject import inject_bound_workflow_result
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -3178,19 +3182,29 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                     name, _ = redact_credentials(name)
                     status, _ = redact_exfiltration_urls(str(snap.get("status", "")))
                     status, _ = redact_credentials(status)
-                    prompt = (
-                        f"[Workflow `{name}` finished: {status}] Its result was just "
-                        "posted above. The user is waiting on the answer to the "
-                        "request that prompted this workflow — find that request "
-                        "earlier in this conversation and answer it directly. Your "
-                        "final message is the only part of this turn the user is "
-                        "guaranteed to see, so make it a standalone deliverable: lead "
-                        "with the answer, and keep run mechanics (which agents ran, "
-                        "what was verified, what is still uncertain) to a short "
-                        "closing note or a collapsed fold. If the workflow failed or "
-                        "came back incomplete, say that plainly and state what is "
-                        "still unknown."
-                    )
+                    if snap.get("driver") == BACKGROUND_DRIVER:
+                        prompt = (
+                            f"[Background command `{name}` {status}] Its outcome was just "
+                            "posted above. Continue the work that was waiting on it: read "
+                            "the exit status and output, then carry on with the task, or "
+                            "tell the user plainly what failed and what you will do next. "
+                            "Do not start the command again unless the outcome shows a "
+                            "rerun is needed."
+                        )
+                    else:
+                        prompt = (
+                            f"[Workflow `{name}` finished: {status}] Its result was just "
+                            "posted above. The user is waiting on the answer to the "
+                            "request that prompted this workflow — find that request "
+                            "earlier in this conversation and answer it directly. Your "
+                            "final message is the only part of this turn the user is "
+                            "guaranteed to see, so make it a standalone deliverable: lead "
+                            "with the answer, and keep run mechanics (which agents ran, "
+                            "what was verified, what is still uncertain) to a short "
+                            "closing note or a collapsed fold. If the workflow failed or "
+                            "came back incomplete, say that plainly and state what is "
+                            "still unknown."
+                        )
                     started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
                     state.push_slots_update()
                     logger.info(
@@ -3270,8 +3284,10 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             state.task_runner.attach_workflow_service(service)
         # No await between attachment, publication and opening admission.
         state.workflow_service = service
+        state.background_commands = BackgroundCommandService(service)
         state.workflow_startup_status = "ready"
         logger.info("WorkflowService ready (run ceiling=%ss)", service.timeout_secs)
+        _kick_background_reconcile(state)
     except asyncio.CancelledError:
         state.workflow_startup_status = "stopped" if state.workflow_startup_stopping else "failed"
         raise
@@ -3281,6 +3297,7 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
     finally:
         if state.workflow_startup_status != "ready":
             state.workflow_service = None
+            state.background_commands = None
             if state.task_runner is not None:
                 try:
                     if attachment_started:
@@ -3322,10 +3339,17 @@ def _register_workflow_lifecycle(app: web.Application, state: DashboardState) ->
     async def _workflow_stop_publication(_app: web.Application) -> None:
         state.workflow_startup_stopping = True
         state.workflow_startup_status = "stopped"
+        background = getattr(state, "background_commands", None)
+        if background is not None:
+            background.begin_shutdown()
         if state.task_runner is not None:
             state.task_runner.defer_workflow_attachment()
 
     async def _workflow_shutdown(_app: web.Application) -> None:
+        background = getattr(state, "background_commands", None)
+        if background is not None:
+            # Supervisors stand down without killing: the next boot re-adopts.
+            await background.stop()
         task = state.workflow_startup_task
         if task is None:
             return
@@ -3554,6 +3578,26 @@ def _kick_workflow_initialization(state: DashboardState) -> None:
         return
     task = asyncio.create_task(_initialize_workflow_service(state), name="workflow-initialization")
     state.workflow_startup_task = task
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_background_reconcile(state: DashboardState) -> None:
+    """Re-adopt background commands a previous gateway left running."""
+
+    async def _reconcile() -> None:
+        background = getattr(state, "background_commands", None)
+        if background is None:
+            return
+        try:
+            adopted = await background.reconcile()
+        except Exception:
+            logger.warning("background command reconcile failed", exc_info=True)
+            return
+        if adopted:
+            logger.info("re-adopted %d background command(s)", adopted)
+
+    task = asyncio.create_task(_reconcile(), name="background-command-reconcile")
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
