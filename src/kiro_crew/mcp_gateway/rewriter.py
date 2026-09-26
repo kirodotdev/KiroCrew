@@ -685,6 +685,7 @@ def _expand_env_placeholders(
     *,
     notes: _RewritePassNotes | None = None,
     source: Mapping[str, str] | None = None,
+    server: str | None = None,
 ) -> str:
     """Resolve ``${VAR}`` / ``${env:VAR}`` from *source* (default: the filtered
     :func:`_placeholder_source_env` view), leaving an unresolved reference as a
@@ -710,6 +711,13 @@ def _expand_env_placeholders(
                     "variable; left as a literal",
                     name,
                 )
+            else:
+                logger.warning(
+                    "declared env placeholder %r for MCP server %r is unset; "
+                    "left as a literal",
+                    name,
+                    server,
+                )
             return f"${{{name}}}"
         return resolved
 
@@ -717,7 +725,10 @@ def _expand_env_placeholders(
 
 
 def _expand_env_map(
-    env_pairs: dict[str, Any], *, notes: _RewritePassNotes | None = None
+    env_pairs: dict[str, Any],
+    *,
+    notes: _RewritePassNotes | None = None,
+    server: str | None = None,
 ) -> dict[str, Any]:
     """Expand placeholders in string values only; non-str values pass through
     (both readers ``str()``-coerce them identically, keeping the PoolKey hash
@@ -725,7 +736,7 @@ def _expand_env_map(
     source = _placeholder_source_env()
     return {
         k: (
-            _expand_env_placeholders(v, notes=notes, source=source)
+            _expand_env_placeholders(v, notes=notes, source=source, server=server)
             if isinstance(v, str)
             else v
         )
@@ -906,7 +917,8 @@ def _build_stub_entry(
                     # is spawned from this sidecar, not by kiro-cli.
                     fh.write(
                         json.dumps(
-                            _expand_env_map(env_pairs, notes=notes), sort_keys=True
+                            _expand_env_map(env_pairs, notes=notes, server=server_name),
+                            sort_keys=True,
                         )
                     )
                 # Staged, not published: the rewrite pass commits after this

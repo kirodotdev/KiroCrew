@@ -1065,6 +1065,21 @@ def test_expand_env_placeholders_unresolved_stays_literal_without_prefix(monkeyp
     assert _expand_env_placeholders("${env:NOPE}") == "${NOPE}"
 
 
+def test_expand_env_unresolved_placeholder_is_warned_by_name(monkeypatch, caplog) -> None:
+    """An unset placeholder is logged, escaped, with its name and server; no value is."""
+    import logging
+
+    monkeypatch.delenv("NOPE", raising=False)
+    monkeypatch.setenv("MYVAR", "resolved-value")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        out = _expand_env_map({"A": "${env:NOPE}", "B": "${MYVAR}", "C": "${X\nY}"}, server="srv")
+    assert out == {"A": "${NOPE}", "B": "resolved-value", "C": "${X\nY}"}
+    msgs = [r.getMessage() for r in caplog.records if "is unset" in r.getMessage()]
+    assert len(msgs) == 2 and not any("\n" in m for m in msgs)
+    assert "'NOPE'" in msgs[0] and "'srv'" in msgs[0]
+    assert "resolved-value" not in caplog.text
+
+
 def test_expand_env_placeholders_empty_value_is_substituted(monkeypatch) -> None:
     """An env var set to empty resolves to empty (kiro-cli parity: std::env::var
     returns Ok("") not a miss)."""
