@@ -456,7 +456,7 @@ jobs:
       # One assume per model call: an AssumeRole session lasts an hour, and a
       # call that inherits a spent session dies on an expired token with no
       # verdict.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: steps.scope.outputs.in_scope == 'true'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}

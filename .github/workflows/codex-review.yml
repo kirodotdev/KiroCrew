@@ -495,7 +495,7 @@ jobs:
       # Bedrock, to minimize the window the credentials exist in the job
       # environment. Uses a DEDICATED least-privilege role (GPT/Mantle only,
       # pull_request-scoped) so a leaked token can't reach the Opus 5 reviewer's model access.
-      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -597,7 +597,7 @@ jobs:
       # failed closed with no verdict and no way to tell a real hang from a
       # spent session. Each pass now starts on a fresh session, so PASS_WALL --
       # not session expiry, and not the job wall above it -- is what bounds it.
-      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
@@ -1007,7 +1007,7 @@ jobs:
       # the GPT reviewer never held this role's model access in its environment;
       # the separation the two secrets exist for is preserved in time rather
       # than by job boundary.
-      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
