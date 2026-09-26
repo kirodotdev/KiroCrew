@@ -62,9 +62,20 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
+  /** ⌘↑ / Ctrl+Up edit request: a monotonically increasing sequence
+   *  number. ChatPage passes a NEW value when the keyboard requests an edit of
+   *  THIS row (the session's last user message); the rising edge opens the
+   *  existing Edit & resend editor with the caret at the end — the same state
+   *  the hover affordance drives. */
+  editRequest?: number
+  /** Acknowledgement for the ⌘↑ request above: called exactly once when this
+   *  row consumes a request, so ChatPage can drop it. A consumed request must
+   *  never persist — a remount would replay the rising edge and re-open the
+   *  editor over the user's dismissed draft. */
+  onEditConsumed?: () => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, editRequest, onEditConsumed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -179,6 +190,19 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     setDraft(initial)
     setEditing(true)
   }, [content, meta])
+
+  // ⌘↑ / Ctrl+Up edit request: fire on the rising edge only, so a
+  // re-render that re-delivers the same seq (or a memo-compare miss elsewhere)
+  // does not re-open the editor over the user's in-progress draft.
+  const lastEditRequestRef = useRef(0)
+  useEffect(() => {
+    if (!editRequest || editRequest === lastEditRequestRef.current) return
+    lastEditRequestRef.current = editRequest
+    if (canEdit && onEditResend) {
+      startEdit()
+      onEditConsumed?.()
+    }
+  }, [editRequest, canEdit, onEditResend, onEditConsumed, startEdit])
   const cancel = useCallback(() => setEditing(false), [])
   const submit = useCallback(() => {
     const trimmed = draft.trim()
