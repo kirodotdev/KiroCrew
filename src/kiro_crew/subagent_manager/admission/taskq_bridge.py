@@ -333,7 +333,13 @@ class _TaskqBridgeMixin(ManagerComponent):
         # here, so a recovered row faces the gate its caller faced; the value is
         # still recorded in ``scope_ref``, which the schema defines as
         # references rather than grants and which no start path reads.
-        _PROCESS_LOCAL_PARAMS = ("_agent_prevalidated", "approval_mode")
+        #
+        # ``_parent_spawn_policy`` is a read of the parent agent spec at THIS
+        # request's moment, kept in the in-memory queue so its synchronous drain
+        # scans nothing on the loop; the durable pump re-resolves it off-loop
+        # before every re-check, so the row never carries a snapshot that an
+        # edited spec would leave stale across a restart.
+        _PROCESS_LOCAL_PARAMS = ("_agent_prevalidated", "approval_mode", "_parent_spawn_policy")
         durable_params = {k: v for k, v in params.items() if k not in _PROCESS_LOCAL_PARAMS}
         return _taskq.TaskRecord(
             id=agent_id,
