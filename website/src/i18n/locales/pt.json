@@ -7901,9 +7901,10 @@
       "quote_hint": "Cita a seleção no compositor desta conversa: sua resposta vai para o chat principal"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Falhou",
       "not_connected": "não conectado",
       "send_a_copy_to": "Enviar uma cópia para",
+      "send_failed": "A cópia não foi entregue — esta sessão não foi alterada.",
+      "send_failed_heading": "Não foi possível enviar uma cópia de “{{name}}”",
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (apenas transcrição)",
       "transcript_only_hint": "Essa instância não conseguiu restaurar o contexto completo da conversa, então esta cópia retoma apenas a partir da transcrição.",
@@ -7932,6 +7933,7 @@
       "unpin": "Desafixar"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "A alteração de cor foi desfeita.",
       "custom_color": "Cor personalizada",
       "hex_color_code": "Código de cor hexadecimal",
       "no_color": "Sem cor"
@@ -9105,7 +9107,17 @@
     },
     "useSessionActions": {
       "close_this_session": "Fechar esta sessão?",
-      "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
+      "fork_failed": "Nenhuma sessão nova foi criada.",
+      "fork_failed_heading": "Não foi possível duplicar “{{name}}”",
+      "mode_change_failed": "A alteração de modo foi desfeita.",
+      "pin_change_failed": "A alteração de fixação foi desfeita.",
+      "pin_change_failed_heading_many": "Não foi possível atualizar {{count}} sessões",
+      "pin_change_failed_heading_one": "Não foi possível atualizar {{count}} sessão",
+      "pin_change_failed_heading_other": "Não foi possível atualizar {{count}} sessões",
+      "pin_change_failed_named": "A alteração de fixação foi desfeita para {{names}}.",
+      "reload_failed": "Falha ao recarregar a sessão: o gateway está inacessível. Reconecte-se e tente novamente.",
+      "reload_failed_busy": "Falha ao recarregar a sessão: o agente pode estar no meio de um turno. Tente novamente quando a sessão estiver inativa.",
+      "reload_failed_rejected": "Falha ao recarregar a sessão: o gateway respondeu com um erro. O processo do agente não foi reiniciado.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
       "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
@@ -9129,6 +9141,9 @@
       "approval_wait_expired": "A espera pela aprovação expirou, então a solicitação foi negada.",
       "approval_rejected": "A aprovação foi rejeitada, então a solicitação foi negada.",
       "unknown": "Desconhecido"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "A movimentação foi desfeita."
     }
   },
   "lib": {
@@ -10836,6 +10851,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Não foi possível atualizar “{{name}}”",
       "turn_minimap": "Navegar pelos turnos da conversa",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Turnos da conversa",

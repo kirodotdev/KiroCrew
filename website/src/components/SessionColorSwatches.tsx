@@ -8,6 +8,8 @@ import { colorName } from '../utils/sessionColors'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { clearActionFailure, reportActionFailure } from '../utils/actionFailure'
+import { findReport } from '../utils/errorReport'
 
 /** Mirrors the backend contract in chat_persistence.COLOR_HEX_RE. */
 const HEX_RE = /^#[0-9a-fA-F]{6}$/
@@ -58,6 +60,16 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
 
   const readSlot = () => store.getState().dashboard.slots.find(s => s.key === slotKey)
 
+  // One key for both write paths: a swatch that lands after a failed hex commit
+  // still means this session's colour now holds.
+  const actionKey = `color:${slotKey}`
+  // Only the latest write may take the banner down, for the reason only it may
+  // roll back: a superseded write's late success says nothing about the state
+  // the newer write left — and, if that one failed, the banner is about it.
+  const clearIfLatest = (ctx: { gen: number } | undefined) => {
+    if (ctx?.gen === writeGenRef.current) clearActionFailure(actionKey)
+  }
+
   const colorMutation = useMutation({
     // idx === null is the "no colour" cell: clear BOTH fields in one PATCH.
     mutationFn: (idx: number | null) =>
@@ -71,7 +83,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
         : sseSlotColor({ key: slotKey, color_index: idx }))
       return { prev, gen }
     },
-    onError: (_err, idx, ctx) => {
+    onSuccess: (_data, _idx, ctx) => clearIfLatest(ctx),
+    onError: (err, idx, ctx) => {
       if (!ctx) return
       // A superseded write never rolls back: a later pick (even one targeting
       // the same value, which the checks below cannot distinguish) owns the
@@ -81,17 +94,24 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       // pick set — a superseding pick (rapid clicks) must not be clobbered
       // (same guard as useMoveSlotToFolder).
       const s = readSlot()
+      let reverted = false
       if (idx === null) {
         // Clear rollback: a later custom-hex pick also leaves color_index
         // null, so checking the index alone would clobber it — require BOTH
         // fields to still be null (i.e. the clear is still the latest state).
         if ((s?.color_index ?? null) === null && (s?.color_hex ?? null) === null) {
           dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+          reverted = true
         }
-        return
+      } else if ((s?.color_index ?? null) === idx) {
+        dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+        reverted = true
       }
-      const current = s?.color_index ?? null
-      if (current === idx) dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      // Only a real revert may say "was undone"; if the superseding write also
+      // failed, ITS onError reports.
+      if (reverted) {
+        reportActionFailure(i18nT('components.sessionColorSwatches.color_change_failed'), readSlot()?.title ?? '', findReport(err.message), undefined, { actionKey })
+      }
     },
   })
 
@@ -104,11 +124,14 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       dispatch(sseSlotColor({ key: slotKey, color_hex: hex }))
       return { prev, gen }
     },
-    onError: (_err, hex, ctx) => {
+    onSuccess: (_data, _hex, ctx) => clearIfLatest(ctx),
+    onError: (err, hex, ctx) => {
       if (!ctx) return
       if (ctx.gen !== writeGenRef.current) return
       const current = readSlot()?.color_hex ?? null
-      if (current === hex) dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      if (current !== hex) return
+      dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      reportActionFailure(i18nT('components.sessionColorSwatches.color_change_failed'), readSlot()?.title ?? '', findReport(err.message), undefined, { actionKey })
     },
   })
 

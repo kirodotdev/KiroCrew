@@ -7671,9 +7671,10 @@
       "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
     },
     "sendToInstanceSubmenu": {
-      "failed": "失敗",
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
+      "send_failed": "コピーは届きませんでした。このセッションは変更されていません。",
+      "send_failed_heading": "「{{name}}」のコピーを送信できませんでした",
       "sent": "送信しました",
       "sent_transcript_only": "送信しました（記録のみ）",
       "transcript_only_hint": "そのインスタンスが会話コンテキスト全体を復元できなかったため、このコピーは記録のみから再開します。",
@@ -7702,6 +7703,7 @@
       "unpin": "ピン留め解除"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "色の変更は取り消されました。",
       "custom_color": "カスタムカラー",
       "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
@@ -8863,7 +8865,15 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
-      "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
+      "fork_failed": "新しいセッションは作成されていません。",
+      "fork_failed_heading": "「{{name}}」を複製できませんでした",
+      "mode_change_failed": "モードの変更は取り消されました。",
+      "pin_change_failed": "ピン留めの変更は取り消されました。",
+      "pin_change_failed_heading_other": "{{count}} 件のセッションを更新できませんでした",
+      "pin_change_failed_named": "{{names}}のピン留めの変更は取り消されました。",
+      "reload_failed": "セッションの再読み込みに失敗しました。ゲートウェイに接続できません。再接続してから再試行してください。",
+      "reload_failed_busy": "セッションの再読み込みに失敗しました。エージェントが処理中の可能性があります。セッションがアイドルになってから再試行してください。",
+      "reload_failed_rejected": "セッションの再読み込みに失敗しました。ゲートウェイがエラーを返しました。エージェントプロセスは再起動されていません。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
       "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
@@ -8887,6 +8897,9 @@
       "approval_wait_expired": "承認の待機時間が期限切れになったため、リクエストは拒否されました。",
       "approval_rejected": "承認が却下されたため、リクエストは拒否されました。",
       "unknown": "不明"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "移動は取り消されました。"
     }
   },
   "lib": {
@@ -10538,6 +10551,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "「{{name}}」を更新できませんでした",
       "turn_minimap": "会話のターンを移動",
       "turn_minimap_active": "{{position}}：{{prompt}}",
       "turn_minimap_landmark": "会話のターン",

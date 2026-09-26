@@ -120,6 +120,7 @@
   "components.webPreviewPanel.annotate_clear_confirm",
   "components.webPreviewPanel.annotations_count",
   "crewCapabilities.memberChanged",
+  "hooks.useSessionActions.pin_change_failed_heading",
   "pages.aidlc.taskDetailPanel.task_2",
   "pages.appsPage.agent",
   "pages.appsPage.app",

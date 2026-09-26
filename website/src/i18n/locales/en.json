@@ -5121,7 +5121,6 @@
       "quote_hint": "Quotes the selection into the composer of this conversation — your reply goes to the main chat"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Failed",
       "not_connected": "not connected",
       "send_a_copy_to": "Send a copy to",
       "sent": "Sent",

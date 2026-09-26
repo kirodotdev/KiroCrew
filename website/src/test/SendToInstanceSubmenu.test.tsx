@@ -185,17 +185,17 @@ describe('InstanceSendItems', () => {
     expect(screen.getByText('Sent')).toBeTruthy()
   })
 
-  it('reports failure with the peer message as the row tooltip', () => {
+  it('leaves no error surface on the row, which the page notice owns', () => {
     render(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
-        states={{ devdesk: { kind: 'error', message: 'peer refused the transfer' } }}
+        states={{ devdesk: { kind: 'idle' } }}
         onSend={vi.fn()}
         Item={StubItem}
       />,
     )
-    expect(screen.getByText('Failed')).toBeTruthy()
-    expect(screen.getByTitle('peer refused the transfer')).toBeTruthy()
+    expect(screen.queryByText('Failed')).toBeNull()
+    expect(screen.queryByText('Sent')).toBeNull()
   })
 
   it('a repeat send stays available after success (copy semantics)', () => {
