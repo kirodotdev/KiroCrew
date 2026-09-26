@@ -673,7 +673,7 @@ rather than a new one. The prompt forbids changing a word at all, and
 the recogniser has (CER 0.436 on `base`) and therefore the input a model is most
 tempted to "fix" by rendering it in one language.
 
-Four properties, each with a test:
+Five properties, each with a test:
 
 - **Never blocks dictation.** The recogniser's own text is in the composer and is
   already sendable before the request goes out. The correction replaces it a moment
@@ -782,6 +782,17 @@ Four properties, each with a test:
   byte-identical drafts -- an empty one is the common case -- so a late reply for slot
   A satisfied "the text is unchanged" and rewrote slot B's draft. Identity has to be
   checked as identity.
+
+- **The failure notice lives as long as the delivery it describes, and no longer.**
+  A cleanup that did not run is surfaced on the composer's existing dismissible error
+  channel, which it SHARES with the microphone's own error -- so it has to share that
+  error's lifetime too. `useVoiceInput` clears its half at the top of every `start()`,
+  and `useComposerVoice` clears `polishError` at the four moments the delivery stops
+  being the one in front of the user: a new capture, a new delivery, a send, and a slot
+  change. Without that the notice is not merely stale: `ChatInput`'s `showDictation`
+  gate blanks the live dictation panel whenever `voiceError` is set, on the premise
+  that an error on that channel means the microphone, so a cleanup failure left
+  standing takes the waveform down for the NEXT recording, whose microphone is fine.
 
 - **Not applied to a manually-stopped stream, which is a known gap.** After a manual
   stop the partial route (not the delivery route) is what turns the last hypothesis

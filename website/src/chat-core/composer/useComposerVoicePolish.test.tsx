@@ -48,7 +48,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-import { useComposerVoice, _resetMicOwner } from './useComposerVoice'
+import { useComposerVoice, composerVoiceInputProps, _resetMicOwner } from './useComposerVoice'
 
 const BASE = { enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }
 
@@ -57,7 +57,10 @@ function mount(polish: boolean) {
   // Mutable so a test can simulate the user switching chat slots mid-flight, which
   // is the only way to exercise the response's ownership check.
   const slot = { current: 'slot-a' }
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // `staleTime: Infinity` so the seeded config is what the hook reads for the whole
+  // test: the module mock's `sttConfig` resolves a DIFFERENT object with no `polish`
+  // key, and letting a refetch install it turns the feature under test off midway.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   qc.setQueryData(['sttConfig'], { ...BASE, polish })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
@@ -220,5 +223,80 @@ describe('transcript polish — never overwrites the user', () => {
     // The message is already gone; putting a corrected copy of it back into an
     // empty composer would be a phantom draft the user never asked for.
     expect(inputRef.current).toBe('')
+  })
+})
+
+describe('transcript polish — the notice belongs to the delivery it describes', () => {
+  /* One channel, two lifetimes.
+   *
+   * `useVoiceInput.start()` clears its own error before every capture, so the
+   * composer's error has always described the capture on screen. The cleanup
+   * failure joined that channel without joining that lifetime, and the channel
+   * is not only a notice: `ChatInput`'s `showDictation` gate blanks the live
+   * dictation panel whenever `voiceError` is set, on the premise that an error
+   * there means the microphone. A cleanup that failed says nothing about the
+   * microphone. */
+
+  it('stops reporting a failed cleanup once a later dictation lands cleanly', async () => {
+    sttPolish.mockRejectedValueOnce(new Error('boom'))
+    const { view, deliver } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    await act(async () => { await Promise.resolve() })
+    // Precondition, or this proves nothing: the notice is genuinely up.
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeTruthy()
+
+    // A second dictation, whose cleanup runs and returns without failing.
+    sttPolish.mockResolvedValue({ ok: true, changed: false, text: 'goodbye', original: 'goodbye' })
+    await act(async () => { deliver('goodbye', 'slot-a', 'batch') })
+    await act(async () => { await Promise.resolve() })
+    expect(sttPolish).toHaveBeenCalledTimes(2)
+
+    // What is being reported as failed is a cleanup that ran and did not fail.
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+
+  it('does not outlive the draft it describes, once that draft is sent', async () => {
+    sttPolish.mockRejectedValue(new Error('boom'))
+    const { view, inputRef, deliver } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    await act(async () => { await Promise.resolve() })
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeTruthy()
+
+    // Sent: the composer is empty, so the notice has nothing left to point at.
+    await act(async () => { view.result.current.disarmForSend() })
+    inputRef.current = ''
+
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+
+  it('does not follow the user into another slot', async () => {
+    sttPolish.mockRejectedValue(new Error('boom'))
+    const { view, deliver, switchSlot } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    await act(async () => { await Promise.resolve() })
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeTruthy()
+
+    // slot-b never dictated anything, so it has no cleanup to report on.
+    await act(async () => { switchSlot('slot-b') })
+
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+
+  it('does not carry a failed cleanup into the next capture', async () => {
+    sttPolish.mockRejectedValue(new Error('boom'))
+    const { view, deliver } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    await act(async () => { await Promise.resolve() })
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeTruthy()
+
+    // The user starts dictating again. The engine clears the capture's own half
+    // here; this pins the composer's half to the same lifetime.
+    await act(async () => { await view.result.current.startVoice() })
+
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
   })
 })
