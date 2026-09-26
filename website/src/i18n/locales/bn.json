@@ -270,7 +270,9 @@
     "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
     "connect_your_phone": "ফোন সংযুক্ত করুন",
     "kiro_credit_usage_no_reading": "Kiro ক্রেডিট ব্যবহার — এখনো কোনো ব্যালেন্স রিডিং নেই; রিফ্রেশ করতে খোলো",
-    "kiro_credit_usage_config_unreadable": "Kiro ক্রেডিট ব্যবহার — ব্যাকএন্ড সেটিং পড়া যায়নি; আবার চেষ্টা করতে খোলো"
+    "kiro_credit_usage_config_unreadable": "Kiro ক্রেডিট ব্যবহার — ব্যাকএন্ড সেটিং পড়া যায়নি; আবার চেষ্টা করতে খোলো",
+    "titlebar_menu_disabled_footer": "কিছু আইটেম সংযোগ উইন্ডোতে উপলব্ধ নয় — মূল উইন্ডো ব্যবহার করো। কীবোর্ড আইকন এমন শর্টকাট নির্দেশ করে যা এখানেও কাজ করে, কাটা শর্টকাট এখানে কাজ করে না।",
+    "titlebar_menu_shortcut_still_available": "শর্টকাট এখনও উপলব্ধ"
   },
   "appSdk": {
     "chatEmbed": {

@@ -274,7 +274,9 @@
     "focus_mode_title_mac": "Mode concentration · ⌥⇧M",
     "connect_your_phone": "Connecter votre téléphone",
     "kiro_credit_usage_no_reading": "Utilisation des crédits Kiro — aucune lecture du solde pour l’instant ; ouvre pour actualiser",
-    "kiro_credit_usage_config_unreadable": "Utilisation des crédits Kiro — impossible de lire le réglage du backend ; ouvre pour réessayer"
+    "kiro_credit_usage_config_unreadable": "Utilisation des crédits Kiro — impossible de lire le réglage du backend ; ouvre pour réessayer",
+    "titlebar_menu_disabled_footer": "Certains éléments ne sont pas disponibles dans les fenêtres de connexion — utilise la fenêtre principale. Une icône de clavier signale les raccourcis qui fonctionnent encore ici ; un raccourci barré non.",
+    "titlebar_menu_shortcut_still_available": "Raccourci toujours disponible"
   },
   "appSdk": {
     "chatEmbed": {

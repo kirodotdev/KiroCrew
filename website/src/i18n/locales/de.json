@@ -270,7 +270,9 @@
     "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
     "connect_your_phone": "Telefon verbinden",
     "kiro_credit_usage_no_reading": "Kiro-Credit-Verbrauch — noch keine Guthabenanzeige; öffnen zum Aktualisieren",
-    "kiro_credit_usage_config_unreadable": "Kiro-Credit-Verbrauch — Backend-Einstellung konnte nicht gelesen werden; öffnen zum erneuten Versuch"
+    "kiro_credit_usage_config_unreadable": "Kiro-Credit-Verbrauch — Backend-Einstellung konnte nicht gelesen werden; öffnen zum erneuten Versuch",
+    "titlebar_menu_disabled_footer": "Einige Einträge sind in Verbindungsfenstern nicht verfügbar — bitte das Hauptfenster verwenden. Ein Tastatur-Symbol markiert Tastenkürzel, die hier weiterhin funktionieren; ein durchgestrichenes Tastenkürzel nicht.",
+    "titlebar_menu_shortcut_still_available": "Kürzel weiterhin verfügbar"
   },
   "appSdk": {
     "chatEmbed": {

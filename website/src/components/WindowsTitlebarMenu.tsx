@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Menu } from 'lucide-react'
+import { Check, Keyboard, Menu } from 'lucide-react'
 import Clickable from './Clickable'
 import { i18nT } from '../i18n/t'
 
@@ -251,6 +251,22 @@ export default function WindowsTitlebarMenu() {
             buttons[nextIndex]?.focus()
           }}
         >
+          {/* Footer legend. Rendered ONCE, BELOW the mapped items, when this
+              menu has any GATE-CAUSED disabled row (`item.gated === true`).
+              A natively-disabled row (e.g. an `undo` role with an empty
+              history) is NOT counted: the "unavailable from this window,
+              shortcut still fires here" claim would be false for it. So
+              `serializeMenuItems` exposes `gated` alongside `enabled` and
+              this predicate reads the former.
+              The glyph alone signals "shortcut on" per row, but
+              `disabled:pointer-events-none` blocks hover on those rows, so
+              a sighted mouse user has no way to reach a tooltip. A single
+              footer line at the bottom of the popup carries the
+              counter-conventional message the greyed rows need — rendered
+              AFTER items so menu-row geometry stays stable (first row's
+              vertical position matches the same menu in the main window,
+              not shifted down by the footer height). Rendered only when
+              relevant so a fully-enabled menu (main window) stays clean. */}
           {menuItems.map(item => item.type === 'separator' ? (
             <div key={item.index} role="separator" className="mx-1 my-1 h-px bg-border" />
           ) : (
@@ -270,12 +286,72 @@ export default function WindowsTitlebarMenu() {
               </span>
               <span className="flex-1 whitespace-nowrap">{item.label}</span>
               {item.accelerator && (
-                <span className="ml-6 whitespace-nowrap text-[11px] text-muted">
-                  {formatWindowsAccelerator(item.accelerator)}
+                <span className="ml-6 flex items-center gap-1 whitespace-nowrap text-[11px] text-muted">
+                  {/*
+                   * When a row is gated AND its accelerator is display-only
+                   * (`registerAccelerator: false` — Settings' Alt+, on Windows
+                   * is the canonical case), the OS never routes the chord to
+                   * the menu. The absence of the keyboard glyph alone is a
+                   * subtle inverse signal — a user has to notice the missing
+                   * icon to learn the chord is dead. Strike-through the
+                   * caption itself so "chord will not act" is affirmatively
+                   * legible, not left as an inference. Accelerator TEXT stays
+                   * visible so the user still sees which chord the row would
+                   * bind to on the main window.
+                   */}
+                  <span className={item.gated && !item.acceleratorRegistered ? 'line-through' : ''}>
+                    {formatWindowsAccelerator(item.accelerator)}
+                  </span>
+                  {item.gated && item.acceleratorRegistered && (
+                    // Row was disabled by the app-menu per-action gate but
+                    // the OS-level accelerator still fires through Electron's
+                    // native dispatch (bypasses the app-menu IPC gate). The
+                    // glyph is the "row off, shortcut on" cue for a user in
+                    // a connection window whose dashboard origin has flipped
+                    // to remote.
+                    //
+                    // Three conditions must ALL hold before we make the claim:
+                    //   1. `item.gated`  — a natively disabled role (e.g.
+                    //      `undo` with an empty history) has no live
+                    //      accelerator either, so the glyph would be false.
+                    //   2. `item.accelerator` — nothing to advertise if the
+                    //      row has no accelerator caption.
+                    //   3. `item.acceleratorRegistered` — with
+                    //      `registerAccelerator: false` in the Electron
+                    //      definition (e.g. Settings' Alt+, on Windows),
+                    //      Electron shows the caption but does NOT route
+                    //      the keystroke to the menu. In a connection window
+                    //      the remote gateway's SPA owns Alt+, and the
+                    //      claim would be false.
+                    <Keyboard
+                      className="lucide-inline"
+                      size={11}
+                      aria-label={i18nT('app.titlebar_menu_shortcut_still_available')}
+                    />
+                  )}
                 </span>
               )}
             </button>
           ))}
+          {menuItems.some(item => item.type !== 'separator' && item.gated) && (
+            <div
+              // max-width matches the popup's ~min-w-56 (224px) plus its
+              // outer padding, giving a wrap point roughly aligned with the
+              // menu rows. Without it (and without `whitespace-normal`,
+              // which is the default on divs but easy to lose to a parent
+              // rule) the footer's single line stretches the popup to
+              // several hundred pixels wider than a normal menu — UX
+              // Review "popup width blowout" watch on c2d85562b.
+              //
+              // `border-t` (previously `border-b` when the footer sat above
+              // the items) draws the separator above the footer so it reads
+              // as a legend appended AFTER the row list, not another item.
+              className="mx-2 mt-1 max-w-[240px] whitespace-normal border-t border-border pb-1 pt-1 text-[11px] leading-snug text-muted"
+              role="note"
+            >
+              {i18nT('app.titlebar_menu_disabled_footer')}
+            </div>
+          )}
         </div>,
         document.body,
       )}

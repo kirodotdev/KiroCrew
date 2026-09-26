@@ -266,7 +266,9 @@
     "focus_mode_title_mac": "专注模式 · ⌥⇧M",
     "connect_your_phone": "连接手机",
     "kiro_credit_usage_no_reading": "Kiro 额度用量 — 暂无余额读数；打开以刷新",
-    "kiro_credit_usage_config_unreadable": "Kiro 额度用量 — 无法读取后端设置；打开以重试"
+    "kiro_credit_usage_config_unreadable": "Kiro 额度用量 — 无法读取后端设置；打开以重试",
+    "titlebar_menu_disabled_footer": "某些项目在连接窗口中不可用 — 请使用主窗口。带键盘图标的表示此处仍可通过快捷键操作，带删除线的快捷键则不可用。",
+    "titlebar_menu_shortcut_still_available": "快捷键仍然可用"
   },
   "appSdk": {
     "chatEmbed": {

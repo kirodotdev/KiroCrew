@@ -274,7 +274,9 @@
     "focus_mode_title_mac": "Modo de foco · ⌥⇧M",
     "connect_your_phone": "Conectar seu telefone",
     "kiro_credit_usage_no_reading": "Uso de créditos do Kiro — ainda sem leitura do saldo; abra para atualizar",
-    "kiro_credit_usage_config_unreadable": "Uso de créditos do Kiro — não foi possível ler a configuração do backend; abra para tentar de novo"
+    "kiro_credit_usage_config_unreadable": "Uso de créditos do Kiro — não foi possível ler a configuração do backend; abra para tentar de novo",
+    "titlebar_menu_disabled_footer": "Alguns itens não estão disponíveis em janelas de conexão — use a janela principal. Um ícone de teclado marca os atalhos que ainda funcionam aqui; um atalho riscado não.",
+    "titlebar_menu_shortcut_still_available": "Atalho ainda disponível"
   },
   "appSdk": {
     "chatEmbed": {

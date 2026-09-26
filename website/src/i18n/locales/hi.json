@@ -270,7 +270,9 @@
     "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
     "connect_your_phone": "फ़ोन कनेक्ट करें",
     "kiro_credit_usage_no_reading": "Kiro क्रेडिट उपयोग — अभी कोई बैलेंस रीडिंग नहीं; रिफ़्रेश करने के लिए खोलो",
-    "kiro_credit_usage_config_unreadable": "Kiro क्रेडिट उपयोग — बैकएंड सेटिंग पढ़ी नहीं जा सकी; फिर से कोशिश करने के लिए खोलो"
+    "kiro_credit_usage_config_unreadable": "Kiro क्रेडिट उपयोग — बैकएंड सेटिंग पढ़ी नहीं जा सकी; फिर से कोशिश करने के लिए खोलो",
+    "titlebar_menu_disabled_footer": "कुछ आइटम कनेक्शन विंडो में उपलब्ध नहीं हैं — मुख्य विंडो का उपयोग करो। कीबोर्ड आइकन उन शॉर्टकट को दर्शाता है जो यहाँ भी काम करते हैं, काटा हुआ शॉर्टकट यहाँ काम नहीं करता।",
+    "titlebar_menu_shortcut_still_available": "शॉर्टकट अभी भी उपलब्ध"
   },
   "appSdk": {
     "chatEmbed": {

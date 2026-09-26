@@ -11,11 +11,11 @@ function installMenuAPI() {
   const api: MenuAPI = {
     getAppMenuItems: vi.fn(async (id: string) => id === 'file-menu'
       ? [
-          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: true, checked: false },
+          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
           { type: 'separator', index: 1 },
-          { type: 'normal', index: 2, label: 'Exit', accelerator: '', enabled: true, checked: false },
+          { type: 'normal', index: 2, label: 'Exit', accelerator: '', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
         ]
-      : [{ type: 'normal', index: 0, label: 'Reload', accelerator: 'CmdOrCtrl+R', enabled: true, checked: false }]),
+      : [{ type: 'normal', index: 0, label: 'Reload', accelerator: 'CmdOrCtrl+R', enabled: true, gated: false, acceleratorRegistered: true, checked: false }]),
     executeAppMenuItem: vi.fn(),
   }
   ;(window as Window & { electronAPI?: MenuAPI }).electronAPI = api
@@ -237,9 +237,11 @@ describe('WindowsTitlebarMenu', () => {
   it('renders a checkbox item with its check state and a rewritten accelerator', async () => {
     const api = installMenuAPI()
     api.getAppMenuItems.mockResolvedValueOnce([
-      { type: 'checkbox', index: 0, label: 'Keep on Top', accelerator: '', enabled: true, checked: true },
-      { type: 'normal', index: 1, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, checked: false },
-      { type: 'normal', index: 2, label: 'Unavailable', accelerator: '', enabled: false, checked: false },
+      { type: 'checkbox', index: 0, label: 'Keep on Top', accelerator: '', enabled: true, gated: false, acceleratorRegistered: true, checked: true },
+      { type: 'normal', index: 1, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
+      // Natively disabled — NOT gate-caused. Left as-is so the checkbox test does
+      // not inadvertently exercise the footer.
+      { type: 'normal', index: 2, label: 'Unavailable', accelerator: '', enabled: false, gated: false, acceleratorRegistered: true, checked: false },
     ])
     render(<header><WindowsTitlebarMenu /></header>)
 
@@ -250,6 +252,193 @@ describe('WindowsTitlebarMenu', () => {
     // The Electron accelerator token is rewritten to the cap the user reads.
     expect(screen.getByRole('menuitem', { name: /Zoom In/ })).toHaveTextContent('Ctrl+Plus')
     expect(screen.getByRole('menuitem', { name: /Unavailable/ })).toBeDisabled()
+  })
+
+  // A row that is greyed by the per-action LOCAL_ONLY gate but still has an
+  // accelerator — Reload (Ctrl+R), zoom, Toggle DevTools, Paste — presents a
+  // contradiction to a naive reader: "the row is dead but there's a shortcut."
+  // The physical accelerator DOES still work through Electron's native
+  // dispatch (which bypasses the app-menu:execute IPC gate this PR added), so
+  // the row paints a `Keyboard` glyph next to the accelerator as a visual
+  // "row off, shortcut on" cue. Scoped to gate-caused disables specifically
+  // (`gated: true`) — a natively-disabled row does NOT carry the glyph, since
+  // its accelerator would not fire either.
+  it('paints a keyboard glyph on greyed rows whose OS accelerator still works', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Greyed by the gate WITH accelerator — glyph expected.
+      { type: 'normal', index: 0, label: 'Reload', accelerator: 'CommandOrControl+R', enabled: false, gated: true, acceleratorRegistered: true, checked: false },
+      // Greyed by the gate WITHOUT accelerator — no glyph (nothing to advertise).
+      { type: 'normal', index: 1, label: 'Set Remote Host…', accelerator: '', enabled: false, gated: true, acceleratorRegistered: true, checked: false },
+      // Enabled WITH accelerator — no glyph (row itself is live).
+      { type: 'normal', index: 2, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const reload = await screen.findByRole('menuitem', { name: /Reload/ })
+    expect(reload).toBeDisabled()
+    // The Keyboard lucide icon carries the shortcut-still-available aria-label
+    // (routed through i18nT so a screen reader announces it translated).
+    // Query inside the row so parallel rows don't shadow the assertion.
+    expect(reload.querySelector('[aria-label="Shortcut still available"]')).not.toBeNull()
+
+    const noAccel = screen.getByRole('menuitem', { name: /Set Remote Host/ })
+    expect(noAccel).toBeDisabled()
+    expect(noAccel.querySelector('[aria-label="Shortcut still available"]')).toBeNull()
+
+    const enabled = screen.getByRole('menuitem', { name: /Zoom In/ })
+    expect(enabled).not.toBeDisabled()
+    expect(enabled.querySelector('[aria-label="Shortcut still available"]')).toBeNull()
+
+    // The one-line footer is the reachable "row off, shortcut on" explainer
+    // for sighted mouse users, whom `disabled:pointer-events-none` blocks
+    // from ever hovering the greyed rows to see a tooltip. Rendered exactly
+    // when the menu contains a gate-caused disabled row.
+    expect(
+      screen.getByText(/Some items are unavailable in connection windows/),
+    ).toBeInTheDocument()
+  })
+
+  // Footer must render BELOW the menu items, not above them. Rendering the
+  // footer at the top of the popup pushes the first menu row (e.g.
+  // "Settings…") ~70px down versus the same menu in the main window, so
+  // gated menus read as a different, shifted surface — UX Review "footer
+  // sits above the items" watch on b1efe7fc9. The reviewer's own suggested
+  // fix, which this test pins: render the footer below the mapped items so
+  // menu-row geometry stays stable and the footer becomes a legend line the
+  // user reaches AFTER scanning the rows they came for.
+  it('renders the disabled-row footer below the menu items', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: false, gated: true, acceleratorRegistered: false, checked: false },
+      { type: 'normal', index: 1, label: 'Exit', accelerator: '', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const firstItem = await screen.findByRole('menuitem', { name: /Settings/ })
+    const footer = screen.getByText(/Some items are unavailable in connection windows/)
+
+    // The footer's position relative to the FIRST menu row is what the user
+    // sees: if it's before Settings, Settings gets pushed down. Assert the
+    // footer follows Settings in document order.
+    expect(
+      firstItem.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  // A greyed row whose accelerator is DISPLAY-ONLY
+  // (`registerAccelerator: false` in the Electron definition — Settings' Alt+,
+  // on Windows is the canonical case) must not paint the keyboard glyph. The
+  // OS does not route that chord to the menu; in a connection window the
+  // remote gateway's SPA can freely intercept it, so the "shortcut still
+  // works here" claim would be FALSE. Accelerator TEXT stays visible (users
+  // still read "Alt+,"), but the glyph must not appear.
+  it('omits the keyboard glyph on gated rows whose accelerator is display-only', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Settings: gated, has an accelerator caption, but NOT OS-registered.
+      { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: false, gated: true, acceleratorRegistered: false, checked: false },
+      // A gated row with a REAL OS-registered accelerator — glyph MUST appear
+      // on this one so the assertion below actually discriminates.
+      { type: 'normal', index: 1, label: 'Paste', accelerator: 'CommandOrControl+V', enabled: false, gated: true, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const settings = await screen.findByRole('menuitem', { name: /Settings/ })
+    expect(settings).toBeDisabled()
+    expect(settings).toHaveTextContent('Alt+,')  // caption still shown
+    expect(settings.querySelector('[aria-label="Shortcut still available"]')).toBeNull()
+
+    const paste = screen.getByRole('menuitem', { name: /Paste/ })
+    expect(paste).toBeDisabled()
+    // Sibling row with a real accelerator DOES get the glyph — proves the
+    // above `toBeNull` is a real omission and not a rendering fluke.
+    expect(paste.querySelector('[aria-label="Shortcut still available"]')).not.toBeNull()
+  })
+
+  // The glyph's absence is a subtle inverse signal — a user must NOTICE
+  // that an icon is missing to learn the chord is dead. UX Review flagged
+  // this: most users will press Alt+, on a gated Settings row and get
+  // silence, then wonder why. Strike-through the accelerator caption
+  // affirmatively when gated && !acceleratorRegistered so the "chord will
+  // not act" claim is legible, not inferred from absence. The accelerator
+  // TEXT itself stays visible (the user still learns which chord the row
+  // would bind to on the main window); only the strike-through changes.
+  it('strikes the accelerator caption on gated rows whose accelerator is display-only', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Settings: gated, has an accelerator caption, but NOT OS-registered.
+      // Strike-through MUST be applied.
+      { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: false, gated: true, acceleratorRegistered: false, checked: false },
+      // Paste: gated, accelerator DOES route (Chromium-native). Caption must
+      // NOT be struck — chord still acts.
+      { type: 'normal', index: 1, label: 'Paste', accelerator: 'CommandOrControl+V', enabled: false, gated: true, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const settings = await screen.findByRole('menuitem', { name: /Settings/ })
+    // The caption is wrapped in an inner span (the one carrying the
+    // conditional `line-through` class). The outer span holds layout classes
+    // and is the parent of both this caption and the optional glyph — we
+    // want the innermost span whose direct text is the accelerator caption.
+    const settingsCaption = Array.from(settings.querySelectorAll('span')).find(
+      (span) => span.textContent === 'Alt+,' && span.querySelector('span') === null,
+    )
+    expect(settingsCaption).toBeDefined()
+    expect(settingsCaption?.className).toContain('line-through')
+
+    const paste = screen.getByRole('menuitem', { name: /Paste/ })
+    const pasteCaption = Array.from(paste.querySelectorAll('span')).find(
+      (span) => /Ctrl\+/.test(span.textContent || '') && span.querySelector('span') === null,
+    )
+    expect(pasteCaption).toBeDefined()
+    expect(pasteCaption?.className).not.toContain('line-through')
+  })
+
+  // The footer's claim — "shortcuts still work here" — is only accurate for
+  // ROWS THE GATE DISABLED. A natively-disabled row (e.g. an `undo` role
+  // with an empty history, or a `paste` role when the selection focus is
+  // gone) is disabled for its OWN runtime reasons, and its accelerator does
+  // NOT fire either. If the footer fired on those, the claim would be false.
+  // So the trigger is `item.gated`, not `!item.enabled`. This test pins that
+  // separation: a menu of only natively-disabled rows leaves the footer off.
+  it('omits the disabled-menu footer for natively disabled rows (not gate-caused)', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Natively disabled — Electron's own dispatch marked it so (undo with
+      // no history, paste with no selection focus). NOT gate-caused.
+      { type: 'normal', index: 0, label: 'Undo', accelerator: 'CommandOrControl+Z', enabled: false, gated: false, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    const undo = await screen.findByRole('menuitem', { name: /Undo/ })
+    expect(undo).toBeDisabled()
+    // No glyph — the row's accelerator would not fire either.
+    expect(undo.querySelector('[aria-label="Shortcut still available"]')).toBeNull()
+    // No footer — the claim would misrepresent a native disable.
+    expect(
+      screen.queryByText(/Some items are unavailable in connection windows/),
+    ).toBeNull()
+  })
+
+  it('omits the disabled-menu footer when every row is enabled', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      { type: 'normal', index: 0, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
+      { type: 'normal', index: 1, label: 'Zoom Out', accelerator: 'CommandOrControl+Minus', enabled: true, gated: false, acceleratorRegistered: true, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    await screen.findByRole('menuitem', { name: /Zoom In/ })
+    // The footer only fires when there's something to explain — a fully-
+    // enabled menu stays clean of the extra line.
+    expect(
+      screen.queryByText(/Some items are unavailable in connection windows/),
+    ).toBeNull()
   })
 
   it('shows Settings as Alt+, on Windows, never a Ctrl chord (CJK IME comma, #9824)', async () => {
@@ -443,7 +632,9 @@ describe('WindowsTitlebarMenu', () => {
   it('does not dispatch a disabled item', async () => {
     const api = installMenuAPI()
     api.getAppMenuItems.mockResolvedValueOnce([
-      { type: 'normal', index: 0, label: 'Unavailable', accelerator: '', enabled: false, checked: false },
+      // Natively disabled — this test's intent is that a disabled item does not
+      // dispatch, independent of gate state.
+      { type: 'normal', index: 0, label: 'Unavailable', accelerator: '', enabled: false, gated: false, acceleratorRegistered: true, checked: false },
     ])
     render(<header><WindowsTitlebarMenu /></header>)
     fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))

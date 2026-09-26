@@ -266,7 +266,9 @@
     "focus_mode_title_mac": "집중 모드 · ⌥⇧M",
     "connect_your_phone": "휴대폰 연결",
     "kiro_credit_usage_no_reading": "Kiro 크레딧 사용량 — 아직 잔액 정보 없음. 열어서 새로 고침",
-    "kiro_credit_usage_config_unreadable": "Kiro 크레딧 사용량 — 백엔드 설정을 읽을 수 없음. 열어서 다시 시도"
+    "kiro_credit_usage_config_unreadable": "Kiro 크레딧 사용량 — 백엔드 설정을 읽을 수 없음. 열어서 다시 시도",
+    "titlebar_menu_disabled_footer": "일부 항목은 연결 창에서 사용할 수 없습니다 — 기본 창을 사용하세요. 키보드 아이콘은 여기서도 작동하는 단축키를 표시하며, 취소선이 그어진 단축키는 여기서 작동하지 않습니다.",
+    "titlebar_menu_shortcut_still_available": "단축키 여전히 사용 가능"
   },
   "appSdk": {
     "chatEmbed": {

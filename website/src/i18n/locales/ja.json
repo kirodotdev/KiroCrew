@@ -266,7 +266,9 @@
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
     "connect_your_phone": "スマホを接続",
     "kiro_credit_usage_no_reading": "Kiro クレジット使用量 — 残高はまだ読み取れていません。開いて更新",
-    "kiro_credit_usage_config_unreadable": "Kiro クレジット使用量 — バックエンド設定を読み取れませんでした。開いて再試行"
+    "kiro_credit_usage_config_unreadable": "Kiro クレジット使用量 — バックエンド設定を読み取れませんでした。開いて再試行",
+    "titlebar_menu_disabled_footer": "接続ウィンドウでは一部の項目を利用できません — メインウィンドウをご利用ください。キーボードアイコンはここでも使えるショートカットを示し、取り消し線付きのショートカットはここでは使えません。",
+    "titlebar_menu_shortcut_still_available": "ショートカットは引き続き利用可能"
   },
   "appSdk": {
     "chatEmbed": {

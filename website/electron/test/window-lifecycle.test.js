@@ -440,6 +440,41 @@ describe("window lifecycle source contracts", () => {
       "getFocusedWebContents() returns null under BaseWindow+contentView, so zoom would silently no-op",
     );
   });
+
+  // `senderIsLocal` is computed once at the IPC boundary in ipc-registrar.js
+  // (via assertLocalDashboard) and threaded down here as the fourth
+  // executeMenu argument. `executeMenuItem` uses it against the LOCAL_ONLY_*
+  // sets. The threading is what turns the boundary decision into a per-
+  // action refusal.
+  it("executeMenu accepts and forwards senderIsLocal into executeMenuItem", () => {
+    const executeMenu = SOURCE.match(
+      /function executeMenu\(sender, id, index, senderIsLocal\) \{([\s\S]*?)\n  \}/,
+    );
+    assert.ok(executeMenu, "executeMenu must accept senderIsLocal as its fourth parameter");
+    assert.match(
+      executeMenu[1],
+      /executeMenuItem\(topLevelItem, index, win, sender, senderIsLocal === true\)/,
+      "senderIsLocal must be forwarded to executeMenuItem with strict === true, "
+      + "so any non-boolean value falls to the fail-closed branch",
+    );
+  });
+
+  // The same threading reaches serializeMenuItems: without it, `app-menu:items`
+  // would advertise LOCAL_ONLY rows as `enabled: true` while `app-menu:execute`
+  // silently refused them — a rendered row that no-ops on click. menuItems is
+  // the seam that carries the boundary decision into the items surface.
+  it("menuItems accepts and forwards senderIsLocal into serializeMenuItems", () => {
+    const menuItems = SOURCE.match(
+      /function menuItems\(sender, id, senderIsLocal\) \{([\s\S]*?)\n  \}/,
+    );
+    assert.ok(menuItems, "menuItems must accept senderIsLocal as its third parameter");
+    assert.match(
+      menuItems[1],
+      /serializeMenuItems\(item, senderIsLocal === true\)/,
+      "senderIsLocal must reach serializeMenuItems with strict === true, "
+      + "so any non-boolean value falls to the fail-closed (greyed) branch",
+    );
+  });
 });
 
 describe("main window frame-load diagnostics", () => {
