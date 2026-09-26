@@ -60,7 +60,8 @@ jobs:
           # Adding a label that is already present is a no-op, so this is safe to
           # re-run on every event and every sweep.
           add_label() {
-            jq -n --arg label "$LABEL" '{labels: [$label]}' \
+            # Not `--arg label`: `label` is a jq keyword that jq 1.6 rejects.
+            jq -n --arg name "$LABEL" '{labels: [$name]}' \
               | gh api --method POST "repos/$REPO/issues/$1/labels" --input - >/dev/null
           }
 
