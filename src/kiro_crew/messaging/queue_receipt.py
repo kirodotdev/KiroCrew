@@ -283,9 +283,10 @@ class QueueReceipt:
     #: would edit the next body over the record already sitting in the bubble.
     bubble_consumed: bool = False
     #: Publications refused in a row with nothing landing. The evidence the retention
-    #: bound is measured against: restarted by any body that reaches the reader and by any
-    #: new record joining the debt, so it counts refusals of the debt's NEWEST record
-    #: rather than the age of the entry holding it.
+    #: bound is measured against: restarted ONLY by a body that reaches the reader, since
+    #: a transition retaining a record is itself one of these refusals. So it counts
+    #: refusals of the body an attempt actually offers -- the oldest -- rather than the
+    #: age of the entry holding it.
     publish_failures: int = 0
 
     @property
@@ -615,10 +616,19 @@ class ReceiptQueue:
         if receipt.owes_record:
             # Already terminal from an earlier refused transition. Retry THAT record
             # first -- writing this transition's words over what actually happened would
-            # say the opposite, permanently -- and keep the entry until it lands. This
-            # record goes WITH the debt if the bound gives it up: ``also=1`` has it counted
-            # there, because retaining it would re-arm the very key that release freed.
-            outcome = await self._write_record(session_key, receipt, also=1)
+            # say the opposite, permanently -- and keep the entry until it lands.
+            #
+            # Whether THIS record dies with the debt depends on whose conversation it came
+            # from. The debt's own chat: the attempt below tries an edit AND a post there,
+            # so it is the evidence this record has no channel either, and ``also=1`` has
+            # it counted with the debt rather than retained -- retaining would re-arm the
+            # very key that release freed. A DIFFERENT chat sharing the key: the debt's
+            # refusals are evidence about the dead conversation and say nothing about this
+            # one, so this record is not counted with it and is offered on its own surface
+            # below. Giving up on a healthy sibling's record would be the exact harm the
+            # release exists to end.
+            mine = receipt.addressed_by(surface)
+            outcome = await self._write_record(session_key, receipt, also=1 if mine else 0)
             if outcome == "owed":
                 # The debt has no channel: that call just tried an edit AND a post and
                 # both failed, so THIS record has none either and posting it now would
@@ -628,17 +638,24 @@ class ReceiptQueue:
                 # silence over answered messages. Only this bubble's own chat's text may
                 # be retained here: otherwise ``answered`` belongs to another
                 # conversation, and a retained body is written to this bubble later.
-                if receipt.addressed_by(surface):
+                if mine:
                     self._retain_owed(session_key, receipt, body)
                 else:
                     self._receipts[session_key] = receipt
                 return
             if outcome == "given_up":
-                # The bound decided this conversation takes nothing, the key is already
-                # released, and this record was counted with the debt. Retaining it would
-                # re-arm that very key as terminal with a fresh allowance, undoing the
-                # release and starving the siblings again; posting it would fail exactly as
-                # the attempt just did.
+                # The bound decided the DEBT's conversation takes nothing and released the
+                # key. A record from that same chat goes with it, counted above: retaining
+                # it would re-arm that very key as terminal with a fresh allowance, undoing
+                # the release and starving the siblings again, and posting it would fail
+                # exactly as the attempt just did.
+                #
+                # A record from a healthy sibling on the key is the opposite case. Its own
+                # surface is untested by anything that just happened, these messages have
+                # already left the queue, and the key is now free -- so the record is
+                # POSTED there, and counted lost only if that surface refuses it too.
+                if not mine and not await self._post_record(surface, body):
+                    self._report_lost(surface.label, "sibling chat refuses the post too", 1)
                 return
             # It published, so this transition's own record has no bubble left to edit: it
             # is POSTED beside it, at the bubble's own address. Retiring the key and
@@ -647,7 +664,7 @@ class ReceiptQueue:
             # the queue.
             # Only when the caller addresses the bubble: otherwise ``answered`` is
             # another chat's text, which may not appear here at all.
-            if receipt.addressed_by(surface):
+            if mine:
                 if not await self._post_record(receipt.opened_on, body):
                     # The post failed too, so this record has reached nobody. Retain it:
                     # a later transition then edits the bubble to it, which replaces a
@@ -872,11 +889,22 @@ class ReceiptQueue:
         given_up = receipt.abandon() + also
         self._receipts.pop(session_key, None)
         label = receipt.opened_on.label if receipt.opened_on is not None else "?"
+        self._report_lost(label, reason, given_up)
+
+    def _report_lost(self, label: str, reason: str, count: int) -> None:
+        """Account for *count* records that will reach no reader. The one such seam.
+
+        Every loss the retention policy causes is reported here and nowhere else, so the
+        operator's copy has one shape whichever bound or refusal produced it, and a loss
+        cannot be added without going through this line. It is a WARNING rather than
+        anything the reader sees: the chat these records belonged to is the one that would
+        not take a write.
+        """
         logger.warning(
             "%s: queue receipt debt given up (%s), %d record(s) reach nobody",
             label,
             reason,
-            given_up,
+            count,
         )
 
     async def _post_record(self, surface: ReceiptSurface | None, body: str) -> bool:

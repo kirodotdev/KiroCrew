@@ -1729,13 +1729,18 @@ strands that bubble on `⏳ Queued` and opens a second beside it.
 
 Both releases go through one counted seam, which also releases the key, so "published"
 and "given up" mean the same thing to every transition above -- this key owes nothing --
-and none of them re-derives it. A drain meeting a spent debt hands its own record to that
-same seam rather than retaining it, since retaining would re-arm the very key the release
-freed. The count is a WARNING log carrying the channel, the reason, and how many records
-reach nobody, for the same reason the body cap counts what it drops: a registry that
-quietly got smaller reads exactly like one that never owed anything. Nothing is said to
-the reader, deliberately -- the conversation those records belonged to is the one that
-would not take a write.
+and none of them re-derives it. A drain meeting a spent debt is decided by WHOSE
+conversation its own record came from. The debt's own chat: the attempt just tried an edit
+and a post there, so that record has no channel either and it goes to the same seam rather
+than being retained, since retaining would re-arm the very key the release freed. A
+different chat sharing the key: the debt's refusals are evidence about the dead
+conversation and none about this one, so that record is POSTED on its own surface and
+counted lost only if that surface refuses it too. Giving it up unasked would be the exact
+harm the release exists to end. The count is a WARNING log carrying the channel, the
+reason, and how many records reach nobody, for the same reason the body cap counts what it
+drops: a registry that quietly got smaller reads exactly like one that never owed anything.
+Nothing is said to the reader, deliberately -- the conversation those records belonged to
+is the one that would not take a write.
 
 The key is released only once the record is on the bubble, because that entry is the
 bubble's only handle. Editing is tried first, so the record lands in the bubble the

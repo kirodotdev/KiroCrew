@@ -1042,6 +1042,57 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         assert queue.has_receipt("s"), "and a live entry, so its next message grows that one"
         assert queue._receipts["s"].address == alive.address_key, "opened on the sibling"
 
+    def test_a_spent_debt_still_gives_a_sibling_drain_its_record(self, caplog) -> None:
+        """A drain answering a HEALTHY chat is not given up with the dead one's debt.
+
+        The release exists to hand the key back to the siblings, so discarding the very
+        record that arrives on a working surface would be the harm it was meant to end. The
+        debt's refusals are evidence about the dead conversation and none about this one,
+        and the answered messages have already left the queue, so the record is posted
+        there rather than counted lost.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            gone = _Surface(edit_refuses=True, send_fails_after=1, address="gone")
+            queue = await self._owing(gone)
+            alive = _Surface(address="alive")
+            async with queue.lock:
+                # One short of the allowance, so the drain below is the attempt that
+                # spends it.
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
+                    await queue.create_or_grow_locked("s", gone, "again", "alice")
+                await queue.flip_answering_locked("s", alive, ["hello"])
+            return queue, alive
+
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue, alive = asyncio.run(go())
+        assert alive.sent == [receipt_text(["hello"], answering=True)], "posted on its own"
+        assert "s" not in queue._receipts, "and the dead conversation's key is released"
+        assert self.given_up(caplog) == [1], "only the debt's own record is given up"
+
+    def test_a_sibling_record_its_own_chat_refuses_is_counted(self, caplog) -> None:
+        """The loss is accounted for when the sibling's surface will not take it either.
+
+        Then this record does reach nobody, and a bound that released it silently would be
+        indistinguishable from one that never held anything.
+        """
+
+        async def go() -> ReceiptQueue:
+            gone = _Surface(edit_refuses=True, send_fails_after=1, address="gone")
+            queue = await self._owing(gone)
+            # Sends past zero fail, so the sibling has a working address and no channel.
+            mute = _Surface(address="alive", send_fails_after=0)
+            async with queue.lock:
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
+                    await queue.create_or_grow_locked("s", gone, "again", "alice")
+                await queue.flip_answering_locked("s", mute, ["hello"])
+            return queue
+
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
+        assert "s" not in queue._receipts, "the key is still released"
+        assert self.given_up(caplog) == [1, 1], "the debt, then the record that followed it"
+
     def test_a_debt_that_publishes_part_of_itself_is_not_given_up(self, caplog) -> None:
         """Landing a body restarts the allowance, so a slow channel keeps its records.
 
