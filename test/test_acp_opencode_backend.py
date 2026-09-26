@@ -706,3 +706,73 @@ def test_the_spawn_arm_refuses_before_the_first_prompt() -> None:
 def test_the_backend_declares_the_verified_mechanism() -> None:
     """Named here so a change of mechanism cannot pass as a refactor."""
     assert routing_for(ACP_BACKEND_OPENCODE) is Routing.VERIFIED_SEEDED_SETTINGS
+
+
+# ── A per-tool rule from a lower config source ───────────────────────────────
+
+
+class TestATrailingAskRuleOutranksTheRulesBeforeIt:
+    """OpenCode checks rules in order and the LAST match wins; ``"*"`` matches all.
+
+    The seed's ``"*": "ask"`` is merged in AFTER a lower source's per-tool keys,
+    because the harness merges sources key by key. Measured on opencode 1.18.30 and
+    1.18.32: with ``{"bash": "allow"}`` in the operator's global ``opencode.json`` the
+    resolved map is ``{"bash": "allow", "*": "ask"}`` and ``bash`` asks before it
+    runs. Main refused that map, so every session on such a host was refused.
+    """
+
+    def test_a_trailing_ask_after_an_allowed_tool_is_ask(self):
+        assert _opencode_uniform_permission({"bash": "allow", "*": "ask"}) == "ask"
+
+    def test_a_trailing_ask_after_a_pattern_map_is_ask(self):
+        raw = {"bash": {"git *": "allow", "*": "ask"}, "edit": "allow", "*": "ask"}
+        assert _opencode_uniform_permission(raw) == "ask"
+
+    def test_order_matters_a_leading_ask_is_outranked(self):
+        """``{"*": "ask", "bash": "allow"}`` lets ``bash`` win: still refused."""
+        observed = _opencode_uniform_permission({"*": "ask", "bash": "allow"})
+        assert observed != "ask"
+        assert "bash" in str(observed)
+
+    def test_a_trailing_allow_is_not_ask(self):
+        observed = _opencode_uniform_permission({"bash": "ask", "*": "allow"})
+        assert observed != "ask"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"webfetch": "deny", "*": "ask"},
+            {"bash": "allow", "webfetch": "deny", "*": "ask"},
+            {"bash": {"pwd": "deny", "git *": "allow"}, "*": "ask"},
+        ],
+    )
+    def test_a_deny_the_trailing_ask_would_outrank_stays_refused(self, raw):
+        """The trailing ``"*"`` would turn the operator's ``deny`` into a prompt, and
+        an auto-approving session would then run the call they switched off. Measured
+        live: ``bash: {"pwd": "deny"}`` with ``"*": "ask"`` after it asks and runs
+        ``pwd``. So a map carrying any deny is not read as ``ask``."""
+        assert _opencode_uniform_permission(raw) != "ask"
+
+    def test_the_read_back_accepts_the_merged_shape(self, tmp_path, monkeypatch):
+        class _Completed:
+            returncode = 0
+            stdout = '{"permission": {"bash": "allow", "edit": "allow", "*": "ask"}}'
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        assert client._verify_opencode_routing(_ARGV, '{"permission": "ask"}') == ("", "")
+
+    def test_an_agent_map_follows_the_same_rule(self, tmp_path, monkeypatch):
+        """The agent-level check shares the reducer, so the order rule holds there."""
+
+        class _Completed:
+            returncode = 0
+            stdout = (
+                '{"permission": {"*": "ask"}, "agent": {'
+                '"build": {"permission": {"*": "ask", "bash": "allow"}, "options": {}}}}'
+            )
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        issue, _remedy = client._verify_opencode_routing(_ARGV, "{}")
+        assert "'build'" in issue

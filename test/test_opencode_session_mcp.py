@@ -1155,3 +1155,56 @@ def test_the_driver_and_stub_are_syntactically_valid_python():
 
     ast.parse(_DRIVER)
     ast.parse(_STUB_MCP)
+
+
+def _real_opencode_read_back(tmp_path, global_permission: dict) -> tuple[str, str]:
+    """Run the real routing read-back under a private HOME holding *global_permission*."""
+    from kiro_crew.acp.client import AcpClient
+
+    home = tmp_path / "home"
+    config_home = home / ".config"
+    (config_home / "opencode").mkdir(parents=True)
+    (config_home / "opencode" / "opencode.json").write_text(
+        json.dumps({"permission": global_permission}), encoding="utf-8"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    isolated = {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(config_home),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+    }
+    client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
+    seed = client._opencode_routing_config()
+    return client._verify_opencode_routing([_BIN, "debug", "config"], seed)
+
+
+@pytest.mark.real_adapter
+def test_real_opencode_a_lower_source_per_tool_allow_is_in_force(tmp_path):
+    """ANTI-DRIFT GUARD for the read-back's last-match-wins reading.
+
+    The harness merges sources key by key, so a per-tool ``allow`` in the operator's
+    global config keeps its place and the seed's ``"*": "ask"`` lands after it. The
+    harness lets the last matching rule win, so every call still asks -- and the
+    session must start. If a release changes the merge order (``"*"`` first) or the
+    evaluation order, this read-back turns into a refusal here instead of a session
+    that silently stops asking.
+    """
+    _require_opencode()
+    assert _BIN is not None
+    issue, remedy = _real_opencode_read_back(
+        tmp_path, {"bash": {"git *": "allow", "*": "ask"}, "edit": "allow"}
+    )
+    assert (issue, remedy) == ("", ""), f"refused: {issue} / {remedy}"
+
+
+@pytest.mark.real_adapter
+def test_real_opencode_a_lower_source_deny_is_still_refused(tmp_path):
+    """The seed's trailing ``"*"`` would outrank a ``deny`` and turn it into a prompt,
+    so a global config that denies anything is refused rather than weakened."""
+    _require_opencode()
+    assert _BIN is not None
+    issue, _remedy = _real_opencode_read_back(tmp_path, {"bash": {"pwd": "deny"}})
+    assert issue and "deny" in issue

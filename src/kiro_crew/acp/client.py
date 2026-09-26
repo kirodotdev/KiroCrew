@@ -1773,9 +1773,22 @@ def _opencode_uniform_permission(raw: object) -> object:
 
     The harness normalizes a bare ``"ask"`` into a rule map (``{"*": "ask"}``), so
     the read-back has to compare shapes rather than strings. A map whose every rule
-    carries the same value IS that value. A MIXED map is not reduced and not
-    accepted: one tool left permissive is one tool whose calls never reach the host
-    gate, so it is returned as its own JSON spelling for the refusal to name.
+    carries the same value IS that value.
+
+    The harness also checks its rules in order and lets the LAST match win, and a
+    ``"*"`` key matches every tool and every pattern. So a map whose last entry is
+    ``"*": "ask"`` asks for every call, whatever the entries before it say. That is
+    the shape the seed produces over a lower source's per-tool rule: the sources are
+    merged key by key, so ``"bash": "allow"`` from the operator's global config keeps
+    its place and the seed's ``"*"`` is appended after it -- measured on opencode
+    1.18.30 and 1.18.32, where such a session asks before running ``bash``. It is
+    accepted ONLY when no entry before it denies anything: a ``deny`` the trailing
+    ``"*"`` outranks is a rule the operator wrote that would silently stop holding,
+    so that map stays refused.
+
+    Any other MIXED map is not reduced and not accepted: one tool left permissive is
+    one tool whose calls never reach the host gate, so it is returned as its own JSON
+    spelling for the refusal to name.
 
     ``None`` for anything else, which the gate reads as "the setting is not there".
     """
@@ -1787,8 +1800,21 @@ def _opencode_uniform_permission(raw: object) -> object:
             [value for value in raw.values() if isinstance(value, str)]
         ):
             return values.pop()
+        last_key, last_value = list(raw.items())[-1]
+        if last_key == "*" and last_value == "ask" and not _opencode_rules_deny(raw):
+            return "ask"
         return json.dumps(raw, sort_keys=True)
     return None
+
+
+def _opencode_rules_deny(raw: dict) -> bool:
+    """True when any rule in *raw* -- top level or one tool's pattern map -- denies."""
+    for value in raw.values():
+        if value == "deny":
+            return True
+        if isinstance(value, dict) and "deny" in value.values():
+            return True
+    return False
 
 
 #: How much of a refused read-back child's stderr is examined at all.
