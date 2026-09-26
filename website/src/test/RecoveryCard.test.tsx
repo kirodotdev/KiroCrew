@@ -201,6 +201,25 @@ describe('parseRecoveryMessage', () => {
     expect(halt?.body).toContain('already took 100')
   })
 
+  it('names the open plan as the cause of its one follow-up', () => {
+    // Verbatim opener from state.PLAN_RECONCILE_RECOVERY_PREFIX + open_plan's body.
+    // Nothing failed: the turn ended with its own task list open, so the card
+    // must not report an interruption or a recovery.
+    const plan = parseRecoveryMessage(
+      '[Open plan — automatic reminder]\nYour turn ended with 1 of 3 items in your own task list (todo_list) still open (item 3).',
+    )
+    expect(plan?.kind).toBe('plan_reconcile')
+    expect(plan?.title).toBe('Plan left unfinished')
+    expect(plan?.detail).toBe('task list items still open · follow-up sent automatically')
+    expect(plan?.chip).toBe('')
+    expect(plan?.body.startsWith('[')).toBe(false)
+    expect(plan?.body).toContain('1 of 3 items')
+    for (const text of [plan?.title, plan?.detail]) {
+      expect(text?.toLowerCase()).not.toContain('interrupt')
+      expect(text?.toLowerCase()).not.toContain('recover')
+    }
+  })
+
   it('labels a promise-only turn (announced an action, never made the call)', () => {
     // Verbatim opener from chat_utils._PROMISE_ONLY_CONTINUE_MSG (#2686).
     const promise = parseRecoveryMessage(

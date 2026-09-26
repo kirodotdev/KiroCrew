@@ -147,6 +147,54 @@ describe('TaskProgressBar', () => {
     act(() => { store.dispatch(sseSlots([slot('slot-1', todo([['a', true], ['b', false]]))])) })
     expect(screen.getByTestId('todo-count').textContent).toBe('1 of 2')
   })
+
+  describe('stopped state (open items, no turn running)', () => {
+    const running = (key: string, t: TodoList | null): ChatSlot =>
+      ({ key, messages: 0, running: true, todo: t }) as ChatSlot
+
+    it('flags an open list on an idle slot as stopped', () => {
+      renderBar([slot('slot-1', todo([['a', true], ['b', true], ['c', false]]))])
+      expect(screen.getByTestId('todo-stopped').textContent).toBe('Stopped')
+      const pill = screen.getByTestId('todo-pill')
+      expect(pill.getAttribute('data-stopped')).toBe('true')
+      expect(pill.getAttribute('aria-label')).toBe(
+        'Stopped with 2 of 3 tasks complete. Expand task list',
+      )
+      // The first open task stays visible: stopped says WHERE it stopped.
+      expect(screen.getByTestId('todo-current').textContent).toBe('c')
+    })
+
+    it('does not flag a list while a turn is running', () => {
+      renderBar([running('slot-1', todo([['a', true], ['b', false]]))])
+      expect(screen.queryByTestId('todo-stopped')).toBeNull()
+      const pill = screen.getByTestId('todo-pill')
+      expect(pill.getAttribute('data-stopped')).toBeNull()
+      expect(pill.getAttribute('aria-label')).toBe('1 of 2 tasks complete. Expand task list')
+    })
+
+    it('does not flag a finished list on an idle slot', () => {
+      renderBar([slot('slot-1', todo([['a', true], ['b', true]]))])
+      expect(screen.queryByTestId('todo-stopped')).toBeNull()
+    })
+
+    it('names the stopped state in the collapse label too', async () => {
+      const user = userEvent.setup()
+      renderBar([slot('slot-1', todo([['a', false]]))])
+      const pill = screen.getByTestId('todo-pill')
+      await user.click(pill)
+      expect(pill.getAttribute('aria-label')).toBe(
+        'Stopped with 0 of 1 tasks complete. Collapse task list',
+      )
+    })
+
+    it('clears the flag when the next turn starts', () => {
+      const t = todo([['a', true], ['b', false]])
+      const { store } = renderBar([slot('slot-1', t)])
+      expect(screen.getByTestId('todo-stopped')).toBeTruthy()
+      act(() => { store.dispatch(sseSlots([running('slot-1', t)])) })
+      expect(screen.queryByTestId('todo-stopped')).toBeNull()
+    })
+  })
 })
 
 describe('sseTodoUpdate reducer', () => {

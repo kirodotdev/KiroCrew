@@ -14,7 +14,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  * BUSY_RECOVERY_PREFIX, POSTTOKEN_RECOVERY_PREFIX,
  * EMPTY_RESPONSE_RECOVERY_PREFIX, COMPACTION_RECOVERY_PREFIX,
  * HOOK_CONTINUATION_RECOVERY_PREFIX, HOOK_HALTED_RECOVERY_PREFIX,
- * SUBAGENT_SYNTHESIS_PREFIX).
+ * PLAN_RECONCILE_RECOVERY_PREFIX, SUBAGENT_SYNTHESIS_PREFIX).
  *
  * Detection is by content prefix rather than a meta flag on purpose: the rows
  * are appended with a plain CSS-class meta ("msg msg-inject"), and matching the
@@ -36,6 +36,7 @@ export type RecoveryKind =
   | 'refusal_fallback'
   | 'hook'
   | 'hook_halted'
+  | 'plan_reconcile'
   | 'synthesis'
   /**
    * Catch-all for an `inject` row this build has no dedicated prefix for — a
@@ -93,6 +94,11 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   // and was halted with no turn dispatched. Informational, not a continuation —
   // the reached depth rides after the marker as " #N".
   ['hook_halted', '[Stop-hook nudge cap reached]'],
+  // The turn ended normally with items still open in the agent's own task list,
+  // so the gateway sent ONE follow-up asking it to finish them or say why not.
+  // Not a recovery either: nothing failed. Its copy names the open plan as the
+  // cause.
+  ['plan_reconcile', '[Open plan — automatic reminder]'],
   // Fired once after every sub-agent in a fan-out has completed and each result
   // has been processed in its own turn. Not a recovery either: nothing failed.
   // It is an orchestration prompt asking for the consolidated write-up, so its
@@ -288,6 +294,19 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       detail: i18nT('pages.chat.recoveryCard.nudge_cap_reached'),
       chip: depth ? `#${depth[1]}` : '',
       body: nl === -1 ? '' : after.slice(nl + 1).trim(),
+    }
+  }
+
+  if (kind === 'plan_reconcile') {
+    // Title states the event (the turn ended with its plan open); detail names
+    // that cause plus the one automatic follow-up, matching every sibling's
+    // "cause · attempt" shape. The body carries the counts the model was given.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.plan_left_open'),
+      detail: i18nT('pages.chat.recoveryCard.open_items_follow_up'),
+      chip: '',
+      body,
     }
   }
 
@@ -503,6 +522,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'manual' ||
     kind === 'refusal_fallback' ||
     kind === 'hook' ||
+    kind === 'plan_reconcile' ||
     kind === 'synthesis' ||
     kind === 'generic'
   // Synthesis is routine, but the retry glyph would misdescribe it — nothing is

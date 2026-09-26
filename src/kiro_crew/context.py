@@ -69,6 +69,7 @@ from kiro_crew.members import (
 )
 from kiro_crew.memory import MemoryStore
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.open_plan import OpenPlan, build_open_plan_context
 from kiro_crew.quick_prompts import expand_quick_prompt
 from kiro_crew.security import (
     audit_injection_dropped,
@@ -4819,6 +4820,7 @@ class ContextBuilder:
         folder_path: str | None = None,
         model_window: int | None = None,
         board_tags: list[tuple[str, str]] | None = None,
+        open_plan: OpenPlan | None = None,
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
@@ -5484,6 +5486,15 @@ class ContextBuilder:
                 parts.append(
                     f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
                 )
+
+        # Open plan — the agent's own todo_list still has open items from an
+        # earlier turn. Without this the next turn carries no sign of the open
+        # work and the agent answers follow-ups as if the plan were done. The
+        # line is built from integers only (counts, 1-based positions), never the
+        # agent-authored task text, because it lands on this trusted rail; see
+        # kiro_crew.open_plan. Skipped for minimal contexts like every advisory.
+        if open_plan is not None and not minimal_context:
+            parts.append(build_open_plan_context(open_plan))
 
         # Resource pressure — inject a compact advisory ONLY when a host ceiling
         # is near: memory tight/critical, or the agent slice close to its cgroup
