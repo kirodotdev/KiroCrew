@@ -4272,3 +4272,178 @@ def test_a_leaf_that_is_not_a_regular_file_still_closes_its_descriptor(tmp_path,
 
     assert cs._recorded_unit_order_at(order) == (), "a directory answers header order"
     assert closed, "the descriptor was closed by this function, not leaked"
+
+
+def _past_the_bound(start: Path) -> Path:
+    """*start* extended until it is one component past the walk's bound.
+
+    The depth is MEASURED off the path rather than written down here. A fixture built
+    to a literal number agrees with the bound only until one of them moves, and the
+    one that moves silently is the literal.
+    """
+    deep = start
+    while len(deep.parts) <= cs._MAX_CHAIN_DEPTH:
+        deep = deep / "g"
+    return deep
+
+
+def _pin_spy(monkeypatch) -> list[str]:
+    """Record every component the walk opens, and keep the real open underneath."""
+    opened: list[str] = []
+    real_pin = cs.platform_compat.pin_directory
+
+    def counting_pin(component, **kwargs):
+        opened.append(os.fspath(component))
+        return real_pin(component, **kwargs)
+
+    monkeypatch.setattr(cs.platform_compat, "pin_directory", counting_pin)
+    return opened
+
+
+def test_a_relative_chain_is_refused_before_any_component_is_opened(tmp_path, monkeypatch):
+    """A relative path is refused, and refused before the walk opens anything.
+
+    Its components resolve against a current directory the walk never inspects, so the
+    chain it would hold is not the chain the caller named. The test runs from INSIDE a
+    real directory whose children exist, so the walk genuinely could have resolved
+    these paths -- a refusal measured somewhere nothing would have resolved anyway
+    proves only that the fixture was empty.
+
+    ``.`` and a multi-component relative path are both checked because they fail
+    differently without the guard: ``.`` resolves to the current directory and would be
+    held successfully, while the deeper one dies on its second component. Only the
+    first of those looks like a hold of the wrong object.
+    """
+    inside = tmp_path / "inside"
+    (inside / "child").mkdir(parents=True)
+    monkeypatch.chdir(inside)
+    opened = _pin_spy(monkeypatch)
+
+    for relative in (Path("."), Path("child"), Path("child/deeper")):
+        with pytest.raises(ValueError, match="relative"):
+            cs._hold_chain_no_follow(relative)
+
+    assert opened == [], "no component of a relative path is opened"
+
+
+def test_a_chain_past_the_depth_bound_is_refused_before_any_component_is_opened(
+    tmp_path, monkeypatch
+):
+    """A path deeper than the bound is refused, ahead of the first open.
+
+    The timing is the claim. One open per component is the walk's whole cost, so a
+    depth nothing bounds is work performed INSIDE the hold before any of the work the
+    hold protects begins -- and a bound enforced after the walk would raise the same
+    exception having already paid for it. The open count is what tells those apart.
+
+    The refusal names the depth it measured, so a reader of the log learns which path
+    was too deep rather than only that some path was.
+    """
+    opened = _pin_spy(monkeypatch)
+    deep = _past_the_bound(tmp_path)
+    measured = len(deep.parts)
+    assert measured > cs._MAX_CHAIN_DEPTH, "the fixture is past the bound"
+
+    with pytest.raises(ValueError) as refusal:
+        cs._hold_chain_no_follow(deep)
+
+    assert str(measured) in str(refusal.value), "the refusal reports the depth it measured"
+    assert opened == [], "the bound refused before the walk opened anything"
+
+
+def test_the_depth_bound_refuses_a_chain_the_walk_would_otherwise_hold(tmp_path):
+    """The bound refuses a chain that EXISTS all the way down, and holds the one below it.
+
+    An absent component refuses on its own, so a fixture that does not exist cannot
+    tell a depth bound from a missing directory: both raise, and only one of them is
+    this guard. This chain exists to its last component, so without the bound the walk
+    holds it and returns descriptors -- which makes the refusal the bound's alone.
+
+    The shallower control is the other half. A guard that refused every deep-looking
+    path would satisfy the assertion above while breaking every real store, so the
+    chain one component inside the bound has to come back fully held, with the
+    descriptor count measured off the path rather than written down.
+    """
+    deep = _past_the_bound(tmp_path)
+    deep.mkdir(parents=True)
+    measured = len(deep.parts)
+
+    with pytest.raises(ValueError) as refusal:
+        cs._hold_chain_no_follow(deep)
+    assert str(measured) in str(refusal.value), "the refusal reports the depth it measured"
+
+    at_the_bound = deep
+    while len(at_the_bound.parts) > cs._MAX_CHAIN_DEPTH:
+        at_the_bound = at_the_bound.parent
+    assert at_the_bound.is_dir(), "the control chain exists too"
+
+    held = cs._hold_chain_no_follow(at_the_bound)
+    try:
+        assert len(held) == len(at_the_bound.parts), (
+            "a chain inside the bound is held component for component, so the bound "
+            "refuses depth rather than refusing this shape of path"
+        )
+    finally:
+        cs._release_held(held)
+
+
+def test_a_chain_the_walk_refuses_reads_as_header_order(tmp_path, monkeypatch):
+    """A chain the walk will not chase answers ``()``, instead of raising into a read.
+
+    The read's contract is that an absent or unholdable component falls back to header
+    order, and these two refusals are ``ValueError`` where every earlier one was an
+    ``OSError``. A read that let them through would turn a crew's ordinary listing into
+    an exception, which is the one outcome the fallback exists to avoid.
+    """
+    _fallback_only(monkeypatch)
+    deep = _past_the_bound(tmp_path)
+    deep.mkdir(parents=True)
+
+    with pytest.raises(ValueError):
+        cs._hold_chain_for_by_name_use(deep)
+    over_deep = cs._read_unit_order_held(deep / f"c_00000000{cs._UNIT_ORDER_SUFFIX}")
+    assert over_deep == (), "an over-deep chain reads as header order"
+
+    monkeypatch.chdir(tmp_path)
+    relative = cs._read_unit_order_held(Path(f"c_00000000{cs._UNIT_ORDER_SUFFIX}"))
+    assert relative == (), "and so does a relative one"
+
+
+def test_a_walk_refusal_does_not_escape_the_recorder(tmp_path, monkeypatch):
+    """A ``ValueError`` from the walk is contained by the recorder, not raised at it.
+
+    The recorder's contract is that a unit order it cannot write is logged and dropped,
+    never raised into the caller that was recording a crew's unit. The walk's two
+    refusals are ``ValueError`` where every earlier failure was an ``OSError``, so a
+    guard admitting only ``OSError`` would turn a deep store path into an exception in
+    ordinary use.
+
+    Asserted BEHAVIOURALLY: the condition that makes the real walk refuse is built, the
+    recorder is called, and nothing may escape. Not asserted structurally -- a check that
+    the call sits inside some ``try`` verifies the SHAPE of the code, which a refactor can
+    preserve while destroying the behaviour (a guard around a call that does not reach the
+    walk) or destroy while preserving it (the guard moved into a helper). Only the escape
+    itself tells those apart.
+
+    The control matters more than the call here: without it this test also passes when the
+    fixture is not actually past the bound, because then the walk never refuses and there
+    is nothing to escape. So the refusal is demonstrated on the same path first.
+    """
+    _fallback_only(monkeypatch)
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+
+    # The depth is MEASURED off the constructed path, never written down: a literal would
+    # agree with the bound only until one of them moved, and the literal moves silently.
+    deep_root = tmp_path
+    while len(cs._unit_order_path(OWNER, REPO, cid, deep_root).parent.parts) <= cs._MAX_CHAIN_DEPTH:
+        deep_root = deep_root / "g"
+    chain = cs._unit_order_path(OWNER, REPO, cid, deep_root).parent
+
+    with pytest.raises(ValueError):
+        cs._hold_chain_for_by_name_use(chain)
+
+    cs._record_unit_order(OWNER, REPO, cid, sid, deep_root)
+
+    written = cs._unit_order_path(OWNER, REPO, cid, deep_root)
+    assert not written.exists(), "the refusal dropped the write instead of writing unheld"

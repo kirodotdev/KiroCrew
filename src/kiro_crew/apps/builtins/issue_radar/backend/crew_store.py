@@ -994,11 +994,14 @@ def _read_unit_order_held(path: Path) -> tuple[str, ...]:
     means no order file can exist, and a read must not create the store it reads.
 
     An absent or unholdable component answers ``()``, as an unreadable file does: the
-    caller falls back to header order.
+    caller falls back to header order. A chain the walk REFUSES to chase -- a relative
+    path, or one past :data:`_MAX_CHAIN_DEPTH` -- answers the same way, because a read
+    that cannot hold its ancestors has nothing to say about the order file under them,
+    and header order is the fold's answer for a crew whose order cannot be read.
     """
     try:
         held = _hold_chain_for_by_name_use(path.parent)
-    except OSError:
+    except (OSError, ValueError):
         return ()
     try:
         return _recorded_unit_order_at(path)
@@ -1146,6 +1149,24 @@ def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
         _release_held(held)
 
 
+#: The deepest chain :func:`_hold_chain_no_follow` holds, counted in the components it
+#: OPENS -- ``[*reversed(directory.parents), directory]``, the filesystem root included.
+#:
+#: The walk costs one open per component, so a path with no bound on its depth is a
+#: stall INSIDE the hold rather than a refusal, and the work is done before anything
+#: it protects begins. The bound is measured against the deepest path this store
+#: builds rather than picked for symmetry: the app's data root, then
+#: ``repos/<owner>/<repo>/crews``, where ``owner`` is a provider NAMESPACE that
+#: carries one separator per level of nesting. Only a NON-GitHub provider has such a
+#: namespace, and that is exactly the case :func:`store.provider_root` routes through
+#: ``@providers/<provider>/<host>``, so the deep path always carries that triple too.
+#: A data root nine components deep reaches thirteen for a single-level owner and
+#: thirty-five for a provider nesting the twenty levels its own limit allows, so this
+#: refuses only a path no legitimate store produces while keeping the walk's cost
+#: bounded.
+_MAX_CHAIN_DEPTH = 64
+
+
 def _hold_chain_no_follow(directory: Path) -> list[int]:
     """Open every component of *directory* without following a link, and keep them open.
 
@@ -1197,12 +1218,33 @@ def _hold_chain_no_follow(directory: Path) -> list[int]:
     path -- the first open would then be the outbound authentication this exists to
     prevent. :func:`_unit_order_path` builds from :func:`data_home`, which is local.
 
+    Two refusals come before the first open, both ``ValueError``, because neither is a
+    fact about the filesystem and neither is worth one open to discover:
+
+    * A path that is not ABSOLUTE is refused. Its components resolve against a current
+      directory this walk never inspects, so the chain it would hold is not the chain
+      the caller named. ``Path.is_absolute`` is the test, which on Windows also refuses
+      a rooted path carrying no drive -- that one is anchored to whichever drive is
+      current, which is the same unexamined base under a different spelling.
+    * A path deeper than :data:`_MAX_CHAIN_DEPTH` components is refused. One open per
+      component is the walk's whole cost, so depth is the one input that turns this
+      guard into the delay it exists to prevent. The depth is the caller's to keep
+      sane, and a provider namespace arrives with one component per level of nesting.
+
     Root-first also decides the failure shape: a failure part-way releases what it took,
     because a half-held chain protects nothing and its descriptors would leak.
     """
+    if not directory.is_absolute():
+        raise ValueError(f"refusing to hold a chain under a relative path: {directory}")
+    components = [*reversed(directory.parents), directory]
+    if len(components) > _MAX_CHAIN_DEPTH:
+        raise ValueError(
+            f"refusing to hold a chain {len(components)} components deep, "
+            f"over a bound of {_MAX_CHAIN_DEPTH}: {directory}"
+        )
     held: list[int] = []
     try:
-        for component in [*reversed(directory.parents), directory]:
+        for component in components:
             held.append(_pin_held(component))
     except BaseException:
         _release_held(held)
