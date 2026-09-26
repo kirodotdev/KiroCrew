@@ -32,6 +32,33 @@ from kiro_crew.validation import (
 )
 
 
+def _fetch_remote_results(query: str, limit: int, source_id: str | None) -> list[dict]:
+    """The Bedrock remote leg, via the gateway's internal route.
+
+    Runs in the GATEWAY process because this MCP server is sandboxed and the
+    sandbox seals ``aws_service_consent.json`` with an inode-pinning
+    self-bind: a host-side consent withdrawal (atomic rename) never becomes
+    visible in here, so an in-process consent read could keep authorizing
+    paid retrievals after the operator withdrew. Dialled through
+    :func:`mcp_core._post` — the shared gateway chokepoint every other MCP
+    tool uses — which owns target resolution, per-generation secret
+    handling, and the moved-gateway replay. Fail-OPEN to [] on any
+    transport or error payload — the remote leg's standing contract.
+    """
+    try:
+        payload = mcp_core._post(
+            "/api/knowledge/remote-search",
+            {"query": query, "limit": limit, "source_id": source_id},
+            timeout=10.0,
+        )
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or payload.get("error"):
+        return []
+    results = payload.get("results")
+    return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+
+
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the knowledge tools."""
     return [
@@ -251,6 +278,33 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     # Filter by minimum confidence score
     min_score = 0.012
     results = [r for r in results if r.get("score", 0) >= min_score]
+
+    # Remote leg: registered bedrock_kb sources are queried live (they hold
+    # no local items) under a hard timeout and fail OPEN -- local results
+    # stand alone when the remote side is slow, broken, or absent. The leg
+    # runs THROUGH THE GATEWAY, not in-process: this MCP server is sandboxed,
+    # and the sandbox seals the consent store with a file-level self-bind
+    # that PINS THE INODE -- a host-side withdrawal (atomic rename) would be
+    # invisible here, so an in-process consent read could authorize paid
+    # calls after consent was withdrawn. The gateway reads the live store.
+    # Fast path first: the sources TABLE is not consent data and this
+    # process already holds the store, so the common no-bedrock install
+    # skips the loopback hop entirely.
+    has_remote = False
+    try:
+        has_remote = (
+            store.db.execute(
+                "SELECT 1 FROM sources WHERE source_type = 'bedrock_kb' LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+    except Exception:
+        has_remote = False
+    remote = _fetch_remote_results(query, limit, source_id) if has_remote else []
+    if remote:
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        results = bedrock_kb.merge_by_rank(results, remote, limit)
 
     if not results:
         mcp_core.sel().log_tool_invocation(

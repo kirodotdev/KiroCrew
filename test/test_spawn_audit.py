@@ -355,6 +355,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
+        # ``asyncio.run`` driving the async consent gate — matched because the
+        # detector's receiver set covers asyncio.* and attr set covers .run,
+        # but this is an event-loop entrypoint, not a subprocess primitive.
+        # The one subprocess it transitively reaches is the STS identity probe
+        # in cloud/aws.run_aws: fixed argv (aws sts get-caller-identity) with
+        # profile/region from operator-typed source config, never from agent
+        # output, and the probe result only ever REFUSES the retrieval.
+        "knowledge/connectors/bedrock_kb.py::_consent_allows",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

@@ -10,7 +10,6 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
 import ConnectionsPage from './connections/ConnectionsPage'
-import KnowledgePage from './KnowledgePage'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
 import { ContentSkeleton } from '../components/ui'
@@ -18,6 +17,13 @@ import { ContentSkeleton } from '../components/ui'
 // The template editor is a drill-in most sessions never open; its chunk is
 // fetched on the first visit rather than riding in the dashboard shell.
 const AgentTemplatesTab = lazy(() => import('./overview/AgentTemplatesTab'))
+
+// The Knowledge tab is its own chunk: the sources list, the ingestion
+// controls and the remote-source form are the largest first-party code on
+// this page and only one of eight tabs reaches them, so they sit behind the
+// same lazy boundary App.tsx gives its heavy pages (SessionsPage, MembersPage)
+// rather than in the App chunk that scripts/check-bundle-size.mjs budgets.
+const KnowledgePage = lazy(() => import('./KnowledgePage'))
 
 
 /**
@@ -93,8 +99,9 @@ export default function CapabilitiesPage() {
         {/* ErrorBoundary preserves the crash isolation the /knowledge route
             used to provide: the page lazy-loads the Graph chunk, and a stale
             chunk after a deploy would otherwise reject through to the root
-            boundary and take the whole dashboard down with it. */}
-        {tab === 'knowledge' && <ErrorBoundary><KnowledgePage embedded /></ErrorBoundary>}
+            boundary and take the whole dashboard down with it. The Suspense
+            covers the page's own chunk the same way. */}
+        {tab === 'knowledge' && <ErrorBoundary><Suspense fallback={null}><KnowledgePage embedded /></Suspense></ErrorBoundary>}
         {tab === 'steering' && <SteeringTab />}
         {tab === 'hooks' && <HooksPage embedded />}
         {tab === 'prompts' && <PromptsTab />}

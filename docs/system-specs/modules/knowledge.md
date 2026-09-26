@@ -110,7 +110,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` + `bedrock_kb` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
 | `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
@@ -453,6 +453,303 @@ The retrieval benchmark builds a disposable corpus with one embedding callable
 for both ingestion and queries. It explicitly uses `ANY_EMBEDDING_SPACE` because
 those synthetic rows have no persisted model signature and never share a store
 with user data. Production retrieval still requires the active signature.
+
+### Remote sources: `bedrock_kb` (`knowledge/connectors/bedrock_kb.py`)
+
+A `bedrock_kb` source points at one or more **Amazon Bedrock Knowledge Bases**
+in the user's own AWS account and holds **no local items**: the KB keeps its
+own index and embeddings, so Kiro Crew queries it live at search time instead
+of ingesting it (issue #7947). Consequences, in the order the code enforces
+them:
+
+- **Config, no secrets.** `properties` carry `kb_ids` (comma-separated; a
+  full KB ARN is accepted and normalized to its trailing ID so one knowledge
+  base has one spelling in the dedupe, the result ids and the audit rows),
+  `region`, optional `profile`. `kb_ids` is the one caller-supplied field a
+  source retains and re-parses on every search, so it is bounded where it is
+  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` entries (also the
+  per-search fan-out cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
+  each normalized id exactly the `[0-9A-Za-z]{10}` shape the Retrieve API
+  accepts. `validate_config` parses strictly and refuses the first violation
+  by name before any probe, and the insert only runs after validation, so
+  nothing out of bounds is probed or stored; the search-time parse of a
+  stored row drops what fails and truncates. The insert stores the
+  connector's `retained_properties(config)`: exactly those three keys, each
+  in the VALIDATED form the gates judged rather than the caller's raw
+  spelling -- `kb_ids` as the canonical comma-joined bare ids the strict
+  parse produced, `region` and `profile` as the stripped strings the
+  grant-equality check matched. Every gate strips or parses before it
+  judges, so a whitespace-padded value (or an ARN spelling) passes them
+  all; retaining the raw copy would store what nothing validated, bounded
+  only by the request-body cap. So the row's size follows the gates' own
+  bounds, its spelling is the one every later compare and result id uses,
+  and an extra field in the body, flat or nested, never reaches storage.
+  The row's `uri` -- the UNIQUE dedup key -- is likewise the server's
+  `canonical_source_uri(retained)` (`bedrock-kb://<region>/<sorted kb ids,
+  +-joined>`), never the caller's: a caller who chose the handle could mint
+  a row per request for one knowledge base, each carrying a `name` up to
+  the body cap, whereas the derived handle is one per distinct SET of
+  knowledge bases: the same ids in any order dedupe to one row (`409
+  source_exists`), so a search pays one Retrieve per KB rather than one per
+  spelling, while a set that shares a first id with an existing row (`A` vs
+  `A,B`) is a different source, not a false `409`. The form therefore posts
+  no `uri` for this type, and its default `name` (when the owner leaves the
+  field blank) is `Bedrock KB <bare first id>`, the trailing segment of a
+  pasted ARN: an ARN also carries the account id, and `name` is a column
+  every authenticated caller reads off the sources list. `add_source` also
+  bounds `name` itself, for every source type, at the `_MAX_SOURCE_NAME_LEN`
+  the rename endpoint already enforces (`400 name_too_long` before any
+  branch runs): the add path must not admit what a rename would refuse, or
+  a valid request lands an oversized row the list serves back on every
+  read. Credentials
+  resolve through
+  the standard AWS chain for the named profile at call time; nothing
+  credential-shaped is stored. boto3 ships in the optional `[bedrock]` extra
+  (same pin as `[voice-aws]`) and is imported lazily; without it the source
+  reports the missing extra on add instead of breaking core imports.
+- **Consent precedes every request.** Bedrock KB retrieval is registered as a
+  gated paid service in `kiro_crew.aws_consent` (`SERVICE_BEDROCK_KB`): the
+  add-time probe and every retrieval first pass the account-bound
+  authorization check (grant keyed on service+profile+region, live account
+  re-checked), refusing fail-closed — a repointed profile cannot receive so
+  much as an access check, and a revoked grant silently removes the source
+  from search results (logged by the consent layer) instead of billing an
+  unconfirmed account. **The sandboxed MCP server never evaluates consent
+  in-process**: the sandbox seals `aws_service_consent.json` with an
+  inode-pinning self-bind, so a host-side withdrawal (atomic rename) is
+  invisible to a sandboxed reader — its remote leg therefore calls the
+  gateway's internal `POST /api/knowledge/remote-search` (loopback +
+  `X-Internal-Secret`), and authorization, credential freeze-verify, and
+  per-retrieve rechecks all run in the gateway process against the live
+  keystone store. The per-retrieve recheck (`_refusal_reason`) runs
+  immediately before every paid request and reads two local facts from the
+  keystone store: the grant is still the one the frozen credentials were
+  verified against, AND the row the search runs for is still attested under
+  it. The enumeration checks the registration once when it starts, but a
+  delete landing during a search revokes the attestation and leaves the
+  grant in place, so a recheck that read only the grant would let the rest
+  of that search keep billing for a source the owner had just removed. A
+  retrieve the recheck refuses writes its own SEL `aws_consent.denied` event
+  naming the KB and which check refused (grant withdrawn or replaced, or
+  source registration withdrawn), so the audit log records every paid
+  request that did not happen, not only the ones the front gate turned
+  away; the freeze-verify refusal in `_get_client` (no grant, credentials
+  resolving to an account other than the confirmed one, or a grant confirmed
+  for a different profile/region) writes the same `denied` event naming the
+  target and which check refused, before any client is built. The grant is recorded from the **add-source form's own
+  consent card**: `bedrock-kb` is the one service whose target is taken from
+  the request (the source exists only in the form until saved), which is safe
+  because the shown account is probed fresh from that exact target, the POST
+  409s on any echo mismatch, and `is_granted` demands exact (profile, region)
+  equality at call time — a grant for a target nothing uses is inert. The
+  form's submit stays disabled until that grant exists (it subscribes to the
+  same consent query the card polls), so the server-side refusal is never a
+  first-time user's first signal — the card above the button is the visible
+  reason and the order. **The request body's shape is checked once, first**
+  (`_add_source_shape_error`): every text field `add_source` reads (`name`,
+  `source_type`, `uri`, `namespace`) must be a string or absent/`null`, and
+  `properties` an object, else 400 `<field> must be a string` / `properties
+  must be an object` before any field is used. Per-field checks at each
+  first use would leave one gap per field: a connector's `validate_config`
+  may ignore `url`, so a JSON object in `uri` would pass validation and
+  reach `str.startswith` as a 500. **Registering the source is an owner action**, the
+  same rule the consent endpoints apply (`is_owner_dashboard_request`, via
+  `_shared.require_owner_dashboard_request`): `add_source` refuses a
+  `bedrock_kb` body from a non-owner dashboard caller (an allow-listed
+  messaging user reaches the route with `app == ""`) or an app token with
+  403 `owner_only` BEFORE validation, because validation probes the KB with
+  the owner's credentials and the insert registers a KB the gateway then
+  queries on the owner's account against the owner's grant. Local sources
+  keep `add_source`'s existing, ungated behaviour. The bundle routes are not
+  a way around the rule: `/api/knowledge/import` is open to every
+  authenticated caller and carries no consent, validation or target check,
+  so `KnowledgeStore.import_bundle` refuses a `bedrock_kb` row (counted as
+  `sources_refused` in the result and the `knowledge.import` SEL line) and
+  `export_all` leaves such rows out -- a live account binding with no items is
+  not knowledge (`_ACCOUNT_BOUND_SOURCE_TYPES`). "No items" is enforced at
+  the writer, not assumed: `KnowledgeStore.add_item` and
+  `add_source_location_in_txn` raise `LiveSourceHoldsNoItems` for a
+  `source_id` naming an account-bound row (one primary-key read inside the
+  write transaction), and the agent's `POST
+  /api/knowledge/sources/{id}/ingest-text` refuses such a target with 409
+  `live_source_holds_no_items` before the body is read, so the caller sees a
+  coded refusal rather than the store's as a 500 after extraction. Without
+  the writer-side rule the export filter would be the defect: an item
+  written under a `bedrock_kb` row (its id is readable by any authenticated
+  caller, and the ingest-text route takes any existing id) would travel
+  while its source row does not, and a clean store's import would trip
+  `items.source_id`'s foreign key and roll the whole bundle back. The
+  export holds the same line for what the writer rule cannot reach:
+  `knowledge.db` is agent-writable in-sandbox, so a row planted under a
+  `bedrock_kb` source by a direct write bypasses `add_item`, and
+  `export_all` leaves such items out together with the locations,
+  mentions and relations riding on them (the set `import_bundle` refuses,
+  ids compared as text), so an export never names a row it dropped. The
+  deletion paths hold the same line: when a source is deleted
+  (`delete_source_cascade`) or drops its copy of a document
+  (`delete_items_batch_in_txn`), a surviving item's new owner comes from
+  `_reassignment_candidates`, the holders of the item that are not
+  account-bound, so a planted `source_locations` row never makes a
+  `bedrock_kb` row the owner of a local document (the document would
+  survive live and vanish from every bundle); an item whose only other
+  holders are account-bound goes with its owner, as if no other holder
+  existed, and the planted row goes with it. The
+  refusal extends to
+  what depends on such a row: a bundle item whose `source_id` names a
+  refused row OR an already-registered account-bound source (its id is
+  readable by any authenticated caller off the sources list) is refused and
+  counted as `items_refused`, and the locations, mentions and relations
+  riding on that item are dropped with it -- so no local content ever lands
+  under a live-only source, and a crafted bundle cannot fail the whole
+  import on that item's FK. Only a refused row or item that carries an id
+  joins its refused set, and a dependent is matched only when its own id is
+  not null: `str(None)` is the text "None", which a bundle can also spell as
+  a source or item id, so a local source called "None" keeps its items and
+  an evidence-free relation is not dropped because a refused item was
+  called "None". **The row itself is not the registration; the attestation
+  is.** `knowledge.db` is agent-writable in-sandbox (the MCP server ingests
+  into it in-process, and the sandbox seals neither `workspace/knowledge` nor
+  the file), so a `bedrock_kb` row on its own proves nothing about who put
+  it there: an agent could clone one, or point a clone at any KB the granted
+  profile reaches, and the enumeration would pay to query it. So the
+  owner-gated, consent-checked insert also records the row in
+  `aws_service_consent.json` (`aws_consent.record_source_attestation`, under
+  the `bedrock-kb.sources` key beside the grants, written under the same
+  lock; the file is in `sandbox._CREW_READONLY_LEAVES`, so only the gateway
+  writes it), pinned to the row's id, uri and retained `kb_ids`/`region`/
+  `profile`, AND to the account the grant confirms at that moment: a
+  profile name is not an account (the reason `authorize` re-verifies it on
+  every call), and re-pointing the profile then confirming again keeps the
+  same profile and region, so without the account the old registration
+  would authorize paid retrieval of the same KB id in the new account.
+  `attested_sources` therefore returns only entries recorded under the
+  CURRENT grant's account; a grant confirmed for another account leaves
+  every earlier registration unattested until the owner adds the source
+  again. The two writes of an add (row, attestation) and of a delete are not
+  one transaction, so each fails in the safe direction: an attestation
+  write that fails undoes the insert (`bedrock_kb_attestation_failed`, no
+  row), and a delete revokes the attestation FIRST (a failed revoke deletes
+  nothing: `bedrock_kb_attestation_revoke_failed`), so a failure between the
+  two leaves at worst a dark row a retry removes, never an attestation
+  without a row that a later row minted under the same id and values would
+  inherit. `revoke_source_attestation` reads the store strictly for the
+  same reason `revoke_for_profile` does: an unreadable store must raise
+  (the route answers the coded 500 and deletes nothing) rather than read as
+  "nothing attested", which would delete the row and leave the attestation
+  on disk for a re-minted row to inherit; only a missing store is the
+  ordinary nothing-attested case. Deleting a `bedrock_kb` row is owner-only
+  like adding one
+  (`knowledge.delete_source.bedrock_kb`); a local source's delete is not
+  gated. Whether a row IS a Bedrock row is decided from the sealed
+  attestation under its id (`has_source_attestation`, read strictly, any
+  account, before the row's type is trusted) OR from its `source_type`,
+  never from the type alone: that column lives in the agent-writable
+  `knowledge.db`, so a registered row an agent re-labelled as a local one
+  would otherwise skip both the owner gate and the revoke and leave its
+  attestation for a row re-minted under the same id and values to inherit.
+  An unreadable store refuses the delete (the same coded 500) before
+  anything is mutated. Every field the row retains carries its own bound at the retention
+  site: `kb_ids` through `_parse_kb_ids`, and `region`/`profile` through
+  `aws_consent.target_is_well_formed` (the shapes a grant can be confirmed
+  under: profile at most 128 characters, region at most 64), checked by
+  `validate_config` before any probe and again by `retained_properties`
+  (`bedrock_kb_config_invalid`), so no value a grant could never name
+  reaches the row or the attestation. `search_remote_sources` reads
+  the attestations once per enumeration and searches only rows that still
+  match one; a row that does not (a clone, or an attested row whose stored
+  KB set was widened afterwards) is skipped before any consent or credential
+  work, with an `aws_consent.denied` SEL line naming the row id (not its KBs
+  or the account). The
+  consent store holds ONE grant per service, so v1 supports one Bedrock
+  account at a time — ENFORCED at add: a second source whose (profile,
+  region) differs from a registered bedrock_kb source is refused with
+  `bedrock_kb_target_conflict` (409), because letting it in would let its
+  re-confirmation silently disable the first source's retrievals — and
+  ENFORCED at confirm: the consent POST refuses (409, same code) a
+  bedrock-kb target that differs from a registered source's, since
+  recording it would overwrite the single per-service grant in place: the
+  registered source would go silently dark while the new target still
+  could not be added past the add-time guard. Same-target re-confirmation
+  stays allowed (the mid-probe re-confirmation path depends on it). Both
+  refusals name the source that holds the other target, and that name is a
+  `sources` row an in-sandbox agent can write directly, past the handler's
+  name bound; the compare renders it through the platform shim
+  `kiro_crew.platform.redact_via_context` (a composed companion policy's
+  extra shapes on top of the OSS baseline, which runs the URL pass before
+  the credential pass) before either payload is built, so a planted
+  credential or exfiltration URL reaches the operator as the redaction tag
+  and the `(profile, region)` stays readable. Both
+  gates run their compare-and-write as ONE critical section under the
+  connector's `target_change_lock` (the slow probes/validation stay
+  outside), so a concurrent add and confirm cannot interleave between check
+  and write; the locked insert also re-checks the LIVE grant for the
+  source's exact target (`bedrock_kb_grant_changed`, 409) so a source can
+  never be registered against a grant that moved during validation, and
+  requires the grant's ACCOUNT to be the one the handler read before
+  validation began (same code): same target is not the same account, a
+  profile can be re-pointed and re-confirmed for the same (profile, region)
+  while validation was probing the KB in the account before, and the
+  attestation pins the account the grant confirms at insert, so without
+  the account check the row would authorize paid retrieval of a KB never
+  validated there. A same-target, same-account re-confirmation (a fresh
+  `grant_id`) still passes. `record_source_attestation` takes that
+  `expected_account` and refuses to pin any other, so the attestation cannot
+  name an account the KB was not probed in whatever ran between validation
+  and the write; and the compare FAILS CLOSED — a sources-table lookup error
+  refuses with `bedrock_kb_conflict_check_failed` (503) rather than reading
+  as "no conflict"; that code covers the lookup alone, so a grant write
+  that fails propagates as the unhandled error it is, for every service,
+  the way the other consent writes do. The remote-leg
+  budget (`REMOTE_SEARCH_TIMEOUT_SECS`) explicitly absorbs the uncached
+  per-search STS consent probe, and is enforced INSIDE the worker as a
+  monotonic deadline checked before each per-source and per-KB request —
+  the pool future's `result(timeout)` alone only abandons the waiter,
+  leaving the worker issuing paid Retrieve calls it can no longer deliver.
+  A budget skip is fail-open silence, never a validate-visible KB failure.
+- **Probe on add.** `validate_config` issues a 1-result `Retrieve` per KB, so
+  a bad id, region, or profile is refused at add time. Authorization-class
+  errors fail validation; service-side errors (throttling, 5xx) prove the KB
+  exists and pass.
+- **Retrieve with the managed fallback.** Retrieval tries
+  `vectorSearchConfiguration` first and retries with
+  `managedSearchConfiguration` only when the ValidationException names it —
+  MANAGED-type KBs reject the vector key (`implicitFilterConfiguration` is
+  never sent on the managed path). The fallback is its own paid request and
+  gets the same two checks the per-KB loop applies before each request: the
+  grant is re-asserted, and a rejection slow enough to spend the search
+  budget leaves the fallback unissued (empty result, not an error). Multi-KB
+  sources fan out one Retrieve per
+  KB and merge by relevance score; one unreachable KB is logged and skipped
+  rather than sinking the others. The query text is the one part of a
+  knowledge search that leaves the host, and it is caller-supplied free
+  text, so it goes out through the same platform shim,
+  `kiro_crew.platform.redact_via_context`, never `security.redact`
+  directly: on a host whose profile composes a companion credential
+  policy the companion's shapes apply too, and the baseline runs the URL
+  pass before the credential pass; a credential inside a URL's query
+  string blanked ahead
+  of the URL pass leaves a placeholder the URL matcher does not recognise,
+  and the URL's host and remaining query would reach the Retrieve API.
+  Local search legs keep the raw text; only this egress redacts.
+- **Citations from document metadata.** Each result's URL comes from the
+  `source_uri` metadata attribute (the convention KB-building crawlers write),
+  falling back to the reserved `x-amz-bedrock-kb-source-uri` key and then the
+  raw storage location — so hits cite the original document, not an S3 object.
+- **Query path: async callers only, bounded, fail-open.** The remote leg runs
+  in `local_knowledge_search` (MCP) and `search_for_context` (dashboard) via
+  `search_remote_sources_bounded` — a shared worker pool plus
+  `REMOTE_SEARCH_TIMEOUT_SECS` wall-clock budget over per-request boto
+  connect/read timeouts. Any failure or timeout returns `[]` and local results
+  stand alone. It never runs inside `HybridRetriever.search` (sync, and the
+  scoped-search exhaustion loop would multiply remote round trips). An
+  install with no `bedrock_kb` rows pays one indexed `SELECT ... LIMIT 1` and
+  no thread.
+- **Merge by rank, not score.** Local RRF scores (~0.01–0.06) and Bedrock
+  relevance scores (0–1) are not comparable, so `merge_by_rank` interleaves
+  the two legs positionally (local first) instead of sorting on raw score.
+- **Sync is a no-op.** `detect_changes` is always `False`, so `SyncScheduler`
+  never ingests the source; the dashboard shows it as connected rather than
+  synced.
 
 ### On-loop connection guard (`on_loop_db.py`)
 
