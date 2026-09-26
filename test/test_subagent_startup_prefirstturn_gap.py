@@ -192,7 +192,7 @@ def test_startup_watchdog_reaps_a_run_wedged_after_entering_execution():
     """
     mgr = _make_manager(max_concurrent=1)
     info = SubagentInfo(id="wedged", task="t", agent="")
-    info._exec_started = time.time() - (_STARTUP_TIMEOUT_SECS + 10)
+    info._exec_started = time.time() - (mgr._startup_deadline + 10)
     info.turns = 0
     info._pid = None
 
