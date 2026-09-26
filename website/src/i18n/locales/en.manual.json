@@ -7352,8 +7352,16 @@
       "saving": "Saving..."
     },
     "offline": {
+      "delete_artifacts": "delete artifacts",
+      "delete_folders": "delete folders",
+      "dimmed_actions_need_connection": "Gateway offline — the dimmed actions need a connection",
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
+      "move_folders": "move folders",
+      "name_not_saved_keep_field_open": "Gateway offline — not saved yet. Keep this field open and reconnect; closing it discards the name.",
+      "rename_folders": "rename folders",
+      "save_folder_names": "save folder names",
+      "star_artifacts": "star or unstar artifacts",
       "submit_comments": "submit comments"
     },
     "popoutController": {

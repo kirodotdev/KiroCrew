@@ -210,3 +210,35 @@ describe('ja plural forms (style/ja.md §5)', () => {
     expect(bad, report(bad)).toEqual([])
   })
 })
+
+/**
+ * `utils.offline.gateway_offline_reconnect` renders "{{action}}するには…", so the
+ * action must be a を-marked verb phrase ("フォルダー名を保存") that `する` can take.
+ * A の-nominalisation ("フォルダー名の保存") reads fine alone but renders as
+ * "フォルダー名の保存するには", so the mismatch only appears once interpolated.
+ */
+describe('ja interpolated actions (utils.offline.gateway_offline_reconnect)', () => {
+  const PREFIX = 'utils.offline.'
+  /** Keys under utils.offline that are NOT interpolated as {{action}}. */
+  const NOT_ACTIONS = new Set([
+    'gateway_offline_reconnect',
+    'disabled_gateway_offline',
+    'dimmed_actions_need_connection',
+    'name_not_saved_keep_field_open',
+  ])
+  const actions = Object.entries(ja).filter(
+    ([key]) => key.startsWith(PREFIX) && !NOT_ACTIONS.has(key.slice(PREFIX.length)),
+  )
+
+  it('the frame still interpolates {{action}} and there are actions to check', () => {
+    expect(ja[`${PREFIX}gateway_offline_reconnect`]).toContain('{{action}}する')
+    expect(actions.length).toBeGreaterThan(0)
+  })
+
+  it('marks every action with を, so `する` has a verb to attach to', () => {
+    const bad = actions
+      .filter(([, value]) => !value.includes('を'))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+})
