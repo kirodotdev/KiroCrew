@@ -1201,17 +1201,26 @@ def governance_permits(
     because the degrade is caught HERE — a caller that wraps this in its own
     ``except`` to fail closed can never see the error (it is swallowed), so the
     DENY must be produced at the point the exception is actually caught.
+
+    A catalog row flagged ``deny_when_ungoverned`` (``steering.sources``) denies
+    when neither level names it; that disposition lives in
+    :func:`kiro_crew.platform.governance.ungoverned_decision` and is applied by
+    ``resolve`` and by the no-ceiling-no-profile shortcut below alike, so
+    ``policy explain`` and this helper cannot disagree about an absent scope.
     """
     from kiro_crew.platform.context import (
         PlatformCompositionError,
         current_context,
     )
-    from kiro_crew.platform.governance import Decision, resolve
+    from kiro_crew.platform.governance import Decision, resolve, ungoverned_decision
 
     try:
         ceiling = getattr(current_context(), "governance", None)
         profile = resolve_active_scope(session_key, agent=agent, app=app)
         if ceiling is None and profile is None:
+            absent = ungoverned_decision(scope)
+            if not absent.permitted:
+                return absent
             return Decision(True, "ungoverned", rule="default")
         return resolve(ceiling, profile, scope, item)
     except PlatformCompositionError:

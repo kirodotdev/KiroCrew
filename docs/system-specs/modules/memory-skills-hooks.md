@@ -1312,6 +1312,31 @@ under, a link below the root is still refused. The managed-state isolation
 resolved spelling, so it fires for resolved candidates on symlinked-home hosts
 exactly as it does elsewhere.
 
+One linked source is admissible, and only by opt-in: a symlink sitting under the
+user's global `~/.kiro/steering` (through real directories, never below a linked
+one) whose name the glob's final component selects — a wildcard (`**/*.md`) or a
+literal (`**/shared.md`, `*/shared.md`) alike, one rule for both — and whose
+CANONICAL target the host-bound `steering.sources` ruleset names (policy ∩ host
+profile; the catalog row is flagged `deny_when_ungoverned`, so absence from both
+denies, and `fail_closed` so an evaluation error denies — see
+[governance](governance.md#global-steering-leaf-links--steeringsources)). The
+link keeps its own spelling as the document's logical identity — its source
+label and the stem its `#name` / `fileMatch` trigger runs against — while
+authorization and the read address the resolved target, pinned to that exact
+file through the no-follow byte reader so a leaf or ancestor swapped after
+approval cannot redirect the read to an unapproved sibling. Admission is decided
+by the link's location, so the same link reached by the global scan, the default
+template's `file://.kiro/steering/**/*.md` resource, the native launch capture or
+a project rooted at the home is one document, judged by the same admission rules
+at scan time and again at read time (a grant revoked between the two refuses the
+read); `validate_file_path` is the first call that resolves it, its ancestors are
+screened before the leaf itself is probed, and the target's type is judged by the
+pinned descriptor, not probed by name — an admitted link is captured as a
+document, never walked as a directory. Both spellings pass the managed-state
+refusal and the sensitive-path fence first. An unapproved, dangling, directory-,
+device- or non-Markdown link raises like every other refusal. Project steering
+links, template links to anything else and directory links are unchanged.
+
 These essentials are read and validated on every member turn. The builder
 stages a complete snapshot on the actual serving provider, which suppresses its
 wire envelope after successful consumption while its content, source list and

@@ -3229,6 +3229,113 @@ config `agent.approval_mode`. Those carry their own vocabulary and are tracked
 separately from this scope — see the reserved `approval_mode` ordinal's
 still-reserved note.
 
+### Global steering leaf links — `steering.sources`
+
+The member-essentials collector (`member_essential_context.py`, see
+[memory-skills-hooks](memory-skills-hooks.md#member-v2-essential-context)) refuses
+every linked source it meets. A symlink placed under the user's global
+`~/.kiro/steering` (`~/.kiro/steering/shared.md -> /srv/standards/shared.md`) is
+the ONE exception, and it is opt-in: the `steering.sources` `SCOPE_CATALOG` row (a
+`ScopedRuleset` on the `path` matcher, mirroring `filesystem.read`) must name the
+link's **canonical target**. The document is spelled
+
+```json
+{"steering": {"sources": {"mode": "allow", "allow": ["/srv/standards/*.md"]}}}
+```
+
+in `security_policy.json` or in a profile bound to the host surface.
+
+**What is authorized, and what is not.** The subject of the decision is the
+resolved target (`validate_file_path`, i.e. `realpath` plus the sensitive-path
+fence), never the link. Nothing about the link carries trust: not who created it,
+not that it sits in the user's home or a configured workspace, not the target
+document's frontmatter, not an agent spec that names it. The link's own spelling
+stays the document's **logical identity** — it labels the delivered source and it
+is the stem a `#name` manual trigger or a `fileMatch` selection runs against — so
+two links to one file are two documents with two triggers, deliberately not
+collapsed. Admission is decided by **where the link sits**, not by which scan
+reached it: the same link is one document whether the global steering scan, the
+default template's `file://.kiro/steering/**/*.md` resource, the native launch
+capture or a project rooted at the home reaches it, and one rule judges it
+whether the glob's final component is a wildcard (`**/*.md`) or a literal
+(`**/shared.md`, `*/shared.md`), at the top of the tree or below real
+subdirectories. Only a link whose name that final component selects reaches the
+decision. Logical paths containing `..` cannot enter this admission path.
+A `.txt` link under the default `**/*.md` scan, a link at a directory position, a link below
+a linked directory and a link anywhere outside the canonical home's
+`.kiro/steering` are refused as before, never skipped, and `validate_file_path`
+is the first call that resolves the link — nothing probes the target before the
+sensitive-path fence has seen it. The target's type is not probed by name either:
+a link to a directory, the filesystem root, a device or a dangling target is refused
+by the pinned descriptor reader (`S_ISREG` on the opened inode), never descended or
+listed — an admitted link is handed to that reader as a document, never walked as
+a directory, which is what keeps a Windows junction from being listed. Project
+`.kiro/steering` links, template `file://` resource links to anything else,
+`AGENTS.md`/`SOUL.md` links and directory-link traversal are unchanged and still
+refused under any approval; real files under `~/.kiro/steering` behave exactly as
+before.
+
+**Default deny, by catalog metadata.** Every other ruleset row treats an unnamed
+scope as ungoverned-and-permitted. This row carries
+`ScopeSpec(deny_when_ungoverned=True)`: when neither the ceiling nor the active
+profile names the scope, `ungoverned_decision` answers a denying `Decision`
+(`layer == "default"`), and `resolve` consults that rule generically — no scope
+name is branched on, and `governance_permits`' no-ceiling-no-profile shortcut
+consults the same rule, so `kirocrew policy explain steering.sources <path>
+--session-key _host` reports `DENIED` on a host that has not opted in, exactly as
+the collector does. The `--session-key _host` is load-bearing: the collector
+evaluates the HOST surface (`HOST_SESSION_KEY`), while the command's default
+`cli_chat` asks about the chat surface's profile and can answer differently. The
+Security panel's governance viewer reports the row `governed: false` with
+`deny_when_ungoverned: true`, and renders "Nothing allowed" rather than "Not
+restricted"; it does not claim an enterprise policy is in effect. The row is
+labelled "Linked steering sources", deliberately not "Steering": ordinary guides
+under `~/.kiro/steering` are read regardless of this row, and a bare "Steering —
+Nothing allowed" would tell the user their guides are off. When either level
+names the row, the unchanged `resolve` algebra decides (policy ∩ profile, tightest
+wins): a host-bound profile alone may grant while the policy is silent, and a
+policy alone may grant while no profile is bound. This is the **consumption
+default of an opt-in scope, not an enterprise deny floor** — an operator who wants
+the scope pinned closed for every host authors an explicit empty allow list at the
+policy, which no profile can widen. An evaluation error denies (`fail_closed`). The
+keystone still binds: a canonical target that is sensitive (`~/.aws`, the trust
+root) or managed state (a member's memory, `config_dir()`) is refused before the
+ruleset is consulted, whatever the pattern says.
+
+**The read is pinned to the exact approved file.** Admission runs at scan time
+and again at read time — a profile revoked between the two refuses the read — and
+the read opens the CANONICAL path through
+`safe_read_file_bytes_nolink(within_root=<that file>,
+within_root_is_canonical=True)`: the descriptor actually read must resolve to the
+very file the ruleset named. A link retargeted after approval is simply not
+re-followed; a canonical leaf swapped for a link — even to a sibling the pattern
+would also admit — or an ancestor swapped for a link resolves elsewhere and the
+read returns a refusal, not the sibling. Hardlinked and non-regular inodes are
+refused by the reader, and the per-document byte cap (reported in bytes, naming the
+canonical target), the document ceiling and the scan budget count linked leaves
+like any other. Every failure on this path — a resolution error, a governance
+composition error, an oversized target — surfaces as one
+`MemberEssentialContextError`.
+
+**Authoring.** The `path` matcher is lexical over the canonical path, so patterns
+must spell real resolved directories — the alias `~/standards -> /srv/standards`
+is not what is matched. `fnmatch`'s `*` crosses directory separators, so
+`/srv/standards/*.md` also admits `/srv/standards/nested/deep.md`; prefer narrow
+allow-mode directory patterns and keep the approved tree shallow. Deny mode is an
+explicit open-set choice — everything not denied is readable — and is honoured as
+written, not rewritten. The row is read at boot with the ceiling and on every
+`policy_distribution.apply_ceiling` reload like every other row; there is no
+separate cache, so a changed policy applies to the next essentials build. An older
+build reading a policy that names `steering` fails closed at boot (`unknown
+governed key`). This governs the Crew-managed essentials paths (fresh, resumed and
+post-compaction member turns, the native launch capture and the projected resource
+snapshot) only — it is not a filesystem policy for the native CLI, a Claude harness
+or the steering viewer, each of which reads `~/.kiro/steering` on its own terms.
+One platform test gap is carried knowingly: the exact-file `within_root` pin is
+compared on a case-sensitive spelling, so a macOS case-insensitive volume reached
+through a case-only alias could false-deny; that is a refusal, not a grant, and is
+not pinned by a test on this host.
+
 ### Computer use is NOT governed (deliberately)
 
 Computer use (see [computer-use.md](computer-use.md)) has **no scope rows in

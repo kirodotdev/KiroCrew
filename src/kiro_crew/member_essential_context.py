@@ -11,7 +11,7 @@ from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
-from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -161,7 +161,37 @@ def _admitted_root(root: Path) -> Path | None:
     return None if admitted is None else Path(admitted)
 
 
+def _global_steering_tree() -> Path | None:
+    """The canonical home's ``.kiro/steering``, the only tree whose leaf links are admissible."""
+    home = _admitted_root(Path.home())
+    return None if home is None else home / ".kiro" / "steering"
+
+
+def _is_global_steering_leaf_link(path: Path) -> bool:
+    """Is *path* a link sitting under the canonical global steering tree, through real directories?
+
+    Decided by location, not by which caller scans: the same link reached through
+    the global scan, the default template's resource glob, the native capture or a
+    project equal to home is one document with one admission. A link below a
+    linked directory is not a leaf of that tree.
+
+    Ancestors are screened BEFORE the leaf is probed: ``lstat`` on the leaf
+    traverses every ancestor, so a linked one -- on Windows, a junction onto a
+    share -- would be followed by the very probe meant to refuse it.
+    """
+    tree = _global_steering_tree()
+    return (
+        tree is not None
+        and ".." not in path.parts
+        and path.parent.is_relative_to(tree)
+        and first_linked_ancestor(path) is None
+        and is_link_or_junction(path)
+    )
+
+
 def _read(path: Path, root: Path) -> str:
+    if _is_global_steering_leaf_link(path):
+        return _read_governed_steering_leaf(path)
     try:
         _refuse_managed_source(path)
         admitted = validate_file_path(str(path))
@@ -188,8 +218,122 @@ def _read(path: Path, root: Path) -> str:
         raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
 
 
+def _admit_governed_steering_leaf(logical: Path) -> Path:
+    """Authorize one global steering leaf link; return the canonical file it may read.
+
+    The link's own spelling stays the document's identity (its label and its
+    ``#name`` / ``fileMatch`` stem); only its canonical target is authorized, by
+    the host-bound ``steering.sources`` ruleset. ``validate_file_path`` is the
+    first call that resolves the link -- nothing probes the target before the
+    sensitive-path fence has seen it -- and its type is left to the pinned
+    descriptor reader. Every failure here is a ``MemberEssentialContextError``.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+    from kiro_crew.platform.governance import STEERING_SOURCES_SCOPE
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, governance_permits
+
+    try:
+        if not _is_global_steering_leaf_link(logical):
+            raise ValueError("linked source outside the global steering tree")
+        _refuse_managed_source(logical)
+        admitted = validate_file_path(str(logical))
+        if admitted is None:
+            raise ValueError("linked target cannot be read safely")
+        canonical = Path(admitted)
+        _refuse_managed_source(canonical)
+        decision = governance_permits(
+            STEERING_SOURCES_SCOPE,
+            str(canonical),
+            session_key=HOST_SESSION_KEY,
+            fail_closed=True,
+        )
+        if not getattr(decision, "permitted", False):
+            raise ValueError(
+                f"{STEERING_SOURCES_SCOPE} does not permit linked target "
+                f"{str(canonical)!r} ({getattr(decision, 'reason', '')})"
+            )
+        return canonical
+    except MemberEssentialContextError:
+        raise
+    except (OSError, ValueError, PlatformCompositionError) as exc:
+        raise MemberEssentialContextError(f"Essential source {logical}: {exc}") from exc
+
+
+def _read_governed_steering_leaf(logical: Path) -> str:
+    """Read an admitted leaf link, pinned to the exact canonical file the ruleset named.
+
+    Admission runs again here; the scan's verdict is not carried over. The open
+    uses ``within_root`` equal to that file, so a link retargeted or a canonical
+    leaf or ancestor swapped after approval resolves elsewhere and is refused
+    rather than read -- never a sibling the pattern would also admit.
+    """
+    canonical = _admit_governed_steering_leaf(logical)
+    try:
+        data = safe_read_file_bytes_nolink(
+            str(canonical),
+            within_root=str(canonical),
+            max_bytes=_MAX_SOURCE_BYTES,
+            allow_truncate=False,
+            within_root_is_canonical=True,
+        )
+        if data is None:
+            raise ValueError(
+                f"linked target {str(canonical)!r} is missing, unreadable, hardlinked, "
+                "not a regular file, or no longer the approved file"
+            )
+        return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except FileTooLargeError as exc:
+        raise MemberEssentialContextError(
+            f"Essential source {logical}: linked target {str(canonical)!r} exceeds "
+            f"{_MAX_SOURCE_BYTES} bytes"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise MemberEssentialContextError(f"Essential source {logical}: {exc}") from exc
+
+
+def _leaf_link_candidate(name: str, pieces: tuple[str, ...], offset: int) -> bool:
+    """Does the glob's final component select this entry name? Lexical only.
+
+    True at the final component itself, and at a ``**`` directly before it whose
+    listing already shows a name the final component will match -- the same
+    directory is listed again there, where the link is judged.
+    """
+    final = len(pieces) - 1
+    if offset == final:
+        return True
+    return (
+        pieces[offset] == "**" and offset + 1 == final and fnmatch.fnmatchcase(name, pieces[final])
+    )
+
+
+def _judge_link(path: Path, name: str, pieces: tuple[str, ...], offset: int) -> bool:
+    """The one rule for a link the walk meets, whichever component met it.
+
+    A link is never descended, so the only question is whether it is a document.
+    At the final component a leaf under the canonical global steering tree is
+    admitted through :func:`_admit_governed_steering_leaf` and captured -- its
+    type is the pinned reader's to judge, never probed by name. Before the final
+    component a ``**`` listing leaves such a candidate for the pass that judges
+    it there. Every other link is refused.
+    """
+    if offset == len(pieces) - 1:
+        if _is_global_steering_leaf_link(path):
+            _admit_governed_steering_leaf(path)
+            return True
+    elif _leaf_link_candidate(name, pieces, offset):
+        return False
+    raise MemberEssentialContextError(f"Essential source {path}: linked document or directory")
+
+
 def _matches(root: Path, pattern: str) -> list[Path]:
-    """Expand a declared glob with bounded directory work and no link traversal."""
+    """Expand a declared glob with bounded directory work and no link traversal.
+
+    A literal component and a wildcard component meet a link through the same
+    rule, :func:`_judge_link`: location decides, not the caller or the spelling
+    of the glob, so a leaf under the canonical global steering tree is admitted
+    whether ``**/*.md``, ``**/shared.md`` or ``*/shared.md`` reaches it, and a
+    link anywhere else stays refused.
+    """
     pieces = Path(pattern).parts
     if Path(pattern).is_absolute() or ".." in pieces:
         raise MemberEssentialContextError(
@@ -207,6 +351,15 @@ def _matches(root: Path, pattern: str) -> list[Path]:
     result: set[Path] = set()
     scanned = 0
     visited: set[tuple[Path, int]] = set()
+    final = len(pieces) - 1
+
+    def capture(path: Path) -> None:
+        result.add(path)
+        if len(result) > _MAX_DOCUMENTS:
+            raise MemberEssentialContextError(
+                f"Essential source {root / pattern}: too many documents"
+            )
+
     while pending:
         directory, offset = pending.pop()
         if (directory, offset) in visited:
@@ -226,15 +379,14 @@ def _matches(root: Path, pattern: str) -> list[Path]:
             # project root must not exhaust a steering subtree's scan budget.
             path = directory / component
             if is_link_or_junction(path):
-                raise MemberEssentialContextError(
-                    f"Essential source {path}: linked document or directory"
-                )
-            if offset + 1 < len(pieces):
+                if _judge_link(path, component, pieces, offset):
+                    capture(path)
+            elif offset < final:
                 pending.append((path, offset + 1))
             elif path.is_file():
-                result.add(path)
+                capture(path)
             continue
-        if component == "**" and offset + 1 < len(pieces):
+        if component == "**" and offset < final:
             pending.append((directory, offset + 1))
         try:
             with os.scandir(directory) as entries:
@@ -255,18 +407,15 @@ def _matches(root: Path, pattern: str) -> list[Path]:
                     except _ManagedEssentialSourceError:
                         continue
                     if is_link_or_junction(path):
-                        raise MemberEssentialContextError(
-                            f"Essential source {path}: linked document or directory"
-                        )
-                    if entry.is_dir(follow_symlinks=False):
-                        if component == "**" or offset + 1 < len(pieces):
+                        # Judged before the directory test: a junction reports
+                        # itself a directory and would otherwise be descended.
+                        if _judge_link(path, entry.name, pieces, offset):
+                            capture(path)
+                    elif entry.is_dir(follow_symlinks=False):
+                        if component == "**" or offset < final:
                             pending.append((path, offset if component == "**" else offset + 1))
-                    elif offset == len(pieces) - 1:
-                        result.add(path)
-                        if len(result) > _MAX_DOCUMENTS:
-                            raise MemberEssentialContextError(
-                                f"Essential source {root / pattern}: too many documents"
-                            )
+                    elif offset == final:
+                        capture(path)
         except FileNotFoundError:
             continue  # A declared glob matching no existing source is valid.
         except OSError as exc:
