@@ -66,6 +66,7 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "ask_question",
         "reset_conversation",
         "chat_tag",
+        "goal",
     }
 )
 

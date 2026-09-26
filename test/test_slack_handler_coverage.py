@@ -259,12 +259,13 @@ class TestStopCommand:
     async def test_soft_stop_posts_stopped(self, slack, sessions, owner):
         sessions.has_session.return_value = True
 
-        async def _stop(key, *, force=False, on_soft=None, on_hard=None):
+        async def _stop(key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
             await on_soft()
             return "soft"
 
         sessions.stop_turn = AsyncMock(side_effect=_stop)
         await _slash("!stop", slack, sessions)
+        assert sessions.stop_turn.await_args.kwargs["goal_state"] is h.get_dashboard_state()
         assert "Execution stopped." in _texts(slack)
         assert any(a[0] == "ephemeral" for a in slack.actions)
 
@@ -272,12 +273,13 @@ class TestStopCommand:
     async def test_hard_stop_reports_session_reset(self, slack, sessions, owner):
         sessions.has_session.return_value = True
 
-        async def _stop(key, *, force=False, on_soft=None, on_hard=None):
+        async def _stop(key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
             await on_hard()
             return "hard"
 
         sessions.stop_turn = AsyncMock(side_effect=_stop)
         await _slash("!stop", slack, sessions)
+        assert sessions.stop_turn.await_args.kwargs["goal_state"] is h.get_dashboard_state()
         assert "session reset" in _texts(slack)
 
     @pytest.mark.asyncio

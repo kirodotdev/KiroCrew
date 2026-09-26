@@ -57,6 +57,7 @@ __all__ = [
     "forget_cached_resolution",
     "kiro_cli_resolves",
     "provider_error_client",
+    "redact_text",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
     "drain_skill_view_aliases",
@@ -110,6 +111,17 @@ def provider_error_client() -> object | None:
     except Exception:  # noqa: BLE001 - the adapter degrades to duck typing
         return None
     return acp_client
+
+
+def redact_text(text: str) -> str:
+    """Use the backend's exact redactor when matching a consumed steer.
+
+    Import at call time to keep driver startup ACP-free and retain lookup at
+    the defining module, as the other plain-data driver bridges do.
+    """
+    from kiro_crew.acp._dispatch import redact_text as _impl
+
+    return _impl(text)
 
 
 def resolve_pin_spelling(model_id: str, advertised: object) -> str:

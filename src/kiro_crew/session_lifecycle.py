@@ -20,6 +20,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from kiro_crew import goal_actions
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
     identity_stamp_mismatch,
@@ -2280,6 +2281,7 @@ class SessionLifecycleService:
         preserve_queue: bool = False,
         on_soft: Callable[[], Awaitable[None]] | None = None,
         on_hard: Callable[[], Awaitable[None]] | None = None,
+        goal_state: Any = None,
     ) -> StopOutcome:
         """Cooperatively stop a turn, escalating to reset and eager respawn."""
         owner = self._owner
@@ -2293,6 +2295,9 @@ class SessionLifecycleService:
         # gap has no session yet still owes the record, or the replay that
         # follows would run the prompt this Stop was aimed at.
         self.note_stop(key)
+
+        if not preserve_queue:
+            await goal_actions.pause_session_goal(key, state=goal_state)
         if not session:
             return "idle"
 

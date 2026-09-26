@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import model_registry, resource_status
+from kiro_crew import goal, model_registry, resource_status
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs
@@ -593,6 +593,7 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*CRITICAL\s*RULES\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*(?:END\s*)?GOAL\s*PURSUIT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*OF\s*SESSION\s*CONTEXT\s*\]", re.IGNORECASE),
     _REPLY_FORMAT_RULES_RE,
     re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),
@@ -5697,6 +5698,10 @@ class ContextBuilder:
         # begin with the raw user text. Preserve that public contract by leaving
         # their guidance trailing, exactly as before.
         _interactive_guidance: list[str] = []
+        if _agent_includes_crew_context(agent) and session_key:
+            _goal_guidance = goal.goal_context(session_key)
+            if _goal_guidance:
+                _interactive_guidance.append("\n\n" + _goal_guidance)
         if interactive:
             _interactive_guidance.append(
                 "\n\n(If presenting choices, end with [OPTIONS: choice1 | choice2 | choice3] "

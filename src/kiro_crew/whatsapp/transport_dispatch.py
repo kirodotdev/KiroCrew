@@ -270,7 +270,9 @@ class WhatsAppDispatcher:
         """
         session_key = self._session_key(scope)
         try:
-            outcome = await self.sessions.stop_turn(session_key)
+            outcome = await self.sessions.stop_turn(
+                session_key, goal_state=getattr(self, "dashboard_state", None)
+            )
         except Exception:  # noqa: BLE001: the queue clear below still applies
             logger.warning("whatsapp: stop_turn failed", exc_info=True)
             outcome = None

@@ -2654,7 +2654,10 @@ export function useWebSocket() {
               if (record) {
                 // The live projection is already authoritative and normalized;
                 // cache it directly instead of issuing one REST request for
-                // every probe frame.
+                // every probe frame. Cancel older slot reads first: inactive
+                // goals leave Redux, so a late REST result would otherwise
+                // replace their completion evidence in this cache.
+                void queryClient.cancelQueries({ queryKey: ['session-automation', slot], exact: true })
                 queryClient.setQueryData(['session-automation', slot], record)
                 dispatch(sseAutomation(record))
               }

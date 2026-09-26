@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import goal_actions
 from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
@@ -4962,6 +4963,13 @@ async def stop_slot_turn(
         # the mirrored chat_done. Nothing local to tear down.
         return {"ok": True}
 
+    def stop_result(**details: Any) -> dict[str, Any]:
+        result = {"ok": True, **details}
+        warning = goal_actions.goal_pause_warning(cancel_key, state=state)
+        if warning:
+            result.update(goal_pause_saved=False, warning=warning)
+        return result
+
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
     # when the client computed force=true — because the client derives force
@@ -5024,7 +5032,9 @@ async def stop_slot_turn(
         # dashboard:<slot> key names a session no running turn owns — the stop
         # reports success and cancels nothing. The SEL record below stays on the
         # slot-derived key, which identifies the tab the operator pressed.
-        await state.sessions.stop_turn(cancel_key, force=True, on_hard=_on_hard_force)
+        await state.sessions.stop_turn(
+            cancel_key, force=True, on_hard=_on_hard_force, goal_state=state
+        )
         await _cancel_stage_controller(slot)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
@@ -5037,10 +5047,11 @@ async def stop_slot_turn(
             # the backend actually performed (always a hard kill here).
             metadata={"slot": name, "via": source, "force": force, "escalated": True},
         )
-        return {"ok": True}
+        return stop_result()
 
     # Already stopping or not running — no-op (idempotent repeat press guard)
     if slot._stop_state != "idle" or not slot.running:
+        await goal_actions.pause_session_goal(cancel_key, state=state)
         if not slot.running:
             logger.info("Stop: slot %s not running, ignoring", name)
             _info = "not running"
@@ -5068,7 +5079,7 @@ async def stop_slot_turn(
         # ``info``, and a caller that renders them alike tells the second one the
         # opposite of what happened — which the de-duplicated retry above now
         # reaches routinely.
-        return {"ok": True, "info": _info, "already_stopping": bool(slot.running)}
+        return stop_result(info=_info, already_stopping=bool(slot.running))
 
     # First press: soft stop
     slot._stop_state = "soft_pending"
@@ -5106,6 +5117,7 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    await goal_actions.pause_session_goal(cancel_key, state=state)
     stage_boundary_for(slot).preserve_stop_generation = slot._stop_generation
     outcome = await state.sessions.stop_turn(
         cancel_key,
@@ -5129,7 +5141,7 @@ async def stop_slot_turn(
         outcome=outcome,
         metadata={"slot": name, "via": source, "force": False},
     )
-    return {"ok": True}
+    return stop_result()
 
 
 async def api_chat_slot_stop(request: web.Request) -> web.Response:
@@ -6107,6 +6119,7 @@ async def _restore_slot_nudge_loop(
             # good.
             banner=loop.banner,
             admission_check=admission_check,
+            goal=loop.goal,
         )
     except Exception:
         # Same wedged disk that failed the persist most likely fails this write

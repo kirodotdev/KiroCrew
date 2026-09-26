@@ -13,6 +13,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import HOOK_REPLY, AutoReplyHook, HookManager, HooksConfig
 from kiro_crew.messaging import auto_title
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.format import CONTINUATION, SLACK_MSG_LIMIT, split_message
 from kiro_crew.slack.handler import (
     _THINKING,
@@ -198,8 +199,9 @@ class FakeSessionManager:
             self.replay_gaps = getattr(self, "replay_gaps", []) + [("close", key)]
         self._gap_open = False
 
-    async def stop_turn(self, key, *, force=False, on_soft=None, on_hard=None):
+    async def stop_turn(self, key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
         """Fake stop_turn that defaults to 'soft' outcome."""
+        assert goal_state is slack_handler.get_dashboard_state()
         outcome = getattr(self, "_stop_outcome", "soft")
         self.removed.append(f"stop_turn:{key}:force={force}")
         if outcome == "soft" and on_soft:
@@ -2037,8 +2039,10 @@ class TestStopCommand:
     """Tests for the !stop kill switch."""
 
     @pytest.mark.asyncio
-    async def test_stop_kills_active_session(self):
+    async def test_stop_kills_active_session(self, monkeypatch):
         """!stop calls stop_turn and posts confirmation."""
+        dashboard_state = object()
+        monkeypatch.setattr(slack_handler, "get_dashboard_state", lambda: dashboard_state)
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         slack = MockSlackClient()

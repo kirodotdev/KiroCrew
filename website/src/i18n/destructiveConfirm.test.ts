@@ -266,6 +266,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',
+  'components.goalProgress.last_confirmed_status':
+    'not a confirmation prompt: display-only last-observed goal status; {{status}} '
+    + 'comes from the closed set of localized goal-status labels, never user-supplied text',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
     + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '

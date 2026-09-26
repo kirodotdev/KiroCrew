@@ -1631,36 +1631,54 @@ def stop_orch(orch: MagicMock) -> MagicMock:
 class TestStopConfirm:
     @pytest.mark.asyncio
     async def test_soft_stop_notifies_thread(self, stop_orch: MagicMock) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, on_soft: Any = None, on_hard: Any = None, *, goal_state: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(message={"ts": "m1", "blocks": [], "thread_ts": "t1"})
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
+        assert (
+            stop_orch.sessions.stop_turn.await_args.kwargs["goal_state"]
+            is stop_orch.dashboard_state
+        )
         stop_orch.slack.post_message.assert_awaited_once_with("C1", "⏹ Execution stopped.", "t1")
 
     @pytest.mark.asyncio
     async def test_hard_stop_reports_session_reset(self, stop_orch: MagicMock) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, on_soft: Any = None, on_hard: Any = None, *, goal_state: Any = None
+        ) -> str:
             await on_hard()
             return "hard"
 
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
+        assert (
+            stop_orch.sessions.stop_turn.await_args.kwargs["goal_state"]
+            is stop_orch.dashboard_state
+        )
         assert "session reset" in stop_orch.slack.post_message.await_args.args[1]
 
     @pytest.mark.asyncio
     async def test_callback_posts_via_response_url(
         self, stop_orch: MagicMock, _mock_aiohttp: AsyncMock
     ) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, on_soft: Any = None, on_hard: Any = None, *, goal_state: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
+        assert (
+            stop_orch.sessions.stop_turn.await_args.kwargs["goal_state"]
+            is stop_orch.dashboard_state
+        )
         assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "⏹ [Stopped]"
 
     @pytest.mark.asyncio
@@ -1669,13 +1687,19 @@ class TestStopConfirm:
     ) -> None:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
 
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, on_soft: Any = None, on_hard: Any = None, *, goal_state: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
+        assert (
+            stop_orch.sessions.stop_turn.await_args.kwargs["goal_state"]
+            is stop_orch.dashboard_state
+        )
 
     @pytest.mark.asyncio
     async def test_idle_outcome_dismisses_ephemeral(

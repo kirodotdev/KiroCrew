@@ -6,24 +6,26 @@ between them: the read routes (list / get), the "service is absent" 503+``enable
 shapes, the malformed-body 400s, and the DELETE route's audit record — which has to name
 the removed loop's ``slot_key`` even though the loop is gone by the time it logs.
 
-Everything is driven through aiohttp's ``make_mocked_request`` (no socket bound) against a
-fake service, so no timer task is armed and no loop store is written. ``sel()`` is replaced
-with a mock so the audit call can be asserted on rather than appended to a real event log.
+Most mappings use aiohttp's ``make_mocked_request`` against a fake service. The
+session-ownership regression uses a real loaded service and HTTP authentication.
+Audit sinks are mocked; stores and HTTP listeners are private test fixtures.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
+from aiohttp import ClientTimeout, web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
+from kiro_crew.goal import GoalState, continuation_message
 from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorObservationStatus,
@@ -294,6 +296,96 @@ def test_session_monitor_read_is_strict_internal() -> None:
     path = "/api/autonudge/session-monitor"
     assert path in _STRICT_INTERNAL_API_PATHS
     assert path not in _MIXED_INTERNAL_API_PATHS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["goal", "plain", "structured"])
+@pytest.mark.parametrize("ownership", ["foreign", "channel", "dashboard"])
+async def test_authenticated_session_monitor_requires_exact_record_binding(
+    tmp_path, monkeypatch, sel_mock, shape, ownership
+) -> None:
+    from kiro_crew.dashboard import token_auth
+    from kiro_crew.mcp_tools.control import _compact_monitor_inspection
+
+    path = "/api/autonudge/session-monitor"
+    secret = "session-monitor-test-secret"
+    channel_key, slot_key = "slack:1.1", "slack_1.1"
+    session_key = channel_key if ownership == "channel" else "dashboard:" + slot_key
+    binding = slot_key if ownership == "dashboard" else channel_key
+    loop = (
+        _monitor_loop(loop_id="owned01", slot_key=binding)
+        if shape == "structured"
+        else _loop(loop_id="owned01", slot_key=binding)
+    )
+    if shape == "goal":
+        loop.goal = GoalState.from_dict(
+            {
+                "objective": "Private channel objective",
+                "criteria": ["Private channel criterion"],
+                "progress": "Private channel progress",
+                "evidence": ["Private channel evidence"],
+            }
+        )
+        loop.message = continuation_message(loop.goal)
+    service = AutoNudgeService(base_dir=tmp_path)
+    service._loops[loop.id] = loop
+    if ownership == "dashboard":
+        foreign = _monitor_loop(loop_id="foreign1", slot_key=channel_key)
+        service._loops[foreign.id] = foreign
+    service._path.write_text(json.dumps(service._serialize_state()), encoding="utf-8")
+    service._loops.clear()
+    service._load()
+    _svc(monkeypatch, service)
+    # Keep the real legacy fallback, including exact-match precedence.
+    assert service.get_by_slot(slot_key).id == loop.id
+    before = service._serialize_state()
+    persisted = service._path.read_bytes()
+    monkeypatch.setattr(token_auth, "_sel_fn", lambda: sel_mock)
+    app = web.Application(
+        middlewares=[
+            token_auth.token_auth_middleware(
+                internal_paths=frozenset({path}), internal_secret=secret
+            )
+        ]
+    )
+    app["state"] = SimpleNamespace(
+        _slots={slot_key: SimpleNamespace(key=slot_key, linked_session_key="", _app="test-app")},
+        crons=SimpleNamespace(_jobs=[]),
+        subagents=SimpleNamespace(_agents={}),
+    )
+    app.router.add_get(path, h.api_session_monitor_get)
+    try:
+        async with TestClient(TestServer(app), timeout=ClientTimeout(total=5)) as client:
+            denied = await client.get(
+                path, headers={"X-Internal-Secret": "wrong", "X-Session-Key": session_key}
+            )
+            assert denied.status == 403
+            response = await client.get(
+                path, headers={"X-Internal-Secret": secret, "X-Session-Key": session_key}
+            )
+            assert response.status == 200
+            payload = await response.json()
+        if ownership == "foreign":
+            assert payload == {"enabled": True, "monitor": None, "autonudge_loop": None}
+            assert _compact_monitor_inspection(payload) == payload
+        elif shape == "structured":
+            assert payload["monitor_id"] == loop.id
+            assert payload["monitor"]["target"] == loop.monitor.target
+            assert payload["autonudge_loop"] is None
+        else:
+            reading = payload["autonudge_loop"]
+            assert reading["id"] == loop.id
+            assert payload["monitor"] is None
+            if shape == "goal":
+                assert reading["goal_id"] == loop.id
+                assert reading["goal"] == dataclasses.asdict(loop.goal)
+            else:
+                assert "goal" not in reading
+                assert "message" not in reading
+        assert service._serialize_state() == before
+        assert service._path.read_bytes() == persisted
+    finally:
+        service.stop()
 
 
 @pytest.mark.asyncio

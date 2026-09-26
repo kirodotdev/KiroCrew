@@ -48,6 +48,7 @@ from kiro_crew import (
     autonudge_selfarm,
     beacon,
     dep_sync,
+    goal_actions,
     name_grant,
     platform_compat,
     shutdown_event,
@@ -6844,7 +6845,7 @@ class GatewayOrchestrator:
             # never assigns TurnUsage.duration_ms, so the row needs this.
             _turn_t0 = time.monotonic()
             _turn_started = True
-            if wake_message is None:
+            if wake_message is None and loop.goal is None:
 
                 def _capture_raw_completion(event: LLMEvent) -> None:
                     if is_monitor_completion_evidence(
@@ -6890,6 +6891,7 @@ class GatewayOrchestrator:
                     directive_consumer=build_directive_consumer(
                         session_key=key,
                         sessions=self.sessions,
+                        self_wake=True,
                     ),
                     monitor_completion=(
                         (
@@ -6910,10 +6912,11 @@ class GatewayOrchestrator:
                     driver.run(full_msg),
                     timeout=_NUDGE_TURN_TIMEOUT,
                 )
-                if _driver_completion_hook is None or not _driver_completion_hook.accepted:
-                    return MonitorDispatchResult.UNAVAILABLE
-                assert _completion_hook is not None
-                _completion_hook.mark_accepted()
+                if wake_message is not None:
+                    if _driver_completion_hook is None or not _driver_completion_hook.accepted:
+                        return MonitorDispatchResult.UNAVAILABLE
+                    assert _completion_hook is not None
+                    _completion_hook.mark_accepted()
             _turn_usage = provider_last_turn_usage(client)
 
             if _raw_dispositions:
@@ -8042,6 +8045,9 @@ class GatewayOrchestrator:
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
                 }
+                if loop.goal is not None:
+                    loop_payload.update(goal_actions.goal_snapshot(loop))
+                    loop_payload["next_due_ts"] = loop.next_due_ts
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
                     loop_payload["monitor"] = _redact_monitor_value(

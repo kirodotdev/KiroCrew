@@ -399,6 +399,15 @@ Available to any user on the allowlist (not just owner).
 | `!dashboard [duration]` | Get a presigned dashboard link (DM'd to you) — **deprecated, use `/kirocrew dashboard`** |
 | `!stop` | Force-halt the active agent execution in the current thread. Sends cooperative `session/cancel`; falls back to hard kill if not acked within `agent.soft_stop_budget_secs`. Posts ephemeral Block Kit stopping message with Kill Now button. If no execution is running, replies "Nothing running." |
 
+Native `!stop` and Stop buttons resolve the thread's owning session before
+pausing its goal or inspecting pause durability. A goal is paused even between
+turns when no provider or handler task exists. Soft, hard and idle acknowledgments
+append the shared restart-risk warning while `goal_pause_unsaved` is retained;
+ordinary replies without a failed goal pause keep their existing wording.
+Inline Stop, stop confirmation and Kill Now use the same warning semantics.
+Repeating Stop retries saving the pause without resuming pursuit. A successful
+save leaves the goal inactive and removes the warning.
+
 #### Keyword Commands (`handler.py`)
 
 Available to all allowed users.

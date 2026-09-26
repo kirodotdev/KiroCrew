@@ -1052,7 +1052,7 @@ class TestSteerLifecycleState:
 
         from kiro_crew.dashboard.chat_delivery import sanitize_outbound
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
-        from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+        from kiro_crew.steer_settle import settle_consumed_steers
 
         msg = "deploy with AKIAIOSFODNN7EXAMPLE"
         target = sanitize_outbound(msg)

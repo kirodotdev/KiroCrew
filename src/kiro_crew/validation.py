@@ -46,6 +46,12 @@ from kiro_crew.constants import (
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.goal import (
+    GOAL_ACTIONS,
+    GOAL_MAX_ITEMS,
+    GOAL_MAX_OBJECTIVE_CHARS,
+    GOAL_MAX_PROGRESS_CHARS,
+)
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_AGENT_TURNS,
@@ -1355,6 +1361,19 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
 )
 
 MONITOR_INSPECT_SCHEMA = ToolSchema(tool_name="monitor_inspect")
+GOAL_SCHEMA = ToolSchema(
+    tool_name="goal",
+    fields=[
+        FieldSpec("action", str, required=True, allowed=frozenset(GOAL_ACTIONS)),
+        FieldSpec("goal_id", str, max_len=80),
+        FieldSpec("generation", int, min_val=0),
+        FieldSpec("objective", str, max_len=GOAL_MAX_OBJECTIVE_CHARS),
+        FieldSpec("criteria", list, max_len=GOAL_MAX_ITEMS),
+        FieldSpec("progress", str, max_len=GOAL_MAX_PROGRESS_CHARS),
+        FieldSpec("evidence", list, max_len=GOAL_MAX_ITEMS),
+        FieldSpec("status", str, allowed=frozenset({"working", "waiting", "needs_input"})),
+    ],
+)
 MONITOR_STOP_SCHEMA = ToolSchema(
     tool_name="monitor_stop",
     # Same shape and same reasoning as autonudge_stop's reason: a stop request
@@ -3423,6 +3442,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
     "monitor_watch": MONITOR_WATCH_SCHEMA,
     "monitor_inspect": MONITOR_INSPECT_SCHEMA,
+    "goal": GOAL_SCHEMA,
     "monitor_stop": MONITOR_STOP_SCHEMA,
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.steer_settle import settle_consumed_steers
 
 #: FIFO ceiling on messages held behind an in-flight side turn. The sidecar is
 #: ephemeral and lives entirely in memory on the parent slot, so an unbounded

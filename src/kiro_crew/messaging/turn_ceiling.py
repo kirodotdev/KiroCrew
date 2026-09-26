@@ -171,6 +171,12 @@ def _spend_generated_turn() -> bool:
     return True
 
 
+def generated_turn_pending() -> bool:
+    """Whether this dispatch is the gateway's next bound automation wake."""
+    marker = _generated_turn.get()
+    return marker is not None and marker.unspent
+
+
 #: Turns one conversation may drive inside :data:`DEFAULT_WINDOW_SECS` before the
 #: ceiling latches. A loop sustains at least twice this in the same hour, so it
 #: latches inside roughly half a window, while a fast human in a busy thread

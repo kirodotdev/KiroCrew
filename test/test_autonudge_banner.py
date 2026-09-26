@@ -1448,15 +1448,39 @@ class TestARealProducerSetsTheBanner:
     the collapsed row show the objective instead of the whole prompt.
     """
 
-    def test_the_goal_command_passes_a_banner_to_add(self) -> None:
-        import inspect
-
+    @pytest.mark.asyncio
+    async def test_the_goal_command_passes_a_banner_to_add(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import autonudge
         from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner)
-        assert (
-            "normalize_banner(_objective, absent_ok=True, truncate=True)" in src
-        ), "/goal no longer routes the objective through normalize_banner(truncate=True)"
+        service = AutoNudgeService(base_dir=tmp_path)
+        slot = _slot()
+        slot.mode = "chat"
+        slot.memory_mode = "persistent"
+        slot.is_closing = False
+        slot.linked_session_key = ""
+        slot.agent = "kirocrew"
+        state = SimpleNamespace(
+            _slots={slot.key: slot},
+            sessions=None,
+            channel_transports={},
+            push_slots_update=MagicMock(),
+        )
+        monkeypatch.setattr(autonudge, "get_instance", lambda: service)
+        monkeypatch.setattr(chat_runner, "get_instance", lambda: service)
+        objective = "Verify keyboard navigation " * 20
+        try:
+            await chat_runner._handle_goal_command(state, slot, f"/goal {objective}")
+            loop = service.get_by_slot(slot.key)
+            assert loop is not None
+            assert loop.banner and len(loop.banner) <= MAX_BANNER_CHARS
+            assert loop.banner.startswith("Verify keyboard navigation")
+            assert objective.strip() in loop.message
+        finally:
+            tasks = list(service._timers.values()) + list(service._inflight_adds)
+            service.stop()
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
 
     def test_the_banner_is_bounded_at_the_call_site(self) -> None:
         """``add`` does not validate, so an unbounded objective would be cleared on load."""

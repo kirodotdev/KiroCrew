@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
 from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.goal import GOAL_ACTIONS, GOAL_MAX_OBJECTIVE_CHARS, GoalState
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.mcp_tools._limits import (
     _MONITOR_DEFAULT_MAX_CYCLES,
@@ -67,6 +68,7 @@ from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
     CHAT_TAG_SCHEMA,
+    GOAL_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
     MONITOR_STOP_SCHEMA,
@@ -178,6 +180,45 @@ def schemas() -> list[dict[str, Any]]:
     """Descriptors for the control tools."""
     prefer_structured = _prefers_structured_arming()
     return [
+        {
+            "name": "goal",
+            "description": (
+                "Manage this session's existing /goal pursuit. Automatically start a goal "
+                "when a genuine user request asks for an actionable outcome, then work in "
+                "the same turn. No user mode selection or confirmation is needed. Preserve "
+                "the goal across steering and status questions. Inspect obtains goal_id and "
+                "generation for subsequent mutations. Update concise progress; use waiting "
+                "only for an operation you verified is running, needs_input for a required "
+                "human answer. Complete only after verifying the full outcome, with evidence. "
+                "Pause on Stop; resume only on a human request. Questions need no goal."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": list(GOAL_ACTIONS)},
+                    "goal_id": {"type": "string"},
+                    "generation": {"type": "integer", "minimum": 0},
+                    "objective": {"type": "string", "maxLength": GOAL_MAX_OBJECTIVE_CHARS},
+                    "criteria": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {"type": "string", "maxLength": 240},
+                    },
+                    "progress": {"type": "string", "maxLength": 600},
+                    "evidence": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {"type": "string", "maxLength": 240},
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["working", "waiting", "needs_input"],
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "task_run",
             "description": (
@@ -1723,6 +1764,44 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def goal(name: str, args: dict[str, Any]) -> str:
+    validate_tool_args(args, GOAL_SCHEMA)
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "Goal management requires an authenticated strict session binding."
+    )
+    if sk and mcp_core._autonudge_binding_key(sk) is None:
+        return _monitor_context_refusal("goal", sk, strict_err or "Unsupported session type.")
+    if args["action"] == "inspect":
+        if not sk:
+            return _monitor_context_refusal("goal", sk, strict_err)
+        if mcp_core.directive_capture_active():
+            return "Goal inspection does not emit a directive."
+        result = mcp_core._get("/api/autonudge/session-monitor", session_key=sk)
+        if result.get("error"):
+            return f"Error: Goal inspection failed: {result['error']}"
+        return json.dumps(_compact_monitor_inspection(result), ensure_ascii=False)
+    try:
+        if args["action"] == "start":
+            candidate = GoalState.from_dict(args)
+            if not candidate.criteria:
+                return "Error: A goal needs concise completion criteria."
+        else:
+            if not args.get("goal_id") or type(args.get("generation")) is not int:
+                return "Error: Inspect the goal for its goal_id and generation before changing it."
+            # Validate partial text/list changes through the same stored-state boundary.
+            GoalState.from_dict({"objective": "Current goal", **args})
+    except ValueError as exc:
+        return f"Error: {exc}"
+    payload = {field.name: args[field.name] for field in GOAL_SCHEMA.fields if field.name in args}
+    return _emit_directive(
+        "goal",
+        payload,
+        "Goal change requested for this session. Continue useful work in this turn. "
+        "Use goal(action='inspect') to verify the host applied it and obtain the current "
+        "goal_id and generation before the next update. This acknowledgment is not completion.",
+    )
+
+
 def monitor_inspect(name: str, args: dict[str, Any]) -> str:
     """Read the monitor bound to a verified strict session identity.
 
@@ -2036,6 +2115,7 @@ def suggest_followup(name: str, args: dict[str, Any]) -> str:
 
 
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "goal": goal,
     "task_run": task_run,
     "wait": wait,
     "route_crew": route_crew,

@@ -2632,6 +2632,11 @@ one place a count is computed. Controls split into two classes:
   An omission is the failure mode that shipped "5 output paths" against several times that many.
   Only a test that detects an omission catches it; a `len()` assertion never will.
 
+Goal-state validation in `goal.py` is classified as non-egress sanitisation:
+it scrubs the retained objective, criteria, progress and evidence before applying
+field bounds. The module owns no transport; the existing auto-nudge serializer
+and gateway broadcast remain the output boundaries.
+
 **Disclosure contract (posture-only, mirroring the governance viewer).** The
 payload carries public control *definitions* and derived counts only:
 

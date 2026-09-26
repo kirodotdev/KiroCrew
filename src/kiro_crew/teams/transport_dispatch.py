@@ -1198,6 +1198,7 @@ class TeamsDispatcher:
         reply = await stop_running_turn(
             self.sessions,
             resumed_key or self._session_key(self._identity(inbound)),
+            goal_state=getattr(self, "dashboard_state", None),
             queue=self._queue,
             surface=self._receipt_surface(inbound),
             owner=_entry_owner(inbound),

@@ -87,6 +87,7 @@ from kiro_crew.sel import sel
 # package's import graph, and session_allocation imports nothing from messaging,
 # so this direction cannot cycle.
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.steer_settle import settle_consumed_steers
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,9 @@ class ChannelTurn:
     after callback admission succeeded but before the provider turn opened.
     """
 
+    on_steer_consumed: Callable[[str], None] | None = None
+    """Host consumption callback; independent of renderer visibility and markers."""
+
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
 #: the per-channel command tables (``/stop`` and ``/cancel`` everywhere, plus
@@ -494,11 +498,52 @@ class _ChannelDirectiveState:
     _slots: dict[str, Any] = field(default_factory=dict)
 
 
+# Bound both dimensions of the per-turn evidence. An input beyond either bound
+# follows the channel's existing queue path, preserving its full human request.
+MAX_PENDING_GOAL_STEERS = 32
+MAX_GOAL_STEER_CHARS = 16_000
+
+
+@dataclass
+class GoalSteerState:
+    """Human input registered by the receiving task and matched at consumption."""
+
+    confirmed_human: bool = field(default=False, init=False)
+    _pending: list[str] = field(default_factory=list, init=False, repr=False)
+
+    async def steer(self, provider: Any, text: str) -> bool:
+        if self.confirmed_human:
+            return bool(await provider.steer(text))
+        if len(text) > MAX_GOAL_STEER_CHARS or len(self._pending) >= MAX_PENDING_GOAL_STEERS:
+            return False
+        # Register before the write awaits: the stream can echo consumption
+        # while the steer writer is still draining its pipe.
+        self._pending.append(text)
+        written = False
+        try:
+            written = bool(await provider.steer(text))
+            return written
+        finally:
+            if not written and text in self._pending:
+                self._pending.remove(text)
+
+    def consume(self, snapshot: str) -> None:
+        if self.confirmed_human or not self._pending:
+            return
+        remaining = settle_consumed_steers(self._pending, snapshot)
+        if len(remaining) < len(self._pending):
+            self.confirmed_human = True
+            self._pending.clear()
+
+
 def build_directive_consumer(
     *,
     session_key: str,
     sessions: Any,
     dispatcher: Any = None,
+    human_request: bool = False,
+    self_wake: bool = False,
+    goal_steers: GoalSteerState | None = None,
 ) -> DirectiveConsumer:
     """Session-directive consumer for one channel turn (``TurnDriver`` injection).
 
@@ -518,6 +563,8 @@ def build_directive_consumer(
     and everything it cannot answer fails CLOSED in the authorizer.
     """
 
+    stop_generation = session_stop_generation(sessions, session_key)
+
     async def _consume(kind: str, args: dict[str, Any]) -> None:
         # Deferred import: the dashboard package imports every channel package
         # at boot, and the channel packages import this module (cycle).
@@ -533,6 +580,12 @@ def build_directive_consumer(
             kind,
             args,
             producer_is_channel=True,
+            producer_is_user_facing=human_request
+            or (kind == "goal" and goal_steers is not None and goal_steers.confirmed_human),
+            producer_is_self_wake=self_wake,
+            producer_turn_is_current=lambda: (
+                session_stop_generation(sessions, session_key) == stop_generation
+            ),
         )
         # The channel surface never renders tool results, so the applier's
         # confirmation has no user-facing sink here; this log is the operator's
@@ -1385,6 +1438,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 auto_approve_tool=build_auto_approve(ctx_builder),
                 tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
                 directive_consumer=turn.directive_consumer,
+                on_steer_consumed=turn.on_steer_consumed,
                 audit_session_key=session_key,
                 audit_agent=turn.agent or "kirocrew",
                 closing_gate=turn_ceiling.gate(
