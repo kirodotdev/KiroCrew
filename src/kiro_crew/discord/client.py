@@ -301,6 +301,13 @@ _REVOKED_DETAIL = "destination authorization withdrawn mid-send"
 #: placed is not the claim that someone withdrew it.
 _UNATTRIBUTABLE_DETAIL = "destination unattributable mid-send: no roster entry, no DM pairing"
 
+#: ``DiscordApiResult.detail`` when the re-check ITSELF failed: the installed
+#: predicate raised, so no authority answered about this destination at all. The
+#: send still stops, and that is the whole point of failing closed, but this is a
+#: third event again -- a roster that refused, a destination nothing could place,
+#: and a check that could not run are three different things to go and fix.
+_UNANSWERABLE_DETAIL = "destination unanswerable mid-send: the authorization check failed"
+
 
 @dataclass(frozen=True)
 class SendPermission:
@@ -312,7 +319,7 @@ class SendPermission:
     refusal's ``detail`` reaches the caller as ``DiscordApiResult.detail``.
 
     ``permitted`` is the whole decision; ``detail`` is empty when permitted. The
-    three named constructors are the only grounds a destination re-check has, and
+    four named constructors are the only grounds a destination re-check has, and
     they exist so the refusal wording lives here once instead of in every module
     that answers.
     """
@@ -334,6 +341,11 @@ class SendPermission:
     def unattributable(cls) -> SendPermission:
         """Nothing available can place this destination, so it cannot be judged."""
         return cls(False, _UNATTRIBUTABLE_DETAIL)
+
+    @classmethod
+    def unanswerable(cls) -> SendPermission:
+        """The check itself failed, so no authority answered about this at all."""
+        return cls(False, _UNANSWERABLE_DETAIL)
 
 
 #: Path segments whose FOLLOWING id is one of Discord's "major parameters":
@@ -700,10 +712,9 @@ class DiscordClient:
         #: A raise is read as a REFUSAL: this is a network egress boundary, and a
         #: predicate that cannot answer has not said yes.
         #:
-        #: Answering a :class:`SendPermission` reports WHY a destination is refused,
-        #: which only the rosters can tell. A bare ``bool`` is still accepted and
-        #: names no ground, so its refusal is reported as a withdrawal.
-        self.still_permitted: Callable[[str], bool | SendPermission] | None = None
+        #: It answers a :class:`SendPermission`, so a refusal reports WHY, which
+        #: only the rosters can tell.
+        self.still_permitted: Callable[[str], SendPermission] | None = None
 
     async def wait_ready(self, timeout: float = 15.0) -> bool:
         """Wait for the Gateway handshake to reach READY. Returns False on
@@ -1652,18 +1663,12 @@ class DiscordClient:
 
         The predicate's own answer carries the refusal's ground, because the rosters
         are the only thing that can tell a destination an operator withdrew from one
-        that nothing there can place. A predicate answering a bare ``bool`` names no
-        ground, so its refusal is reported as a withdrawal.
+        that nothing there can place.
         """
         if self.still_permitted is None:
             return SendPermission.allow()
         try:
-            answer = self.still_permitted(destination)
-            permission = (
-                answer
-                if isinstance(answer, SendPermission)
-                else (SendPermission.allow() if answer else SendPermission.revoked())
-            )
+            permission = self.still_permitted(destination)
             if permission.permitted:
                 self._audit_mid_send_decision(destination, "roster", "allowed")
                 return permission
@@ -1679,11 +1684,12 @@ class DiscordClient:
         except Exception:
             logger.warning(
                 "Discord REST: the destination predicate raised while re-checking a "
-                "route after a wait; treating the destination as withdrawn",
+                "route after a wait; refusing the send, and reporting that the check "
+                "itself could not answer",
                 exc_info=True,
             )
             self._audit_mid_send_decision(destination, "predicate_raised", "denied")
-            return SendPermission.revoked()
+            return SendPermission.unanswerable()
 
     def _audit_mid_send_decision(self, destination: str, authority: str, outcome: str) -> None:
         """Record one mid-send egress decision, naming which authority decided.

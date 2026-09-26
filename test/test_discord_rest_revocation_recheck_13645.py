@@ -33,6 +33,7 @@ from kiro_crew.discord import client as dc
 from kiro_crew.discord import transport as dt
 from kiro_crew.discord.client import (
     _REVOKED_DETAIL,
+    _UNANSWERABLE_DETAIL,
     _UNATTRIBUTABLE_DETAIL,
     DISCORD_BLOCKED,
     DISCORD_OK,
@@ -695,25 +696,6 @@ class TestRefusalNamesItsOwnGround:
         assert result.outcome == DISCORD_BLOCKED
         assert result.detail == _REVOKED_DETAIL
 
-    @pytest.mark.asyncio
-    async def test_a_predicate_answering_a_bare_bool_reports_a_withdrawal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A predicate that answers a plain `False` names no ground, so the ladder
-        reports the one it can defend: something that could place this destination
-        declined it."""
-        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
-
-        def _plain(channel_id: str) -> bool:
-            return False
-
-        harness.client.still_permitted = _plain
-
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
-
-        assert result.outcome == DISCORD_BLOCKED
-        assert result.detail == _REVOKED_DETAIL
-
     def test_the_transport_arms_answer_their_own_grounds(self) -> None:
         """The transport is the only place the two can be told apart, so each arm
         names its own. A paired peer the roster dropped is a withdrawal; an id no
@@ -747,14 +729,55 @@ class TestFailsClosed:
         not said yes."""
         harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
 
-        def _boom(channel_id: str) -> bool:
+        def _boom(channel_id: str) -> SendPermission:
             raise RuntimeError("roster unavailable")
 
         harness.client.still_permitted = _boom
         result = await harness.client.api_json("POST", _SEND_PATH, {})
         assert result.outcome == DISCORD_BLOCKED
-        assert result.detail == _REVOKED_DETAIL
+        assert result.detail == _UNANSWERABLE_DETAIL
         assert len(harness.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_could_not_run_is_not_reported_as_a_withdrawal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising predicate means NO authority answered, which is a third event.
+
+        A roster that refused, a destination nothing could place, and a check that
+        could not run send an operator to three different places. Collapsing the
+        third into the first says someone withdrew a destination when the only thing
+        that happened is that the check broke.
+        """
+        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
+
+        def _boom(channel_id: str) -> SendPermission:
+            raise RuntimeError("roster unavailable")
+
+        harness.client.still_permitted = _boom
+        result = await harness.client.api_json("POST", _SEND_PATH, {})
+
+        assert result.outcome == DISCORD_BLOCKED
+        assert result.detail != _REVOKED_DETAIL
+        assert result.detail != _UNATTRIBUTABLE_DETAIL
+
+    def test_every_refusal_ground_is_its_own_wording(self) -> None:
+        """Four constructors, three distinct refusal wordings, one empty allow.
+
+        Two grounds sharing a string would make the reported reason useless while
+        every assertion about it still passed.
+        """
+        grounds = [
+            SendPermission.revoked(),
+            SendPermission.unattributable(),
+            SendPermission.unanswerable(),
+        ]
+        assert all(not g.permitted for g in grounds)
+        details = [g.detail for g in grounds]
+        assert all(details)
+        assert len(set(details)) == len(details), f"two grounds share a wording: {details}"
+        assert SendPermission.allow().permitted is True
+        assert SendPermission.allow().detail == ""
 
     @pytest.mark.asyncio
     async def test_a_still_authorized_destination_keeps_retrying(
@@ -1136,7 +1159,7 @@ class TestRefusalsAreAudited:
         monkeypatch.setattr(dc, "sel", lambda: recorder)
         harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
 
-        def _boom(channel_id: str) -> bool:
+        def _boom(channel_id: str) -> SendPermission:
             raise RuntimeError("roster unreadable")
 
         harness.client.still_permitted = _boom
