@@ -18,6 +18,12 @@ These tests measure that, name by name, in both orderings: COLD, where the
 harness's own read is the first read of the name, and WARM, where something has
 read it already. A memoising ``__getattr__`` leaks only COLD, which is why the
 orderings are separate cases rather than one.
+
+The same one-storage rule applies to the OWNER as well as the value: each package
+asks ``importlib`` for its owner on every read rather than holding a mapping of
+its own, so a test that replaces or reimports an owner is seen through the
+package, and a thread reading a name while another is still importing its owner
+waits for that import instead of seeing a half-built module.
 """
 
 from __future__ import annotations
@@ -230,15 +236,16 @@ def test_every_package_spells_the_rule_the_same_way(package: str) -> None:
     module = importlib.import_module(package)
     source = inspect.getsource(module)
     for fragment in (
-        "_OWNERS: dict[str, ModuleType] = {}",
         "def _owner(name: str) -> ModuleType:",
-        "importlib.import_module(",
+        "return importlib.import_module(module_name)",
         "class _ReExportModule(ModuleType):",
         "def __setattr__(self, name: str, value: Any) -> None:",
         "def __delattr__(self, name: str) -> None:",
         "sys.modules[__name__].__class__ = _ReExportModule",
     ):
         assert fragment in source, f"{package} is missing {fragment!r}"
+    for forbidden in ("_OWNERS: dict", "_OWNERS.get(", "_OWNERS[", "sys.modules.get(module_name)"):
+        assert forbidden not in source, f"{package} resolves its owner outside the import system"
 
 
 @pytest.mark.parametrize("package", PACKAGES)
@@ -291,13 +298,18 @@ def test_the_rule_imports_no_extra_kiro_crew_module(package: str) -> None:
 
 
 @pytest.mark.parametrize("package", PACKAGES)
-def test_an_owner_is_imported_once_and_the_import_is_cached(package: str) -> None:
-    """``_OWNERS`` caches the IMPORT -- the value is still read fresh every time."""
+def test_every_read_resolves_the_owner_through_the_import_system(package: str) -> None:
+    """Each read asks ``importlib`` for the owner, so nothing here can go stale.
+
+    Asking every time is what makes the import system the single storage location:
+    it answers from ``sys.modules`` and it waits on the import lock while an owner's
+    body is still running, which a mapping held in the package can do neither of.
+    """
     module = importlib.import_module(package)
     name = sorted(owners(package))[0]
     owner_name, symbol = owners(package)[name]
 
-    getattr(module, name)  # warm the import cache
+    getattr(module, name)  # import the owner once
     calls: list[str] = []
     real_import = importlib.import_module
 
@@ -308,7 +320,76 @@ def test_an_owner_is_imported_once_and_the_import_is_cached(package: str) -> Non
     with mock.patch.object(module.importlib, "import_module", counting):
         first = getattr(module, name)
         second = getattr(module, name)
-    assert calls == [], "a cached owner was re-imported"
+    assert calls == [owner_name, owner_name], f"{package} answered a read from its own state"
 
     owner = importlib.import_module(owner_name)
     assert first is second is getattr(owner, symbol)
+
+
+@pytest.mark.parametrize("package", PACKAGES)
+def test_the_package_follows_its_owner_to_a_new_module_object(package: str) -> None:
+    """``sys.modules`` is the owner's one storage location, so a swap is seen at once.
+
+    Purging a module and importing it again is an idiom this suite uses in twenty
+    files. A package holding its own resolved-owner mapping answers from the
+    module it resolved first while a direct importer answers from the one in
+    ``sys.modules`` -- two storage locations for the owner, which is the same split
+    this rule removes for the value. A stand-in module stands for the reimported
+    one so no owner's module body is executed twice here.
+    """
+    module = importlib.import_module(package)
+    name = sorted(owners(package))[0]
+    owner_name, symbol = owners(package)[name]
+
+    getattr(module, name)  # resolve the owner, so any private mapping is warm
+    real_owner = sys.modules[owner_name]
+    stand_in = ModuleType(owner_name)
+    read_sentinel = object()
+    setattr(stand_in, symbol, read_sentinel)
+    try:
+        sys.modules[owner_name] = stand_in
+        assert getattr(module, name) is read_sentinel, f"{package} read the replaced owner"
+        write_sentinel = object()
+        setattr(module, name, write_sentinel)
+        assert (
+            getattr(stand_in, symbol) is write_sentinel
+        ), f"a write through {package} missed the owner in sys.modules"
+        assert getattr(real_owner, symbol) is not write_sentinel, "the write hit the old owner"
+    finally:
+        sys.modules[owner_name] = real_owner
+
+
+def test_a_genuine_purge_and_reimport_is_seen_through_the_package() -> None:
+    """The stand-in above is not the only path: a real reimport behaves the same.
+
+    One owner carries this, because importing a module again runs its body again.
+
+    Importing a submodule also binds it on its parent package, and ``recorder`` is
+    not a re-exported name, so that binding lands in the package's own namespace
+    rather than being forwarded. Teardown puts it back: ``from kiro_crew.diag
+    import recorder`` resolves through that attribute, so leaving it on the
+    discarded module would hand a later reader in the same worker a module whose
+    ``Recorder`` is this test's sentinel.
+    """
+    diag = importlib.import_module("kiro_crew.diag")
+    owner_name = "kiro_crew.diag.recorder"
+    stale = importlib.import_module(owner_name)
+    assert diag.Recorder is stale.Recorder  # resolve the owner before purging it
+    had_parent_attr = "recorder" in vars(diag)
+    parent_attr = vars(diag).get("recorder")
+    try:
+        del sys.modules[owner_name]
+        fresh = importlib.import_module(owner_name)
+        assert fresh is not stale, "the reimport handed back the same module object"
+        sentinel = object()
+        fresh.Recorder = sentinel
+        assert diag.Recorder is sentinel, "the package read the purged module"
+    finally:
+        sys.modules[owner_name] = stale
+        if had_parent_attr:
+            diag.recorder = parent_attr
+        elif "recorder" in vars(diag):
+            del diag.recorder
+
+    assert vars(diag).get("recorder") is parent_attr, "teardown left the discarded module bound"
+    assert diag.Recorder is stale.Recorder, "teardown left the sentinel reachable"

@@ -110,19 +110,20 @@ _EXPORTS: dict[str, str] = {
 
 __all__ = sorted(_EXPORTS)
 
-#: Submodule name -> the imported module, filled on first use. This caches the
-#: IMPORT and never the value: a re-exported name is read from its owner on every
-#: access, which is what keeps the owner the only place the value lives.
-_OWNERS: dict[str, ModuleType] = {}
-
 
 def _owner(name: str) -> ModuleType:
-    """Return the submodule that defines ``name``, importing it on first use."""
-    module = _EXPORTS[name]
-    owner = _OWNERS.get(module)
-    if owner is None:
-        owner = _OWNERS[module] = importlib.import_module(f"{__name__}.{module}")
-    return owner
+    """Return the submodule that defines ``name``, importing it on first use.
+
+    ``importlib.import_module`` is the resolution rather than a mapping kept here.
+    It answers from :data:`sys.modules`, the one place a module is stored, so a
+    purged or replaced owner is seen at once; and it waits on that module's import
+    lock while its body is still running. A private mapping of resolved owners
+    would be a second storage location, and a bare ``sys.modules`` read would hand
+    a partially initialised module to a thread that asks for a name while another
+    thread is still importing its owner.
+    """
+    module_name = f"{__name__}.{_EXPORTS[name]}"
+    return importlib.import_module(module_name)
 
 
 def __getattr__(name: str) -> Any:

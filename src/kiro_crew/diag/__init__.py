@@ -60,16 +60,20 @@ _LAZY: dict[str, tuple[str, str]] = {
 #: value whatever read it first.
 _OWNED: dict[str, tuple[str, str]] = dict(_LAZY)
 
-_OWNERS: dict[str, ModuleType] = {}
-
 
 def _owner(name: str) -> ModuleType:
-    """Return the module that defines ``name``, importing it on first use."""
+    """Return the module that defines ``name``, importing it on first use.
+
+    ``importlib.import_module`` is the resolution rather than a mapping kept here.
+    It answers from :data:`sys.modules`, the one place a module is stored, so a
+    purged or replaced owner is seen at once; and it waits on that module's import
+    lock while its body is still running. A private mapping of resolved owners
+    would be a second storage location, and a bare ``sys.modules`` read would hand
+    a partially initialised module to a thread that asks for a name while another
+    thread is still importing its owner.
+    """
     module_name = _OWNED[name][0]
-    owner = _OWNERS.get(module_name)
-    if owner is None:
-        owner = _OWNERS[module_name] = importlib.import_module(module_name)
-    return owner
+    return importlib.import_module(module_name)
 
 
 def __getattr__(name: str) -> Any:
