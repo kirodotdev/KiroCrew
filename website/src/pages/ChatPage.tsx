@@ -4436,6 +4436,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // survive a row remount, or the rising-edge mount would replay the editor
   // after Escape + session-switch and invite an accidental resend.
   const [editLast, setEditLast] = useState<{ seq: number; ts: string; index: number } | null>(null)
+  // Backs `editLast.seq` with a counter that survives consumption — deriving
+  // it from `editLast` itself (nulled by `onEditConsumed`) would restart at 1
+  // after every consumed request, colliding with a mounted row's already-seen
+  // `lastEditRequestRef` and silently dropping the next press.
+  const editSeqRef = useRef(0)
   const handleEditConsumed = useCallback(() => setEditLast(null), [])
   // Same for a session switch: the request is slot-scoped intent, so leaving
   // the slot discards any unconsumed request instead of letting a later,
@@ -5516,7 +5521,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const di = messageToDisplayIdxRef.current.get(i)
       if (di === undefined) return
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
-      setEditLast(prev => ({ seq: (prev?.seq ?? 0) + 1, ts: msgs[i].ts || '', index: i }))
+      setEditLast({ seq: ++editSeqRef.current, ts: msgs[i].ts || '', index: i })
       return
     }
   }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex])
