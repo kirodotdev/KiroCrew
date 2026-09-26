@@ -4,7 +4,7 @@ One chat session can open, fork, seed, watch, stop and close another one, and ta
 another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 17 of its tools, written for the agent that is about to use them.
+for all 18 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -13,8 +13,8 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
-  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`.
-  These organize what the person sees in the sidebar.
+  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_session_pin_move`. These organize what the person sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
 like any other tab, they can read it, take it over, and close it. This is how
@@ -260,6 +260,25 @@ is safe to grant where `chat_folder_move_session` is withheld.
 Folder moves are metadata only: the session keeps its transcript, its model, and
 any running turn. Archived (history) sessions cannot be moved — revive one into
 the sidebar first. There is no delete verb here.
+
+## Pinned order
+
+Pinned sessions sit at the top of their folder (or of the top level), in an
+order the person sets by dragging them. The gateway stores that order, so every
+browser and every agent sees the same one.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_session_pin_move` | `session` (required), `before`, `after` | Move a pinned session next to another pinned session in the same sidebar group |
+
+Pass exactly one of `before` / `after`, naming a pinned session in the same group.
+`chat_folder_tree` lists each group's pinned sessions first, in the order the
+sidebar draws them, so read it to pick the anchor. Pinned sessions the person
+never reordered follow in most-recent-activity order, and the first call
+stores that order for every one of them: the person's own sidebar sort lives in
+their browser, where the gateway cannot read it. The call only reorders: it
+does not pin, unpin, or move a session between folders. The order is the
+person's own preference, so an app agent or a crew member is refused.
 
 ## Tags
 

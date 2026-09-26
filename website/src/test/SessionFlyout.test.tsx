@@ -19,7 +19,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, within } from '@testing-library/react'
 import type { ChatSlot } from '../types'
 import SessionFlyout, { FLYOUT_MAX_ROWS, toggleClip, FULL_CLIP } from '../pages/chat/SessionFlyout'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY } from '../utils/pinnedSessionOrder'
 
 /** The framer-motion props this mock READS; every other prop is copied through
  *  to the plain DOM element untouched, which is what the index signature is for. */
@@ -104,14 +103,12 @@ describe('SessionFlyout ordering', () => {
     expect(rowKeys(container)).toEqual(['k-mid', 'k-new', 'k-old'])
   })
 
-  it('uses persisted manual rank for pinned rows and refreshes on same-tab reorder', () => {
-    const pins = SLOTS.map(item => slot({ ...item, pinned: true }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['k-old', 'k-mid', 'k-new']))
-    const { container } = mount({ slots: pins })
+  it('ranks pinned rows by the gateway pin order and follows a new order', () => {
+    const ranked = (order: string[]) => SLOTS.map(item => slot({ ...item, pinned: true, pin_rank: order.indexOf(item.key) }))
+    const { container, rerender, props } = mount({ slots: ranked(['k-old', 'k-mid', 'k-new']) })
     expect(rowKeys(container)).toEqual(['k-old', 'k-mid', 'k-new'])
 
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['k-new', 'k-old', 'k-mid']))
-    fireEvent(window, new Event(PINNED_SESSION_ORDER_CHANGED_EVENT))
+    rerender(<SessionFlyout {...props} slots={ranked(['k-new', 'k-old', 'k-mid'])} />)
     expect(rowKeys(container)).toEqual(['k-new', 'k-old', 'k-mid'])
   })
 

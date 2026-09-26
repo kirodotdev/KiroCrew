@@ -306,17 +306,15 @@ describe('SessionsPage', () => {
   })
 
   it('orders the Pinned group by the sidebar\'s manual pin order, not recency', async () => {
-    // pinnedSessionOrder.ts is the user-arranged artifact both surfaces share.
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['s-b', 's-a']))
+    // The gateway's pinned order (pin_rank) is what both surfaces share.
     renderPage([
-      slot('s-a', 'Pinned, touched recently', NOW - 60_000, { pinned: true }),
-      slot('s-b', 'Pinned, ranked first by hand', NOW - 3_600_000, { pinned: true }),
+      slot('s-a', 'Pinned, touched recently', NOW - 60_000, { pinned: true, pin_rank: 1 }),
+      slot('s-b', 'Pinned, ranked first by hand', NOW - 3_600_000, { pinned: true, pin_rank: 0 }),
     ])
     const sections = await screen.findAllByRole('region')
     const rows = within(sections[0]).getAllByTestId(/sessions-row-/)
     // Recency alone would put s-a first; the manual order says s-b.
     expect(rows[0]).toHaveAttribute('data-testid', 'sessions-row-s-b')
     expect(rows[1]).toHaveAttribute('data-testid', 'sessions-row-s-a')
-    localStorage.removeItem('mc-pinned-session-order')
   })
 })

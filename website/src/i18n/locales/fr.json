@@ -11264,6 +11264,7 @@
       "folders_load_failed": "Impossible de charger les dossiers",
       "columns_load_failed": "Impossible de charger les colonnes du tableau",
       "folder_update_failed": "Échec de la mise à jour du dossier",
+      "pinned_order_save_failed": "Impossible d'enregistrer l'ordre des sessions épinglées",
       "board_update_failed": "Échec de la mise à jour du tableau",
       "open_crew_members": "Membres de l’équipe",
       "open_crew_members_desc": "Ouvre la page Membres de l’équipe : chaque membre est un agent permanent avec son propre fil.",

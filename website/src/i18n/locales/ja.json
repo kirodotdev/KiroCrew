@@ -10936,6 +10936,7 @@
       "folders_load_failed": "フォルダーを読み込めませんでした",
       "columns_load_failed": "ボードの列を読み込めませんでした",
       "folder_update_failed": "フォルダーの更新に失敗しました",
+      "pinned_order_save_failed": "ピン留めの順序を保存できませんでした",
       "board_update_failed": "ボードの更新に失敗しました",
       "open_crew_members": "クルーメンバー",
       "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",

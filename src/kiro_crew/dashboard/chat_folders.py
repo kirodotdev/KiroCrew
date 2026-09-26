@@ -15,6 +15,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import pinned_fs
+from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -2382,6 +2383,21 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
+        if new_pinned != prior_pinned and await ensure_pinned_order_loaded(state):
+            # Still under the metadata lock, so a concurrent reorder cannot
+            # write an order computed before this pin landed. The pin itself is
+            # already durable; the order is a display preference, so a failed
+            # order write is logged and the pin stands.
+            await _write_pinned_order(
+                state,
+                pinned_session_order.after_pin_change(
+                    list(state._pinned_session_order),
+                    slot.key,
+                    new_pinned,
+                    state.pinned_session_flags(),
+                    state._pinned_session_order_stored,
+                ),
+            )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",
@@ -2391,6 +2407,179 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         resources=name,
     )
     return web.json_response({"ok": True, "pinned": slot.pinned})
+
+
+async def ensure_pinned_order_loaded(state: DashboardState) -> bool:
+    """Read the stored pinned order if it has not landed yet; ``True`` once loaded.
+
+    The gateway reads the file after it starts serving (see
+    ``load_pinned_order_after_listen``), so a pin or reorder can arrive first.
+    Every writer calls this before it computes a new order, or it would write
+    one derived from an empty list over the stored one. Returns ``False`` when
+    the file could not be read, and the writer leaves the stored order alone.
+    """
+    if not state._pinned_session_order_loaded:
+        state.adopt_pinned_session_order(await asyncio.to_thread(state.read_pinned_session_order))
+    return state._pinned_session_order_loaded
+
+
+async def load_pinned_order_after_listen(state: DashboardState) -> None:
+    """Read the pinned order after the listener is up, then publish the ranks.
+
+    Kept off the boot path (``no-new-work-on-gateway-boot-path``): until it
+    lands, slot rows carry no ``pin_rank`` and pinned sessions show in the
+    sidebar's own sort for a moment.
+    """
+    try:
+        was_loaded = state._pinned_session_order_loaded
+        if await ensure_pinned_order_loaded(state) and not was_loaded:
+            state.push_slots_update()
+    except Exception:  # noqa: BLE001 -- a display preference must not crash startup
+        logger.warning("could not load the pinned session order", exc_info=True)
+
+
+async def _write_pinned_order(state: DashboardState, keys: list[str]) -> bool:
+    """Persist *keys* as the pinned order, then adopt it in memory.
+
+    Memory changes only after the file write succeeds, so the order the
+    sidebar shows is always the one a restart would load. Returns ``False``
+    (logged) when the write fails.
+    """
+    if keys == list(state._pinned_session_order):
+        return True
+    try:
+        await asyncio.to_thread(state.save_pinned_session_order, keys)
+    except OSError:
+        logger.warning("could not write the pinned session order", exc_info=True)
+        return False
+    state._pinned_session_order = keys
+    state._pinned_session_order_loaded = True
+    state._pinned_session_order_stored = True
+    return True
+
+
+#: Byte ceiling for a pinned-order body: every key at its maximum length plus
+#: JSON quoting and separators.
+_MAX_PINNED_ORDER_BODY_BYTES = pinned_session_order.MAX_PINNED_ORDER_KEYS * (
+    pinned_session_order.MAX_PINNED_ORDER_KEY_CHARS + 4
+)
+
+
+async def api_chat_pinned_order(request: web.Request) -> web.Response:
+    """POST /api/chat/pinned-order -- set the order of pinned sessions in one write.
+
+    Body: ``{"keys": [slot_key, ...]}``, the pinned sessions in the order they
+    should appear. The named keys go first, in that order; stored keys the
+    request did not name follow in their existing order. The whole order is
+    one file, replaced atomically, so the reorder lands entirely or not at all.
+
+    ``"only_if_unset": true`` makes the write conditional: it lands only while
+    no order is stored, and is otherwise a 409 ``pinned_order_exists`` carrying
+    the stored order. The sidebar's one-time hand-off of a browser's old local
+    order uses it.
+
+    Every key must name a live, pinned session. One that does not is a 409 for
+    the whole request: the caller computed its order from a sidebar that has
+    since changed, and applying part of it would put sessions where nobody
+    asked. A repeated key is a 400.
+
+    The order is the person's sidebar preference and spans sessions no single
+    app or crew member owns, so only the person may set it: an app or member
+    caller is refused with 403.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := refuse_unattributable_caller(state, request, "chat.pinned_order")) is not None:
+        return refusal
+    principal = folder_principal(state, request)
+    if principal:
+        sel().log_api_access(
+            caller=principal,
+            operation="chat.pinned_order",
+            outcome="denied",
+            source="app_isolation",
+            error="only the person may reorder pinned sessions",
+        )
+        return web.json_response(
+            {
+                "error": "only the person may reorder pinned sessions",
+                "code": "pinned_order_person_only",
+            },
+            status=403,
+        )
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_PINNED_ORDER_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    keys = body.get("keys")
+    if not isinstance(keys, list) or not all(
+        isinstance(key, str) and 0 < len(key) <= pinned_session_order.MAX_PINNED_ORDER_KEY_CHARS
+        for key in keys
+    ):
+        return web.json_response(
+            {"error": "keys must be an array of session keys", "code": "keys_invalid"},
+            status=400,
+        )
+    if len(keys) > pinned_session_order.MAX_PINNED_ORDER_KEYS:
+        return web.json_response(
+            {"error": "too many keys in one reorder", "code": "keys_too_many"}, status=400
+        )
+    if len(set(keys)) != len(keys):
+        return web.json_response(
+            {"error": "a key appears more than once", "code": "keys_duplicate"}, status=400
+        )
+    only_if_unset = body.get("only_if_unset") is True
+    async with _slot_meta_txn_lock(state):
+        if not await ensure_pinned_order_loaded(state):
+            return web.json_response(
+                {"error": "the pinned order could not be read", "code": "pinned_order_unreadable"},
+                status=503,
+            )
+        if only_if_unset and state._pinned_session_order_stored:
+            # A browser handing over its old local order: only an order nobody
+            # has set yet may take it, so it cannot replace a newer one saved
+            # from another browser since that browser last read the slots.
+            return web.json_response(
+                {
+                    "error": "a pinned order is already stored",
+                    "code": "pinned_order_exists",
+                    "order": list(state._pinned_session_order),
+                },
+                status=409,
+            )
+        # Checked under the same lock the pin route holds, so no pin or unpin
+        # can land between this check and the write.
+        flags = state.pinned_session_flags()
+        missing = [key for key in keys if not flags.get(key)]
+        if missing:
+            return web.json_response(
+                {
+                    "error": "a session in the reorder is gone or no longer pinned",
+                    "code": "slot_not_pinned",
+                    "keys": missing[:10],
+                },
+                status=409,
+            )
+        order = pinned_session_order.after_reorder(
+            list(state._pinned_session_order), list(keys), flags
+        )
+        if not await _write_pinned_order(state, order):
+            return web.json_response(
+                {
+                    "error": "the gateway could not write its order file",
+                    "code": "pinned_order_write_failed",
+                },
+                status=500,
+            )
+    state.push_slots_update()
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.pinned_order",
+        outcome="allowed",
+        source=source,
+        resources=",".join(keys[:10]),
+    )
+    return web.json_response({"ok": True, "order": order})
 
 
 _VALID_MODES = ("", "orchestrator")

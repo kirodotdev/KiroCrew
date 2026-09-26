@@ -10936,6 +10936,7 @@
       "folders_load_failed": "无法加载文件夹",
       "columns_load_failed": "无法加载看板列",
       "folder_update_failed": "文件夹更新失败",
+      "pinned_order_save_failed": "无法保存置顶会话的顺序",
       "board_update_failed": "看板更新失败",
       "open_crew_members": "团队成员",
       "open_crew_members_desc": "打开团队成员页面——每个成员都是一个常驻代理，各有自己的话题。",

@@ -11100,6 +11100,7 @@
       "folders_load_failed": "ফোল্ডার লোড করা যায়নি",
       "columns_load_failed": "বোর্ড কলাম লোড করা যায়নি",
       "folder_update_failed": "ফোল্ডার আপডেট ব্যর্থ",
+      "pinned_order_save_failed": "পিন করা ক্রম সংরক্ষণ করা যায়নি",
       "board_update_failed": "বোর্ড আপডেট ব্যর্থ",
       "open_crew_members": "ক্রু সদস্যরা",
       "open_crew_members_desc": "ক্রু সদস্যদের পেজ খোলে — প্রত্যেক সদস্য একজন স্থায়ী এজেন্ট, যার নিজস্ব থ্রেড আছে।",

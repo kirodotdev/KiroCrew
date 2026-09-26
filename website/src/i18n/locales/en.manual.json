@@ -4709,6 +4709,7 @@
       "folders_load_failed": "Could not load folders",
       "columns_load_failed": "Could not load board columns",
       "folder_update_failed": "Folder update failed",
+      "pinned_order_save_failed": "Could not save the pinned order",
       "board_update_failed": "Board update failed",
       "open_crew_members": "Crew Members",
       "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",

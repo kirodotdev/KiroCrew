@@ -293,6 +293,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_REORDER_BODY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The pinned-session reorder carries a bounded list of slot keys, sized
+    # from the key-count and key-length ceilings in pinned_session_order.
+    "chat_folders.py::api_chat_pinned_order": (
+        "_MAX_PINNED_ORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py: control-field slot mutations take the cap; the sites
     # that carry a chat message, queued-edit text, follow-up prompts, or

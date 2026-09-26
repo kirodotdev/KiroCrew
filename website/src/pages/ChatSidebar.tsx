@@ -24,7 +24,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
-import { sseSlotTitle, setSidebarOrder, slotIsRemoteBound, fetchSlots } from '../store/dashboardSlice'
+import { sseSlotTitle, setSidebarOrder, setPinRanks, slotIsRemoteBound, fetchSlots } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -57,7 +57,7 @@ import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import { useInstanceSessions } from '../hooks/useInstanceSessions'
 import { useLanguage } from '../i18n/LanguageProvider'
-import { pinMutationKeysInFlight, useSessionActions } from '../hooks/useSessionActions'
+import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { platformShortcut } from '../utils/platform'
@@ -68,7 +68,7 @@ import ResizeHandle from '../components/ResizeHandle'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../components/SearchFilterBar'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
+import { clearLegacyPinnedSessionOrder, movePinnedSession, rankedPinnedKeys, readLegacyPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { LAYOUT } from '../components/layout'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
@@ -4420,16 +4420,18 @@ function ChatSidebar({
     closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') },
   })
 
-  // Pinned membership is server-persisted; the order inside that section is a
-  // browser preference, matching the sidebar's existing sort/view preferences.
+  // Pinned membership AND the order inside the pinned section live on the
+  // gateway: each slot row carries `pin_rank` (see utils/pinnedSessionOrder.ts
+  // and dashboard/pinned_session_order.py). Rows with no rank follow the
+  // ranked ones in the sidebar's own sort, so a person who never reordered
+  // keeps the plain sort.
   //
   // Both collections read `localSlots`, NOT the merged `allRows`: pin state and
   // pin order are local sidebar metadata keyed by local slot key, and a peer row
   // has no entry in either. Feeding it merged rows would put a peer key into the
-  // persisted order array, where it would survive disconnection forever.
+  // gateway's order, where the next write would only drop it again.
   const pinned = useMemo(() => new Set(localSlots.filter(s => s.pinned).map(s => s.key)), [localSlots])
-  const [storedPinnedOrder, setStoredPinnedOrder] = useState(readPinnedSessionOrder)
-  const pinnedOrderFromStorage = useRef(false)
+  const storedPinnedOrder = useMemo(() => rankedPinnedKeys(localSlots), [localSlots])
   const naturalPinnedOrder = useMemo(
     () => localSlots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, sortKey)).map(s => s.key),
     [localSlots, sortKey],
@@ -4439,38 +4441,80 @@ function ChatSidebar({
     [storedPinnedOrder, naturalPinnedOrder],
   )
   const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
-  useEffect(() => {
-    const refresh = (fromStorage: boolean) => {
-      const incoming = readPinnedSessionOrder()
-      setStoredPinnedOrder(current => {
-        const changed = incoming.length !== current.length
-          || incoming.some((key, index) => key !== current[index])
-        if (!changed) return current
-        pinnedOrderFromStorage.current = fromStorage
-        return incoming
+  // A reorder paints the order the person just made, then writes it. Writes
+  // go out one at a time, in gesture order, so the gateway stores the last
+  // gesture even when two land within one round trip. The client never
+  // rebuilds an order from what it remembers: a failure shows why and re-reads
+  // the slots, whose ranks are the gateway's (`fetchSlots` yields to any newer
+  // drag through the row-write stamps), and a success paints the order the
+  // gateway answered with, so there is no stale order to restore. Only the
+  // last write in the queue re-reads.
+  const [pinnedOrderError, setPinnedOrderError] = useState('')
+  const pinnedOrderMutation = useMutation({
+    mutationFn: ({ keys, onlyIfUnset = false }: { keys: string[]; onlyIfUnset?: boolean }) =>
+      api.setPinnedOrder(keys, onlyIfUnset),
+  })
+  const { mutateAsync: mutatePinnedOrder } = pinnedOrderMutation
+  const pinnedOrderTail = useRef<Promise<unknown>>(Promise.resolve())
+  const savePinnedOrder = useCallback((vars: { keys: string[]; onlyIfUnset?: boolean }) => {
+    const request = pinnedOrderTail.current.catch(() => undefined).then(() => mutatePinnedOrder(vars))
+    pinnedOrderTail.current = request
+    return request
+  }, [mutatePinnedOrder])
+  const commitPinnedOrder = useCallback((next: string[]) => {
+    setPinnedOrderError('')
+    dispatch(setPinRanks(next))
+    const request = savePinnedOrder({ keys: next })
+    request
+      .then(res => {
+        // The gateway's answer is its stored order.
+        if (Array.isArray(res?.order)) dispatch(setPinRanks(res.order))
       })
-    }
-    const onSameTabChange = () => refresh(false)
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh(true)
-    }
-    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, onSameTabChange)
-    window.addEventListener('storage', onStorage)
-    return () => {
-      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, onSameTabChange)
-      window.removeEventListener('storage', onStorage)
-    }
-  }, [])
+      .catch((err: unknown) => {
+        setPinnedOrderError(errMessage(err) || i18nT('components.errorBoundary.something_went_wrong'))
+        // Re-read only when no later gesture is queued: that write's own
+        // answer, or its own re-read, is newer than anything read now.
+        if (pinnedOrderTail.current === request) dispatch(fetchSlots())
+      })
+  }, [dispatch, savePinnedOrder])
   const reorderPinned = useCallback((activeKey: string, overKey: string) => {
-    setStoredPinnedOrder(current => {
-      const naturalSet = new Set(naturalPinnedOrder)
-      const pending = pinMutationKeysInFlight().filter(key => !naturalSet.has(key))
-      const reconciled = reconcilePinnedSessionOrder(current, [...naturalPinnedOrder, ...pending])
-      const next = movePinnedSession(reconciled, activeKey, overKey)
-      persistPinnedSessionOrder(next)
-      return next
-    })
-  }, [naturalPinnedOrder])
+    const next = movePinnedSession(pinnedOrder, activeKey, overKey)
+    if (next.every((key, index) => key === pinnedOrder[index])) return
+    commitPinnedOrder(next)
+  }, [pinnedOrder, commitPinnedOrder])
+  // One-time hand-off of the order this browser kept in localStorage before
+  // the gateway stored it. Only an unranked gateway adopts it, so a second
+  // browser with an older local order cannot overwrite a newer shared one.
+  const legacyPinnedOrderMigrated = useRef(false)
+  useEffect(() => {
+    if (!slotsLoaded || legacyPinnedOrderMigrated.current) return
+    const legacy = readLegacyPinnedSessionOrder()
+    if (legacy.length === 0) { legacyPinnedOrderMigrated.current = true; return }
+    if (storedPinnedOrder.length > 0) {
+      legacyPinnedOrderMigrated.current = true
+      clearLegacyPinnedSessionOrder()
+      return
+    }
+    const next = reconcilePinnedSessionOrder(legacy, naturalPinnedOrder)
+    // No pinned session in this frame (a gateway still restoring its sessions
+    // answers an empty list): keep the local copy and wait for a frame that
+    // has them, rather than hand over nothing and delete it.
+    if (next.length === 0) return
+    legacyPinnedOrderMigrated.current = true
+    // Conditional: another browser may have saved an order since this one
+    // read the slots, and a stale local order must not replace it.
+    savePinnedOrder({ keys: next, onlyIfUnset: true })
+      .then(res => {
+        if (Array.isArray(res?.order)) dispatch(setPinRanks(res.order))
+        clearLegacyPinnedSessionOrder()
+      })
+      .catch((err: unknown) => {
+        // 409: the gateway already has an order, which the next slots frame
+        // carries. Any other failure keeps the local copy for the next page
+        // load; retrying here would re-send on every slots frame.
+        if ((err as { status?: number } | null)?.status === 409) clearLegacyPinnedSessionOrder()
+      })
+  }, [slotsLoaded, storedPinnedOrder, naturalPinnedOrder, dispatch, savePinnedOrder])
 
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
@@ -4847,7 +4891,6 @@ function ChatSidebar({
   // Sidebar column layout (flat list; empty = legacy single-lane UX)
   const {
     data: rawColumns = [],
-    isFetched: tagColumnsSettled,
     isError: columnsFailed,
     error: columnsError,
     refetch: refetchColumns,
@@ -4875,25 +4918,6 @@ function ChatSidebar({
     return [...columns].sort((a, b) => a.order - b.order)
   }, [rawColumns, tagColumnsEnabled])
   const [columnEditId, setColumnEditId] = useState<string | null>(null)  // column whose popover is open
-  const pinnedRankAuthorityEstablished = useRef(storedPinnedOrder.length > 0)
-  useEffect(() => {
-    if (!slotsLoaded || !tagColumnsSettled || pinMutationKeysInFlight().length > 0) return
-    const boardProjection = orderedColumns.length > 0
-    if (boardProjection && !pinnedRankAuthorityEstablished.current
-      && storedPinnedOrder.length === 0) return
-    pinnedRankAuthorityEstablished.current = true
-    const next = reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinnedOrder)
-    const changed = next.length !== storedPinnedOrder.length
-      || next.some((key, index) => key !== storedPinnedOrder[index])
-    const fromStorage = pinnedOrderFromStorage.current
-    pinnedOrderFromStorage.current = false
-    if (!changed) return
-    if (!fromStorage) {
-      persistPinnedSessionOrder(next)
-      window.dispatchEvent(new Event(PINNED_SESSION_ORDER_CHANGED_EVENT))
-    }
-    setStoredPinnedOrder(next)
-  }, [slotsLoaded, tagColumnsSettled, orderedColumns.length, storedPinnedOrder, naturalPinnedOrder])
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null)
   // The column-filter popover is portaled to <body>, so it is outside the trigger's
   // DOM tab-order and never receives focus on open. columnPopoverRef + the effect
@@ -9383,6 +9407,14 @@ function ChatSidebar({
         onDismiss={() => setFolderActionError('')}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
+      />
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.pinned_order_save_failed')}
+        message={pinnedOrderError}
+        askAgent
+        onDismiss={() => setPinnedOrderError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="pinned-order-error"
       />
       <ErrorNotice
         message={newChatError}

@@ -42,13 +42,6 @@ vi.mock('../store/chatSlice', async (importOriginal) => ({
 import { store } from '../store'
 import { sseSlots, markSlotUnread, markSlotRead, setSidebarOrder, updateSlot, updateSlotPin } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
-import {
-  PINNED_SESSION_ORDER_KEY,
-  movePinnedSession,
-  persistPinnedSessionOrder,
-  readPinnedSessionOrder,
-  reconcilePinnedSessionOrder,
-} from '../utils/pinnedSessionOrder'
 import { pinMutationKeysInFlight, useSessionActions } from './useSessionActions'
 
 const KEY = 'zzq-slot-1'
@@ -131,11 +124,9 @@ describe('togglePin', () => {
     act(() => result.current.togglePin(KEY))
     expect(slot()?.pinned).toBe(true)
     await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(KEY, true))
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([KEY]))
   })
 
   it('unpins a pinned session', async () => {
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['before', KEY, 'after']))
     store.dispatch(sseSlots([
       { key: 'before', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: KEY, messages: 0, running: false, pinned: true } as ChatSlot,
@@ -146,7 +137,6 @@ describe('togglePin', () => {
     act(() => result.current.togglePin(KEY))
     expect(slot()?.pinned).toBe(false)
     await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(KEY, false))
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['before', 'after']))
   })
 
   it('rolls the pin back when the write fails', async () => {
@@ -177,75 +167,6 @@ describe('togglePin', () => {
     expect(slot()?.title).toBe('after')
   })
 
-  it('appends the first new pin after the complete natural baseline', async () => {
-    store.dispatch(sseSlots([
-      { key: 'pin-b', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: 'pin-a', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder(['pin-a', 'pin-b', KEY]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!))
-      .toEqual(['pin-b', 'pin-a', KEY]))
-  })
-
-  it('sorts the first baseline by saved preference when no sidebar order exists', async () => {
-    localStorage.setItem('mc-session-sort', 'name-desc')
-    store.dispatch(sseSlots([
-      { key: 'pin-a', title: 'Alpha', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: 'pin-z', title: 'Zulu', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, title: 'Middle', messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder([]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!))
-      .toEqual(['pin-z', 'pin-a', KEY]))
-  })
-
-  it('ignores a partial sidebar order when seeding the first pinned rank', async () => {
-    localStorage.setItem('mc-session-sort', 'name-desc')
-    store.dispatch(sseSlots([
-      { key: 'pin-a', title: 'Alpha', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: 'pin-z', title: 'Zulu', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, title: 'Middle', messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    // A filter projects only one existing pin into the rendered order.
-    store.dispatch(setSidebarOrder(['pin-a', KEY]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-
-    await waitFor(() => expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!))
-      .toEqual(['pin-z', 'pin-a', KEY]))
-  })
-
-  it('sorts concurrent authoritative new pins before appending them', async () => {
-    const other = 'zzq-slot-z'
-    localStorage.setItem('mc-session-sort', 'name-desc')
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['base']))
-    store.dispatch(sseSlots([
-      { key: 'base', title: 'Base', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, title: 'Alpha', messages: 0, running: false, pinned: false } as ChatSlot,
-      { key: other, title: 'Zulu', messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder(['base', KEY, other]))
-    const { result } = harness()
-
-    act(() => {
-      result.current.togglePin(KEY)
-      result.current.togglePin(other)
-    })
-
-    await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(readPinnedSessionOrder()).toEqual(['base', other, KEY]))
-  })
-
   it('commits overlapping outcomes atomically when success arrives before failure', async () => {
     const other = 'zzq-slot-2'
     let rejectFirst: (reason?: unknown) => void = () => undefined
@@ -253,7 +174,6 @@ describe('togglePin', () => {
     apiMock.setSlotPin
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
       .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([KEY, other]))
     store.dispatch(sseSlots([
       { key: KEY, messages: 0, running: false, pinned: true } as ChatSlot,
       { key: other, messages: 0, running: false, pinned: true } as ChatSlot,
@@ -277,13 +197,11 @@ describe('togglePin', () => {
     expect(store.getState().dashboard.slots.find(s => s.key === other)?.pinned).toBe(false)
 
     await act(async () => { resolveSecond({ ok: true }); await Promise.resolve() })
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([KEY, other])
 
     await act(async () => { rejectFirst(new Error('zzq offline')); await Promise.resolve() })
 
     await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === KEY)?.pinned).toBe(true))
     expect(store.getState().dashboard.slots.find(s => s.key === other)?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([KEY])
   })
 
   it('appends an authoritative partial-success pin instead of reviving stale rank', async () => {
@@ -294,7 +212,6 @@ describe('togglePin', () => {
       { key: 'a', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: KEY, messages: 0, running: false, pinned: true } as ChatSlot,
     ])
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([KEY, 'a']))
     store.dispatch(sseSlots([
       { key: 'a', messages: 0, running: false, pinned: true } as ChatSlot,
       { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
@@ -309,7 +226,6 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(slot()?.pinned).toBe(true))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['a', KEY])
   })
 
   it('serializes overlapping same-key writes and restores membership when both fail', async () => {
@@ -318,7 +234,6 @@ describe('togglePin', () => {
     apiMock.setSlotPin
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
     apiMock.chatSlots.mockResolvedValue([
       { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
     ])
@@ -340,7 +255,6 @@ describe('togglePin', () => {
     await act(async () => { rejectSecond(new Error('zzq second')); await Promise.resolve() })
 
     await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
 
   it('keeps the newer successful toggle when its snapshot resolves first', async () => {
@@ -368,87 +282,11 @@ describe('togglePin', () => {
     })
 
     expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
-  })
-
-  it('retains a pending unpin key during a concurrent reorder', async () => {
-    const a = 'zzq-slot-a'
-    const b = KEY
-    const c = 'zzq-slot-c'
-    let rejectUnpin: (reason?: unknown) => void = () => undefined
-    let resolveSnapshot: (slots: ChatSlot[]) => void = () => undefined
-    apiMock.setSlotPin.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectUnpin = reject }))
-    apiMock.chatSlots.mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([a, b, c]))
-    store.dispatch(sseSlots([
-      { key: a, messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: b, messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: c, messages: 0, running: false, pinned: true } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder([a, b, c]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(b))
-    await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(b, false))
-    const natural = [a, c]
-    const naturalSet = new Set(natural)
-    const pending = pinMutationKeysInFlight().filter(key => !naturalSet.has(key))
-    const reordered = movePinnedSession(
-      reconcilePinnedSessionOrder(readPinnedSessionOrder(), [...natural, ...pending]),
-      a,
-      c,
-    )
-    persistPinnedSessionOrder(reordered)
-    expect(reordered).toEqual([b, c, a])
-
-    await act(async () => { rejectUnpin(new Error('zzq rejected')); await Promise.resolve() })
-    await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalled())
-    await act(async () => {
-      resolveSnapshot([
-        { key: a, messages: 0, running: false, pinned: true } as ChatSlot,
-        { key: b, messages: 0, running: false, pinned: true } as ChatSlot,
-        { key: c, messages: 0, running: false, pinned: true } as ChatSlot,
-      ])
-      await Promise.resolve()
-    })
-
-    await waitFor(() => expect(slot()?.pinned).toBe(true))
-    expect(readPinnedSessionOrder()).toEqual([b, c, a])
-  })
-
-  it('preserves an in-flight manual reorder while rolling back a rejected pin', async () => {
-    let resolveSnapshot: (slots: ChatSlot[]) => void = () => undefined
-    apiMock.setSlotPin.mockRejectedValue(new Error('zzq rejected'))
-    apiMock.chatSlots.mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['a', 'b']))
-    store.dispatch(sseSlots([
-      { key: 'a', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: 'b', messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder(['a', 'b', KEY]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-    await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalled())
-    act(() => persistPinnedSessionOrder(['b', 'a']))
-    await act(async () => {
-      resolveSnapshot([
-        { key: 'a', messages: 0, running: false, pinned: true } as ChatSlot,
-        { key: 'b', messages: 0, running: false, pinned: true } as ChatSlot,
-        { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
-      ])
-      await Promise.resolve()
-    })
-
-    await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['b', 'a'])
   })
 
   it('retries reconciliation when an authoritative slots frame arrives in flight', async () => {
     let resolveSnapshot: (slots: ChatSlot[]) => void = () => undefined
     apiMock.chatSlots.mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
     slots({ pinned: false })
     const { result } = harness()
 
@@ -465,7 +303,6 @@ describe('togglePin', () => {
 
     expect(apiMock.chatSlots).toHaveBeenCalledTimes(2)
     expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
 
   it('bounds snapshot retries under continuous authoritative slot frames', async () => {
@@ -475,7 +312,6 @@ describe('togglePin', () => {
       ]))
       return [{ key: KEY, messages: 0, running: false, pinned: true } as ChatSlot]
     })
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
     slots({ pinned: false })
     const { result } = harness()
 
@@ -483,33 +319,6 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
-  })
-
-  it('discards a snapshot when cross-tab pinned order changes in flight', async () => {
-    let resolveSnapshot: (slots: ChatSlot[]) => void = () => undefined
-    apiMock.chatSlots.mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve }))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
-    slots({ pinned: false })
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-    await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalled())
-
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
-    act(() => {
-      window.dispatchEvent(new StorageEvent('storage', { key: PINNED_SESSION_ORDER_KEY }))
-      store.dispatch(sseSlots([
-        { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
-      ]))
-    })
-    await act(async () => {
-      resolveSnapshot([{ key: KEY, messages: 0, running: false, pinned: true } as ChatSlot])
-      await Promise.resolve()
-    })
-
-    expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
 
   it('uses snapshot membership after a delayed pre-mutation slots frame', async () => {
@@ -518,7 +327,6 @@ describe('togglePin', () => {
     apiMock.chatSlots.mockResolvedValue([
       { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
     ])
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([KEY]))
     slots({ pinned: true })
     const { result } = harness()
 
@@ -532,7 +340,6 @@ describe('togglePin', () => {
     await act(async () => { resolveUnpin({ ok: true }); await Promise.resolve() })
 
     await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
 
   it('keeps a newer authoritative unpin when an older pin completion arrives later', async () => {
@@ -557,15 +364,12 @@ describe('togglePin', () => {
     expect(slot()?.pinned).toBe(false)
     expect(slot()?.title).toBe('newer title')
     expect(store.getState().dashboard.slots.some(slot => slot.key === 'zzq-newer-slot')).toBe(true)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
-
 
   it('keeps an authoritative matching broadcast when PATCH and snapshot responses fail', async () => {
     let rejectPin: (reason?: unknown) => void = () => undefined
     apiMock.setSlotPin.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPin = reject }))
     apiMock.chatSlots.mockRejectedValue(new Error('zzq snapshot offline'))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
     slots({ pinned: false })
     const { result } = harness()
 
@@ -580,38 +384,6 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalled())
     expect(slot()?.pinned).toBe(true)
-  })
-
-  it('removes a rejected optimistic pin from concurrently reordered storage', async () => {
-    const a = 'zzq-slot-a'
-    const c = 'zzq-slot-c'
-    let rejectPin: (reason?: unknown) => void = () => undefined
-    apiMock.setSlotPin.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPin = reject }))
-    apiMock.chatSlots.mockRejectedValue(new Error('zzq snapshot offline'))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([a, c]))
-    store.dispatch(sseSlots([
-      { key: a, messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: c, messages: 0, running: false, pinned: true } as ChatSlot,
-      { key: KEY, messages: 0, running: false, pinned: false } as ChatSlot,
-    ]))
-    store.dispatch(setSidebarOrder([a, c, KEY]))
-    const { result } = harness()
-
-    act(() => result.current.togglePin(KEY))
-    await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(KEY, true))
-    const natural = [a, c]
-    const pending = pinMutationKeysInFlight()
-    persistPinnedSessionOrder(movePinnedSession(
-      reconcilePinnedSessionOrder(readPinnedSessionOrder(), [...natural, ...pending]),
-      a,
-      c,
-    ))
-    expect(readPinnedSessionOrder()).toEqual([c, a, KEY])
-
-    await act(async () => { rejectPin(new Error('zzq rejected')); await Promise.resolve() })
-
-    await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(readPinnedSessionOrder()).toEqual([c, a])
   })
 
   it('rolls back an owned failure when another key was superseded', async () => {
@@ -642,14 +414,12 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === other)?.pinned).toBe(false))
     expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY) ?? '[]')).toEqual([])
   })
 
   it('does not fallback-roll back a newer broadcast when the snapshot refetch fails', async () => {
     let resolvePin: (value: { ok: boolean }) => void = () => undefined
     apiMock.setSlotPin.mockImplementationOnce(() => new Promise(resolve => { resolvePin = resolve }))
     apiMock.chatSlots.mockRejectedValue(new Error('zzq snapshot offline'))
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify([]))
     slots({ pinned: false })
     const { result } = harness()
 
@@ -662,14 +432,11 @@ describe('togglePin', () => {
 
     await waitFor(() => expect(apiMock.chatSlots).toHaveBeenCalled())
     expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual([])
   })
 })
 
-
   it('preserves manual rank when an optimistic unpin is rejected', async () => {
     const other = 'zzq-slot-2'
-    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['before', KEY, other]))
     apiMock.setSlotPin.mockRejectedValue(new Error('zzq offline'))
     apiMock.chatSlots.mockResolvedValue([
       { key: 'before', messages: 0, running: false, pinned: true } as ChatSlot,
@@ -686,10 +453,8 @@ describe('togglePin', () => {
 
     act(() => result.current.togglePin(KEY))
     expect(slot()?.pinned).toBe(false)
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['before', KEY, other])
 
     await waitFor(() => expect(slot()?.pinned).toBe(true))
-    expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['before', KEY, other])
   })
 describe('toggleMode', () => {
   it('switches to orchestrator once confirmed', async () => {
