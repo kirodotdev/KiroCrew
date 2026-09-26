@@ -26,6 +26,8 @@ one, or merges the two.
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -527,6 +529,234 @@ def test_the_owner_count_is_bounded_and_evicts_the_oldest():
     assert len(owners) == PANEL_OWNER_LIMIT
     assert keys[0] not in owners, "the oldest publish must be the one evicted"
     assert set(owners) == set(keys[1:])
+
+
+# --------------------------------------------- what the sanctioned reader sees
+
+
+#: The reference page's own reader hint, as the paragraph it is written in. The
+#: pins below derive what a reader is promised from THIS text rather than from a
+#: list kept here, so a hint that grows a field the record does not carry reds.
+#: The panel type is the page's last documented type, so its hint is the last one.
+_READER_HINT_HEAD = "**Reader hint**"
+
+
+def _reader_hint() -> str:
+    """The panel type's reader-hint paragraph from the crew-log reference page."""
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "reference" / "crew-log" / "session-types.md"
+    )
+    text = page.read_text(encoding="utf-8")
+    # The panel type is the page's last documented type, so its hint is the last
+    # one on the page; sliced to the blank line that ends the paragraph.
+    head = text.rindex(_READER_HINT_HEAD)
+    para = text[head:].split("\n\n", 1)[0]
+    assert "crew_key" in para, "the panel type's reader hint moved; re-anchor this"
+    return para
+
+
+def test_the_slot_wide_count_is_on_the_top_level_alone():
+    """``owners_omitted`` belongs to the fold, not to any owner's record.
+
+    It counts the slot's evictions, and eviction deletes the evicted owner's entry,
+    so the crew the count is about has no record here to read it from. A copy on each
+    SURVIVING owner's record would answer a question none of them is asking, and it
+    would sit beside the owner-scoped ``history_omitted`` where the natural misreading
+    is "my crew was evicted that many times".
+
+    Derived by COMPARING the two shapes rather than by listing fields, so a future
+    field appearing on one side alone reds this without the test being edited.
+    ``owners`` is the container holding the per-owner records, so it and the count are
+    the keys the top level is expected to have alone.
+    """
+    _unit()
+    _publish(title="fleet", data={"cycle": 47})
+
+    value = _folded()
+    mine = value["owners"][KEY]
+    assert "owners_omitted" in value, "the fold must still report its own truncation"
+    assert "owners_omitted" not in mine, "the slot's count is not the owner's to carry"
+    top_only = set(value) - set(mine)
+    owner_only = set(mine) - set(value)
+    assert top_only == {"owners", "owners_omitted"}, f"top level alone: {sorted(top_only)}"
+    assert not owner_only, f"on the per-owner record alone: {sorted(owner_only)}"
+
+
+def test_every_field_the_reader_hint_names_is_reachable_along_the_hints_own_path():
+    """The hint may not name a field a reader following it cannot reach.
+
+    The hint sends a reader to the fold for the slot and then to the record under
+    its ``crew_key``, so both the fold's top level and that per-owner record are in
+    a compliant reader's hands. A backticked field on NEITHER is a documented
+    contract the implementation does not keep.
+
+    Deliberately not "must be on the per-owner record": eviction deletes an owner's
+    entry, so the count that answers an evicted reader can only live on the top
+    level, and a pin demanding per-owner presence would be asserting the very thing
+    the fold cannot do.
+    """
+    _unit()
+    _publish(title="fleet", data={"cycle": 47})
+    value = _folded()
+    reachable = set(value) | set(value["owners"][KEY])
+
+    named = set(re.findall(r"`([a-z_]+)`", _reader_hint()))
+    assert named, "the hint names no field in backticks; re-anchor this pin"
+    missing = sorted(name for name in named if name not in reachable)
+    assert not missing, f"the hint names {len(named)} fields; unreachable: {missing}"
+
+
+def test_an_evicted_crew_has_no_record_and_reads_the_count_from_the_top_level():
+    """The evicted reader's whole path, which is the case the count exists for.
+
+    Eviction is ``del owners[oldest]``, so a crew whose record was evicted finds
+    NOTHING under its own ``crew_key`` -- not an empty record. That is why the count
+    cannot live on the per-owner record: the crew it is about has none. The fold's
+    top-level count is what this reader reads instead, and this pins that it is there
+    and non-zero in exactly that state.
+    """
+    _unit()
+    keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
+    for i, key in enumerate(keys):
+        _publish(crew_key=key, title=f"crew-{i}", data={"cycle": i})
+
+    value = _folded()
+    evicted = keys[0]
+    assert len(value["owners"]) == PANEL_OWNER_LIMIT
+    # Absent, not empty: there is no record here to carry a count of its own.
+    assert evicted not in value["owners"]
+    assert value["owners"].get(evicted) is None
+    # So the top level is the only thing that can tell this reader it was evicted.
+    assert value["owners_omitted"] == 1
+
+
+def test_no_record_under_owners_is_ever_empty_so_absence_is_the_only_signal():
+    """An "empty record under ``owners``" is not a state the fold can produce.
+
+    ``_panel_step`` assigns a validated non-empty ``template`` on insert, so every
+    record under ``owners`` describes a real publish. The only empty-``template``
+    record ``_panel_render`` emits is its top-level fallback, reached when no crew
+    has published at all -- where the eviction count is necessarily zero.
+
+    Pinned because it is what makes ABSENCE the evicted reader's signal. A reader
+    told to look for an empty record under its key would be waiting for a state that
+    never arrives.
+    """
+    _unit()
+    keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
+    for i, key in enumerate(keys):
+        _publish(crew_key=key, title=f"crew-{i}", data={"cycle": i})
+
+    templates = [record["template"] for record in _folded()["owners"].values()]
+    assert templates and all(templates), templates
+
+    # The one empty-template record the fold emits, and its count is zero there.
+    fresh = crew_log.read_slot_projection("member-nobody-published", PANEL_FOLD_NAME).value
+    assert fresh["template"] == ""
+    assert fresh["owners_omitted"] == 0
+
+
+def test_a_non_zero_count_does_not_attribute_the_loss_to_the_asking_crew():
+    """The false-positive direction, which the count genuinely cannot rule out.
+
+    ``_panel_step`` increments on ANY owner's eviction with no reference to the
+    asking key, so a crew that never published on a busy slot reads exactly what a
+    genuinely evicted crew reads: no record of its own, and the same non-zero count.
+    Pinned so the documentation can never be tightened back into claiming an
+    attribution, and so the true-positive pin above is not mistaken for the whole
+    guarantee.
+    """
+    _unit()
+    publishers = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
+    for i, key in enumerate(publishers):
+        _publish(crew_key=key, title=f"crew-{i}", data={"cycle": i})
+
+    value = _folded()
+    evicted = publishers[0]
+    never_published = "z" * 40
+
+    # Both read absence, and both read the same count. Indistinguishable by design.
+    assert evicted not in value["owners"]
+    assert never_published not in value["owners"]
+    assert value["owners_omitted"] == 1
+
+
+def test_a_zero_count_speaks_only_about_this_fold_not_about_publishing():
+    """``0`` says this FOLD recorded no eviction. It says nothing about publishing.
+
+    The distinction is load-bearing because the append is best-effort:
+    ``api_agent_panel_publish`` writes the durable file and then skips the entry when
+    the crew log is off, when the session has no unit, or when the line does not fit.
+    Each of those leaves the fold with no record under that ``crew_key`` while the
+    count is still ``0`` and the file is still serving that crew's panel -- so reading
+    ``0`` as "this crew never published" is wrong in exactly the case the store is
+    designed to survive.
+
+    The fixture is that case: nothing is appended at all, which is what an unlanded
+    publish looks like from the fold's side.
+    """
+    _unit()
+
+    value = _folded()
+    assert value["owners_omitted"] == 0, "no eviction was recorded by this fold"
+    assert value["owners"] == {}, "and the fold holds no record for anyone"
+    # What the fold cannot distinguish: a crew that never published from one whose
+    # publish landed in the file while its entry was skipped.
+    assert value["template"] == "", "the fold says only that it has nothing recorded"
+
+
+def test_a_slot_that_evicted_nobody_still_reports_the_count_as_zero():
+    """The count's other direction: zero is an answer, not an absent field.
+
+    A reader that cannot distinguish "no eviction" from "this fold does not report
+    evictions" is back to guessing, so the field is present on a slot that published
+    and evicted nobody -- the ordinary case, distinct from the empty fold above.
+    """
+    _unit()
+    _publish(title="fleet", data={"cycle": 47})
+
+    value = _folded()
+    assert value["owners_omitted"] == 0
+    assert value["owners"][KEY]["template"], "and the publish itself is recorded"
+
+
+def test_no_panel_prose_claims_the_count_identifies_the_evicted_crew():
+    """The attribution claim must not survive anywhere in the fold's prose.
+
+    The claim appeared in two places in the fold -- the comment at the increment site
+    and ``_panel_render``'s docstring -- in the one shape "exactly like a crew that
+    never published on this slot". Correcting the docstring alone left the comment
+    asserting the opposite inside the same file, which is the sibling-site miss this
+    pin closes.
+
+    Pinned on that exact construction rather than by judging each sentence's
+    sentiment: this prose wraps and negates across lines, so a sentiment sweep reports
+    a denial's own subject as an offender. One phrase, no false positives.
+
+    The ``history_omitted`` variant ("those cycles") is a DIFFERENT and true claim:
+    that field lives on the owner's own record, so telling a reader its history was
+    trimmed is something the fold can keep.
+    """
+    source = Path(crew_log.__file__).read_text(encoding="utf-8")
+
+    assert "exactly like a crew that never published on this slot" not in source
+    # The correction is present, so this pin cannot pass by the prose being deleted.
+    assert "exactly what a genuinely evicted crew reads" in source
+    # And the true sibling claim is untouched.
+    assert "never published those cycles" in source
+
+
+def test_the_increment_site_says_what_the_count_omits():
+    """The eviction site's own comment must not promise per-crew distinguishability.
+
+    It is the site a reader lands on when asking what the count is for, so an
+    overclaim there outranks a correct docstring elsewhere.
+    """
+    import inspect
+
+    body = inspect.getsource(crew_log._panel_step)
+    assert "owners_omitted" in body, "re-anchor: the increment moved"
+    assert "exactly like a crew that never published" not in body
 
 
 # ------------------------------------------------------------------- the caps

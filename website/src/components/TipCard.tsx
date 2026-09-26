@@ -181,10 +181,11 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
             >
               {i18nT('components.tipCard.turn_off_tips')}
             </button>
-            {/* The Feature Tips toggle lives in Settings → Chat. No `highlight`
-                yet: that toggle has no setting anchor to flash. */}
+            {/* The Feature Tips toggle lives in Settings → Chat → Discovery. No
+                `highlight` yet: that toggle has no setting anchor to flash. */}
             <SettingsLink
               tab="chat"
+              sub="discovery"
               className="inline-flex items-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
               style={{ color: 'var(--muted)' }}
               aria-label={i18nT('components.tipCard.tip_settings')}

@@ -640,6 +640,7 @@ jobs:
           done
 
       - name: Post/update summary comment
+        id: post
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -829,6 +830,126 @@ jobs:
             fi
             READ_FAILURE_NOTE="$subject exited $rc and reported: ${text:-(nothing on stderr)}"
           }
+          # A verdict this run computed and did NOT publish exists only inside this
+          # job. Nothing on the board retains it, because both carriers the board
+          # has are REPLACED rather than appended: the lane's marker comment is
+          # updated in place, so a later run's body takes this one's slot, and a
+          # check-run's conclusion and annotations are superseded by the next
+          # attempt's. A workflow artifact is neither -- it is written once under a
+          # name unique to this run and attempt, and no later run can rewrite it --
+          # so that is where a withheld verdict is kept.
+          #
+          # What this retains is the difference between "a verdict exists and did
+          # not reach its slot" and "no verdict was reached". Those two are
+          # indistinguishable on the board: an annotation can read like a published
+          # verdict while the write was refused, and a slot can be occupied by
+          # ANOTHER revision's verdict. So the receipt records the outcome and the
+          # head the verdict was computed for, beside the verdict text itself.
+          #
+          # The text comes from `body_file` when the caller named one, and otherwise
+          # off the write command this function was handed: a PATCH carries its body
+          # as a `body=` argument instead of a file, and a verdict retained without
+          # its text answers nothing a reader needs.
+          #
+          # This never changes what the caller sees. It runs only on the arms that
+          # already return a withheld status, returns 0 whatever it manages to
+          # write, and a retention that fails leaves the withhold reported exactly
+          # as it is reported today.
+          retain_unpublished_verdict() {
+            local outcome="$1" rc="$2" needle="$3" body_file="$4" arg
+            local dir name now candidate note
+            shift 4
+            # The body is resolved FIRST, because whether there is anything to
+            # retain is a question about the body and not about which arm was
+            # reached. It comes from `body_file` when the caller named one, and
+            # otherwise off the write command this function was handed: a PATCH
+            # carries its body as a `body=` argument instead of a file.
+            candidate="${RUNNER_TEMP:-/tmp}/withheld-verdict-candidate.md"
+            if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+              cat "$body_file" > "$candidate" || return 0
+            else
+              : > "$candidate"
+              for arg in "$@"; do
+                case "$arg" in
+                  body=*)
+                    printf '%s\n' "${arg#body=}" > "$candidate"
+                    break
+                    ;;
+                esac
+              done
+            fi
+            # A WITHHELD ARM IS NOT A WITHHELD VERDICT, and conflating them
+            # inverts the whole point of retaining anything. Several of these
+            # arms are reached with a body that is not a verdict at all: a
+            # skip notice, a staleness notice, or the failure notice an
+            # incomplete review writes when it reached no verdict. Two of them
+            # run before the caller's own stamp check, and the no-stamp arm is
+            # reached precisely BECAUSE the body carries no stamp. Recording any
+            # of those would assert that a verdict exists for this revision when
+            # none was ever reached -- and because the record is unique per run
+            # and attempt, no later run can contradict it.
+            #
+            # So retention is gated on the body PROVING it carries a verdict for
+            # this head. The caller's needle is that proof where it supplied one,
+            # since it is the exact stamp it requires for a landing. Where it did
+            # not -- the replace path names a comment id instead -- the proof is
+            # the same head-scoped stamp read off the text. Both directions fail
+            # CLOSED: an unprovable body is not retained, which leaves the arm
+            # reported exactly as it is reported without this mechanism.
+            if [ -n "$needle" ]; then
+              if ! grep -Fq "$needle" "$candidate"; then
+                echo "Nothing is retained for $HEAD: the body this run could not write carries no $needle stamp, so this run reached no verdict, and a record of one would assert a verdict that never existed."
+                rm -f "$candidate"
+                return 0
+              fi
+            elif ! grep -Eq -- "-(REVIEWED|OVERRIDE)\] $HEAD" "$candidate"; then
+              echo "Nothing is retained for $HEAD: the body this run could not write carries no head-scoped review stamp, so this run reached no verdict, and a record of one would assert a verdict that never existed."
+              rm -f "$candidate"
+              return 0
+            fi
+            # And WHAT the record claims is the caller's to state, because only
+            # the caller knows what its arm established. `withheld` is reserved
+            # for KNOWN non-publication: no write was attempted, or a successful
+            # read confirmed this run's write is not in the slot. Every other arm
+            # attempted a write whose absence was never confirmed, and a write
+            # that returned non-zero may still have landed -- the API can commit
+            # a POST and lose the acknowledgement, and the read that would settle
+            # it can fail in the same degradation. Those record
+            # `publication_unknown`, which is the honest answer and the one a
+            # reader can act on; claiming non-publication there would be the same
+            # fault as claiming a verdict that never existed, pointing the other
+            # way.
+            dir="${RUNNER_TEMP:-/tmp}/withheld-review-verdict"
+            # The head SHA leads the name so every record for one revision is
+            # reachable from the revision alone -- the pointer that cannot dangle,
+            # because it is derived rather than announced. Run id and attempt follow
+            # and make it unique, which is what lets a SECOND run on the same head
+            # add a record BESIDE the first instead of replacing it.
+            name="withheld-verdict-${HEAD}-${GITHUB_JOB:-job}-r${GITHUB_RUN_ID:-0}-a${GITHUB_RUN_ATTEMPT:-1}"
+            mkdir -p "$dir" || return 0
+            now="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+            {
+              echo "outcome=$outcome"
+              echo "head=$HEAD"
+              echo "write_rc=$rc"
+              echo "withheld_at=$now"
+              echo "repo=${REPO:-}"
+              echo "pr=${PR:-}"
+              echo "workflow=${GITHUB_WORKFLOW:-}"
+              echo "job=${GITHUB_JOB:-}"
+              echo "run_id=${GITHUB_RUN_ID:-}"
+              echo "run_attempt=${GITHUB_RUN_ATTEMPT:-}"
+              echo "artifact=$name"
+            } > "$dir/receipt.txt" || return 0
+            mv "$candidate" "$dir/verdict.md" || return 0
+            printf 'retained_verdict_artifact=%s\n' "$name" >> "${GITHUB_OUTPUT:-/dev/null}"
+            if [ "$outcome" = "withheld" ]; then
+              note="did NOT publish it"
+            else
+              note="could not confirm whether it published it -- a write was attempted and its absence from the slot was never confirmed, so this record says UNKNOWN rather than claiming non-publication"
+            fi
+            echo "::notice::This run computed a verdict for $HEAD and $note (write status $rc). The verdict text is retained in workflow artifact $name, on run ${GITHUB_RUN_ID:-} attempt ${GITHUB_RUN_ATTEMPT:-}. An artifact named withheld-verdict-$HEAD... holds a verdict that EXISTS for this revision, and its receipt's outcome field says whether it reached the comment slot -- neither of which is the same as this revision having no verdict."
+          }
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
@@ -888,6 +1009,7 @@ jobs:
               if [ -z "$slot_ok" ]; then
                 note_read_failure "$slot_rc" "reading this PR's comments to find this lane's slot" "$READ_ERR_FILE"
                 echo "Whether this lane's slot is already taken is unreadable after 6 attempts, so nothing was posted: re-running this lane publishes the verdict, and a second comment in the slot does not come back out without a human."
+                retain_unpublished_verdict withheld 1 "$needle" "$body_file" "$@"
                 return 1
               fi
               if [ -n "$occupied" ]; then
@@ -923,6 +1045,7 @@ jobs:
                 # the lane publishes it once the slot is current. Status 2 is
                 # that case specifically, so no caller can read it as a write.
                 echo "Comment #$slot_id already holds this lane's slot, so this run wrote NOTHING: a second comment beside it is the one a later override cannot reach, and overwriting it can discard a verdict for a head this run cannot judge. Re-run this lane once that comment is no longer current."
+                retain_unpublished_verdict withheld 2 "$needle" "$body_file" "$@"
                 return 2
               fi
             fi
@@ -931,6 +1054,7 @@ jobs:
                 return 0
               fi
               echo "This body carries no current-head stamp, so a lost write cannot be told from a rejected one; not posting again."
+              retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
               return 1
             fi
             for attempt in 1 2 3 4 5 6; do
@@ -948,6 +1072,7 @@ jobs:
                 if [ "$slot_rc" -ne 0 ]; then
                   note_read_failure "$slot_rc" "re-reading this PR's comments to confirm whether the previous write landed" "$READ_ERR_FILE"
                   echo "Cannot confirm whether the previous attempt landed, so not posting again."
+                  retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                   return 1
                 fi
                 if [ -n "$landed" ]; then
@@ -957,6 +1082,7 @@ jobs:
                     return 0
                   fi
                   echo "Comment #$(printf '%s\n' "$landed" | awk 'NR == 1 { print $1 }') took this lane's slot while this run was retrying, and it is not this run's write, so this run wrote NOTHING: overwriting it would discard a verdict for another head, and posting beside it leaves a comment a later override cannot reach."
+                  retain_unpublished_verdict withheld 2 "$needle" "$body_file" "$@"
                   return 2
                 fi
               fi
@@ -986,6 +1112,7 @@ jobs:
                 if ! head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
                   || [ -z "$head_now" ]; then
                   echo "Whether $HEAD is still this PR's head is unreadable, so this write was not repeated: a repeat can replace a newer head's verdict with a superseded one. Re-run this lane to publish this verdict."
+                  retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                   return 1
                 fi
                 if [ "$head_now" != "$HEAD" ]; then
@@ -1014,6 +1141,7 @@ jobs:
                   if [ "$ov_rc" -ne 0 ]; then
                     note_read_failure "$ov_rc" "reading the comment this repeat would overwrite, to check for an accepted human override" "$READ_ERR_FILE"
                     echo "Comment #$target could not be read, so this write was not repeated: a repeat can restore a body over a human decision. Re-run this lane to publish this verdict."
+                    retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                     return 1
                   fi
                   case "$ov_body" in
@@ -1032,6 +1160,7 @@ jobs:
                 sleep "$(( attempt * 5 ))"
               fi
             done
+            retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
             return 1
           }
           # Guarded upsert (#8292, #8344): the shared function below is defined
@@ -1197,6 +1326,46 @@ jobs:
       # Fail-CLOSED finalize of the required "Opus 5 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
       # Opus is a REQUIRED gating check, so it never resolves neutral.
+      # Where a withheld verdict goes, so that it outlives the job that computed
+      # it. The step above reports a withheld verdict in an annotation, and an
+      # annotation is replaced by the next attempt's -- as is the marker comment
+      # it could not write into. An artifact is replaced by neither.
+      #
+      # It runs only when that step actually withheld one. The output it reads is
+      # written at the moment of withholding and nowhere else, so a published
+      # verdict uploads nothing, and a lane that reached no verdict at all leaves
+      # no record that could be mistaken for one. That is the distinction this
+      # exists to keep: a verdict that EXISTS and never reached its slot is not
+      # the same as no verdict, and on the board the two look alike.
+      #
+      # `error` rather than `ignore` on missing files: the output is set by the
+      # same code that writes the files, so an empty directory here is a fault in
+      # this mechanism and must be loud rather than silently produce no record.
+      - name: Retain this run's unpublished verdict
+        if: always() && steps.post.outputs.retained_verdict_artifact != ''
+        # NEVER fatal. A lane's conclusion is read by pr-readiness.yml, and for
+        # the three advisory labels ANY non-success conclusion is reported as
+        # `<label> (BLOCK)` -- a judged-wrong verdict. So a transport flake here,
+        # or an `if-no-files-found: error` on a directory that did not survive,
+        # would invent a verdict nobody reached. Retention is evidence ABOUT a
+        # verdict and never part of one: it may be loud, and a failed step is
+        # still annotated, but it may not change what the lane concluded.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Named by the publish step: the head SHA leads, so every record for
+          # one revision is reachable from the revision alone, and the run and
+          # attempt follow, so a SECOND run on the same head adds its record
+          # beside the first instead of overwriting it.
+          name: ${{ steps.post.outputs.retained_verdict_artifact }}
+          path: ${{ runner.temp }}/withheld-review-verdict
+          if-no-files-found: error
+          # 90, not the 7 the sibling uploads use. Those are TRANSFER
+          # artifacts, alive only long enough to cross a job boundary; this
+          # one is the record itself, and a record that expires while its
+          # pull request is still open restores exactly the ambiguity it was
+          # added to remove -- and leaves the republisher nothing to read.
+          retention-days: 90
       - name: Finalize check-run (fail closed)
         if: always()
         env:

@@ -890,6 +890,20 @@ async def api_side_turn(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
+    # Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    # the class ``is_owner_dashboard_request`` can rule on at all. An app token
+    # carries its app's name and keeps the slot scoping below unchanged.
+    if request.get("app") == "":
+        # Body-scope import, like the sibling gates in this package
+        # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+        # reaches back into sibling handler modules, so importing the helper at
+        # module scope from here would close a cycle.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "chat.side_turn")
+        if owner_denied is not None:
+            return owner_denied
+
     own = _check_slot_ownership(request, slot, "chat.side_turn")
     if own is not None:
         return own

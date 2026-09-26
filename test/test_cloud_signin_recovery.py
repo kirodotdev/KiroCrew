@@ -1529,14 +1529,14 @@ class TestSigninPromptReprobe:
 
     async def test_a_confirmed_probe_leaves_no_contradictory_state(self, tmp_path, monkeypatch):
         """A parked job carries an "Interrupted" error and a connect step that says
-        "Finish the Kiro sign-in before connecting." When the re-probe confirms the
-        sign-in, all of that must go: a card that says signed in and not signed in
-        at once is the state this feature exists to remove."""
+        "Sign in to Kiro on the crew after you connect." When the re-probe confirms
+        the sign-in, all of that must go: a card that says signed in and not
+        signed in at once is the state this feature exists to remove."""
         state, job = await self._preserved(tmp_path)
         store = state.cloud_launch_store
         job.error = "Interrupted — Kiro Crew restarted while the Kiro sign-in was running."
         job.step(lj.STEP_CONNECT).detail = (
-            "Added to Your crews. Finish the Kiro sign-in before connecting."
+            "Added to Your crews. Sign in to Kiro on the crew after you connect."
         )
         store.save(job)
 
@@ -1546,7 +1546,7 @@ class TestSigninPromptReprobe:
         out = store.get(job.id)
         assert out.signin_detected is True
         assert out.error == "", f"stale error survived a confirmed sign-in: {out.error!r}"
-        assert "Finish the Kiro sign-in" not in out.step(lj.STEP_CONNECT).detail
+        assert out.step(lj.STEP_CONNECT).detail == "Added to Your crews."
         assert out.step(lj.STEP_SIGNIN).state == lj.STEP_DONE
         assert out.step(lj.STEP_SIGNIN).detail == "Signed in."
 

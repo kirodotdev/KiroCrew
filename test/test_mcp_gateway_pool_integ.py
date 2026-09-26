@@ -537,6 +537,7 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
         )
     )
     procs: list[asyncio.subprocess.Process] = []
+    backend_pids: list[int] = []
     try:
         for _ in range(100):
             if transport.endpoint_exists(sock):
@@ -566,6 +567,10 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
             f"through the gateway, so it has no callback address: "
             f"{fallback.read_text()}"
         )
+        # The fake server records under ``<log>.d/<pid>.txt``, so the file names
+        # are the backend pids the daemon is answerable for.
+        backend_pids = [int(p.stem) for p in Path(f"{launch_log}.d").iterdir()]
+        assert len(backend_pids) == 3
     finally:
         await _reap(procs)
         stop.set()
@@ -573,6 +578,19 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
             await asyncio.wait_for(daemon, timeout=30)
         except asyncio.TimeoutError:  # pragma: no cover - daemon shutdown hang
             daemon.cancel()
+    # A private backend's reap belongs to the pool, and ``shutdown_all`` joins it:
+    # by the time ``run_gatewayd`` has returned every one of them has been
+    # terminated AND waited for. The inline ``await orphan.shutdown()`` this
+    # replaced was cancelled by the daemon's own teardown after
+    # ``release_exclusive`` had already dropped the backend from the exclusive
+    # map, so the child was outside ``shutdown_all`` and outlived the daemon --
+    # a zombie or a live process here, and its pipe transports still finalizing
+    # after the test's loop closed.
+    survivors = [pid for pid in backend_pids if pc.pid_exists(pid)]
+    assert not survivors, (
+        f"private backends {survivors} outlived run_gatewayd: their reap was not "
+        "joined by shutdown_all"
+    )
 
 
 def _windows_collect_ignore() -> list[str]:

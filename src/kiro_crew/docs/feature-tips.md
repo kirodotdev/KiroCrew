@@ -16,7 +16,7 @@ Kiro Crew surfaces a compact feature tip above the chat composer while a turn is
 | Action | Effect |
 |--------|--------|
 | Click the X on a tip | Permanently dismisses that tip and its associated feature documentation when available. |
-| Settings → Chat → Feature Tips | Turns Feature Tips off or back on. The toggle is disabled with an instance-config hint when `dashboard.tips_enabled` is false. |
+| Settings → Chat → Discovery → Feature Tips | Turns Feature Tips off or back on. The toggle is disabled with an instance-config hint when `dashboard.tips_enabled` is false. |
 | `dashboard.tips_enabled: false` in config | Instance-wide kill switch. |
 
 ## Privacy

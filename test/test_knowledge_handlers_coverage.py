@@ -35,7 +35,7 @@ MODULE = "kiro_crew.dashboard.handlers.knowledge"
 def store(tmp_path):
     s = KnowledgeStore(str(tmp_path / "kb.db"))
     yield s
-    s.close()
+    s._close_all_for_tests()
 
 
 class _FakeEmbedder:
@@ -716,7 +716,7 @@ class TestImportBundle:
                     await export_client.get(f"/api/knowledge/items/{item_id}/export")
                 ).json()
         finally:
-            source_store.close()
+            source_store._close_all_for_tests()
 
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)

@@ -1,3 +1,4 @@
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Radix Select renders a portalled listbox that jsdom cannot open; the repo's
 // test double (used by SettingsSelect.test.tsx) makes the role picker driveable.
@@ -60,9 +61,9 @@ function seed(dashboard: Record<string, string>) {
   kirocrewConfigMock.mockImplementation(() => Promise.resolve({ ...BASE_CFG, dashboard }))
 }
 
-function wrap(ui: React.ReactElement) {
+function wrap(ui: React.ReactElement, sub = 'aboutyou') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
+  return render(<MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}><Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider></MemoryRouter>)
 }
 
 describe('ChatPanel → About You custom role', () => {

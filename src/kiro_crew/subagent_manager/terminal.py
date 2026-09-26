@@ -572,6 +572,9 @@ class TerminalCoordinator(ManagerComponent):
         # prompts, where `_exec_started` is already set, so `_exec_started is
         # None` is what distinguishes "never started" from "was running".
         approval_parked = info._awaiting_approval and info._exec_started is None
+        # Same capture for the state right after: approved, and waiting for the
+        # pump to meter the start into startup (``_admit_released_start``).
+        release_parked = info._start_release is not None and info._exec_started is None
 
         task = self._manager._tasks.pop(agent_id, None)
         if task and not task.done():
@@ -607,6 +610,8 @@ class TerminalCoordinator(ManagerComponent):
                     # closed. It reached no execution deadline, so DO NOT frame it
                     # as one. Predicate captured above the cancel; see there.
                     info.error = f"Reaped after {int(elapsed)}s while still awaiting an unanswered spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                elif release_parked:
+                    info.error = f"Reaped after {int(elapsed)}s while still waiting to be admitted into startup after spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 elif reason == "startup_timeout":
                     info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 else:

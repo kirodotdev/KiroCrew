@@ -258,7 +258,7 @@ class TestOnSessionExpire:
 
         # reset still called despite callback failure
         mock_reset.assert_called_once_with(
-            "expired-key", skip_if_busy=True, skip_if_injecting=True
+            "expired-key", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )
 
 
@@ -359,7 +359,7 @@ class TestExpireIdleSelFailure:
 
         callback.assert_not_called()
         mock_reset.assert_called_once_with(
-            "expired-sel", skip_if_busy=True, skip_if_injecting=True
+            "expired-sel", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )
 
     @patch("kiro_crew.session.sel")
@@ -395,5 +395,5 @@ class TestExpireIdleSelFailure:
 
         callback.assert_called_once_with("expired-cb")
         mock_reset.assert_called_once_with(
-            "expired-cb", skip_if_busy=True, skip_if_injecting=True
+            "expired-cb", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )

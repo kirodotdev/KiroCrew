@@ -23,14 +23,14 @@ describe('ChatPanel – Merge Queued Messages', () => {
   })
 
   it('renders the Merge Queued Messages toggle', async () => {
-    renderWithProviders(<ChatPanel />)
+    renderWithProviders(<ChatPanel />, { route: '/settings?tab=chat&sub=composer' })
     await waitFor(() => {
       expect(screen.getByText('Merge Queued Messages')).toBeInTheDocument()
     })
   })
 
   it('toggle is off by default', async () => {
-    renderWithProviders(<ChatPanel />)
+    renderWithProviders(<ChatPanel />, { route: '/settings?tab=chat&sub=composer' })
     await waitFor(() => {
       expect(screen.getByText('Merge Queued Messages')).toBeInTheDocument()
     })
@@ -48,7 +48,7 @@ describe('ChatPanel – Merge Queued Messages', () => {
     )
 
     const user = userEvent.setup()
-    renderWithProviders(<ChatPanel />)
+    renderWithProviders(<ChatPanel />, { route: '/settings?tab=chat&sub=composer' })
     await waitFor(() => {
       expect(screen.getByText('Merge Queued Messages')).toBeInTheDocument()
     })

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -869,6 +870,178 @@ def test_host_lines_reports_the_wrapper_under_a_custom_rule(mod, tmp_path, monke
     )
     assert len(lines) == 1
     assert "pid=104" in lines[0]
+
+
+# --- the vitest rule: an invocation, never a mention ------------------------
+#
+# Pinned as CONDITIONS over a generated space rather than as a list of command
+# lines, because the defect is a whole class: any command whose text happens to
+# end in the phrase reads as a run of it. A fixture list pins the members someone
+# thought of, and the next spelling is another silent false stop.
+#
+# Every case goes in as argv and is stored the way the kernel stores it -- NUL
+# separated, NUL terminated -- so the read, the split and the join are all
+# exercised. A decision that only looks right against a hand-written joined string
+# cannot pass here, which is the point: the joined string is where the two
+# directions below become indistinguishable.
+
+#: Programs that carry the phrase as DATA. None of them is a test runner, and each
+#: is a thing someone maintaining these rules actually runs.
+_PHRASE_CARRIERS = (
+    ["grep", "-rn"],
+    ["rg", "--files-with-matches"],
+    ["cat"],
+    ["echo"],
+)
+
+#: Ways ONE argument can hold the phrase: alone, behind another command's words,
+#: and as the tail of a longer word. All three are one argv entry, which is what
+#: separates them from an invocation and what the joined text erases.
+_PHRASE_FORMS = (
+    "vitest run",
+    "docker run vitest run",
+    "my-vitest run",
+    "./vitest run",
+)
+
+#: How a real vitest reaches a cmdline, including the qualified shim path.
+_VITEST_PROGRAMS = ("vitest", "node_modules/.bin/vitest", "/wt/node_modules/.bin/vitest")
+
+#: What stands in front of the program when something launches it.
+_VITEST_LAUNCHERS = ([], ["npx"], ["pnpm"], ["yarn"], ["npx", "--yes"])
+
+
+def vitest_case(root, fleet, pid: str, argv: list[str]):
+    """One /proc entry for *argv*, owned by the fleet so its row would be printed."""
+    entry = proc_pid(root, pid, argv, starttime=50_000)
+    make_dir_link(entry / "cwd", fleet)
+    return entry
+
+
+def test_a_command_carrying_the_phrase_as_text_is_never_a_banned_run(mod, tmp_path, monkeypatch):
+    """The condition: the phrase inside ONE argument names no run, however carried."""
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = [carrier + [form] for carrier in _PHRASE_CARRIERS for form in _PHRASE_FORMS]
+    for offset, argv in enumerate(cases):
+        # Not vacuous: the rule's PATTERN still selects every one of these, so a
+        # quiet answer can only come from the argv decision. Without this guard a
+        # case that merely stopped matching would pass while proving nothing.
+        assert re.search(mod._VITEST_BANNED_RE, " ".join(argv)), argv
+        vitest_case(root, fleet, str(200 + offset), argv)
+    lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    assert lines == []
+    assert "banned 0 | foreign 0" in host
+
+
+def test_a_vitest_run_that_names_a_target_is_never_a_banned_run(mod, tmp_path, monkeypatch):
+    """The condition: a run with a file argument is scoped, whatever spells it."""
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    targets = (["test/a.test.ts"], ["packages/ui/test/b.spec.ts"], ["test/a.test.ts", "-t", "x"])
+    cases = [
+        launcher + [program, "run"] + target
+        for launcher in _VITEST_LAUNCHERS
+        for program in _VITEST_PROGRAMS
+        for target in targets
+    ]
+    for offset, argv in enumerate(cases):
+        vitest_case(root, fleet, str(300 + offset), argv)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    assert lines == []
+
+
+def test_a_bare_whole_suite_vitest_run_stays_banned(mod, tmp_path, monkeypatch):
+    """The loud half of the same condition: no file argument is a whole-suite run."""
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = [
+        launcher + [program, "run"]
+        for launcher in _VITEST_LAUNCHERS
+        for program in _VITEST_PROGRAMS
+    ]
+    for offset, argv in enumerate(cases):
+        vitest_case(root, fleet, str(400 + offset), argv)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    assert len(lines) == len(cases)
+    assert all(mod._VITEST_BANNED_RE in line for line in lines)
+
+
+def test_the_argv_decision_only_ever_narrows_the_pattern(mod):
+    """Nothing this rule reports was quiet under the pattern alone.
+
+    The structural half of the fix: the argv decision is a SUBSET of the pattern's,
+    so the change can only shrink the set of pids reported and can never introduce
+    a stop that did not already exist. Stated over the generated space rather than
+    asserted in prose, because a later widening of the argv side is exactly the
+    change that would break it silently.
+    """
+    space = [
+        launcher + [program, "run"] + tail
+        for launcher in _VITEST_LAUNCHERS
+        for program in _VITEST_PROGRAMS + ("my-vitest", "vitest.cmd", "notvitest")
+        for tail in ([], ["test/a.test.ts"], ["--reporter=dot"])
+    ] + [carrier + [form] for carrier in _PHRASE_CARRIERS for form in _PHRASE_FORMS]
+    narrower = 0
+    for argv in space:
+        if mod._invokes_bare_vitest_run(argv):
+            assert re.search(mod._VITEST_BANNED_RE, " ".join(argv)), argv
+        elif re.search(mod._VITEST_BANNED_RE, " ".join(argv)):
+            narrower += 1
+    # The subset is PROPER, so the assertion above is not passing on an empty set.
+    assert narrower > 0
+
+
+def test_the_argv_decision_states_the_whole_shape_it_requires(mod):
+    """The predicate holds its own contract, not one borrowed from the pattern.
+
+    The pattern's trailing anchor already implies ``run`` ends the text for every
+    cmdline it selects, so the last two cases here cannot arrive through
+    ``_host_lines``. They are pinned at the predicate anyway: a decision that is
+    right only because something upstream filtered its input is one nobody can
+    safely edit, and retuning the pattern is exactly the edit that would reach it.
+    """
+    # The program, its subcommand, nothing else -- however the program is qualified.
+    assert mod._invokes_bare_vitest_run(["npx", "vitest", "run"])
+    assert mod._invokes_bare_vitest_run(["/wt/node_modules/.bin/vitest", "run"])
+    # The name has to be the program, not a word ending in it, and not a phrase
+    # carried inside one argument.
+    assert not mod._invokes_bare_vitest_run(["my-vitest", "run"])
+    assert not mod._invokes_bare_vitest_run(["vitest run"])
+    assert not mod._invokes_bare_vitest_run(["run"])
+    # ``run`` has to be the LAST token, and adjacent to the program: a command that
+    # merely carries the word somewhere names no bare run.
+    assert not mod._invokes_bare_vitest_run(["vitest", "run", "test/a.test.ts"])
+    assert not mod._invokes_bare_vitest_run(["npm", "run", "test:unit", "--", "vitest", "-w"])
+
+
+def test_a_custom_rule_keeps_its_joined_text_decision(mod, tmp_path, monkeypatch):
+    """An operator's own pattern is a statement about the text they wrote it against.
+
+    The argv narrowing belongs to the built-in rule, so an operator's own pattern
+    still reports the mention it was written to catch. Without this the narrowing
+    would silently answer a question the operator never asked.
+
+    A rule is identified by its pattern TEXT, so a config that copies the built-in
+    pattern verbatim IS the built-in rule and is narrowed with it -- the same
+    identity the wrapper exemption above uses, and the same answer either way, since
+    a verbatim copy asks for exactly the built-in behaviour.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    entry = proc_pid(root, "500", ["grep", "-rn", "vitest run"], starttime=50_000)
+    make_dir_link(entry / "cwd", fleet)
+    operator_rule = r"vitest\s+run\s*$"
+    assert operator_rule not in mod.DEFAULT_BANNED_RES
+    lines, _host = mod._host_lines(
+        {"fleet_worktrees": [str(fleet)], "banned_process_res": [operator_rule]}
+    )
+    assert len(lines) == 1
+    assert "pid=500" in lines[0]
 
 
 def test_host_lines_drops_the_age_when_the_pid_is_recycled_mid_scan(mod, tmp_path, monkeypatch):

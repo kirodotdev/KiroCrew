@@ -447,6 +447,14 @@ class TestDeadLeaderOrphanedGroup:
             lambda _pid: backend_mod.platform_compat.PID_DEAD,
         )
         monkeypatch.setattr(backend_mod, "sel", lambda: None)
+        # Retention asks ``pgroup_exists`` whether the group is positively gone,
+        # and that probe is ``os.killpg(pgid, 0)`` against the REAL host -- so an
+        # unpatched case decides its outcome from whether this machine happens to
+        # run a process group numbered like the fixture's pid, reading EPERM from
+        # another user's group as alive. Answer it here so every case in the class
+        # states the group's fate itself; the two that assert on the probe
+        # override this afterwards.
+        monkeypatch.setattr(backend_mod.platform_compat, "pgroup_exists", lambda _pgid: False)
 
     def test_a_dead_leader_still_costs_its_group_a_signal(self, pidfile, monkeypatch):
         backend_mod._write_pidfile(

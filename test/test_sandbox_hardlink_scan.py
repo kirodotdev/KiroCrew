@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.sandbox import _build_launcher_script
 
 _BLOCK_START = "_protected_inodes = set()"
@@ -38,6 +39,18 @@ _SLICE_LANDMARKS = (
     "_MAX_SCAN_PER_ROOT",           # the walk itself
     "sandbox: BLOCKED",             # the refusal
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    Every test here executes the scan block lifted from the generated launcher; none
+    is about that probe, and a real ssh spawned from the test process is a host
+    dependency the launcher text must not vary with. Pinned at the module seam
+    ``_build_launcher_script`` reads, so no binary runs.
+    """
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
 
 
 def _scan_source() -> str:

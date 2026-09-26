@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -483,6 +484,131 @@ class TestTelegramDeliveryHook:
             d.deliver_spawn_approval("spawn:abc", "d", d._session_key(("direct", "7")))
         )
         assert result is None
+
+
+class TestASilentSendFailureFallsThroughAtOnce:
+    """A post that fails by RETURNING no message id, rather than by raising.
+
+    ``TelegramClient.send_message`` is typed ``int | None`` and answers ``None``
+    once its own attempts are spent -- a revoked token, a deleted forum Topic, a
+    chat the bot cannot write to, a 5xx. Nothing is on screen, so the gate reaches
+    the same conclusion it reaches for a raise: retire the armed nonce and fall
+    through. Reading only the exception leaves it awaiting a press nobody can
+    make, which spends the whole approval window and then hands that silence to
+    the host gate as a deny, postponing the Slack/dashboard surface that could
+    have answered at once.
+
+    What the assertions read is the RESULT (``None``, never ``False``) and the
+    absence of a wait, not a duration; the fixture only keeps a regression fast.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _short_prompt_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Shrink the deny-by-default wait so a REGRESSION fails fast.
+
+        A gate that reads the absent id returns before the prompt is ever
+        awaited, so this does not touch the path under test. It bounds the OTHER
+        outcome: a gate that awaits anyway would park every assertion below on
+        ``_APPROVAL_TIMEOUT_S`` (minutes) and surface as a suite-wide timeout
+        instead of a failed assertion.
+        """
+        import kiro_crew.telegram.renderer as renderer_mod
+
+        monkeypatch.setattr(renderer_mod, "_APPROVAL_TIMEOUT_S", 0.2)
+
+    @staticmethod
+    def _silent(cli: Any) -> list[int]:
+        """Make the fake client accept the call and report no message id."""
+        calls: list[int] = []
+
+        async def _no_id(*_a: object, **_k: object) -> None:
+            await asyncio.sleep(0)  # yield like a real network await
+            calls.append(1)
+            return None
+
+        cli.send_message = _no_id
+        return calls
+
+    def test_an_absent_message_id_falls_through_instead_of_waiting(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        self._silent(cli)
+
+        result = asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key))
+
+        # ``None`` is "not surfaced here, fall through". ``False`` would be a
+        # refusal the operator never made, and the host gate acts on it.
+        assert result is None
+
+    def test_it_registers_no_wait_so_the_window_is_never_spent(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+        self._silent(cli)
+        seen: list[str] = []
+
+        async def _go() -> bool | None:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            while not task.done():
+                if key in TelegramApprovalDecider._REGISTRY:
+                    seen.append("wait")
+                await asyncio.sleep(0)
+            return await task
+
+        assert asyncio.run(_go()) is None
+        # No wait was ever registered for the key, so no window was spent on a
+        # prompt that does not exist.
+        assert seen == []
+
+    def test_the_nonce_is_retired_so_a_later_prompt_cannot_be_answered_by_it(self) -> None:
+        # Request ids are REUSABLE (an ACP sequence restarts per provider
+        # process), so a nonce left armed by a prompt that never went out would
+        # still authorize a press against the next prompt filed at the same key.
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+        self._silent(cli)
+
+        result = asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key))
+
+        assert result is None
+        assert key not in TelegramApprovalDecider._NONCES
+        assert key not in TelegramApprovalDecider._REGISTRY
+        assert not TelegramApprovalDecider.nonce_matches(key, "any")
+
+    def test_the_gate_does_not_repost_after_an_absent_id(self) -> None:
+        # The client owns retrying: ``retry_plain`` re-sends without a parse_mode
+        # inside one call, so an absent id is the verdict after those attempts.
+        # The gate adds no send of its own on top of it.
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        calls = self._silent(cli)
+
+        result = asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key))
+
+        assert result is None
+        assert len(calls) == 1
+
+    def test_a_real_message_id_still_arms_the_wait_and_honors_the_press(self) -> None:
+        # The other side of the same branch: a truthy id is a delivered prompt, so
+        # the gate still awaits it and returns the press verbatim.
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+
+        async def _go() -> bool | None:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            for _ in range(50):
+                if cli.sent:
+                    break
+                await asyncio.sleep(0.01)
+            await _press(d, session_key, "spawn:abc", "1")
+            return await task
+
+        assert asyncio.run(_go()) is True
 
 
 # ── (d) precedence: a trusted/auto parent never reaches the channel prompt ──

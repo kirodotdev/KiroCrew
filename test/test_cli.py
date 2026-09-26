@@ -370,9 +370,24 @@ class TestDoctor:
         assert "composition failed" in out
         assert "KIROCREW_PROFILE=standalone" in out
 
-    def test_doctor_without_kiro(self, tmp_path):
+    def test_doctor_without_kiro(self, tmp_path, monkeypatch):
+        """A host with no kiro-cli: ``which`` finds nothing, and neither do the
+        trusted-directory resolvers the credentials, memory-pressure and
+        source-checkout sections spawn through. Left unpinned, those sections ran
+        the REAL ``aws configure list-profiles``, ``systemctl is-active`` and
+        ``git -C <this checkout>`` on the developer's host; ``None`` from each
+        resolver is the product's own "cannot ask" arm, so no binary is reached.
+        The one spawn that resolves through no seam -- the runtime section's
+        ``<venv>/bin/python3 --version`` -- is mocked like every sibling here."""
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(_doc.platform_compat, "trusted_aws_bin", lambda: None)
+        monkeypatch.setattr(_doc.platform_compat, "trusted_system_bin", lambda _name: None)
+        monkeypatch.setattr(_doc.platform_compat, "trusted_git_bin", lambda: None)
+        mock_run = MagicMock(returncode=0, stdout="Python 3.10.0", stderr="")
         with (
             patch("kiro_crew.cli_doctor.shutil.which", return_value=None),
+            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
             patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),

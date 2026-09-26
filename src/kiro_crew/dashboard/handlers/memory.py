@@ -74,6 +74,7 @@ from ._shared import (
     _redact_memory_field,
     markdown_memory_for_store,
     read_bounded_json,
+    require_owner_dashboard_request,
     resolve_lesson_memory_store,
     resolve_requested_memory_store,
     vector_memory_for_store,
@@ -214,6 +215,12 @@ async def _memory_write_gate(
     ``blocks_persisted_mode=is_incognito_transcript`` because every caller mutates
     durable memory: writes block every private persisted mode.
     """
+    # Owner first: every caller of this gate writes the owner's durable memory,
+    # and the store resolution below only asks for the owner when ``?store=``
+    # is present.
+    owner_denied = await require_owner_dashboard_request(request, operation)
+    if owner_denied is not None:
+        return owner_denied
     if operation != "memory.consolidate":
         _, refusal = await resolve_requested_memory_store(request, state, operation)
         if refusal is not None:

@@ -30,7 +30,10 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.chat_utils import run_config_write
-from kiro_crew.dashboard.handlers._shared import read_capped_response
+from kiro_crew.dashboard.handlers._shared import (
+    read_capped_response,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.executors import subprocess_executor
@@ -1576,6 +1579,9 @@ async def _restart_gateway(
 
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update — git pull, rebuild, restart gateway."""
+    owner_denied = await require_owner_dashboard_request(request, "update.apply")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
 
     # A policy-defined provider OWNS the update on this host. Checked before the

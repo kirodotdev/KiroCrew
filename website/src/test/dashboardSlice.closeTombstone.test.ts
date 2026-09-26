@@ -14,6 +14,7 @@ import reducer, {
   addSlotOptimistic,
   removeSlotOptimistic,
   releaseCloseHold,
+  armConfirmedCloseHold,
   sseSubagentStatus,
 } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
@@ -375,5 +376,40 @@ describe('dashboardSlice close tombstone', () => {
     const a0 = s.slots[0]
     s = reducer(s, sseSlots([A, B, C]))
     expect(s.slots[0]).toBe(a0)
+  })
+})
+
+describe('armConfirmedCloseHold (#11255)', () => {
+  /** A removal the server already confirmed: no deleteSlot lifecycle at all. */
+  const confirmedGone = (state = live()) =>
+    reducer(reducer(state, armConfirmedCloseHold('chat-b')), removeSlotOptimistic('chat-b'))
+
+  it('holds a straggler frame for the grace budget, then yields to membership', () => {
+    let s = confirmedGone()
+    for (let i = 0; i < 3; i++) {
+      s = reducer(s, sseSlots([A, B, C]))
+      expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+    }
+    s = reducer(s, sseSlots([A, B, C]))
+    expect(keys(s)).toEqual(['chat-a', 'chat-b', 'chat-c'])
+    expect(s.closingSlots).toEqual({})
+  })
+
+  it('outlives a fetch already in flight, however many frames land first', () => {
+    let s = reducer(live(), fetchStarted('h'))
+    s = confirmedGone(s)
+    for (let i = 0; i < 3; i++) s = reducer(s, sseSlots([A, C]))
+    s = reducer(s, httpReply([A, B, C], 'h'))
+    expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+    expect(s.closingSlots).toEqual({})
+  })
+
+  it('is superseded by a same-key re-add and refuses prototype keys', () => {
+    let s = reducer(confirmedGone(), addSlotOptimistic(B))
+    expect(s.closingSlots).toEqual({})
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      expect(() => { s = reducer(s, armConfirmedCloseHold(key)) }).not.toThrow()
+    }
+    expect(Object.keys(s.closingSlots)).toEqual([])
   })
 })

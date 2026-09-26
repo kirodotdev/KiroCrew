@@ -374,6 +374,36 @@ jobs:
           python3 scripts/check_testpaths_coverage.py --test
           python3 scripts/check_testpaths_coverage.py
 
+  cwd-relative-repo-reads:
+    name: Working-Directory Path Gate
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check that no test reaches the repository through the working directory
+        # A structural test that reads the repository's own source has to name a
+        # file, and a bare relative literal names it against whatever directory
+        # the process started in. Launched from anywhere but the root, that read
+        # raises FileNotFoundError before a single assertion runs — a failure that
+        # says nothing about the behaviour the test pins. Whole-tree, not
+        # diff-scoped: the backlog is zero, so there is nothing to charge to
+        # whoever pushes next. A file that changes directory itself is skipped,
+        # and a single access can carry a `# cwd-ok:` reason; see the script
+        # docstring.
+        run: |
+          # Self-test first: it plants one probe per rule family, in both
+          # directions, so a rule that silently stops matching — or starts
+          # matching a legitimate relative read — fails here instead of
+          # shipping green.
+          python3 scripts/check_cwd_relative_repo_reads.py --test
+          python3 scripts/check_cwd_relative_repo_reads.py
+
   harness-parity:
     name: Harness Parity Gate
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}

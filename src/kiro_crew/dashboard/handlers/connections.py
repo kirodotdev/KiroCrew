@@ -129,6 +129,13 @@ class _NoListener(Exception):
     """Nothing is bound to the loopback port a return address names."""
 
 
+async def _open_loopback_connection(
+    host: str, port: int
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open the relay's loopback connection."""
+    return await asyncio.open_connection(host, port)
+
+
 async def _relay_loopback_callback(callback: _LoopbackCallback) -> int:
     """Send one GET to a fixed loopback host and return its HTTP status."""
     host = "::1" if callback.ipv6 else "127.0.0.1"
@@ -136,7 +143,7 @@ async def _relay_loopback_callback(callback: _LoopbackCallback) -> int:
     writer: asyncio.StreamWriter
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, callback.port),
+            _open_loopback_connection(host, callback.port),
             timeout=3,
         )
     except ConnectionRefusedError as refused:

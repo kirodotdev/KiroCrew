@@ -3,6 +3,7 @@
 // are real role="option" nodes.
 vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-ui/react-select'))
 
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -51,9 +52,9 @@ import { Provider } from 'react-redux'
 // not the app singleton: a shared store would carry `activeSlot` across suites.
 import { createTestStore } from './helpers'
 
-function wrap(ui: React.ReactElement) {
+function wrap(ui: React.ReactElement, sub = 'models') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
+  return render(<MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}><Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider></MemoryRouter>)
 }
 
 const seed = (agent: Record<string, unknown>) =>
@@ -66,7 +67,8 @@ async function openSelect(label: string) {
   const trigger = await screen.findByRole('combobox', { name: label })
   await waitFor(() => expect(trigger).not.toHaveAttribute('data-disabled'))
   fireEvent.click(trigger)
-  return screen.getAllByRole('option')
+  // The settings rail is also a listbox of options; count only the dropdown's.
+  return screen.getAllByRole('option').filter(o => !o.closest('nav'))
 }
 
 /** Assert a SettingsSelect is inert: it stays closed when clicked. */
@@ -74,7 +76,7 @@ async function expectSelectInert(label: string) {
   const trigger = await screen.findByRole('combobox', { name: label })
   await waitFor(() => expect(trigger).toHaveAttribute('data-disabled'))
   fireEvent.click(trigger)
-  expect(screen.queryAllByRole('option')).toHaveLength(0)
+  expect(screen.queryAllByRole('option').filter(o => !o.closest('nav'))).toHaveLength(0)
   return trigger
 }
 

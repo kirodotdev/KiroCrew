@@ -430,7 +430,7 @@
       "id": "chat.auto-compact-threshold",
       "label": "Auto-Compact Threshold",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Asession.autocompact_pct",
+      "route": "/settings/chat/advanced?highlight=key%3Asession.autocompact_pct",
       "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
       "configKey": "session.autocompact_pct"
     },
@@ -438,67 +438,67 @@
       "id": "chat.auto-open-git-in-side-panel",
       "label": "Auto-Open Git in Side Panel",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.auto-open-git-in-side-panel",
+      "route": "/settings/chat/sidepanel?highlight=chat.auto-open-git-in-side-panel",
       "description": "Expand the side panel to the Git tab each time you start a chat in a git project. The Git tab is created either way."
     },
     {
       "id": "chat.background-effort",
       "label": "Background Effort",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.background-effort"
+      "route": "/settings/chat/models?highlight=chat.background-effort"
     },
     {
       "id": "chat.background-model",
       "label": "Background Model",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.background-model"
+      "route": "/settings/chat/models?highlight=chat.background-model"
     },
     {
       "id": "chat.compact-empty-folders",
       "label": "Compact Empty Folders",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.compact-empty-folders",
+      "route": "/settings/chat/sessions?highlight=chat.compact-empty-folders",
       "description": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row"
     },
     {
       "id": "chat.completion-event-characters",
       "label": "Completion Event Characters",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.completion-event-characters"
+      "route": "/settings/chat/advanced?highlight=chat.completion-event-characters"
     },
     {
       "id": "chat.completion-event-truncation",
       "label": "Completion Event Truncation",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.completion-event-truncation",
+      "route": "/settings/chat/advanced?highlight=chat.completion-event-truncation",
       "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."
     },
     {
       "id": "chat.confirm-before-closing-session",
       "label": "Confirm Before Closing Session",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.confirm-before-closing-session",
+      "route": "/settings/chat/sessions?highlight=chat.confirm-before-closing-session",
       "description": "Show a confirmation dialog when closing a session"
     },
     {
       "id": "chat.content-width",
       "label": "Content Width",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.content-width",
+      "route": "/settings/chat/transcript?highlight=chat.content-width",
       "description": "Compact is the original view. Comfortable and Full use more screen space."
     },
     {
       "id": "chat.content-filter-fallback-model",
       "label": "Content-filter fallback model",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Aagent.refusal_fallback_model",
+      "route": "/settings/chat/models?highlight=key%3Aagent.refusal_fallback_model",
       "configKey": "agent.refusal_fallback_model"
     },
     {
       "id": "chat.default-memory-mode",
       "label": "Default Memory Mode",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Adashboard.default_memory_mode",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.default_memory_mode",
       "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
       "configKey": "dashboard.default_memory_mode"
     },
@@ -506,132 +506,132 @@
       "id": "chat.default-model",
       "label": "Default Model",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.default-model",
+      "route": "/settings/chat/models?highlight=chat.default-model",
       "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there."
     },
     {
       "id": "chat.default-reasoning-effort",
       "label": "Default Reasoning Effort",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.default-reasoning-effort",
+      "route": "/settings/chat/models?highlight=chat.default-reasoning-effort",
       "description": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x)."
     },
     {
       "id": "chat.default-to-autopilot-mode",
       "label": "Default to Autopilot Mode",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.default-to-autopilot-mode",
+      "route": "/settings/chat/sessions?highlight=chat.default-to-autopilot-mode",
       "description": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions."
     },
     {
       "id": "chat.describe-your-role",
       "label": "Describe your role",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.describe-your-role",
+      "route": "/settings/chat/aboutyou?highlight=chat.describe-your-role",
       "description": "Kiro uses this description to adapt vocabulary and examples to your role."
     },
     {
       "id": "chat.fallback-model",
       "label": "Fallback model",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Aagent.fallback_model",
+      "route": "/settings/chat/models?highlight=key%3Aagent.fallback_model",
       "configKey": "agent.fallback_model"
     },
     {
       "id": "chat.feature-tips",
       "label": "Feature Tips",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.feature-tips"
+      "route": "/settings/chat/discovery?highlight=chat.feature-tips"
     },
     {
       "id": "chat.file-change-chips",
       "label": "File Change Chips",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.file-change-chips",
+      "route": "/settings/chat/transcript?highlight=chat.file-change-chips",
       "description": "How file diff chips appear below assistant messages"
     },
     {
       "id": "chat.folder-suggestions",
       "label": "Folder suggestions",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.folder-suggestions",
+      "route": "/settings/chat/sessions?highlight=chat.folder-suggestions",
       "description": "Offer to file a new session into a matching folder once it has a title."
     },
     {
       "id": "chat.follow-up-bar-layout",
       "label": "Follow-Up Bar Layout",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.follow-up-bar-layout",
+      "route": "/settings/chat/composer?highlight=chat.follow-up-bar-layout",
       "description": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row."
     },
     {
       "id": "chat.history-expanded",
       "label": "History Expanded",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.history-expanded",
+      "route": "/settings/chat/sessions?highlight=chat.history-expanded",
       "description": "Expand history sidebar by default"
     },
     {
       "id": "chat.link-previews",
       "label": "Link Previews",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.link-previews",
+      "route": "/settings/chat/transcript?highlight=chat.link-previews",
       "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address."
     },
     {
       "id": "chat.mcp-apps-in-side-panel",
       "label": "MCP Apps in Side Panel",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.mcp-apps-in-side-panel",
+      "route": "/settings/chat/sidepanel?highlight=chat.mcp-apps-in-side-panel",
       "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically."
     },
     {
       "id": "chat.merge-queued-messages",
       "label": "Merge Queued Messages",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.merge-queued-messages",
+      "route": "/settings/chat/composer?highlight=chat.merge-queued-messages",
       "description": "Combine follow-up messages into a single labeled prompt while the agent is busy"
     },
     {
       "id": "chat.message-font-size",
       "label": "Message Font Size",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.message-font-size",
+      "route": "/settings/chat/transcript?highlight=chat.message-font-size",
       "description": "Font size for the conversation, in every session: message text, code, tables, suggested replies and the message input. The Compact content width grows to match. Sidebar, session list and the rest of the interface are unaffected."
     },
     {
       "id": "chat.minimap-location",
       "label": "Minimap location",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.minimap-location",
+      "route": "/settings/chat/transcript?highlight=chat.minimap-location",
       "description": "When located on the right edge, the minimap replaces the scroll bar."
     },
     {
       "id": "chat.pin-the-latest-turn",
       "label": "Pin the latest turn",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.pin-the-latest-turn",
+      "route": "/settings/chat/transcript?highlight=chat.pin-the-latest-turn",
       "description": "Keep the most recent turn visible as a sticky banner once it scrolls above the fold."
     },
     {
       "id": "chat.plain-diffs",
       "label": "Plain diffs",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.plain-diffs",
+      "route": "/settings/chat/transcript?highlight=chat.plain-diffs",
       "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs."
     },
     {
       "id": "chat.pr-and-issue-chips-on-session-cards",
       "label": "PR and Issue Chips on Session Cards",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.pr-and-issue-chips-on-session-cards",
+      "route": "/settings/chat/sessions?highlight=chat.pr-and-issue-chips-on-session-cards",
       "description": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
     },
     {
       "id": "chat.prevent-sleep-while-running",
       "label": "Prevent sleep while running",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Adashboard.prevent_sleep",
+      "route": "/settings/chat/advanced?highlight=key%3Adashboard.prevent_sleep",
       "description": "Keep your computer awake while a task is running",
       "configKey": "dashboard.prevent_sleep"
     },
@@ -639,34 +639,34 @@
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.quick-send"
+      "route": "/settings/chat/composer?highlight=chat.quick-send"
     },
     {
       "id": "chat.response-verbosity",
       "label": "Response Verbosity",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.response-verbosity",
+      "route": "/settings/chat/transcript?highlight=chat.response-verbosity",
       "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level; security warnings always appear but stay brief, and multi-step instructions stay complete. Answer-only goes further and drops explanation entirely: one sentence at most, and detail only when you ask for it — or when a decision is consequential enough (security, exposure, data loss, spend, anything hard to undo) that you need the reasoning to choose correctly."
     },
     {
       "id": "chat.restore-sessions",
       "label": "Restore Sessions",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.restore-sessions",
+      "route": "/settings/chat/sessions?highlight=chat.restore-sessions",
       "description": "Re-open recently active sessions on startup"
     },
     {
       "id": "chat.restore-window",
       "label": "Restore Window",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.restore-window",
+      "route": "/settings/chat/sessions?highlight=chat.restore-window",
       "description": "Time window for session restoration"
     },
     {
       "id": "chat.selectable-models",
       "label": "Selectable Models",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Adashboard.model_picker_hidden_models",
+      "route": "/settings/chat/models?highlight=key%3Adashboard.model_picker_hidden_models",
       "description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
       "configKey": "dashboard.model_picker_hidden_models"
     },
@@ -674,140 +674,140 @@
       "id": "chat.send-shortcut",
       "label": "Send shortcut",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.send-shortcut"
+      "route": "/settings/chat/composer?highlight=chat.send-shortcut"
     },
     {
       "id": "chat.session-summaries",
       "label": "Session summaries",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.session-summaries",
+      "route": "/settings/chat/sessions?highlight=chat.session-summaries",
       "description": "Summarize each session by intent. Uses tokens on turns that change the session."
     },
     {
       "id": "chat.show-context-percentage",
       "label": "Show Context Percentage",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.show-context-percentage",
+      "route": "/settings/chat/transcript?highlight=chat.show-context-percentage",
       "description": "Display usage percentage next to the context progress bar"
     },
     {
       "id": "chat.show-context-tokens",
       "label": "Show Context Tokens",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.show-context-tokens",
+      "route": "/settings/chat/transcript?highlight=chat.show-context-tokens",
       "description": "Display used and total tokens next to the context progress bar"
     },
     {
       "id": "chat.show-pasted-text-in-full",
       "label": "Show Pasted Text in Full",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.show-pasted-text-in-full"
+      "route": "/settings/chat/composer?highlight=chat.show-pasted-text-in-full"
     },
     {
       "id": "chat.show-thinking-inline",
       "label": "Show Thinking Inline",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.show-thinking-inline",
+      "route": "/settings/chat/transcript?highlight=chat.show-thinking-inline",
       "description": "Show intermediate reasoning text between tool calls instead of collapsing everything"
     },
     {
       "id": "chat.show-timestamps",
       "label": "Show Timestamps",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.show-timestamps",
+      "route": "/settings/chat/transcript?highlight=chat.show-timestamps",
       "description": "Display time on each message"
     },
     {
       "id": "chat.simplified-tool-call-names",
       "label": "Simplified Tool Call Names",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.simplified-tool-call-names",
+      "route": "/settings/chat/transcript?highlight=chat.simplified-tool-call-names",
       "description": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.soft-stop-budget-seconds"
+      "route": "/settings/chat/composer?highlight=chat.soft-stop-budget-seconds"
     },
     {
       "id": "chat.spell-check-message-input",
       "label": "Spell Check Message Input",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.spell-check-message-input",
+      "route": "/settings/chat/composer?highlight=chat.spell-check-message-input",
       "description": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type."
     },
     {
       "id": "chat.split-side-by-side-diffs",
       "label": "Split (side-by-side) diffs",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.split-side-by-side-diffs",
+      "route": "/settings/chat/transcript?highlight=chat.split-side-by-side-diffs",
       "description": "Show old and new code in two columns; off shows one unified column. Changing it here or on any diff sets it everywhere."
     },
     {
       "id": "chat.split-view-session-grid",
       "label": "Split View (Session Grid)",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.split-view-session-grid"
+      "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid"
     },
     {
       "id": "chat.subagent-effort",
       "label": "Subagent Effort",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.subagent-effort"
+      "route": "/settings/chat/models?highlight=chat.subagent-effort"
     },
     {
       "id": "chat.subagent-model",
       "label": "Subagent Model",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.subagent-model"
+      "route": "/settings/chat/models?highlight=chat.subagent-model"
     },
     {
       "id": "chat.tail-only-fork",
       "label": "Tail-only Fork",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.tail-only-fork",
+      "route": "/settings/chat/sessions?highlight=chat.tail-only-fork",
       "description": "Fork keeps only the messages after the chosen point instead of those up to it."
     },
     {
       "id": "chat.technical-comfort",
       "label": "Technical Comfort",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.technical-comfort",
+      "route": "/settings/chat/aboutyou?highlight=chat.technical-comfort",
       "description": "Sets how deep explanations go — plain language vs. full technical detail"
     },
     {
       "id": "chat.text-link-patterns",
       "label": "Text Link Patterns",
       "tab": "chat",
-      "route": "/settings/chat?highlight=key%3Adashboard.link_patterns",
+      "route": "/settings/chat/transcript?highlight=key%3Adashboard.link_patterns",
       "configKey": "dashboard.link_patterns"
     },
     {
       "id": "chat.text-streaming-style",
       "label": "Text Streaming Style",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.text-streaming-style",
+      "route": "/settings/chat/transcript?highlight=chat.text-streaming-style",
       "description": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
     },
     {
       "id": "chat.what-enter-does-while-the-agent-is-working",
       "label": "What Enter does while the agent is working",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.what-enter-does-while-the-agent-is-working"
+      "route": "/settings/chat/composer?highlight=chat.what-enter-does-while-the-agent-is-working"
     },
     {
       "id": "chat.widget-density",
       "label": "Widget Density",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.widget-density",
+      "route": "/settings/chat/transcript?highlight=chat.widget-density",
       "description": "How aggressively the agent uses inline widgets for visual content"
     },
     {
       "id": "chat.your-role",
       "label": "Your Role",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.your-role",
+      "route": "/settings/chat/aboutyou?highlight=chat.your-role",
       "description": "Kiro matches vocabulary and examples to your professional background"
     },
     {
@@ -1264,6 +1264,13 @@
       "label": "Live Security Posture",
       "tab": "security",
       "route": "/settings/security/posture?highlight=security.live-security-posture"
+    },
+    {
+      "id": "security.redact-credentials-in-files-the-dashboard-opens-for-you",
+      "label": "Redact credentials in files the dashboard opens for you",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.redact-credentials-in-files-the-dashboard-opens-for-you",
+      "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
     },
     {
       "id": "security.trust-every-third-party-app",

@@ -20,6 +20,68 @@ from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
 
+#: Test-only switch. ``False`` in production: every connection keeps SQLite's
+#: own thread-affinity guard (``check_same_thread=True``), so a caller that
+#: caches ``store.db`` and uses it from another thread is refused with
+#: ``ProgrammingError`` instead of racing the owner. The rootdir test conftest
+#: flips this to ``True`` once per session so ``_close_all_for_tests()`` can
+#: close the handles other (usually exited) threads opened -- the one operation
+#: the default guard refuses that a teardown needs, since an unclosed connection
+#: is a reference cycle on CPython 3.11+ and holds its descriptors until the
+#: cyclic collector runs. Nothing in production may set it.
+_ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS = False
+
+
+class _ThreadAffineTestConnection(sqlite3.Connection):
+    """A test-mode connection that keeps the thread-affinity guard in Python.
+
+    Opened with ``check_same_thread=False`` so a teardown on another thread may
+    ``close()`` it, but every statement entry point the store uses --
+    ``cursor``, ``execute``, ``executemany``, ``executescript``, ``commit`` and
+    ``rollback`` -- refuses a thread that did not open it with the same
+    ``ProgrammingError`` SQLite raises in production, so the test suite still
+    catches a caller that caches ``store.db`` and uses it from a worker. The
+    connection-level paths the store never takes (``with conn:``, ``backup``,
+    ``iterdump``, ``blobopen``) and the methods of an already-created cursor are
+    NOT re-guarded. Only ever constructed under ``_ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS``.
+    """
+
+    _owner_ident: int = -1
+
+    def _check_owner(self) -> None:
+        current = threading.get_ident()
+        if current != self._owner_ident:
+            raise sqlite3.ProgrammingError(
+                "SQLite objects created in a thread can only be used in that same thread. "
+                f"The object was created in thread id {self._owner_ident} and this is "
+                f"thread id {current}."
+            )
+
+    def cursor(self, *args, **kwargs):  # type: ignore[override]
+        self._check_owner()
+        return super().cursor(*args, **kwargs)
+
+    def execute(self, *args, **kwargs):  # type: ignore[override]
+        self._check_owner()
+        return super().execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):  # type: ignore[override]
+        self._check_owner()
+        return super().executemany(*args, **kwargs)
+
+    def executescript(self, *args, **kwargs):  # type: ignore[override]
+        self._check_owner()
+        return super().executescript(*args, **kwargs)
+
+    def commit(self):  # type: ignore[override]
+        self._check_owner()
+        return super().commit()
+
+    def rollback(self):  # type: ignore[override]
+        self._check_owner()
+        return super().rollback()
+
+
 logger = logging.getLogger(__name__)
 
 # Marker in a source row's properties for a source Kiro Crew created itself rather
@@ -564,6 +626,17 @@ class KnowledgeStore:
         # concurrent readers alongside a single writer, and busy_timeout
         # serializes rare cross-thread writes.
         self._thread_local = threading.local()
+        # Every connection this store has opened, on any thread, so `_close_all_for_tests()`
+        # can release them all. Without this a connection a worker thread opened had
+        # no close path at all: on CPython 3.11+ an unclosed `sqlite3.Connection`
+        # is a reference CYCLE (its statement cache is an `lru_cache` wrapping the
+        # connection itself), so dropping the store does not free the descriptor
+        # -- only the cyclic collector eventually does. `_generation` is bumped
+        # by `_close_all_for_tests()`; a thread whose cached connection predates it reopens
+        # lazily instead of touching a handle another thread closed.
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
+        self._generation = 0
         # The FTS index rebuild is deliberately NOT done here. This constructor
         # runs on the event-loop thread (see the note above), and a rebuild is
         # data-scaled, so doing it here would stall the gateway at boot for the
@@ -639,6 +712,21 @@ class KnowledgeStore:
         return cls(db_path, read_only=True)
 
     def _connect(self) -> sqlite3.Connection:
+        # Production keeps SQLite's thread-affinity guard and registers nothing:
+        # its connections are freed exactly as before (by refcount or the cyclic
+        # collector), so the registry pins no exited thread's handle. Under the
+        # test flag the native guard is relaxed -- which does NOT make the
+        # connection shared: `db` still hands every thread its own, and the
+        # `_ThreadAffineTestConnection` factory re-applies the guard in Python on
+        # every statement entry point the store uses (cursor/execute*/commit/
+        # rollback), leaving only `close()` cross-thread -- so `_close_all_for_tests()`,
+        # called from whichever thread tears the store down, can release the
+        # handles OTHER threads opened; the native check refuses that even for
+        # an exited thread.
+        test_mode = _ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS
+        connect_kwargs: dict = {"timeout": 30, "isolation_level": None}
+        if test_mode:
+            connect_kwargs.update(check_same_thread=False, factory=_ThreadAffineTestConnection)
         if self._read_only:
             # `as_uri()` percent-encodes the path, which is the escaping SQLite
             # undoes when it parses a URI filename, so a path holding `?` or `#`
@@ -646,13 +734,20 @@ class KnowledgeStore:
             # left alone: a read-only connection may not change it, and a WAL
             # file is readable as-is.
             uri = Path(self._db_path).resolve().as_uri() + "?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=30, isolation_level=None)
+            conn = sqlite3.connect(uri, uri=True, **connect_kwargs)
+            if test_mode:
+                conn._owner_ident = threading.get_ident()
         else:
-            conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+            conn = sqlite3.connect(self._db_path, **connect_kwargs)
+            if test_mode:
+                conn._owner_ident = threading.get_ident()
             conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
+        if test_mode:
+            with self._connections_lock:
+                self._connections.append(conn)
         return conn
 
     @property
@@ -660,9 +755,10 @@ class KnowledgeStore:
         """The calling thread's connection, created lazily on first use."""
         _ON_LOOP_DB_GUARD.check()
         conn = getattr(self._thread_local, "conn", None)
-        if conn is None:
+        if conn is None or getattr(self._thread_local, "gen", self._generation) != self._generation:
             conn = self._connect()
             self._thread_local.conn = conn
+            self._thread_local.gen = self._generation
         return conn
 
     def _init_schema(self):
@@ -2720,9 +2816,43 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         return {"items_imported": items_imported, "entities_created": entities_created, "relations_rebuilt": relations_rebuilt}
 
     def close(self):
-        """Close the calling thread's connection (other threads' connections
-        are released when their thread or the store is garbage-collected)."""
+        """Close the CALLING thread's connection; other threads' stay live.
+
+        Per-thread by contract (see `test_knowledge_cross_thread`): a worker
+        mid-query must never have its handle closed from under it. In production
+        the process exit is what closes the other threads' handles; a test
+        teardown uses `_close_all_for_tests()` instead.
+        """
         conn = getattr(self._thread_local, "conn", None)
         if conn is not None:
+            with self._connections_lock:
+                self._connections = [c for c in self._connections if c is not conn]
             conn.close()
             self._thread_local.conn = None
+
+    def _close_all_for_tests(self):
+        """Close EVERY connection this store opened, on any thread.
+
+        A test seam, and nothing in production may call it: production has no
+        moment at which every thread is provably idle short of process exit,
+        and closing a handle from under a worker mid-query is undefined. A test
+        teardown has that moment, and needs the close because connections that
+        pool threads and exited threads opened have no other close path, and an
+        unclosed one holds its descriptors until the cyclic collector runs
+        (a `sqlite3.Connection` is a self-cycle on CPython 3.11+). Idempotent, and not final:
+        the store stays usable, each thread reopening lazily on its next `db`
+        take -- the generation bump is what tells a thread its cached handle was
+        closed from elsewhere. Callers must ensure no thread is mid-query.
+        """
+        if not _ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS:
+            raise RuntimeError(
+                "KnowledgeStore._close_all_for_tests is a test seam: set "
+                "kiro_crew.knowledge.store._ALLOW_CROSS_THREAD_CLOSE_FOR_TESTS before any "
+                "store is built (the rootdir test conftest does); production closes by exiting"
+            )
+        with self._connections_lock:
+            conns, self._connections = self._connections, []
+            self._generation += 1
+        for conn in conns:
+            conn.close()
+        self._thread_local.conn = None

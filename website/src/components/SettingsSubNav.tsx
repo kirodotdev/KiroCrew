@@ -280,7 +280,9 @@ export function SettingsSubNav<K extends string>({
   }
 
   const list = (
-    <nav className={twoPane ? 'shrink-0' : 'w-full'} style={twoPane ? { width: railWidth } : undefined}>
+    // -ml-2.5 cancels the item px-2.5 so icons sit on the page title's left
+    // edge and the highlight pill bleeds into the gutter.
+    <nav className={twoPane ? 'shrink-0 -ml-2.5' : 'w-full'} style={twoPane ? { width: railWidth } : undefined}>
       <div className="flex flex-col gap-0.5" role={twoPane ? 'listbox' : 'list'} aria-label={listLabel}>
         {grouped.map(({ group, items: groupItems }, gi) =>
           group ? (

@@ -4,7 +4,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { api } from '../api/client'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
@@ -2562,6 +2562,7 @@ export const switchSlot = createAsyncThunk<
           // a successful same-key re-open included — cannot evict.
           const rowNow = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)
           if (escapes && rowAtDispatch !== undefined && rowNow === rowAtDispatch && chat.slotSwitchRequestId === requestId) {
+            dispatch(armConfirmedCloseHold(key))
             dispatch(removeSlotOptimistic(key))
           }
         } else if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true) {

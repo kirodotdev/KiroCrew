@@ -52,10 +52,10 @@ from kiro_crew.dashboard.handlers.mcp import (
     api_mcp_active,
 )
 
-# One xdist worker for the whole module: the call-site ratchet below reads src/ through
-# ``test/source_corpus.py``'s shared, module-lifetime text cache. Under `--dist loadgroup`
-# an unmarked module is spread across workers and each worker re-pays that read and holds
-# its own copy of the corpus. Grouping keeps the cache single-copy per run.
+# One xdist worker for the whole module: the call-site ratchet below streams src/ through
+# ``test/source_corpus.py`` once per target and memoises only its own small result. Under
+# `--dist loadgroup` an unmarked module is spread across workers and each worker re-pays
+# every one of those scans. Grouping keeps them single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_agent_spec_hardened_reads")
 
 # The two refusal shapes cheap enough to plant per surface. "oversized" is the
@@ -1209,7 +1209,7 @@ def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | 
 
     Cached per *target*: the source tree cannot change mid-run and both tests in
     ``TestCallSiteLabelRatchet`` ask the same targets. The scan itself goes through
-    ``test/source_corpus.py``: one shared read of ``src/`` for the module, and a
+    ``test/source_corpus.py``: one streamed read of ``src/`` per target, and a
     parse of only the files whose text names *target* at all. That narrowing cannot
     hide a site -- every match above is an identifier equal to *target* (a ``Name``
     id, an ``Attribute`` attr, or a positional ``Name`` argument), and the corpus

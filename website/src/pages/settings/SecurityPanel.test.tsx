@@ -1721,6 +1721,7 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Denied Commands'),
       expect.stringContaining('Tailnet origin'),
       expect.stringContaining('Third-party apps'),
+      expect.stringContaining('Credential redaction'),
       expect.stringContaining('Flagged-file delivery'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),

@@ -1072,7 +1072,9 @@ Details worth knowing:
     The hold that would otherwise have refused those heals is cleared by the
     supersession check: a run a newer push has replaced holds no result worth
     protecting, so a busy fleet no longer shields the exact run that is blocking
-    the branch. A manual dispatch is
+    the branch -- at attempt 1. Past attempt 1 the heal path refuses the cancel
+    itself (a later attempt may be somebody's hand re-run, see below) and the
+    tick goes red naming the run. A manual dispatch is
     governed by its own `dry_run` input regardless, so a run can still be
     inspected without acting. A `CI` run in *pending* with no jobs is
     **not** something the watchdog touches — that run is waiting on its
@@ -1083,7 +1085,22 @@ Details worth knowing:
     for the run to report `completed`, then `gh run rerun <run-id>`
     (`gh run rerun <run-id> --failed` keeps the successful jobs but carries the
     stale-label caveat). `workflow_dispatch` with `dry_run: true` (the default
-    for a manual dispatch) detects and reports without acting.
+    for a manual dispatch) detects and reports without acting. **A hand re-run is
+    safe from the watchdog's cancel once a newer push supersedes it**: a run past
+    attempt 1 may be the very `gh run rerun` above, and cancelling a superseded run
+    is never followed by a re-run (the heal path declines to re-run a superseded
+    run, `superseded-before-cancel` is not a failed outcome, and the recovery pass
+    classifies a superseded cancelled run out), so it would be a silent loss. The
+    guard sits at the cancel itself, so every route reaches it -- an orphan with
+    no fleet hold, and one whose hold the supersession check released alike: for
+    any attempt past the first the heal path asks the supersession question
+    immediately before cancelling and leaves a superseded (or undecidable) run
+    untouched. That is a failed outcome
+    (`rerun-attempt-superseded-left-untouched`): the run keeps its concurrency
+    group's running slot and the watchdog will never free it, so the tick goes
+    red and its log names the `gh run cancel <run-id>` to type. A re-run attempt
+    that is still its branch's newest is healed like any orphan. A held
+    concurrency group a human is told about is the cheaper failure.
   - **Trust model.** A self-hosted runner exposes its host identity to the job it
     runs; that is inherent, not something this PR adds. What bounds it: only runs
     triggered by accounts that can push here reach the runner (forks never do);

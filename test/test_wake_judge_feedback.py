@@ -41,6 +41,7 @@ from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate as decisions_gate
 from kiro_crew.decisions import log as decisions_log
 from kiro_crew.decisions.points import nudge_wake as point
+from kiro_crew.monitoring.models import MonitorState
 
 
 def _verdict(outcome: irq.Outcome) -> irq.Verdict:
@@ -1878,3 +1879,170 @@ class TestVerdictRecordedOnTheTick:
         finally:
             service.stop()
         assert loop.judge_recent_verdicts == []
+
+
+class TestProbeFloorFiresAJudgedTick:
+    """The probe's own floor can fire the turn a judge row claims it withheld."""
+
+    def test_a_floor_fire_takes_no_missed_label_for_the_turn_it_delivered(
+        self, tmp_path, monkeypatch
+    ):
+        """The row the probe floor fires is labelled by that turn, not as a suppression.
+
+        The judge's streak and the probe's streak are independent fields, so a gated
+        loop whose judge arms mid-life reaches the probe's floor with the judge's own
+        streak still below its floor. The judge has already stamped this tick's row as
+        withholding the turn, and the floor then delivers it anyway. Left standing, that
+        row is skipped by the delivery stamp and takes ``missed`` from the retroactive
+        pass of the next delivery -- a wrong row in the one log this feature produces.
+        """
+        monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+        monkeypatch.setattr(
+            irq,
+            "poll",
+            lambda *_a, **_k: irq.Verdict(irq.Outcome.QUIET, "nothing yet", ()),
+        )
+        monitor = MonitorState(
+            kind="gh-pr",
+            target="acme/widgets#42",
+            objective="review_ready",
+            created_ts=1_000.0,
+        )
+        monitor.quiet_streak = _MAX_QUIET_STREAK - 1
+        loop = NudgeLoop(
+            id="loop-floor",
+            slot_key="chat-1",
+            message="watch https://github.com/acme/widgets/pull/42 until green",
+            idle_secs=30,
+            active=True,
+            monitor=monitor,
+            gate=True,
+        )
+        service = AutoNudgeService(base_dir=tmp_path)
+        service._loops[loop.id] = loop
+        persisted: list[str] = []
+        real_persist = service._persist_judge_state
+
+        async def _recording_persist(target_loop: NudgeLoop) -> bool:
+            persisted.append("start")
+            landed = await real_persist(target_loop)
+            persisted.append("done")
+            return landed
+
+        service._persist_judge_state = _recording_persist  # type: ignore[method-assign]
+
+        async def _judge_suppresses(target_loop: NudgeLoop) -> bool:
+            """What the judge leaves behind when it answers quiet below its own floor."""
+            service._record_judge_verdict(
+                target_loop,
+                _verdict(irq.Outcome.QUIET),
+                2,
+                "v-floor",
+                suppressed=True,
+                answered=True,
+            )
+            return True
+
+        service._judge_tick_is_quiet = _judge_suppresses  # type: ignore[method-assign]
+
+        async def drive() -> None:
+            assert await service._monitor_tick_is_quiet(loop) is False, "the floor must fire"
+            # Only the floor branch owes this charge, so it is what proves the tick
+            # reached the floor rather than returning early on a fallback.
+            assert loop.id in service._pending_floor_tick, "the floor branch ran"
+            # The withdrawal is a memory edit, so the tick has to await its durable
+            # write: a deferred one that never lands leaves a restart reading the row
+            # as suppressed and the next delivery writing the false label back.
+            assert persisted == ["start", "done"], "the withdrawal landed before the fire"
+            # The fire lands, so the corrected row is stamped like any other delivery
+            # and the turn it delivered is what labels it.
+            service._confirm_judge_delivery(loop)
+            history, _ = judge.label_latest_delivery(loop.judge_recent_verdicts, acted=True)
+            loop.judge_recent_verdicts = history
+            # A later real wake. Its retroactive pass is what writes the wrong label on
+            # a row still claiming to have withheld its turn.
+            service._record_judge_verdict(
+                loop, _verdict(irq.Outcome.WAKE), 3, "v-wake", suppressed=False, answered=True
+            )
+            service._confirm_judge_delivery(loop)
+            history, _ = judge.label_latest_delivery(loop.judge_recent_verdicts, acted=True)
+            loop.judge_recent_verdicts = history
+            await asyncio.sleep(0)
+
+        try:
+            asyncio.run(drive())
+        finally:
+            service.stop()
+
+        floor_row = next(row for row in loop.judge_recent_verdicts if row.get("id") == "v-floor")
+        assert "suppressed" not in floor_row, "the claim to have withheld the turn is withdrawn"
+        assert floor_row["owner_acted"] is True, "the turn it delivered is what labels it"
+        assert "missed" not in floor_row, "and no later delivery labels it as a suppression"
+
+    def test_a_floor_fire_leaves_an_earlier_tick_s_suppression_alone(self, tmp_path, monkeypatch):
+        """With no lane armed, the newest row belongs to an earlier tick and stands.
+
+        Nothing is asked on this tick, so there is no claim of its own to withdraw. The
+        newest row is a suppression that is TRUE, and clearing it would return it to the
+        undecided state, where the fire path stamps it delivered and the finished turn
+        credits it with a delivery it never produced.
+        """
+        monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+        monkeypatch.setattr(
+            irq,
+            "poll",
+            lambda *_a, **_k: irq.Verdict(irq.Outcome.QUIET, "nothing yet", ()),
+        )
+        monitor = MonitorState(
+            kind="gh-pr",
+            target="acme/widgets#42",
+            objective="review_ready",
+            created_ts=1_000.0,
+        )
+        monitor.quiet_streak = _MAX_QUIET_STREAK - 1
+        loop = NudgeLoop(
+            id="loop-floor-unarmed",
+            slot_key="chat-1",
+            message="watch https://github.com/acme/widgets/pull/42 until green",
+            idle_secs=30,
+            active=True,
+            monitor=monitor,
+            gate=True,
+        )
+        loop.judge_recent_verdicts = [_suppressed(1.0, "v-old")]
+        service = AutoNudgeService(base_dir=tmp_path)
+        service._loops[loop.id] = loop
+        persisted: list[str] = []
+        real_persist = service._persist_judge_state
+
+        async def _recording_persist(target_loop: NudgeLoop) -> bool:
+            persisted.append("start")
+            return await real_persist(target_loop)
+
+        service._persist_judge_state = _recording_persist  # type: ignore[method-assign]
+
+        async def _no_lane_armed(_target_loop: NudgeLoop) -> None:
+            return None
+
+        service._judge_tick_is_quiet = _no_lane_armed  # type: ignore[method-assign]
+
+        async def drive() -> None:
+            assert await service._monitor_tick_is_quiet(loop) is False, "the floor must fire"
+            assert loop.id in service._pending_floor_tick, "the floor branch ran"
+            # No row of this tick's to make durable, so the streak reset rides the
+            # deferred write exactly as it does without a judge.
+            assert persisted == [], "no judge write is forced on a tick that asked nothing"
+            service._confirm_judge_delivery(loop)
+            history, _ = judge.label_latest_delivery(loop.judge_recent_verdicts, acted=True)
+            loop.judge_recent_verdicts = history
+            await asyncio.sleep(0)
+
+        try:
+            asyncio.run(drive())
+        finally:
+            service.stop()
+
+        old_row = next(row for row in loop.judge_recent_verdicts if row.get("id") == "v-old")
+        assert old_row.get("suppressed") is True, "a suppression this tick did not make stands"
+        assert "delivered" not in old_row, "and it is credited with no delivery"
+        assert "owner_acted" not in old_row

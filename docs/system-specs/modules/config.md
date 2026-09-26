@@ -225,7 +225,7 @@ handlers.
 `workspace_root()` returns the base directory for all LLM working directories (kiro-cli cwd, task runner output, etc.):
 
 Resolution order:
-1. `KIROCREW_WORKSPACE` env var — used as-is (no `kirocrew-workspace` subdirectory appended)
+1. `KIROCREW_WORKSPACE` env var — no `kirocrew-workspace` subdirectory appended
 2. Saved path in `~/.kiro/crew/workspace_dir` (written by `kirocrew setup`; re-running setup preserves the existing value as the prompt default)
 3. Platform default:
 
@@ -234,6 +234,8 @@ Resolution order:
 | macOS | `/Volumes/workplace/kirocrew-workspace` (falls back to `~/workplace/kirocrew-workspace` if `/Volumes/workplace` doesn't exist) |
 | Linux | `~/workplace/kirocrew-workspace` |
 | Windows | `~/workplace/kirocrew-workspace` |
+
+Values from (1) and (2) lose one surrounding quote pair and have `~` expanded; a non-absolute result is logged and replaced by (3).
 
 Each session/task gets an isolated subdirectory under this root via `_session_work_dir(key)`:
 - Chat sessions: `kirocrew-workspace/cli_chat`, `kirocrew-workspace/{thread_ts}`

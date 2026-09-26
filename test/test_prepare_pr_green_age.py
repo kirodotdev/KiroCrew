@@ -513,12 +513,19 @@ def test_summarize_never_reports_fresh_without_a_verdict(mod, monkeypatch, tmp_p
     assert summary["reason"]
 
 
-def test_an_injected_runner_is_the_only_way_commands_are_issued(mod, pair, tmp_path) -> None:
+def test_an_injected_runner_is_the_only_way_commands_are_issued(
+    mod, monkeypatch, pair, tmp_path
+) -> None:
     """pr_status.py embeds this script and passes its own runner; nothing leaks.
 
     Run from a directory that is not the repository at all: the verdict is still
     correct, which is only possible if every command went through the runner.
+    That directory is constructed, not inherited: the default cwd is the pytest
+    worker's -- this checkout, itself a git repository -- from which a command
+    that slipped past the runner would still answer, and answer about the wrong
+    repository. From ``nowhere`` a leaked ``git`` fails instead of passing.
     """
+    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
     pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
     pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
     seen: list[list[str]] = []

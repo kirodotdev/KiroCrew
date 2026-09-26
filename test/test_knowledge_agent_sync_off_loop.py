@@ -56,7 +56,7 @@ def strict_store(monkeypatch, tmp_path):
     monkeypatch.setenv(STORE_STRICT_ENV, "1")
     store = KnowledgeStore(str(tmp_path / "knowledge.db"))
     yield store
-    store.close()
+    store._close_all_for_tests()
 
 
 def _pipeline(store: KnowledgeStore) -> IngestionPipeline:

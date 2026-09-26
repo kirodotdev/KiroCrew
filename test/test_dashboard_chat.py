@@ -19834,7 +19834,7 @@ class TestEmptyResponseRetry:
         # task created by another test can run while this module-level function is
         # patched and must not change the behavior observed for this turn.
         own_flushes = [
-            mock_call for mock_call in mock_flush.call_args_list if mock_call.args == (slot,)
+            mock_call for mock_call in mock_flush.call_args_list if mock_call.args[:1] == (slot,)
         ]
         assert len(own_flushes) == 1
 

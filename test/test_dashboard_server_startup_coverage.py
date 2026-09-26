@@ -403,13 +403,17 @@ def _release_process_handles(state: Any) -> None:
     them by exiting: the loop-stall crash-dump file (a raw ``os.open`` fd held by
     the watchdog, which no garbage collection ever closes and whose own
     ``close()`` is a deliberate no-op) and the knowledge store's SQLite
-    connection on this thread (``db`` + ``-wal`` + ``-shm``). In a test they
-    accumulate one set per dashboard start on the worker, so the harness closes
-    them once the real shutdown path has run. The dump fd is closed at the OS
-    level, which is safe only after the watchdog has stopped: ``stop()`` cancels
-    the ``faulthandler`` timer that would otherwise write into it. Only the
-    calling thread's knowledge connection can be closed here; connections that
-    pool threads opened are released when the store itself is collected.
+    connections (``db`` + ``-wal`` + ``-shm`` each). In a test they accumulate
+    one set per dashboard start on the worker, so the harness closes them once
+    the real shutdown path has run. The dump fd is closed at the OS level, which
+    is safe only after the watchdog has stopped: ``stop()`` cancels the
+    ``faulthandler`` timer that would otherwise write into it. The store keeps a
+    connection PER THREAD, and startup opens three on default-executor threads
+    (the source watcher's first sweep and the orphan reclaim, via
+    ``asyncio.to_thread``) besides the loop thread's own; ``close()`` releases
+    only the calling thread's (its pinned contract), so the harness calls
+    ``KnowledgeStore._close_all_for_tests``, which releases every connection the store
+    opened, whichever thread owns it, so none is left to the collector.
     """
     watchdog = getattr(state, "_loop_watchdog", None)
     if watchdog is not None:
@@ -419,7 +423,7 @@ def _release_process_handles(state: Any) -> None:
             os.close(dump_file.fileno())
     store = getattr(state, "_knowledge_store", None)
     if store is not None:
-        store.close()
+        store._close_all_for_tests()
 
 
 async def _cancel_stray_tasks() -> None:

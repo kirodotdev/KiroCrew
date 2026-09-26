@@ -2056,6 +2056,15 @@ class VectorMemoryStore:
             # Named V1 and V2 stores are both replaced as whole directories.
             # Take admission before opening SQLite so restore cannot replace a live handle.
             self._store_use_lock_fd = member_memory_backup.acquire_store_use_lock(self._db_path)
+        # A repeated init() replaces the handle. Close the one it replaces, or the
+        # orphan keeps its descriptors until the cyclic collector runs: on CPython
+        # 3.11+ an unclosed sqlite3.Connection is a reference cycle (its statement
+        # cache is an lru_cache wrapping the connection), so refcounting never
+        # frees it.
+        with self._db_lock:
+            if self._db is not None:
+                self._db.close()
+                self._db = None
         try:
             self._init_database()
         except BaseException:

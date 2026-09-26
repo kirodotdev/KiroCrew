@@ -40,6 +40,17 @@ _MODES = ("standard", "cc", "strict")
 _CREW_PREFIXES = (".kiro/crew", ".kirocrew")
 
 
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    Every launcher-building test here reads the generated mask list; none is about
+    that probe, and a real ssh spawned from the test process is a host dependency
+    the launcher text must not vary with. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
 def _crew_path(prefix: str, leaf: str) -> str:
     """Spell a crew-home target the way the production builders do (single relative join)."""
     return os.path.join(os.path.expanduser("~"), f"{prefix}/{leaf}")

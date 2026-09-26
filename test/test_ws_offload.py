@@ -379,6 +379,41 @@ async def test_cached_status_snapshot_publishes_null_for_unknown_counts(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_cached_status_snapshot_reads_bundle_id_off_event_loop(monkeypatch):
+    """The served-bundle stat + read runs in a worker thread, and its answer
+    reaches ``status_snapshot`` as the ``bundle_id`` kwarg."""
+    from kiro_crew.dashboard import status_counts as sc_module
+    from kiro_crew.dashboard.state import DashboardState
+
+    async def fake_refresh(_state):
+        return (0, 0)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def recording_bundle_id(index=None):
+        seen["bundle"] = threading.get_ident()
+        return "abc123"
+
+    monkeypatch.setattr(DashboardState, "served_bundle_id", staticmethod(recording_bundle_id))
+
+    seen_kwargs: dict = {}
+
+    def fake_snapshot(**kwargs):
+        seen_kwargs.update(kwargs)
+        return {}
+
+    state = SimpleNamespace(status_snapshot=fake_snapshot)
+
+    await sc_module.cached_status_snapshot(state)  # type: ignore[arg-type]
+
+    assert seen["bundle"] != loop_thread, "served_bundle_id must run off the event loop"
+    assert seen_kwargs["bundle_id"] == "abc123"
+
+
+@pytest.mark.asyncio
 async def test_status_frame_publishes_null_for_unknown_counts(monkeypatch):
     """Pins the WS ``dashboard`` frame: it delegates to ``cached_status_snapshot``
     (so the inline on-loop fallback can never run here) and appends

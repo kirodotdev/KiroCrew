@@ -368,8 +368,15 @@ class TestPrincipalAnsweredTransports:
     def _discord(self, allowed: list[str], threads: list[str] | None = None) -> Any:
         from kiro_crew.discord.transport import DiscordTransport
 
+        # The transport installs its mid-send authorization predicate onto the
+        # client it is handed, so this stand-in has to accept an attribute --
+        # a bare ``object()`` cannot. Nothing else about the client is reached
+        # here: ``may_send_to`` decides from the rosters alone.
+        class _UnusedClient:
+            pass
+
         return DiscordTransport(
-            object(), allowed_user_ids=allowed, allowed_thread_ids=threads or []
+            _UnusedClient(), allowed_user_ids=allowed, allowed_thread_ids=threads or []
         )
 
     def test_discord_permits_an_allow_listed_principal(self) -> None:

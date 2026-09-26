@@ -1,16 +1,15 @@
 /**
  * The chat hero must not eat the first screen on a phone.
  *
- * `text-5xl` (48px) is a desktop size, and the heading sits between a 64px brand
- * mark and a 64px optical-centering spacer in a `gap-4` row inside `px-8`. At a
- * 320px viewport that leaves the heading 189px, which measured 5 lines in
- * English and 6 in German and French — 260-325px of hero. Dropping to 30px and
- * releasing the decorative spacer below `sm` holds it to 2 lines in every locale
- * measured (82px).
+ * A desktop-size heading (`text-5xl`, 48px) squeezed into a narrow row measured
+ * 5-6 lines at a 320px viewport in English, German and French. The heading now
+ * sits BELOW the brand mark in a column, so it gets the full row width, and it
+ * starts at 30px and only grows from `sm`. No 64px counterweight spacer beside
+ * the heading exists any more, so none can take a phone's width.
  *
- * happy-dom does no layout, so these pin the declaration: the defect is that the
- * size and the spacer were unconditional, and that is what a source assertion
- * can see.
+ * happy-dom does no layout, so these pin the declaration: the defect is an
+ * unconditional large size or a fixed-width spacer in the heading row, and that
+ * is what a source assertion can see.
  */
 import { describe, it, expect } from 'vitest'
 
@@ -19,22 +18,21 @@ async function source(): Promise<string> {
 }
 
 describe('WelcomeView hero at narrow widths', () => {
-  it('scales the heading down on base and up from sm', async () => {
+  it('scales every heading down on base and up from sm', async () => {
     const src = await source()
-    const h2 = src.match(/<h2 className="[^"]*"/)
-    expect(h2, 'expected an h2 with a className').not.toBeNull()
-    expect(h2![0]).toContain('text-3xl')
-    expect(h2![0]).toContain('sm:text-5xl')
-    // An unqualified text-5xl is the defect: it applies at every width.
-    expect(h2![0]).not.toMatch(/(^|\s)text-5xl/)
+    const headings = src.match(/<h2 className="[^"]*"/g)
+    expect(headings, 'expected an h2 with a className').not.toBeNull()
+    for (const h2 of headings!) {
+      expect(h2).toContain('text-3xl')
+      expect(h2).toMatch(/sm:text-[45]xl/)
+      // An unqualified larger size is the defect: it applies at every width.
+      expect(h2).not.toMatch(/(^|\s|")text-[45]xl/)
+    }
   })
 
-  it('does not spend 64px of a phone on the centering spacer', async () => {
+  it('does not spend 64px of a phone on a centering spacer', async () => {
     const src = await source()
-    const spacer = src.match(/className="[^"]*w-\[64px\][^"]*"/)
-    expect(spacer, 'expected the optical-centering spacer').not.toBeNull()
-    expect(spacer![0]).toContain('hidden')
-    expect(spacer![0]).toContain('sm:block')
+    expect(src).not.toMatch(/className="[^"]*w-\[64px\][^"]*"/)
   })
 
   it('keeps the brand mark, which is content rather than padding', async () => {

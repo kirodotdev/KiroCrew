@@ -2457,7 +2457,7 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
         )
 
 
-def test_the_real_adapter_guard_is_reachable_at_all():
+def test_the_real_adapter_guard_is_reachable_at_all(monkeypatch):
     """A skip-only guard is a guard nobody notices has stopped running.
 
     This does not assert the adapter is installed -- most runners have none, and
@@ -2465,12 +2465,28 @@ def test_the_real_adapter_guard_is_reachable_at_all():
     instead. It asserts the RESOLVER the guard
     reads is the spawn's own, so a rename there cannot turn the guard permanently
     green without anyone seeing it.
+
+    The ladder's one spawn is ``mise which <adapter>`` through ``_mise_which``. That
+    seam is pinned to a recording fake: a real ``mise`` is a version manager that
+    may fetch toolchains, and it is a host program this test is not about. What the
+    fake records -- that the ladder asked mise for THIS adapter's binary -- is the
+    "spawn's own resolver" fact the test exists to pin.
     """
-    from kiro_crew.acp.client import _resolve_codex_acp_bin
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.acp.client import CODEX_ACP_BIN, _resolve_codex_acp_bin
+
+    asked: list[str] = []
+
+    def fake_mise_which(tool: str) -> str | None:
+        asked.append(tool)
+        return None
+
+    monkeypatch.setattr(client_mod, "_mise_which", fake_mise_which)
 
     argv, search = _resolve_codex_acp_bin()
     assert argv is None or isinstance(argv, list)
     assert isinstance(search, str)
+    assert asked == [CODEX_ACP_BIN]
     assert os.environ.get("CODEX_ACP_BIN") is None or _ENTRY is not None
 
 

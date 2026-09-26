@@ -78,11 +78,12 @@ Four mechanisms clean up processes. They are complementary — not redundant.
    slot-owned by construction; a key of any other shape counts as slot-owned
    only if a published live set once carried it, which is what keeps a
    ``cron:`` fire or a ``taskrunner:{id}:task{n}`` step that never had a tab
-   from being read as finished. That axis refuses a session with attached
-   sub-agent work, then re-asserts against the live set as the last read before
-   the reset, with no await in between. BOTH axes refuse a session with a
-   completion injection in flight: a turn already committed to a session is not
-   finished work, whichever test elected it. *Cannot be replaced by the idle clock* — a finished session holds its
+   from being read as finished. BOTH axes ask the sub-agent probe and refuse a
+   session with attached sub-agent work; only the orphan axis then re-asserts
+   against the live set as the last read before the reset, with no await in
+   between. BOTH axes also refuse a session with a completion injection in
+   flight: a turn already committed to a session is not finished work,
+   whichever test elected it. *Cannot be replaced by the idle clock* — a finished session holds its
    runtime and its per-session MCP servers for the whole timeout, so the live
    process count is the number of unreaped sessions times the servers each one
    spawns.
@@ -1018,6 +1019,17 @@ class _Session:
     # does not resolve models made the session. Both are "no selection to report",
     # which is what a consumer of the empty value states.
     requested_model: str = ""
+    # The crew log this session SUPERSEDED: what the slot-to-session mapping named
+    # -- its live id, or the stash a recycle left -- at the instant the allocation
+    # registered this session, read inside that registration's critical section
+    # and before this session's own id was mapped. Stamped there because no read a
+    # caller takes around ``get_or_create`` can be right: waiting inside the
+    # allocation for the turn permit, it can be overtaken by a concurrent turn's
+    # allocate-and-recycle on the same key. Kept on the session rather than in a
+    # per-key table so ordinary teardown releases it: every ``/new`` or generation
+    # rotation mints a fresh key, and a table keyed by them would grow for the
+    # life of the gateway. Read through ``SessionManager.allocation_predecessor``.
+    predecessor_sid: str = ""
     loaded_capabilities: LoadedCapabilities | None = None
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
     queue: deque[tuple[str, str, dict]] = field(default_factory=deque)
@@ -2944,6 +2956,18 @@ class SessionManager:
         answer a resumable session, and this one deliberately omits it.
         """
         return self._allocation_boundary().mapped_sid(key)
+
+    def allocation_predecessor(self, key: str) -> str:
+        """The store *key*'s current cold-started session superseded, or ``""``.
+
+        Captured by the allocation boundary inside the registration's own critical
+        section (see :meth:`SessionAllocationService.allocation_predecessor`), so a
+        caller consumes it AFTER ``get_or_create`` returns instead of reading the
+        mapping around its own call -- the read that a concurrent turn's
+        allocate-and-recycle can stale while the caller waits inside the allocation.
+        The ``previous_sid`` source for ``crew_log_emit.on_session_opened``.
+        """
+        return self._allocation_boundary().allocation_predecessor(key)
 
     def mapped_session_keys(self) -> frozenset[str]:
         """Every folded key this gateway holds a session ID for, in memory.

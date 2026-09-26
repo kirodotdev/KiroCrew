@@ -185,7 +185,7 @@ class Seeded:
         return out
 
 
-def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
+def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, opened) -> Seeded:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -259,7 +259,7 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
     history_file = history_dir / f"{today}.md"
     history_file.write_text(_HISTORY_DAY, encoding="utf-8")
 
-    vectors = VectorMemoryStore(db_path=config_dir() / "memory.db", embedding_dim=_DIM)
+    vectors = opened(VectorMemoryStore(db_path=config_dir() / "memory.db", embedding_dim=_DIM))
     vectors.init()
     vectors.embed_fn = embed_fn
     # Recency order needs distinct input times, not a fast host clock.
@@ -304,7 +304,7 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
 
     builder = ctx.ContextBuilder(
         memory=memory,
-        skills=SkillsLoader(skills_path=skills_root, install_builtins=False),
+        skills=opened(SkillsLoader(skills_path=skills_root, install_builtins=False)),
         hooks=HookManager(),
         lessons=LessonStore(base_dir=workspace),
         conversation_log=None,
@@ -330,8 +330,8 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
 
 
 @pytest.fixture
-def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
-    return _seed(tmp_path, monkeypatch)
+def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opened) -> Seeded:
+    return _seed(tmp_path, monkeypatch, opened=opened)
 
 
 #: The session key every build uses. Not a ``dashboard:`` key, so the payload takes

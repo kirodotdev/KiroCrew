@@ -74,6 +74,7 @@ from kiro_crew.messaging.split import (
     FENCE_BODY,
     FENCE_CLOSE,
     FENCE_OPEN,
+    bounded_for_delivery,
     iter_fence_lines,
     split_markdown_safe,
 )
@@ -286,7 +287,9 @@ def to_whatsapp_text(content: str) -> str:
     return text.strip()
 
 
-def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+def render_chunks(
+    content: str, limit: int = WHATSAPP_CHUNK_LIMIT, *, stable: bool = False
+) -> list[str]:
     """Delivery-ready chunks of WhatsApp-dialect text (see module docstring).
 
     Every rewrite -- the display screen, the reductions, dialect conversion --
@@ -295,14 +298,34 @@ def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
     any chunk outgrowing the budget it was cut to, and several of them do: a
     flattened table row carries its column labels, a diagram gains a heading, and
     a redacted credential becomes a marker longer than the key it replaces.
+
+    ``stable`` is for the streaming turn renderer, which re-splits its growing
+    body every frame and treats all but the last chunk as delivered: it keeps the
+    text redacted while leaving every boundary where this budget puts it, so a
+    later arrival cannot revise a message already sent. That caller grades its own
+    seam before it counts a chunk final.
     """
     text = to_whatsapp_text(content)
     if not text:
         return []
-    return split_markdown_safe(text, limit)
+    if stable:
+        return split_markdown_safe(text, limit, redactor=_redact_all, stable=True)
+    # A credential-aware cut can DECLINE to cut, answering with the text whole,
+    # which is fail-closed but one chunk over ``limit``. This channel's own sender
+    # posts each chunk as its own message with no length bound of its own, so the
+    # over-cap chunk would reach the transport. The bound cuts it back and grades
+    # the sequence it produced, as every other capped caller does. The stable
+    # branch is not bounded here: its caller re-splits a growing body every frame
+    # and grades its own seam, and a bound would move a boundary under a message it
+    # has already treated as delivered.
+    return bounded_for_delivery(
+        split_markdown_safe(text, limit, redactor=_redact_all), limit, _redact_all
+    )
 
 
-async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+async def render_chunks_off_loop(
+    content: str, limit: int = WHATSAPP_CHUNK_LIMIT, *, stable: bool = False
+) -> list[str]:
     """:func:`render_chunks` on a worker thread.
 
     The shared splitter terminates on pathological delimiter input but its CPU
@@ -310,4 +333,4 @@ async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT
     every turn and the liveness heartbeat on one event loop. Discord offloads
     the same call for the same reason.
     """
-    return await asyncio.to_thread(render_chunks, content, limit)
+    return await asyncio.to_thread(render_chunks, content, limit, stable=stable)

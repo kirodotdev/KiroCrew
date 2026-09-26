@@ -57,6 +57,7 @@ __all__ = [
     "provider_error_client",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
+    "drain_skill_view_aliases",
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
 ]
@@ -579,6 +580,17 @@ def skill_view_alias_census(agents_dir: "Path") -> dict[str, int]:
     from kiro_crew.acp.skill_projection import census_projected_aliases
 
     return census_projected_aliases(agents_dir)
+
+
+def drain_skill_view_aliases() -> int:
+    """Best-effort drain of unused skill-view aliases this data home owns; never raises.
+
+    Returns how many aliases were removed. What counts as unused is the
+    projection module's rule.
+    """
+    from kiro_crew.acp.skill_projection import drain_stale_aliases
+
+    return drain_stale_aliases()
 
 
 def skill_view_sidecar_dirs() -> tuple[str, str]:

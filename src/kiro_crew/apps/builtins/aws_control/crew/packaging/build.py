@@ -1976,7 +1976,22 @@ def _open_dir_nofollow_pinned(dir_path: Path, *, already_resolved: bool = False)
     # is pinned by the second one, and every check taken through the resulting descriptor
     # then agrees with itself about the attacker's tree. The prompt path resolves once
     # before its validation and hands that value in.
-    resolved = dir_path if already_resolved else dir_path.resolve()
+    # CPython 3.12 reports a symlink loop from non-strict ``resolve()`` as
+    # ``RuntimeError``; 3.13 can leave the unresolved suffix for the component
+    # walk, whose ``O_NOFOLLOW`` open reports ``OSError(ELOOP)`` instead. Both
+    # shapes are normalized to ``OSError(ELOOP)`` at this one boundary so every
+    # caller's existing ``except OSError`` guard fails closed consistently.
+    if already_resolved:
+        resolved = dir_path
+    else:
+        try:
+            resolved = dir_path.resolve()
+        except RuntimeError as exc:
+            raise OSError(errno.ELOOP, f"symlink loop resolving {dir_path}") from exc
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OSError(errno.ELOOP, f"symlink loop resolving {dir_path}") from exc
+            raise
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     cur_fd = os.open(resolved.anchor or "/", dir_flags)
     open_dirs = [cur_fd]
@@ -1984,9 +1999,27 @@ def _open_dir_nofollow_pinned(dir_path: Path, *, already_resolved: bool = False)
         for part in resolved.relative_to(resolved.anchor).parts:
             cur_fd = os.open(part, dir_flags, dir_fd=open_dirs[-1])
             open_dirs.append(cur_fd)
-    except BaseException:
+    except BaseException as exc:
+        loop_error = isinstance(exc, OSError) and exc.errno == errno.ELOOP
+        if isinstance(exc, OSError) and exc.errno == errno.ENOTDIR:
+            try:
+                component = os.stat(part, dir_fd=open_dirs[-1], follow_symlinks=False)
+            except OSError:
+                pass
+            else:
+                loop_error = stat.S_ISLNK(component.st_mode)
         for d in open_dirs:
             os.close(d)
+        if loop_error:
+            # A no-follow open cannot tell a loop from a component swapped for a link after
+            # resolution: both are simply a link where a directory was measured. Name the
+            # component and say what was measured, keeping ELOOP so callers fail closed.
+            raise OSError(
+                errno.ELOOP,
+                f"component {part!r} of {dir_path} is a symbolic link where a directory "
+                f"was resolved (a symlink loop, or it changed to a link since resolution): "
+                f"{exc}",
+            ) from exc
         raise
     # Close every intermediate but keep the final descriptor for the caller.
     for d in open_dirs[:-1]:
@@ -4660,16 +4693,36 @@ def _verify_build_wrote_captured_fd(
             )
 
 
-def _verify_captured_is_staging_fd(parent_fd: int, moved_rel: str, *, label: Path) -> None:
+def _verify_captured_is_staging_fd(
+    parent_fd: int,
+    moved_rel: str,
+    *,
+    label: Path,
+    expected_identity: "tuple[int, int] | None" = None,
+) -> None:
     """Confirm a captured tree is THIS build's own staging, read through the pinned parent.
 
-    The moved-entry counterpart of the staging leftover check: only owned top-level names and
-    only shapes this build writes, run on the entry the rename captured. A tree swapped in
-    before the capture is moved (not deleted), fails here, and is left where it came from.
-    Raises ``ExportRefused`` on any leftover.
+    The moved-entry counterpart of the staging leftover check: when a retained
+    descriptor identity is available, the captured tree must be that exact inode;
+    only then are its top-level names and shapes checked. A tree swapped in before
+    capture is moved (not deleted), fails here, and is left where it came from.
+    Raises ``ExportRefused`` on any leftover or identity mismatch.
     """
     dir_fd = _open_captured_dir_fd(parent_fd, moved_rel, label, "the staging path")
     try:
+        captured = os.fstat(dir_fd)
+        if (
+            expected_identity is not None
+            and (
+                captured.st_dev,
+                captured.st_ino,
+            )
+            != expected_identity
+        ):
+            raise ExportRefused(
+                f"the staging path {label} is no longer the directory this build opened "
+                f"(its inode changed before cleanup). It has NOT been deleted."
+            )
         tree = _inspect_captured_tree_fd(dir_fd, frozenset(), read_files=False)
     finally:
         os.close(dir_fd)
@@ -4696,7 +4749,7 @@ def _dispose_via_private_aside(
     settle: Callable[[str, int], None],
     *,
     resolved_parent: "Path | None" = None,
-) -> None:
+) -> bool:
     """Recursively delete ``target`` through a run-private aside, all relative to a pinned parent.
 
     ``shutil.rmtree(target)`` re-resolves ``target`` from its path string, so a swap of
@@ -4736,12 +4789,25 @@ def _dispose_via_private_aside(
     ``FileNotFoundError``) there is nothing to dispose of and the private dir is removed; a
     partially-created private dir is cleaned on any failure.
 
+    Returns ``True`` when the rename captured ``target``, ``verify`` and ``settle`` ran on it,
+    and the private-dir sweep completed. Returns ``False`` in two cases: the already-gone case,
+    where nothing was captured or verified (the early ``return``), and a sweep that did not
+    complete. For the purge's no-op ``settle`` that sweep IS the delete, so ``False`` there means
+    the captured tree is still under the ``.smc-purge-*`` aside, undeleted. The staging purge is
+    the one caller that reads the return; the rename-to-destination and post-promotion callers
+    ignore it, since their tree already reached its destination (or was already gone) and an
+    unswept private dir is only best-effort residue for them.
+
     ``resolved_parent`` defaults to ``target.parent.resolve()`` for a direct caller with no
     earlier reading to pin; the transaction passes the value it resolved at validation so the
     pin reflects that moment rather than a fresh resolve at disposal time.
     """
     if resolved_parent is None:
         resolved_parent = target.parent.resolve()
+    # Bound before anything that can raise: the final ``return`` reads this, and binding it up
+    # front means no error path -- a failed parent open, a failed ``mkdir`` -- can reach that
+    # read with the name unbound. It flips to ``True`` only if the private-dir sweep fails.
+    sweep_failed = False
     try:
         parent_fd = _open_dir_nofollow_pinned(resolved_parent, already_resolved=True)
     except OSError as exc:
@@ -4767,8 +4833,10 @@ def _dispose_via_private_aside(
                 os.rename(target_name, moved_rel, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             except FileNotFoundError:
                 # target vanished (a concurrent process removed or moved it first); nothing to
-                # dispose of, and the empty private dir is cleaned in the finally below.
-                return
+                # dispose of, and the empty private dir is cleaned in the finally below. Report
+                # "not captured" rather than success: a MOVED tree still exists wherever it was
+                # moved to, and this call neither captured nor verified it.
+                return False
             try:
                 verify(parent_fd, moved_rel)
             except BaseException:
@@ -4826,27 +4894,46 @@ def _dispose_via_private_aside(
             if cleanup_private:
                 # Reach the delete through the pinned parent, never by re-resolving
                 # ``private``'s path: a bare ``shutil.rmtree(private)`` would follow a parent
-                # component swapped after the pin. Best-effort, like the rmtree it replaces -- a
-                # private dir that cannot be swept is left for the next run, never chased outside
-                # the parent.
+                # component swapped after the pin. Best-effort AS A DELETE MECHANISM -- a private
+                # dir that cannot be swept is never chased outside the parent -- but WHETHER it
+                # completed is recorded, because for the purge caller this sweep is the disposal
+                # itself and a silent failure would leave the staging tree undeleted in the aside
+                # while the caller reports success.
                 try:
                     _rmtree_pinned(parent_fd, private_name)
                 except OSError:
-                    pass
+                    sweep_failed = True
     finally:
         os.close(parent_fd)
+    # The early ``return False`` (target already gone) exits before this line. On the ordinary
+    # exit the purge caller's no-op ``settle`` left the captured tree in the private dir, so an
+    # incomplete sweep means it is still there, undeleted: report that rather than success.
+    return not sweep_failed
 
 
 def _purge_via_private_aside(
-    target: Path, verify: Callable[[int, str], None], *, resolved_parent: "Path | None" = None
-) -> None:
+    target: Path,
+    verify: Callable[[int, str], None],
+    *,
+    resolved_parent: "Path | None" = None,
+) -> bool:
     """Delete ``target`` through the private aside: capture, verify, then sweep via the pin.
 
     The verified tree is removed by the ``_rmtree_pinned`` sweep of the private directory in
-    ``_dispose_via_private_aside``, so the settle step has nothing to do.
+    ``_dispose_via_private_aside``, so the settle step has nothing to do -- the no-op settle
+    leaves the tree in the private dir for that sweep to delete.
+
+    Returns ``_dispose_via_private_aside``'s result: ``False`` when ``target`` was already gone
+    (nothing captured or verified) or when the sweep did not complete (the captured tree is
+    still under the aside). Only ``_purge_staging_best_effort`` reads it; the transaction-path
+    and post-promotion ``<out>.previous`` purges ignore it, so leftover scratch never turns a
+    bundle that already landed into a refusal.
     """
-    _dispose_via_private_aside(
-        target, verify, lambda moved_rel, pfd: None, resolved_parent=resolved_parent
+    return _dispose_via_private_aside(
+        target,
+        verify,
+        lambda moved_rel, pfd: None,
+        resolved_parent=resolved_parent,
     )
 
 
@@ -4878,27 +4965,52 @@ def _unlink_out_leaf_best_effort(leaf: Path, resolved_parent: Path) -> None:
         os.close(parent_fd)
 
 
-def _purge_staging_best_effort(staging: Path, resolved_parent: Path) -> None:
-    """Best-effort teardown of THIS build's own staging tree, reached through a pinned parent.
+def _purge_staging_best_effort(
+    staging: Path,
+    resolved_parent: Path,
+    *,
+    staging_fd: "int | None" = None,
+) -> bool:
+    """Attempt identity-checked teardown of this build's staging tree.
+
+    Returns ``True`` only when the private-aside capture, verification, and sweep
+    completed. ``False`` means this call did not delete the tree: it was already gone or moved
+    away, verification refused it (it is restored where it was), or the sweep did not complete
+    (it is under a ``.smc-purge-*`` directory beside ``staging``).
 
     A bare ``shutil.rmtree`` of ``staging`` with ``ignore_errors=True`` re-resolves ``staging``'s
     path string, so a parent swapped between a failure and its cleanup steers the recursive
     delete outside ``--out`` -- the failure path then deletes as irreversibly as the success
     path. This captures
     ``staging`` into a run-private aside under a parent pinned ``O_NOFOLLOW``, confirms the
-    captured tree holds only names and shapes this build writes, and deletes only then; a tree
-    swapped in before the capture fails that check and is LEFT, never deleted.
+    captured tree holds only names and shapes this build writes, and deletes only then. When
+    ``staging_fd`` is retained, the captured tree must also match that descriptor's device and
+    inode; a bundle-shaped replacement therefore fails verification and is restored untouched.
 
     Best-effort, like the ``ignore_errors=True`` it replaces: it runs inside a failure handler,
     so it must not raise a NEW error over the exception already in flight. A refusal (a
-    swapped-in tree), a pin-open failure, or a sweep that cannot complete is swallowed and the
-    scratch tree is left for the next run rather than masking the real failure.
+    swapped-in tree) or a pin-open failure is swallowed, and a sweep that cannot complete comes
+    back as ``False``; either way the scratch tree is left for the next run rather than masking
+    the real failure.
     """
+    expected_identity: "tuple[int, int] | None" = None
+    if staging_fd is not None:
+        try:
+            opened = os.fstat(staging_fd)
+        except OSError:
+            return False
+        expected_identity = (opened.st_dev, opened.st_ino)
     try:
-        _purge_via_private_aside(
+        # ``True`` only when this call captured the tree, verified its identity, and the sweep
+        # deleted it. A target that was already gone returns ``False``: nothing was captured
+        # or verified, and a tree moved away by another process still exists where it went.
+        return _purge_via_private_aside(
             staging,
             lambda parent_fd, moved_rel: _verify_captured_is_staging_fd(
-                parent_fd, moved_rel, label=staging
+                parent_fd,
+                moved_rel,
+                label=staging,
+                expected_identity=expected_identity,
             ),
             resolved_parent=resolved_parent,
         )
@@ -4907,7 +5019,7 @@ def _purge_staging_best_effort(staging: Path, resolved_parent: Path) -> None:
         # ``ExportRefused``: this is teardown of the build's own scratch, and leaving it is safe
         # (the next run's ownership check handles a residue). A ``BaseException`` -- a cancel --
         # is left to propagate, as it is not the cleanup's to swallow.
-        pass
+        return False
 
 
 #: The errnos a filesystem raises when hard links are simply not supported there -- FAT/exFAT,
@@ -5371,6 +5483,29 @@ def build_bundle(
             f"it ({exc}); a component changed since --out was validated. Nothing was written. "
             f"Re-run the build."
         ) from exc
+
+    def _release_pretransaction_staging(*, remove_marker: bool) -> bool:
+        """Attempt an identity-checked purge, then close the descriptor exactly once."""
+        nonlocal staging_fd
+        active_fd = staging_fd if staging_fd != -1 else None
+        purged = False
+        try:
+            purged = _purge_staging_best_effort(
+                staging,
+                resolved_out_parent,
+                staging_fd=active_fd,
+            )
+        finally:
+            if staging_fd != -1:
+                try:
+                    os.close(staging_fd)
+                except OSError:
+                    pass
+                staging_fd = -1
+        if remove_marker:
+            _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
+        return purged
+
     try:
         _write_marker_exclusive(staging_marker, ours=marker_is_ours)
     except BaseException:
@@ -5379,7 +5514,8 @@ def build_bundle(
         # behind, and the pre-mkdir checks then read it as another build's claim -- so the
         # first refusal makes every later run refuse too, for a different reason, until
         # someone deletes the directory by hand. Only the tree THIS call created is removed.
-        _purge_staging_best_effort(staging, resolved_out_parent)
+        # Do not unlink the marker here: the exclusive write may have refused a foreign one.
+        _release_pretransaction_staging(remove_marker=False)
         raise
 
     # The swap below replaces out_dir wholesale, which is what makes a failed build
@@ -5395,85 +5531,115 @@ def build_bundle(
     #      than absorbed.
     #   2. Carry the plan through the staging directory, so it lands back in the
     #      new out_dir instead of being replaced along with the bundle.
-    carried_plan: bytes | None = None
-    # Declared BEFORE the try, because the handler reads it. Bound inside, it would be
-    # unbound for every failure that happens earlier in the block -- and the handler runs
-    # on exactly those, so the restore would raise NameError and mask the real error.
-    previous: Path | None = None
+    # Every probe below runs AFTER the staging tree and its ownership marker exist and
+    # BEFORE the main transaction's own ``except BaseException`` cleanup: the report
+    # baseline read, ``out_dir.exists()``, and the ``plan_file.is_file()`` read. A raw
+    # ``OSError`` from any of them (a permission change, EIO, ESTALE) would escape every
+    # handler and strand the staging tree AND the marker -- and the marker is what the next
+    # run reads as another build's claim, so one transient fault refuses every later build
+    # until the directory is removed by hand. The deliberate refusals inside are
+    # ``ExportRefused`` (a ``RuntimeError``, not an ``OSError``), so they pass this handler
+    # untouched with their own messages and their own cleanup; only a raw ``OSError`` is
+    # converted here, after the same best-effort release of this call's staging and marker.
+    try:
+        carried_plan: bytes | None = None
+        # Declared BEFORE the try, because the handler reads it. Bound inside, it would be
+        # unbound for every failure that happens earlier in the block -- and the handler runs
+        # on exactly those, so the restore would raise NameError and mask the real error.
+        previous: Path | None = None
 
-    # Established BEFORE the try, because the except block reads all three and a refusal
-    # raised early in the body would otherwise hit UnboundLocalError -- which does not just
-    # lose the rollback, it REPLACES the real refusal with a confusing one. Found exactly
-    # that way: 13 tests turned red naming UnboundLocalError instead of the ExportRefused
-    # they assert.
-    #
-    # The report is written before the swap on purpose -- a report failure must not land
-    # after the previous bundle is gone -- and that ordering is what leaves the other hole:
-    # a rename failure restores the previous bundle while the report still describes the new
-    # one that never landed. The transaction has to cover both files or it covers neither.
-    report_path = out_dir.parent / f"{out_dir.name}.smc-bundle.json"
-    report_before: bytes | None = None
-    if report_path.is_file() and not _is_redirecting_entry(report_path):
-        # Fail closed rather than treat an unreadable existing report as absence. On the
-        # rollback path below, ``report_before is None`` means "no report was here, so unlink
-        # the one this run wrote" -- if a read failure quietly set it to None, a rollback
-        # would DELETE the operator's existing report instead of restoring it. The read is
-        # the only thing that tells "no report" from "a report we could not read".
-        # Read the baseline through the whole-window no-follow reader, not ``read_bytes``,
-        # which follows every component: a parent/intermediate swapped after the leaf check
-        # above would be traversed and the drift/rollback baseline taken from outside --out.
-        # Inside this ``is_file()`` branch a ``None`` return means unreadable or redirected,
-        # never absent, so it fails closed the same way the old ``OSError`` branch did.
-        report_before = _read_bytes_openat(report_path.parent, Path(report_path.name))
-        if report_before is None:
-            # Release the staging tree and marker this build already created before refusing.
-            # This refusal sits BEFORE the main transaction's own cleanup, so without this the
-            # correct refusal would leak the tree and -- worse -- the ownership marker, which
-            # the next run reads as another build's claim and refuses on, turning one refusal
-            # into a standing one until someone deletes the directory by hand. A refusal must
-            # release what this build acquired, not only report the reason.
-            _purge_staging_best_effort(staging, resolved_out_parent)
-            _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
-            raise ExportRefused(
-                f"the existing report at {report_path} cannot be read or a component of its "
-                f"path changed to a link, so this build cannot restore it if the swap fails "
-                f"and will not risk deleting it. Fix or remove that file."
-            )
-    report_written = False
-    promoted = False
-    report_tmp = report_path.parent / (report_path.name + f".{_RUN_ID}.tmp")
-    if out_dir.exists():
-        # The SAME vocabulary the staging check above uses. It was briefly written
-        # out twice, which is the duplicate-spelling mistake this branch has paid for
-        # more than once: two copies of one rule drift, and here the drift would be
-        # one of the two recursive deletes quietly accepting a name the other
-        # refuses.
-        # One function owns all three rules (names, shapes, the manifest's own digest),
-        # because this site had all three and the `<out>.previous` site below had only the
-        # first two -- reported as a defect for precisely the case the third one catches.
-        # Both are about to run a recursive delete, so they cannot be allowed to drift.
-        try:
-            _refuse_unless_this_build_wrote_it(out_dir, "--out", crew.name)
-        except ExportRefused:
-            _purge_staging_best_effort(staging, resolved_out_parent)
-            _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
-            raise
-        plan_file = out_dir / PLAN_FILENAME
-        if plan_file.is_file():
-            # Inside the cleanup transaction, and translated. This read sat OUTSIDE the
-            # ``except ExportRefused`` above, so an unreadable plan -- a permission change, a
-            # file that became a directory, a device node -- raised a bare OSError past every
-            # handler and left the staging tree and its marker on disk. The marker is worse
-            # than the tree: it is what authorises the NEXT run's recursive delete.
-            carried_plan = _read_bytes_openat(out_dir, Path(PLAN_FILENAME))
-            if carried_plan is None:
-                _purge_staging_best_effort(staging, resolved_out_parent)
-                _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
+        # Established BEFORE the try, because the except block reads all three and a refusal
+        # raised early in the body would otherwise hit UnboundLocalError -- which does not just
+        # lose the rollback, it REPLACES the real refusal with a confusing one. Found exactly
+        # that way: 13 tests turned red naming UnboundLocalError instead of the ExportRefused
+        # they assert.
+        #
+        # The report is written before the swap on purpose -- a report failure must not land
+        # after the previous bundle is gone -- and that ordering is what leaves the other hole:
+        # a rename failure restores the previous bundle while the report still describes the new
+        # one that never landed. The transaction has to cover both files or it covers neither.
+        report_path = out_dir.parent / f"{out_dir.name}.smc-bundle.json"
+        report_before: bytes | None = None
+        if report_path.is_file() and not _is_redirecting_entry(report_path):
+            # Fail closed rather than treat an unreadable existing report as absence. On the
+            # rollback path below, ``report_before is None`` means "no report was here, so unlink
+            # the one this run wrote" -- if a read failure quietly set it to None, a rollback
+            # would DELETE the operator's existing report instead of restoring it. The read is
+            # the only thing that tells "no report" from "a report we could not read".
+            # Read the baseline through the whole-window no-follow reader, not ``read_bytes``,
+            # which follows every component: a parent/intermediate swapped after the leaf check
+            # above would be traversed and the drift/rollback baseline taken from outside --out.
+            # Inside this ``is_file()`` branch a ``None`` return means unreadable or redirected,
+            # never absent, so it fails closed the same way the old ``OSError`` branch did.
+            report_before = _read_bytes_openat(report_path.parent, Path(report_path.name))
+            if report_before is None:
+                # Release the staging tree and marker this build already created before refusing.
+                # This refusal sits BEFORE the main transaction's own cleanup, so without this the
+                # correct refusal would leak the tree and -- worse -- the ownership marker, which
+                # the next run reads as another build's claim and refuses on, turning one refusal
+                # into a standing one until someone deletes the directory by hand. A refusal must
+                # release what this build acquired, not only report the reason.
+                _release_pretransaction_staging(remove_marker=True)
                 raise ExportRefused(
-                    f"the existing plan at {plan_file} cannot be read or a component of its "
-                    f"path changed to a link, so this build cannot carry it across the swap "
-                    f"and will not replace the bundle without it. Fix or remove that file."
+                    f"the existing report at {report_path} cannot be read or a component of its "
+                    f"path changed to a link, so this build cannot restore it if the swap fails "
+                    f"and will not risk deleting it. Fix or remove that file."
                 )
+        report_written = False
+        promoted = False
+        report_tmp = report_path.parent / (report_path.name + f".{_RUN_ID}.tmp")
+        if out_dir.exists():
+            # The SAME vocabulary the staging check above uses. It was briefly written
+            # out twice, which is the duplicate-spelling mistake this branch has paid for
+            # more than once: two copies of one rule drift, and here the drift would be
+            # one of the two recursive deletes quietly accepting a name the other
+            # refuses.
+            # One function owns all three rules (names, shapes, the manifest's own digest),
+            # because this site had all three and the `<out>.previous` site below had only the
+            # first two -- reported as a defect for precisely the case the third one catches.
+            # Both are about to run a recursive delete, so they cannot be allowed to drift.
+            try:
+                _refuse_unless_this_build_wrote_it(out_dir, "--out", crew.name)
+            except ExportRefused:
+                _release_pretransaction_staging(remove_marker=True)
+                raise
+            plan_file = out_dir / PLAN_FILENAME
+            if plan_file.is_file():
+                # Inside the cleanup transaction, and translated. This read sat OUTSIDE the
+                # ``except ExportRefused`` above, so an unreadable plan -- a permission change, a
+                # file that became a directory, a device node -- raised a bare OSError past every
+                # handler and left the staging tree and its marker on disk. The marker is worse
+                # than the tree: it is what authorises the NEXT run's recursive delete.
+                carried_plan = _read_bytes_openat(out_dir, Path(PLAN_FILENAME))
+                if carried_plan is None:
+                    _release_pretransaction_staging(remove_marker=True)
+                    raise ExportRefused(
+                        f"the existing plan at {plan_file} cannot be read or a component of its "
+                        f"path changed to a link, so this build cannot carry it across the swap "
+                        f"and will not replace the bundle without it. Fix or remove that file."
+                    )
+    except OSError as exc:
+        staging_released = _release_pretransaction_staging(remove_marker=True)
+        if staging_released:
+            retry_guidance = (
+                "the staging tree was released and ownership-marker cleanup was attempted. "
+                "Re-run the build."
+            )
+        else:
+            # ``False`` covers more than an incomplete sweep: the tree may have been moved away
+            # by another process before capture, or refused by verification and restored. So
+            # say deletion is unconfirmed and name every place the residue can be, rather than
+            # assert it is in one of two.
+            retry_guidance = (
+                f"the staging tree at {staging} could not be released safely and its deletion "
+                f"was not confirmed; it may still be there, under a .smc-purge-* directory "
+                f"beside it, or wherever another process moved it. Check for it and remove it "
+                f"before retrying. Ownership-marker cleanup was attempted."
+            )
+        raise ExportRefused(
+            f"a filesystem fault while preparing to build into {out_dir} ({exc}); "
+            f"{retry_guidance}"
+        ) from exc
 
     try:
         _sfd = staging_fd if staging_fd != -1 else None
@@ -5601,7 +5767,11 @@ def build_bundle(
                 # ``carried_plan`` -- the stale copy read at the start -- would be written over
                 # the operator's signed plan. An unreadable-or-redirected plan at write-back
                 # time is exactly when we must NOT write, so refuse and leave their file alone.
-                _purge_staging_best_effort(staging, resolved_out_parent)
+                _purge_staging_best_effort(
+                    staging,
+                    resolved_out_parent,
+                    staging_fd=_sfd,
+                )
                 _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
                 raise ExportRefused(
                     f"{plan_file} could not be re-read before carrying it across the swap "
@@ -5611,7 +5781,11 @@ def build_bundle(
                     f"bundle is untouched. Re-run the build."
                 )
             if current_plan != carried_plan:
-                _purge_staging_best_effort(staging, resolved_out_parent)
+                _purge_staging_best_effort(
+                    staging,
+                    resolved_out_parent,
+                    staging_fd=_sfd,
+                )
                 _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
                 raise ExportRefused(
                     f"{plan_file} changed while this build was running, so carrying the "
@@ -5853,16 +6027,26 @@ def build_bundle(
         _publish_report(report_tmp, report_path, report_before)
         report_written = True
     except BaseException:
-        if staging_fd != -1:
-            os.close(staging_fd)
-            staging_fd = -1
+        active_fd = staging_fd if staging_fd != -1 else None
+        try:
+            _purge_staging_best_effort(
+                staging,
+                resolved_out_parent,
+                staging_fd=active_fd,
+            )
+        finally:
+            if staging_fd != -1:
+                try:
+                    os.close(staging_fd)
+                except OSError:
+                    pass
+                staging_fd = -1
         # Every cleanup unlink below targets a file DERIVED from --out (the staging marker, the
         # report temp, the report) in a directory this build does not own, so each goes through
         # ``_unlink_out_leaf_best_effort``: descriptor-relative to the validated parent, and
         # LEAVING RESIDUE if that parent cannot be pinned rather than deleting on a guess of
         # where a swapped path now points. A bare ``Path.unlink`` here re-resolves the name and
         # a swapped parent component steers it outside the validated parent.
-        _purge_staging_best_effort(staging, resolved_out_parent)
         _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
         # Roll the report back to exactly what was there, which for the ordinary first build
         # is nothing. Only when this run wrote it: an earlier failure leaves the operator's

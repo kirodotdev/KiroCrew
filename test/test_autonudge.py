@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,24 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     MonitorState,
 )
+
+
+def _owner_dashboard_identity():
+    """The owner's dashboard claims, for the routes the owner gate covers.
+
+    ``app == ""`` with the owner's subject: ``state.owner_id`` when one is
+    configured, else the signed local bootstrap subject.
+    """
+    from aiohttp import web
+
+    @web.middleware
+    async def middleware(request, handler):
+        state = request.app.get("state")
+        request["user"] = str(getattr(state, "owner_id", "") or "") or "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    return middleware
 
 
 @pytest.fixture(autouse=True)
@@ -4308,7 +4327,8 @@ class TestAutonudgeDisabledSettingLink:
         from kiro_crew.dashboard.handlers import autonudge as _handler
 
         monkeypatch.setattr(_handler, "_autonudge_get", lambda: None)
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
+        app["state"] = SimpleNamespace(owner_id="")
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
         app.router.add_patch("/api/autonudge/{loop_id}", _handler.api_autonudge_update)
         app.router.add_delete("/api/autonudge/{loop_id}", _handler.api_autonudge_delete)
@@ -4371,7 +4391,7 @@ class TestAutonudgeStartIntCoercion:
                 workspace="default", mode="", memory_mode="persistent", _closing=False
             )
         }
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
         app["state"] = state
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
         return app
@@ -4474,7 +4494,8 @@ class TestAutonudgeUpdateChokepoint:
         from kiro_crew.dashboard.handlers import autonudge as _handler
 
         monkeypatch.setattr(_handler, "_autonudge_get", lambda: fake_svc)
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
+        app["state"] = SimpleNamespace(owner_id="")
         app.router.add_patch("/api/autonudge/{loop_id}", _handler.api_autonudge_update)
         return app
 

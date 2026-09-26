@@ -33,6 +33,17 @@ _HOME = os.path.expanduser("~")
 _CREW = os.path.join(_HOME, ".kiro", "crew")
 
 
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    Every launcher-building test here reads the generated mask list; none is about
+    that probe, and a real ssh spawned from the test process is a host dependency
+    the launcher text must not vary with. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
 def _real_paths(scratch: Path | None = None) -> dict[str, str]:
     """The modules' own layout, computed against a scratch home (so the test
     never opens anything under the operator's real crew home) and rebased onto

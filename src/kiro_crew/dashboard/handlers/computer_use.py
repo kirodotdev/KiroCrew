@@ -584,6 +584,18 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
             {"error": "dashboard user required", "code": "dashboard_user_required"},
             status=403,
         )
+    # After the app-token refusal above, so an app token keeps its own
+    # ``dashboard_user_required`` answer: the keystone is the owner's switch,
+    # and a dashboard user who is not the owner may not flip it either.
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "computer_use.config_save")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()

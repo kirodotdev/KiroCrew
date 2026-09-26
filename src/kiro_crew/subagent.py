@@ -576,6 +576,16 @@ _BOUNDARY_CANCELLATION_SCOPE_CAP_REASON = "pending_scope_cap"
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
+# Derived in-startup bound, in rounds of the session-start gate: one round
+# holding permits plus one round already admitted and waiting behind them. See
+# ``SubagentManager._startup_cap`` for why the bound is tied to the gate's
+# width and not to the running cap.
+_STARTUP_CAP_GATE_ROUNDS = 2
+# How often a start released from the spawn-approval prompt re-pumps while it
+# waits for the in-startup bound (``_admit_released_start``). A backstop behind
+# the edges that pump anyway (PID, first stream, terminal, stagger boundary),
+# so it is slow.
+_RELEASE_REPUMP_SECS = 1.0
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
 # Continuation prompt sent when a transient backend error interrupted a turn
@@ -1859,6 +1869,12 @@ class SubagentInfo:
     # that is merely waiting for approval. None until execution starts.
     _exec_started: float | None = None
     _first_stream_started: float | None = None
+    # Wall-clock moment this run began waiting for a ``SessionStartGate``
+    # permit (``_gate_wait_mark``); None outside that wait. While set, the
+    # startup watchdog reads the start clock as frozen at this moment: time
+    # queued for a permit is not start time. Cleared by ``_gate_exit_reset`` at
+    # acquisition, which also restarts the clock.
+    _gate_wait_started: float | None = None
     # Learned-cost high-water marks (dynamic-subagent-sizing.md §4.1), sampled
     # periodically by the reaper loop and folded into the cost store at exit.
     peak_rss_gb: float = 0.0
@@ -1960,6 +1976,10 @@ class SubagentInfo:
     # None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    # The wake-up for a start released from the spawn-approval prompt and
+    # waiting to be metered into startup by the pump (``_admit_released_start``).
+    # None except during that wait.
+    _start_release: Any = None
     # True once the terminal report's `_on_done` injection has RETURNED, i.e.
     # the outcome actually reached the parent. Distinct from `_finalized` (the
     # claim, taken before delivery is attempted) and from the "delivered"
@@ -2735,6 +2755,26 @@ class SubagentManager:
             )
         except Exception:
             self._spawn_stagger_secs = 0.25
+        # In-startup bound (dynamic-subagent-sizing.md, Configuration). The
+        # stagger bounds the RATE of starts and ``_max_concurrent`` the RUNNING
+        # population; :meth:`_startup_cap` bounds how many admitted agents may
+        # be between execution start and their first runtime/stream/turn at
+        # once, derived from the session-start gate's width alone -- there is
+        # no key for it (see ``_startup_cap`` for why). ``session_start_concurrency``
+        # is boot-only (``restart=True``), so it is captured here and never
+        # re-read by ``apply_limits``: the SessionStartGate it sizes is fixed
+        # for the loop's lifetime, and the derived bound must track the gate
+        # that exists, not a value nothing is serving yet.
+        try:
+            self._session_start_concurrency = max(
+                1, int(KiroCrewConfig.load().agent.session_start_concurrency)
+            )
+        except Exception:
+            self._session_start_concurrency = 2
+        # ClaimPoint reservations not yet registered as a SubagentInfo; counted
+        # by ``_startup_population`` (see there). +1 at reserve, -1 on the
+        # re-entry that registers or on ``release_reservation``.
+        self._startup_reservations = 0
 
         # Every limit captured above is a copy of config.json. The live watcher
         # pushes a rewrite at this object through ``reconfigure`` so a write from
@@ -3012,13 +3052,14 @@ class SubagentManager:
         self.update_completion_keep(agent.completion_keep, int(agent.completion_keep_chars))
         logger.info(
             "SubagentManager reconfigured: max_concurrent=%d (was %d), turn_limit=%d, "
-            "timeout=%ds, stall_idle=%ds, stagger=%.1fs, result_ttl=%ds",
+            "timeout=%ds, stall_idle=%ds, stagger=%.1fs, max_startups=%d, result_ttl=%ds",
             self._max_concurrent,
             old_cap,
             self._default_turn_limit,
             self._default_timeout,
             self._stall_idle_secs,
             self._spawn_stagger_secs,
+            self._startup_cap(),
             self._result_ttl_secs,
         )
         if self._max_concurrent > old_cap:
@@ -3763,6 +3804,130 @@ class SubagentManager:
             return self._user_max_concurrent
         return max(0, min(self._user_max_concurrent, int(self._adaptive_cap)))
 
+    # ── In-startup population ──────────────────────────────────────────────
+    #
+    # Three different things bound a fan-out: ``_spawn_stagger_secs`` bounds
+    # the RATE of starts, ``_max_concurrent`` bounds the RUNNING population,
+    # and ``_startup_cap`` bounds how many admitted agents may be IN STARTUP at
+    # once. Without the third, one start is admitted every stagger interval however long each
+    # takes, and when starts are slow (a dedicated process per model override,
+    # a queue at the session-start gate, a throttled provider handshake) dozens
+    # sit in startup together, every one of them contending for the same gate
+    # and every one of them running down the same fixed startup deadline.
+    # Measured on a 623-item fan-out: waves of 24-45 lost ~2%, a wave of 120
+    # lost ~50%, every loss a healthy start the watchdog reaped as
+    # "Failed to start within 120s".
+
+    @staticmethod
+    def _in_startup(info: SubagentInfo) -> bool:
+        """True while *info* has entered execution but has nothing to show yet.
+
+        The same shape the startup watchdog reaps on (:meth:`_is_startup_stalled`),
+        minus the clock: past ``_run_inner``'s first statement (``_exec_started``
+        set), no runtime PID, no first provider stream, no turn, and not already
+        ending. A queued spawn is not in it (not registered until admitted), and
+        neither is an agent PARKED at the spawn-approval prompt
+        (``_awaiting_approval``, ``_exec_started`` still ``None``): it is
+        starting nothing, so it must not consume the startup bound -- counting
+        it would let a handful of unanswered prompts hold every other spawn on
+        the host, auto-approved ones from unrelated parents included. What has
+        to be bounded is the moment its prompt resolves, since a bulk grant
+        (``tool_approval:bulk_trust`` / ``bulk_yolo``) resolves EVERY pending
+        prompt at once: a released agent therefore re-enters through the pump
+        (:meth:`_admit_released_start`) and is metered into startup by the SAME
+        stagger and in-startup checks a fresh spawn passes, so ``_startup_cap``
+        holds through the flood without the parked agents ever counting.
+        """
+        return (
+            not info.done
+            and not info._reap_started
+            and info._exec_started is not None
+            and info.turns == 0
+            and info._pid is None
+            and info._first_stream_started is None
+        )
+
+    def _startup_population(self, *, exclude: SubagentInfo | None = None) -> int:
+        """How many admitted agents are in startup right now (see :meth:`_in_startup`).
+
+        Includes ``_startup_reservations``: a durable-store spawn reserves its
+        slot BEFORE its claim is awaited (``ClaimPoint``, reserve-then-commit)
+        and registers its ``SubagentInfo`` only on re-entry, which skips the
+        admission gate because the reservation already passed it. Between
+        reserve and re-entry the start is admitted but has no info to count, so
+        the reservation is counted in its place; the re-entry's registration
+        and ``release_reservation`` both give it back.
+        """
+        return int(self._startup_reservations) + sum(
+            1 for info in self._agents.values() if info is not exclude and self._in_startup(info)
+        )
+
+    def _startup_cap(self) -> int:
+        """The in-startup bound: ``_STARTUP_CAP_GATE_ROUNDS x session_start_concurrency``.
+
+        Twice the session-start gate's width, clamped to ``[1, cap]``. The
+        bound is tied to the GATE, not to the running cap, because the gate is
+        the one resource every start in startup contends for: ``session/new``
+        runs under ``G`` permits, so at most ``G`` starts make progress at any
+        moment and every other admitted start is a spawned process (dedicated
+        path) or a claimed slot holding nothing but a place in the gate's
+        queue. Time spent in that queue is not charged to the startup deadline
+        (the clock freezes at gate entry and restarts at acquisition --
+        ``_gate_wait_mark`` / ``_gate_exit_reset``), so the queue's length is
+        not what reaps a healthy start; what the bound decides is how much of
+        the running cap may sit in startup contending for ``G`` permits at
+        once. ``2G`` is the smallest value that never idles the gate -- one
+        round holding permits and one round already admitted to take them the
+        moment they free -- and admitting more buys no starts, since the gate
+        serves ``G`` per round however many are queued: it only lengthens the
+        queue and grows the population of admitted-but-idle starts. A
+        cap-derived term (``max(..., ceil(cap / 4))``, say) would do exactly
+        that: 16 in startup at a cap of 64 against a 2-permit gate is seven
+        rounds queued for two permits. The population the bound is checked
+        against (:meth:`_in_startup`) is the agents actually starting, plus
+        reservations not yet registered (:meth:`_startup_population`). Agents
+        parked at the spawn-approval prompt are NOT in it -- they start nothing
+        and must not block unrelated spawns -- and are instead metered through
+        the pump when their prompt resolves (:meth:`_admit_released_start`), so
+        "at most ``2G`` in startup" holds even when a bulk trust/yolo grant
+        releases them all at once.
+
+        There is deliberately NO config key for this value. ``2G`` is both the
+        floor and the ceiling of the useful range: fewer than ``2G`` idles the
+        gate between rounds (no next round already admitted when the current
+        one releases), and more than ``2G`` buys no starts -- the gate serves
+        ``G`` per round however many are queued behind it -- only a longer
+        queue of idle admitted starts. A knob could therefore only make the
+        system worse, and the operator's real lever on this bound already
+        exists: ``agent.session_start_concurrency`` sizes the gate, and the
+        bound tracks it.
+
+        Never above the effective running cap (a larger value could not bind)
+        and never below 1, so at a cap of ``0`` this returns ``1``: the running
+        cap, not this bound, is what pauses admission there.
+        """
+        cap = max(0, int(self._max_concurrent))
+        bound = _STARTUP_CAP_GATE_ROUNDS * int(self._session_start_concurrency)
+        return max(1, min(bound, cap))
+
+    def _note_startup_progress(self, info: SubagentInfo) -> None:
+        """Wake the spawn queue when *info* leaves startup without ending.
+
+        A runtime PID or a first provider stream takes *info* out of the
+        in-startup population, which may open a slot under :meth:`_startup_cap`
+        that no other edge announces: the slot-release drain fires only on a
+        terminal, and the pump does not poll. Called from ``_run_inner`` at
+        those two transitions -- at most twice per start -- and the pump
+        returns at once when nothing waits and re-checks every gate itself, so
+        a call that opens nothing is cheap. A pump failure is logged, never
+        raised: the run that just progressed is not the one at fault, and the
+        next terminal or arrival pumps again.
+        """
+        try:
+            self._drain_queue()
+        except Exception:
+            logger.debug("startup-progress queue pump failed for %s", info.id, exc_info=True)
+
     def set_cap_raise_listener(self, listener: Callable[[], object] | None) -> None:
         """Register the ONE hook a cap raise rings, or ``None`` to drop it.
 
@@ -4358,6 +4523,12 @@ class SubagentManager:
     def _drain_queue(self) -> None:
         return self._admission._drain_queue_impl()
 
+    async def _admit_released_start(self, info: SubagentInfo) -> bool:
+        return await self._admission._admit_released_start_impl(info)
+
+    def _release_admitted_start(self) -> str:
+        return self._admission._release_admitted_start_impl()
+
     async def _drain_queue_async(self) -> None:
         return await self._admission._drain_queue_async_impl()
 
@@ -4614,6 +4785,12 @@ class SubagentManager:
         self, info: SubagentInfo, session_key: str, agent: str
     ) -> "LLMProvider":
         return await self._run_events._create_shared_session_impl(info, session_key, agent)
+
+    def _gate_exit_reset(self, info: SubagentInfo) -> Callable[[float], None]:
+        return self._run_events._gate_exit_reset_impl(info)
+
+    def _gate_wait_mark(self, info: SubagentInfo) -> Callable[[], None]:
+        return self._run_events._gate_wait_mark_impl(info)
 
     # Facades for the session-start gate's late-adoption path;
     # implementations live in run.py.

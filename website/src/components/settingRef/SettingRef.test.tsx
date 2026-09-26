@@ -28,6 +28,24 @@ vi.mock('../commandPalette/settingsRegistry.gen', () => ({
       occurrence: 1,
       configKey: 'chat.default_model',
     },
+    {
+      id: 'chat.selectable-models',
+      label: 'Selectable Models',
+      tab: 'chat',
+      type: 'select',
+      occurrence: 1,
+      params: { sub: 'models' },
+      configKey: 'dashboard.model_picker_hidden_models',
+    },
+    {
+      id: 'channels.slack.bot-token',
+      label: 'Bot Token',
+      tab: 'channels',
+      type: 'text',
+      occurrence: 1,
+      params: { channel: 'slack' },
+      configKey: 'slack.bot_token',
+    },
   ],
 }))
 
@@ -61,6 +79,20 @@ describe('SettingRef component', () => {
     it('displays the configKey text', () => {
       const { container } = renderRef({ configKey: 'chat.default_model' })
       expect(container.textContent).toContain('chat.default_model')
+    })
+
+    it('carries the entry\'s params.sub as the second path segment', () => {
+      // Settings → Chat is a SubNav rail: without the page segment the rail
+      // opens its first page and the highlight never finds the control.
+      const { container } = renderRef({ configKey: 'dashboard.model_picker_hidden_models' })
+      expect(container.querySelector('a')!.getAttribute('href'))
+        .toBe('/settings/chat/models?highlight=key%3Adashboard.model_picker_hidden_models')
+    })
+
+    it('carries a legacy channel param as the second path segment', () => {
+      const { container } = renderRef({ configKey: 'slack.bot_token' })
+      expect(container.querySelector('a')!.getAttribute('href'))
+        .toBe('/settings/channels/slack?highlight=key%3Aslack.bot_token')
     })
   })
 

@@ -932,12 +932,16 @@ against sweep completeness, and are torn down at `close_all`.
   without it, absence from the live set is equally true of a `cron:` fire, a
   `taskrunner:{id}:task{n}` step or a `hook:` session that is running right now
   and never had a tab, so reaping on absence alone would end live work instead
-  of finished work. Two further guards apply to this axis only, and the probe
-  call one of them makes carries a third question the RSS recycle shares. It
-  consults the
+  of finished work. One further guard applies to this axis only, the live-set
+  re-assert below; the sub-agent probe is asked on BOTH axes, and the call
+  carries a third question the RSS recycle shares. The sweep consults the
   same `CleanupDeps.has_attached_subagents` probe the RSS recycle uses,
   fail-closed, because with session sharing on a parent's children run on its
-  runtime after its own turn ends and the busy semaphore cannot see them. That
+  runtime after its own turn ends and the busy semaphore cannot see them. The
+  idle clock reaches that probe as well as the orphan test does: a long
+  sub-agent run is exactly what lets a parent's `last_used` go stale, and an
+  idle expiry that skipped the probe would fire `on_session_expire` and reset
+  the runtime the children are still working on. That
   same wrapper answers a second question FIRST, and synchronously: whether a
   completion injection is in flight for the key
   (`CleanupDeps.has_pending_injection`, installed by the gateway over its
@@ -955,12 +959,26 @@ against sweep completeness, and are torn down at `close_all`.
   branches honour it: the axis that elected a session says nothing about whether
   a turn is committed to it, and the clock alone can elect a never-tabbed
   `cron:{job}` parent whose `last_used` went stale during the very sub-agent run
-  whose completion injection is in flight. For the idle branch that read is the
-  last one before its reset. The two branches that suspend on the sub-agent probe
-  -- the orphan branch and the RSS recycle -- read the counter ONCE MORE after
-  that probe, because it suspends and an injection starting inside its await is
-  invisible to any earlier read. On both, that re-read is the last statement
-  before `reset` and nothing between them suspends. Neither read is the atomic
+  whose completion injection is in flight. Every branch that resets suspends
+  on the sub-agent probe -- the sweep on both its axes and the RSS recycle --
+  so each reads the counter ONCE MORE after that probe, because an injection
+  starting inside its await is invisible to any earlier read. On the RSS
+  recycle that re-read is the last statement before `reset`. In the sweep it is
+  the first of four post-await re-judges, all synchronous and all asked about
+  the entry the scan carried out: the counter; then the incarnation, on both
+  axes (the key must still hold the session the sweep judged, because
+  `on_session_expire` consolidates the transcript ahead of `reset` and a
+  `reset` that declines on the mismatch afterwards does not undo a
+  consolidation already run over a newcomer's transcript -- and on the orphan
+  axis a departed incarnation loses its old slot-claim record only while the
+  key is still absent from the current live set; a reopened slot republishes a
+  fresh claim for its replacement, which the stale verdict must preserve);
+  then the semaphore (a turn that took it during the await is exactly as live
+  as one the scan skipped); then, on the idle axis only, the clock (a turn that
+  began AND finished inside the await released the semaphore again but bumped
+  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  ignores the clock and re-asserts against the live set instead, below).
+  Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates
   anything, so an injection beginning while that lock is contended is invisible
   to every read a caller took first. Both resetters therefore pass
@@ -974,17 +992,19 @@ against sweep completeness, and are torn down at `close_all`.
   than exempting the key: once the counter returns to zero the next sweep expires
   it, so the runtime this axis exists to release is not held for good by a window
   that has closed.
-  Every verdict this sweep reaches is about ONE incarnation, so on this axis the
+  Every verdict this sweep reaches is about ONE incarnation, so on BOTH axes the
   reset is pinned to it: the scan carries the session object out with its key and
   passes it as `reset(expect_session=...)`, which revalidates identity under the
-  registry lock and declines on a mismatch. Two awaits separate the scan from the
-  act, so the key can change hands in between -- a cron job firing again, a tab
-  reopened and a turn taken -- and a key-only reset would hand that newcomer a
-  verdict reached about its predecessor. The record restore on a declined reset
+  registry lock and declines on a mismatch. The probe suspends on either axis,
+  and the orphan axis adds the scan's lock release ahead of it, so the key can
+  change hands before the act -- a cron job firing again, a tab reopened and a
+  turn taken -- and a key-only reset would hand that newcomer a verdict reached
+  about its predecessor; on the idle axis it would shut down exactly the
+  replacement runtime. The record restore on a declined reset
   is conditioned on the same identity, which covers both reasons for a decline:
   a session that is merely busy is the one whose claim was released, so the claim
   goes back, while a key that changed hands must not have a claim invented for
-  its new holder. The idle axis keeps its long-standing key-only reset. And
+  its new holder. On the orphan axis
   the answer is then re-asserted against the current live set. That re-assert
   must be the LAST read of the live set before `reset`, which is why it sits
   after the probe rather than before it: two awaits separate the scan from the
@@ -992,6 +1012,20 @@ against sweep completeness, and are torn down at `close_all`.
   reopen in either window. Everything between the re-assert and `reset` is
   synchronous by requirement, so a check placed any earlier reopens the window
   it exists to close and a session the user has just resumed loses its runtime.
+  Fail-closed has one accepted residual: a probe that cannot answer keeps every
+  candidate it is asked about, on the idle sweep, the orphan axis and the RSS
+  recycle alike, so a probe broken system-wide holds every reap until it
+  recovers. That is the right answer for the sessions -- reaping on a probe
+  that cannot see the children is the hazard the guard exists to prevent. When
+  the probe RAISES, its visibility is a WARNING bounded by
+  `SessionCleanup.PROBE_FAILURE_WARN_INTERVAL_SECS` (at most one line per
+  interval across all keys, `CleanupState.probe_failure_warned_at`), with every
+  failure keeping its traceback at debug, so a persistent break stays visible
+  in the log without a line per candidate per tick. An unreadable task store
+  does not raise to this wrapper: `subagents_attached_async` absorbs it and
+  answers "attached" (`taskq_bridge.UNKNOWN_PENDING`), so that cause surfaces
+  only as the per-key "still has sub-agent work - left running" INFO line, not
+  as the bounded WARNING.
   While no live set has been published at all
   (`active_dashboard_slots is None`) the axis expires nothing, so a build with
   no dashboard keeps the idle timer as its only reaper. The policy is
@@ -2546,7 +2580,12 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 **API:**
 - `SessionManager.set_mirror_link(key, link)` / `clear_mirror_link(key)` /
   `get_mirror_link(key)` — persist/read the outbound `ChannelLink` (Slack routes
-  to `set_slack_link` so its reverse index stays intact).
+  to `set_slack_link` so its reverse index stays intact). The read synthesizes a
+  Slack mirror from the legacy `slack_thread_ts` / `slack_channel_id` fields only
+  when a thread is named: a threadless Slack row — the bucket `set_channel` stamps
+  on a channel session's first turn, which `clear_mirror_link` leaves behind — is
+  bookkeeping nobody can deliver through and reads as `None`, so no reader needs
+  its own copy of that rule.
 - `SessionManager.clear_mirror_links_at(link)` — value-keyed sweep: clears
   EVERY session whose mirror targets that exact non-Slack location and returns
   the cleared keys. The write counterpart of `find_mirror_sessions`, and the
@@ -2576,12 +2615,22 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   the slot's `linked_session_key` — the channel session its turns run on — is
   untouched, inbound keeps routing to it, and nothing about what session control
   or the work ledger decide for that slot changes. Those gates judge a channel-born
-  slot by `session_control.audience_is_owner`, whose one exemption is a 1:1 DM
+  slot by `session_control.owner_dm_refusal`, whose one exemption is a 1:1 DM
   whose only human is the configured owner (see
   [session-control](session-control.md)); a thread session is refused before and
   after either endpoint, and an owner DM is admitted before and after — a paused or
-  cleared origin mirror is still the same audience. There is no "detach from
-  channel" action: a channel conversation stays a channel conversation.
+  cleared origin mirror is still the same audience. "Cleared" is the store's word,
+  not an empty row: `clear_mirror_link` pops the `mirror` row and leaves the
+  namespaced bucket the first inbound turn's `set_channel` stamped into the legacy
+  `slack_channel_id` field, and `get_mirror_link` reads that threadless Slack row as
+  no mirror at the source (a row naming no thread is never synthesized into one),
+  so the predicate — and every other reader — sees `None`. The one dashboard action that DOES change the
+  verdict is `slack-link` on a channel-born slot: it binds the thread on the slot's
+  effective key — the channel session — beside the untouched origin mirror, and the
+  predicate reads that thread on its own (`get_slack_link`), because `get_mirror_link`
+  answers the `mirror` row alone when one exists; the owner DM is refused as
+  mirroring to a Slack thread until `slack-unlink` clears it. There is no "detach
+  from channel" action: a channel conversation stays a channel conversation.
 - **Three persisted pause markers, each keyed differently.** A mute must live and
   die with the binding the user muted, so the key follows what the flag is about:
   - `slack_paused` — the Slack thread. Cleared when the binding is REBOUND
@@ -3447,6 +3496,45 @@ lane slot and its runtime is still resident. `effective_caps` and
 Each computation samples `kirocrew.taskq.depth{state}`,
 `kirocrew.taskq.oldest_wait_secs`, `kirocrew.taskq.effective_cap{lane_kind}` and
 `kirocrew.taskq.pressure_reason{reason}` -- every attribute a closed-set value.
+
+**Refresh signal.** The verdict is not only computed on request. Every
+computation goes through `handlers/sessions.py::refresh_session_health` (the
+one owner of the payload cache and of the signal), which digests the verdict
+with `health_verdict_fingerprint` and, when the digest differs from the one last
+signalled, broadcasts the WS frame `session_health_changed` with the payload
+`{"ts": <wall clock>}` and nothing else -- no slot, no session key, no count, no
+classification. The frame says only THAT the verdict moved; a subscriber
+entitled to `GET /api/sessions/health` re-reads it, and a frontend-only app whose
+manifest does not list that path refreshes the surfaces it can already read
+instead of polling an endpoint that answers it with a denial. The digest
+excludes every age, timestamp and monotonic reading (a quiet resample is not a
+change) and folds everything else in BY IDENTITY, never only by count: each
+slot's classification, which slots are stalled, each waiting and recovering
+row's identity and state, the queue's `by_state` tallies, `effective_caps` and
+`degrade_reason` -- so one row leaving a state as another enters it is a change
+even though every count stands still. The first computation after process start
+seeds the baseline silently rather than firing a refresh at every subscriber on
+every gateway restart; a broadcast that fails leaves the digest uncommitted so
+the change is retried on the next computation. The frame rides the pre-existing
+`sessions` event declaration in `ws_event_scope._GLOBAL_EVENT_DECLARATIONS`
+(`events` and `api` are independent manifest fields, which is why the frame must
+stay data-free), and delivery is judged per frame by `ws_event_allowed` against
+the live scope. Because the verdict also moves with the clock (a turn crossing
+the stall threshold, a queue draining, a cap being cut), a WebSocket connection
+whose declaration set includes `sessions` runs a per-connection timer driver
+(`ws.py::_refresh_health_loop`) that calls `refresh_session_health` at connect
+and then every `_HEALTH_REFRESH_SECS` -- the handler's own cache TTL, so the call
+is TTL-gated and single-flighted and every declaring socket together costs at
+most one computation per interval. The first tick is at connect rather than
+after one interval because the first computation in a process is the silent
+baseline: a driver that slept first would let a verdict that moved during that
+sleep become the baseline and never signal it. A connection that declared
+nothing, or something unrelated, runs no driver, and a dashboard user (not
+declaration-gated, reads the endpoint directly) drives nothing either. The app SDK's event-declaration map
+(`website/src/app-sdk/index.ts`) lists `session_health_changed` under `sessions`
+so an app author sees which declaration the frame rides. Tests:
+`test/test_session_health_signal.py`.
+
 Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 `test/test_recovery_policy.py`, `test/test_recovery_ladder.py`,
 `test/test_recovery_l1_chat_runner.py`.

@@ -18,11 +18,12 @@ import ast
 import json
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from source_corpus import parsed_candidates, source_texts
+from source_corpus import iter_source_texts, parsed_candidates
 
 from kiro_crew import agent
 from kiro_crew.agent_files import (
@@ -54,36 +55,29 @@ def _pin_spec_permissions_cli(monkeypatch, which):
     monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
-# One xdist worker for the whole module: the four enumeration gates below share ONE read of
-# src/ (~1,550 files, 0.9 s and ~187 MB of text while it is warm), and under `--dist
-# loadgroup` an unmarked module is spread across workers -- so those four can land on four
-# workers, each paying the read again and each holding its own copy of the corpus at the
-# same time. Grouping keeps it single-copy per run; the copy itself is released at module
-# teardown by `conftest._release_source_corpus_after_module`.
+# One xdist worker for the whole module: the four enumeration gates below each stream
+# src/ (~1,700 files) through ``test/source_corpus.py``, which memoises only the file
+# list. Grouping keeps that list single-copy per run and the gates on one worker, so
+# their reads do not compete with three other workers re-walking the same tree.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_worker_agent")
 
 
-def _package_sources() -> tuple[tuple[Path, str], ...]:
-    """Every ``kiro_crew`` module except ``agent.py``, off the shared corpus read.
+def _package_sources() -> Iterator[tuple[Path, str]]:
+    """Every ``kiro_crew`` module except ``agent.py``, streamed off the shared corpus.
 
-    Four enumeration tests below reason over the package, and one traversal serves all of
-    them. A walk per test is thousands of small reads each -- seconds on Linux and far
-    worse on the Windows shards, whose job budget is 40 minutes for a quarter of a
-    100k-test suite. The rule-shaped assertions are what matter; repeating the traversal
-    is not part of them.
-
-    The sharing is ``test/source_corpus.py``'s and NOT an ``lru_cache`` of our own,
-    because the text of the ~1,550 modules under ``src/`` is ~115 MB of retained ``str``
-    and only the corpus helper's copy can be released: ``test/conftest.py``'s
-    ``_release_source_corpus_after_module`` calls ``_clear_caches()`` at module teardown,
-    but a second tuple of ours holding those same ``str`` objects would keep every one of
-    them alive for the rest of the xdist worker's life, paid by every later test that
-    worker runs. So this stays uncached -- rebuilding a tuple of ~1,550 references costs
-    nothing measurable -- and the ``agent.py`` exclusion stays HERE with the gates rather
-    than in the shared helper, because which files a gate polices is that gate's contract
-    (and ``agent.py``, defining every name these gates hunt for, would match them all).
+    Four enumeration tests below reason over the package. Streamed, not collected: the
+    text of the ~1,700 modules under ``src/`` is ~130 MB of ``str`` (a quarter of the
+    files hold an emoji, which makes CPython store the whole file at four bytes per code
+    point), and a tuple holding all of it was this module's entire +229 MiB high-water
+    mark. ``iter_source_texts`` keeps one file live at a time, and the rule-shaped
+    assertions below only ever look at one file at a time anyway. The ``agent.py``
+    exclusion stays HERE with the gates rather than in the shared helper, because which
+    files a gate polices is that gate's contract (and ``agent.py``, defining every name
+    these gates hunt for, would match them all).
     """
-    return tuple((path, text) for path, text in source_texts() if path.name != "agent.py")
+    for path, text in iter_source_texts():
+        if path.name != "agent.py":
+            yield path, text
 
 
 @pytest.fixture(autouse=True)

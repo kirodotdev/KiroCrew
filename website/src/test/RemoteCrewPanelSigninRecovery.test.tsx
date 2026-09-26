@@ -106,7 +106,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done' as const,
-    detail: 'Added to Your crews. Finish the Kiro sign-in before connecting.',
+    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 const UNSIGNED_JOB = {
@@ -190,7 +190,7 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
   })
 
   it('marks the held connect step as waiting rather than done', async () => {
-    // A green tick beside "Finish the Kiro sign-in before connecting" reads as
+    // A green tick beside "Sign in to Kiro on the crew" reads as
     // done and not-done at the same time.
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
@@ -489,12 +489,12 @@ describe('Your crews — an unsigned cloud crew', () => {
     )
   })
 
-  it('holds Connect back and says why', async () => {
-    // Connecting opens a remote dashboard whose chats all fail, and whose fix
-    // needs a terminal it does not have.
+  it('still offers Connect, and flags the missing sign-in', async () => {
+    // The user can sign in on the crew itself once connected, so the missing
+    // sign-in is shown but never holds Connect back.
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByRole('button', { name: /Connect after sign-in/i })).toBeDisabled()
-    expect(screen.queryByRole('button', { name: /^Connect$/i })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /Connect after sign-in/i })).not.toBeInTheDocument()
     expect(screen.getByText(/Needs sign-in/i)).toBeInTheDocument()
   })
 

@@ -152,7 +152,13 @@ Guard rails
   wants, and that run's result is discarded by the branch moving on, while holding
   it keeps it alive in a ``cancel-in-progress: false`` concurrency group where it
   evicts every later commit's run (``supersession_clears_hold`` carries the measured
-  incident). Such a run is cancelled, and the rule above still declines to re-run it.
+  incident). At attempt 1 such a run is cancelled, and the rule above still declines
+  to re-run it. Past attempt 1 it is NOT cancelled either -- a later attempt may be
+  somebody's own ``gh run rerun``, and cancelling a superseded run is never followed
+  by a re-run, so the cancel would discard their work -- and the refusal is a FAILED
+  outcome (``rerun-attempt-superseded-left-untouched``) that names the run and the
+  ``gh run cancel`` a human must type to free the group
+  (``_rerun_attempt_may_be_cancelled``).
 * A run whose head repository is a fork is reported but never touched: forks
   are never routed to CodeBuild, and the workflow token could not re-run them.
 * A run at ``Policy.max_attempt`` (3) or beyond is reported but never touched. Every
@@ -481,6 +487,18 @@ OUTCOME_RERUN_DEFERRED = "rerun-deferred-out-of-time"
 OUTCOME_RERUN_REFUSED = "rerun-refused"
 OUTCOME_NOT_ATTEMPTED = "not-attempted-cap-reached"
 OUTCOME_EVIDENCE_REREAD_DEFERRED = "deferred-evidence-reread-failed"
+# An orphan past attempt 1 that a newer push supersedes (or whose supersession
+# cannot be told), left uncancelled: a later attempt may be somebody's own `gh run
+# rerun`, and cancelling a superseded run is never followed by a re-run, so the
+# cancel would discard their work with nothing left to show they did it. A FAILED
+# outcome: the run keeps its concurrency group's running slot, and on `main`
+# (`cancel-in-progress: false`) that evicts every later push's run from the
+# pending slot -- the measured 6-hour incident in `supersession_clears_hold`'s
+# docstring. The watchdog has decided it will never free that slot itself, so a
+# human must, and a `::warning::` inside a green scheduled run tells nobody; the
+# tick goes red and names the `gh run cancel` to type, for the same reason
+# `OUTCOME_HUMAN_REQUIRED` is a failed outcome.
+OUTCOME_RERUN_ATTEMPT_LEFT = "rerun-attempt-superseded-left-untouched"
 # A stuck run in a workflow this script will not heal, so only a human can move
 # it. A failed outcome: most of the watched set is heal-exempt,
 # `main-ratchet-audit.yml` among them, and it was one of the three workflows in
@@ -525,6 +543,7 @@ FAILED_OUTCOMES = frozenset(
         OUTCOME_LISTING_TRUNCATED,
         OUTCOME_HEAL_SAFETY_UNKNOWN,
         OUTCOME_HUMAN_REQUIRED,
+        OUTCOME_RERUN_ATTEMPT_LEFT,
     }
 )
 
@@ -1637,6 +1656,15 @@ def supersession_clears_hold(
 
     A lookup that cannot answer leaves the hold standing: cancelling needs
     supersession ESTABLISHED, never assumed from a failed read.
+
+    Releasing the hold does not by itself cancel anything. The run stays an orphan
+    and reaches ``heal_runs``, which for any attempt past the first asks
+    ``_rerun_attempt_may_be_cancelled`` immediately before its cancel: a
+    superseded later attempt may be somebody's own ``gh run rerun``, so it is left
+    untouched under a FAILED outcome that names the run. That guard sits at the
+    cancel rather than here so that a held run and an unheld one end the same
+    way -- reported red, not held green with no outcome -- and so the answer is
+    given once, where the irreversible step is.
     """
     if verdict.event != "push" or verdict.head_repo.lower() != policy.repo.lower():
         return False
@@ -1652,9 +1680,54 @@ def supersession_clears_hold(
     log(
         f"{_label(verdict)}: a newer push supersedes it, so the fleet hold has no result "
         f"to protect and is not applied; freeing its concurrency group is what a cancel "
-        f"would then buy, and the re-run check still declines to re-run it"
+        f"would then buy, the re-run check still declines to re-run it, and past attempt 1 "
+        f"the heal path declines even the cancel"
     )
     return True
+
+
+def _rerun_attempt_may_be_cancelled(
+    api: Api, policy: Policy, verdict: RunVerdict, log: Callable[[str], None]
+) -> bool:
+    """Whether cancelling an orphan past attempt 1 can still end in a re-run.
+
+    Cancelling a superseded orphan is never followed by a re-run: ``_rerun``
+    declines a superseded run, and the ``superseded-before-cancel`` outcome is not
+    a failed one. For attempt 1 that is the intended trade -- nobody re-ran it, so
+    nothing anyone did is lost, and the cancel frees its concurrency group. A later
+    attempt may BE somebody's ``gh run rerun`` of the stuck run, the operator
+    response this script's own logs ask for, and cancelling it ends in silent loss:
+    the recovery pass will not restore it either, because ``classify_cancelled_run``
+    classifies a superseded cancelled run out of ``CANCELLED_ORPHAN``. So the
+    question is asked HERE, immediately before the cancel and on every route to it
+    (a fleet hold released by ``supersession_clears_hold`` lands here too): a run
+    that is still its branch's newest is cancelled and re-run like any orphan; a
+    superseded one, or one whose supersession cannot be told, is left untouched --
+    and reported as a FAILED outcome, because the run then holds its concurrency
+    group until a human frees it, and nothing else will tell them.
+    """
+    try:
+        if is_newest_for_branch(api, policy.repo, verdict):
+            return True
+    except LookupInconclusive as exc:
+        log(
+            f"::error::{_label(verdict)}: left untouched, because this is attempt "
+            f"{verdict.run_attempt} and whether a newer push supersedes it cannot be told "
+            f"({exc}); cancelling a re-run attempt that turns out superseded would discard "
+            f"somebody's work irrecoverably. It holds its concurrency group until a human "
+            f"decides: `gh run cancel {verdict.run_id}` if the branch has moved on, "
+            f"`gh run rerun {verdict.run_id}` if its result is still wanted."
+        )
+        return False
+    log(
+        f"::error::{_label(verdict)}: left untouched, because this is attempt "
+        f"{verdict.run_attempt} and a newer push supersedes it: the cancel would not be "
+        f"followed by a re-run, and a re-run attempt may be somebody's own, so cancelling "
+        f"it could discard their work irrecoverably. It holds its concurrency group, and "
+        f"every later push's run is evicted behind it, until a human frees it: "
+        f"`gh run cancel {verdict.run_id}`."
+    )
+    return False
 
 
 def _fmt_delta(delta: timedelta) -> str:
@@ -1770,6 +1843,11 @@ def heal_runs(
             if hold_outcome is not None:
                 outcomes[verdict.run_id] = hold_outcome
             log(f"::warning::{_label(verdict)}: {verdict.detail} (re-checked before the cancel)")
+            continue
+        if verdict.run_attempt != 1 and not _rerun_attempt_may_be_cancelled(
+            api, policy, verdict, log
+        ):
+            outcomes[verdict.run_id] = OUTCOME_RERUN_ATTEMPT_LEFT
             continue
         if tick.remaining() < RERUN_RESERVE_SECONDS:
             # A cancel is only worth posting if its re-run can still be started

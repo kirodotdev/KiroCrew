@@ -547,6 +547,92 @@ async def test_switch_variant_skips_the_write_when_the_slot_is_recreated(state) 
 
 
 @pytest.mark.asyncio
+async def test_edit_resend_pins_the_truncating_write_to_its_transcript(state) -> None:
+    """Edit-resend carries BOTH axes into the write, like its two siblings.
+
+    Its loop-side checks run before the save is dispatched, and the event loop
+    is free from there until the worker commits, so neither of them decides the
+    commit. ``expected_history_key`` alone leaves the same-name case open: a
+    recreate resuming the same transcript keeps the key identical.
+    """
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("user", "deploy alpha", ts="t1")
+    slot.append("assistant", "deployed alpha", ts="t2")
+    slot.drain()
+
+    saved = AsyncMock(return_value=True)
+    with (
+        patch("kiro_crew.dashboard.chat_regenerate.save_slot_off_loop", new=saved),
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
+    ):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 200
+            await asyncio.sleep(0)
+
+    assert saved.await_count == 1
+    assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
+    assert saved.await_args.kwargs["expected_slot_name"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_skips_the_write_when_the_slot_is_recreated(state) -> None:
+    """A same-name recreate landing inside the locked write suppresses the rewrite.
+
+    The replacement is bound to the SAME transcript key, which is what a recreate
+    resuming the same session produces, so the routing pin waves it through and
+    only the object-identity recheck at the commit boundary refuses. The
+    truncated window must not reach the transcript the replacement now holds, and
+    the edited prompt must not be dispatched onto the slot being torn down.
+    """
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("user", "keep-me-1", ts="t1")
+    slot.append("assistant", "keep-me-2", ts="t2")
+    slot.append("user", "keep-me-3", ts="t3")
+    slot.append("assistant", "keep-me-4", ts="t4")
+    slot.drain()
+    replacement = state.get_or_create_slot("s1b", linked_session_key="orig:key")
+
+    real_status = state.conversation_log.get_metadata_status
+
+    def _swap_inside_the_locked_write(key):
+        # Runs inside the save's ``_locked`` region, before the identity
+        # recheck -- the window a recreate lands in.
+        if state._slots.get("s1") is slot:
+            state._slots["s1"] = replacement
+        return real_status(key)
+
+    with (
+        patch.object(
+            state.conversation_log,
+            "get_metadata_status",
+            side_effect=_swap_inside_the_locked_write,
+        ),
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()) as run,
+    ):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "edit_resend_save_failed"
+            await asyncio.sleep(0)
+
+    assert state.conversation_log.get_metadata("orig:key") == {}
+    assert run.await_count == 0
+    # Nothing was mutated on the live slot either: the refusal happens before
+    # the commit, so the original window is intact for a retry.
+    assert [m["content"] for m in slot.messages] == [
+        "keep-me-1",
+        "keep-me-2",
+        "keep-me-3",
+        "keep-me-4",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_edit_resend_by_ts_truncates_and_resends(state) -> None:
     slot = state.get_or_create_slot("s1")
     slot.append("user", "deploy alpha", ts="t1")

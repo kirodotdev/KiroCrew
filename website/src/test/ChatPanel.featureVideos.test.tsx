@@ -10,6 +10,7 @@
  * download-disabled gate and the in-flight gate are the two places where the
  * wrong answer puts a button in front of the user that cannot do anything.
  */
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -40,8 +41,9 @@ const BASE_STATUS = {
   downloading: null as string | null,
 }
 
-const { featureVideoStatusMock, featureVideoFetchAllMock } = vi.hoisted(() => ({
+const { featureVideoStatusMock, featureVideoFetchAllMock, tipsStatusMock } = vi.hoisted(() => ({
   featureVideoStatusMock: vi.fn(),
+  tipsStatusMock: vi.fn(),
   featureVideoFetchAllMock: vi.fn(),
 }))
 
@@ -56,7 +58,7 @@ vi.mock('../api/client', () => ({
     updateDashboardConfig: () => Promise.resolve({}),
     updateVoiceConfig: () => Promise.resolve({}),
     updateSttConfig: () => Promise.resolve({}),
-    tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),
+    tipsStatus: tipsStatusMock,
     tipsFeedback: () => Promise.resolve({ ok: true }),
     featureVideoStatus: featureVideoStatusMock,
     featureVideoFetchAll: featureVideoFetchAllMock,
@@ -72,9 +74,9 @@ import { Provider } from 'react-redux'
 // not the app singleton: a shared store would carry `activeSlot` across suites.
 import { createTestStore } from './helpers'
 
-function wrap(ui: React.ReactElement, store = createTestStore()) {
+function wrap(ui: React.ReactElement, store = createTestStore(), sub = 'discovery') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
+  return render(<MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}><Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider></MemoryRouter>)
 }
 
 const statusLine = () => screen.queryByTestId('feature-video-status')
@@ -102,6 +104,8 @@ beforeEach(() => {
   featureVideoStatusMock.mockResolvedValue({ ...BASE_STATUS })
   featureVideoFetchAllMock.mockReset()
   featureVideoFetchAllMock.mockResolvedValue({ ok: true })
+  tipsStatusMock.mockReset()
+  tipsStatusMock.mockResolvedValue({ enabled_config: true, opted_out: false })
 })
 
 describe('ChatPanel — the feature-video cache readout', () => {
@@ -252,5 +256,32 @@ describe('ChatPanel — downloading every clip now', () => {
     await waitFor(() => expect(screen.getByText(
       i18nT('pages.settings.chatPanel.failed_to_start_feature_video_download'),
     )).toBeInTheDocument())
+  })
+})
+
+describe('ChatPanel — the Discovery rail page', () => {
+  const tipsOption = () => screen.queryByRole('option', { name: i18nT('pages.settings.chatPanel.discovery') })
+
+  it('drops the page when tips are off by config and there is no video row', async () => {
+    tipsStatusMock.mockResolvedValue({ enabled_config: false, opted_out: false })
+    featureVideoStatusMock.mockResolvedValue({ ...BASE_STATUS, enabled: false })
+    wrap(<ChatPanel />, createTestStore(), 'transcript')
+    await statusSettled()
+    await waitFor(() => expect(tipsStatusMock).toHaveBeenCalled())
+    await waitFor(() => expect(tipsOption()).toBeNull())
+  })
+
+  it('keeps the page while the video row still has something to show', async () => {
+    tipsStatusMock.mockResolvedValue({ enabled_config: false, opted_out: false })
+    wrap(<ChatPanel />, createTestStore(), 'transcript')
+    await statusSettled()
+    expect(await screen.findByRole('option', { name: i18nT('pages.settings.chatPanel.discovery') })).toBeTruthy()
+  })
+
+  it('keeps the page when tips can be toggled', async () => {
+    featureVideoStatusMock.mockResolvedValue({ ...BASE_STATUS, enabled: false })
+    wrap(<ChatPanel />, createTestStore(), 'transcript')
+    await statusSettled()
+    expect(await screen.findByRole('option', { name: i18nT('pages.settings.chatPanel.discovery') })).toBeTruthy()
   })
 })

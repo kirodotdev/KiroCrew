@@ -30,7 +30,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -84,8 +84,24 @@ def _request(body: object = None, *, query: dict[str, str] | None = None) -> Mag
     req.query = dict(query or {})
     state = MagicMock()
     state._background_tasks = set()
+    state.owner_id = ""  # no owner configured: the local bootstrap subject is the owner
     req.app = {"state": state}
+    _as_owner(req)
     return req
+
+
+def _as_owner(req: MagicMock) -> None:
+    """Give a mock request the dashboard owner's claims, leaving every other key as-is.
+
+    ``POST /api/update`` is owner-gated, so the dashboard-user request these tests
+    model carries ``app == ""`` and the owner's subject: ``state.owner_id`` when
+    one is configured, else the signed local bootstrap subject.
+    """
+    owner = str(getattr(req.app["state"], "owner_id", "") or "") or "local-app"
+    claims = {"app": "", "user": owner}
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key] if key in claims else DEFAULT
+    req.get.side_effect = lambda key, *default: claims[key] if key in claims else DEFAULT
 
 
 class _FakeProc:

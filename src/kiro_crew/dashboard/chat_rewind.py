@@ -758,6 +758,18 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            # Both axes are pinned INTO the write, because the commit boundary is
+            # the only place either can be decided. ``expected_history_key``
+            # catches a RENAMED replacement; a same-name close-and-recreate
+            # resumes the same transcript and keeps that key identical, so it
+            # slips past. ``expected_slot_name`` carries this slot's map key in,
+            # where ``state._slots[name]`` is re-read inside the transcript lock
+            # with no await before the write: a map holding a different slot
+            # object refuses the save, nothing written. The fence read above is
+            # not a substitute -- it answers whether a retraction has STARTED,
+            # while this answers whether one has already completed and republished
+            # the name. A refusal returns ``False`` and reaches the 503 below with
+            # the prepared state never committed.
             save_task = asyncio.ensure_future(
                 asyncio.to_thread(
                     _save_slot_to_history,
@@ -766,6 +778,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     msgs_snapshot,
                     expected_history_key=expected_history_key,
                     expected_disk_older_count=pre_await_disk_older_count,
+                    expected_slot_name=name,
                 )
             )
             # This is the one truncating write that does not go through

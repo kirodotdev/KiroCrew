@@ -751,10 +751,10 @@ def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
     Three paths confirm one: the retry's own wait, its already-signed-in answer,
     and the dashboard's re-probe of a preserved code. Setting ``signin_detected``
     alone leaves the rest of the job saying the opposite -- an "Interrupted"
-    error from a restart, a connect step still reading "Finish the Kiro sign-in
-    before connecting." A card that says signed
-    in and not signed in at once is the state this feature exists to remove, so
-    the normalisation lives in one place.
+    error from a restart, a connect step still reading "Sign in to Kiro on the
+    crew after you connect." A card that says signed in and not signed in at
+    once is the state this feature exists to remove, so the normalisation lives
+    in one place.
     """
     job.signin_detected = True
     job.signin = None
@@ -1066,7 +1066,7 @@ def run_launch(
             s.detail = (
                 "Added to Your crews."
                 if job.signin_detected
-                else "Added to Your crews. Finish the Kiro sign-in before connecting."
+                else "Added to Your crews. Sign in to Kiro on the crew after you connect."
             )
             store.save(job)
 

@@ -35,6 +35,31 @@ from kiro_crew.subagent import SpawnApprovalUnreachable, SubagentManager
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built in a test.
+
+    Construction opens the durable task queue (``tasks/tasks.db``: a SQLite
+    connection and its writer thread); ``cancel_all`` never touches it, so each
+    ``_manager`` here leaked the connection's three descriptors until the
+    manager happened to be collected. Same shape as
+    ``test_spawn_reasoning_effort``: track every instance, release at teardown.
+    """
+    created: list[SubagentManager] = []
+    orig_init = SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            mgr.close()
+
+
 # --------------------------------------------------------------------------
 # Manager-level doubles (same posture as test_subagent_spawn_approval_parked_6484)
 # --------------------------------------------------------------------------

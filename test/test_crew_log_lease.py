@@ -41,18 +41,9 @@ CHILD_TIMEOUT = 60.0
 # Windows is skipped for the same reason the real-crash suite is: the property
 # asserted by the subprocess tests is the kernel releasing a lock when a process
 # ends, and that is asserted on the platforms whose lock semantics this suite can
-# reason about. macOS is skipped as the same bisect step the real-crash suite
-# documents -- a shard running spawned children there is being isolated from an
-# unrelated provisioning race. That darwin half is SCOPED to
-# kirodotdev/KiroCrew#10704, which owns removing it: cross-process ownership is
-# asserted nowhere else against a second process, so an expiry-free skip would mean
-# a macOS regression in it has no test that would catch it.
+# reason about.
 needs_real_processes = pytest.mark.skipif(
-    sys.platform in ("win32", "darwin"),
-    reason=(
-        "win32: lock semantics differ; "
-        "darwin: bisecting shard interference, tracked in kirodotdev/KiroCrew#10704"
-    ),
+    sys.platform == "win32", reason="win32: lock semantics differ"
 )
 locked_lease_swap_unavailable = pytest.mark.skipif(
     sys.platform == "win32",

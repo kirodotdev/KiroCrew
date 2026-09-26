@@ -44,6 +44,23 @@ def _without_extended_prefix(target: str) -> str:
     return target
 
 
+@pytest.fixture(autouse=True)
+def _cwd_is_the_scratch_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every test here with the process cwd inside its own ``tmp_path``.
+
+    The clones these tests drive are scratch repositories under ``tmp_path``, and the
+    product's git helpers (``backend/commit._git``, ``spine/driver._git``,
+    ``spine/proposer._git``, ``spine/gate._changed_paths``, ``spine/scope.scoped_relpaths``
+    and the ``git apply`` calls beside them) address that clone with ``-C`` and pass no
+    ``cwd``: each of those ~100 spawns per run inherits the process cwd. By default that
+    is the pytest worker's cwd -- THIS checkout -- so a helper handed the wrong path, or a
+    git that falls back to the cwd, would read or write the developer's own repository.
+    The tests' own ``subprocess.run`` calls already pass ``cwd=``; this pins the one
+    default they cannot reach. ``monkeypatch.chdir`` restores the cwd at teardown.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 class TestMetricDirectionIsPlumbed:
     """The keeper accepts ``direction`` — but a parameter nobody passes is dead code."""
 
@@ -2254,31 +2271,20 @@ class TestTheStoredPushDestinationIsValidated:
     """
 
     @pytest.fixture(autouse=True)
-    def _public_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Resolve every hostname to a fixed public address.
+    def _public_dns(self, _public_dns: None) -> None:
+        """Every case here takes the tests-conftest ``_public_dns`` pin.
 
         ``resolve_origin_url``'s identity-pinning step re-runs ``validate_target_url``,
-        whose ``_host_is_blocked`` SSRF check does a LIVE ``socket.getaddrinfo`` resolve
-        and fails CLOSED on any resolver error. On a transient runner DNS hiccup
-        ``github.com`` read as blocked and a legitimate remote resolved to ``""``,
-        flaking the legitimate-remote cases in CI; the foreign-remote cases
-        short-circuit on the allowlist before DNS and cannot flake, but the pin covers
-        the whole class so no case here ever reaches a resolver. These tests are about
-        URL/identity validation, not address screening — the address decision has its
-        own tests below — so resolution is stubbed, same shape as the ``public_dns``
-        fixture in ``test/test_meetings_providers.py``. The patch swaps the shared
-        ``socket`` module's ``getaddrinfo`` for the whole process while a test runs
-        (``clone_setup.socket`` IS that module; monkeypatch restores it at teardown);
-        these tests do no other network I/O, so do not copy this fixture into ones
-        that do. The fail-closed production behaviour is deliberately untouched: it is
-        correct for a real DNS failure; the defect was a unit test exercising the real
-        resolver.
+        which (1) does a LIVE ``socket.getaddrinfo`` resolve that fails CLOSED on a
+        runner DNS hiccup, and (2) shells out to ``gh config get git_protocol`` to pick
+        a clone transport. An earlier copy of this fixture re-implemented only (1), so
+        the four network-remote cases below ran the developer's REAL ``gh`` -- an
+        authenticated CLI, spawned with the worker's cwd inherited -- on every run.
+        The conftest fixture pins both seams (``_gh_prefers_ssh`` to https); this
+        override exists only to make it autouse for the class, because the foreign-
+        remote cases short-circuit on the allowlist before either seam and a case
+        that forgets to request it would flake or spawn silently.
         """
-        monkeypatch.setattr(
-            clone_setup.socket,
-            "getaddrinfo",
-            lambda *_a, **_kw: [(2, 1, 6, "", ("93.184.216.34", 443))],
-        )
 
     @pytest.mark.parametrize(
         "url",

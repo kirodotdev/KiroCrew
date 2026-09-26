@@ -330,7 +330,8 @@ async def test_maintenance_quiesce_wakes_a_firing_remove_waiter(tmp_path, monkey
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             assert not timer.done()
-            assert await asyncio.wait_for(view.deactivate_and_wait(loop.id), 1)
+            # remove() offloads an fsync persist; loaded Windows runners exceed 1 s.
+            assert await asyncio.wait_for(view.deactivate_and_wait(loop.id), 10)
             assert timer.done()
             assert loop.active is False
             await view.remove(loop.id)

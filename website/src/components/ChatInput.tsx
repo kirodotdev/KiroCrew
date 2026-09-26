@@ -806,6 +806,19 @@ const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
  *  effect on every render (a fresh [] literal changes deps each time). */
 const NO_DIRS: string[] = []
 
+/** Staged attachments and folder references above the composer.
+ *
+ *  Every tile is a `role="group"` named by its FULL path. `title` shows that
+ *  path on pointer hover only -- no browser opens a native tooltip on keyboard
+ *  focus -- and a tile's visible text is the short label, so without the group
+ *  name the path reaches nobody using assistive technology. A group's name IS
+ *  announced when focus enters it, which is the reliable case and is what these
+ *  tiles have: each one holds a focusable button.
+ *
+ *  The name also tells the per-tile controls apart: their labels are bare verbs
+ *  ("Remove", "Remove folder"), so with several files staged a screen reader
+ *  announces each one inside its own file's group instead of a row of identical
+ *  buttons. */
 function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir, rootRef }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void; rootRef?: (node: HTMLDivElement | null) => void }) {
   const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
   // Chips are added and removed while the strip stays mounted (a paste, a
@@ -829,7 +842,7 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
         const resize = resizedInfo?.[path]
         return (
-          <div key={path} className="group/preview shrink-0 flex flex-col items-start gap-0.5" title={path}>
+          <div key={path} role="group" aria-label={path} className="group/preview shrink-0 flex flex-col items-start gap-0.5" title={path}>
             {/* The corner controls anchor to the IMAGE, not to the chip: the chip
                 is as wide as the wider of tile and resize pill, so a locale
                 whose pill is wider than the 64px tile (de: 104px pill) would
@@ -875,7 +888,7 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
         )
       })}
       {nonImgs.map(path => (
-        <div key={path} className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text">
+        <div key={path} role="group" aria-label={path} title={path} className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text">
           <span>{path.split('/').pop()}</span>
           {onRemove && (
             <button className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')} aria-label={i18nT('components.chatInput.remove')}><X size={12} /></button>
@@ -896,6 +909,8 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
         <div
           key={path}
           data-dir-chip=""
+          role="group"
+          aria-label={path}
           title={path}
           className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text"
         >

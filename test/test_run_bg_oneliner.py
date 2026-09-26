@@ -139,6 +139,29 @@ async def test_accumulates_text_and_sets_model_and_destroys():
 
 
 @pytest.mark.asyncio
+async def test_image_paths_in_the_prompt_are_not_sent_as_attachments(tmp_path):
+    """A one-liner quotes session history; a pasted screenshot's path in it must
+    reach the builder as the history marker, never as a readable path it would
+    inline as an image block (a text-only model rejects the whole request)."""
+    from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER
+
+    shot = tmp_path / "pasted-image-1.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sent: list[str] = []
+
+    class _Capturing(_FakeSession):
+        async def prompt(self, prompt):
+            sent.append(prompt)
+            async for event in super().prompt(prompt):
+                yield event
+
+    sess = _Capturing([SimpleNamespace(kind=EVENT_COMPLETE, text="")])
+    await run_bg_oneliner(_FakeSessions(sess), f"Summarize.\nuser: look at {shot} and `{shot}`")
+
+    assert sent == [f"Summarize.\nuser: look at {STRIPPED_IMAGE_MARKER} and `{shot}`"]
+
+
+@pytest.mark.asyncio
 async def test_auto_model_is_passed_to_set_model_for_wire_resolution():
     """``model="auto"`` IS forwarded to set_model. The real wire chokepoint
     (AcpSessionHandle.set_model -> resolve_usable_model) turns it into a usable

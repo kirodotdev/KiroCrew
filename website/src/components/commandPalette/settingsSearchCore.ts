@@ -98,6 +98,10 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
 ])
 
+/** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`
+ *  then self-heals to the first group -- so an offered hit would land without its control. */
+export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
+
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
   /**
@@ -107,6 +111,11 @@ export interface SettingsSearchGovernance {
    * withholds the row.
    */
   decisionsEnabled: boolean
+  /**
+   * Whether the Feature Tips entry may be offered. Same shape: true unless the
+   * `['tipsStatus']` read SUCCEEDED and said `enabled_config === false`.
+   */
+  tipsEnabled: boolean
 }
 
 /**
@@ -128,6 +137,7 @@ export function settingEntryOffered(
   entry: SettingEntry,
   governance: SettingsSearchGovernance,
 ): boolean {
+  if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

@@ -248,6 +248,7 @@ import {
   subscribeChatHandoff,
 } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
+import { MemoryModeChip, type MemoryMode } from '../components/MemoryModeChip'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
@@ -4134,7 +4135,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // no settings route at all, so on both surfaces the affordance is omitted
   // rather than pointed at a page that does not carry the setting.
   const openDefaultModelSetting = useCallback(() => {
-    navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
+    navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID }))
   }, [navigate])
   // The Kiro sign-in card (an `auth_required` error row's fix) lives on the
   // full dashboard's Developer > Agent Backend tab, under the switch that
@@ -5725,7 +5726,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
+              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -6545,6 +6546,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </button>
   )
 
+  // Unchanged from the inline WelcomeView handler; shared with the composer memory chip.
+  const switchMemoryMode = async (newMode: MemoryMode) => {
+    if (!activeSlot) return
+    // Create-first-then-delete: deleting the active slot first
+    // would make deleteSlot jump focus to a sibling. Creating
+    // first keeps the new slot active, so the delete skips the
+    // sibling navigation. Carry agent/project/folder/color so
+    // the recreated slot keeps its identity and placement.
+    const old = currentSlot
+    const opts = {
+      agent: old?.agent || defaultAgent || undefined,
+      model: old?.model || undefined,
+      mode,
+      memory_mode: newMode,
+      folder_id: old?.folder_id ?? null,
+      color_index: old?.color_index ?? null,
+      color_hex: old?.color_hex ?? null,
+      project: old?.project ?? null,
+      instanceId: old?.instance_id || undefined,
+    }
+    try { await dispatch(createSlot(opts)).unwrap() } catch (error) {
+      showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
+      return
+    }
+    try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch (error) {
+      showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
+    }
+  }
+  // The non-orchestrator welcome screen puts its memory chip directly above the composer.
+  const showComposerMemoryChip = isWelcomeState && (currentSlot?.mode || mode) !== 'orchestrator'
+
   return (
     <RowDisclosureProvider resetKey={activeSlot}>
     <TagPopoverProvider>
@@ -7116,28 +7148,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   mode={currentSlot?.mode || mode}
                   setInput={setInput}
                   memoryMode={currentSlot?.memory_mode ?? 'persistent'}
-                  onSwitchMode={async (newMode) => {
-                    if (!activeSlot) return
-                    // Create-first-then-delete: deleting the active slot first
-                    // would make deleteSlot jump focus to a sibling. Creating
-                    // first keeps the new slot active, so the delete skips the
-                    // sibling navigation. Carry agent/project/folder/color so
-                    // the recreated slot keeps its identity and placement.
-                    const old = currentSlot
-                    const opts = {
-                      agent: old?.agent || defaultAgent || undefined,
-                      model: old?.model || undefined,
-                      mode,
-                      memory_mode: newMode,
-                      folder_id: old?.folder_id ?? null,
-                      color_index: old?.color_index ?? null,
-                      color_hex: old?.color_hex ?? null,
-                      project: old?.project ?? null,
-                      instanceId: old?.instance_id || undefined,
-                    }
-                    try { await dispatch(createSlot(opts)).unwrap() } catch { return }
-                    try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
-                  }}
+                  onSwitchMode={switchMemoryMode}
                 />
               </motion.div>
             ) : (
@@ -7551,6 +7562,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     onStartInWorktree={followupStartInWorktree}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
+                </div>
+              )}
+              {showComposerMemoryChip && (
+                // Opaque backdrop: at phone widths the welcome cards scroll under this row.
+                <div className="relative z-10 flex justify-center px-4 pt-2 pb-2 bg-bg" data-testid="composer-memory-chip">
+                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} />
                 </div>
               )}
               <Composer
@@ -7967,11 +7984,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 effortLevelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
-                  navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
+                  navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))
                 }}
                 onSetDefault={() => {
                   setModelDropdown(false)
-                  navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
+                  navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID }))
                 }}
                 agentName={_modelPinAgent}
                 pinModelName={_modelPinActive || 'auto'}

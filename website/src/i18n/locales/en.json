@@ -8407,6 +8407,11 @@
       },
       "chatPanel": {
         "about_you": "About You",
+        "advanced": "Advanced",
+        "discovery": "Discovery",
+        "rail_label": "Chat settings",
+        "side_panel": "Side panel",
+        "transcript": "Transcript",
         "answer_only_details_on_request": "Answer only — plainest words, details on request",
         "auto_add_documents": "Auto-Add Documents",
         "auto_add_saved_artifacts": "Auto-Add Saved Artifacts",
@@ -8475,7 +8480,6 @@
         "link_patterns_unsafe_pattern": "This pattern is too complex to run safely, so this rule is ignored. Keep one repeating part, e.g. \\b[A-Z]{2,5}-\\d+\\b; backreferences (\\1, \\k<name>) are not supported",
         "mcp_apps_in_side_panel": "MCP Apps in Side Panel",
         "merge_queued_messages": "Merge Queued Messages",
-        "messages": "Messages",
         "minimap_side_left": "Left",
         "minimap_side_right": "Right",
         "mirror_documents_you_save_as_artifacts_into_the_l": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
@@ -8520,7 +8524,6 @@
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
         "your_role": "Your Role",
-        "minimap": "Minimap",
         "minimap_location": "Minimap location",
         "minimap_location_desc": "When located on the right edge, the minimap replaces the scroll bar."
       },
@@ -9024,7 +9027,6 @@
         "code_ready_for": "The sign-in code for {{name}} is ready",
         "confirm_cancel_remove": "Yes, remove “{{tag}}”",
         "confirm_delete_of": "Confirm deleting “{{name}}”",
-        "connect_after_sign_in": "Connect after sign-in",
         "copied": "Copied",
         "copy_code_aria": "Copy your sign-in code {{code}}",
         "copy_command": "Copy command",
@@ -9367,7 +9369,12 @@
       "window_tokens_col": "Window (tokens)",
       "off_body": "Enable with <settingRef/>. Metrics stay local (<metricsDir/>) — nothing leaves this machine.",
       "gauges": "Gauges",
-      "gauges_latest": "latest sample"
+      "gauges_latest": "latest sample",
+      "credits_by_origin": "Credits by origin",
+      "credits_by_model": "Credits by model",
+      "top_sessions": "Top sessions",
+      "other_group": "Other ({{n}})",
+      "full_table": "Full table"
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",

@@ -26,6 +26,7 @@ import http.server
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -175,8 +176,23 @@ async def _grant_internal_auth(request: web.Request, handler):
     return await handler(request)
 
 
+@web.middleware
+async def _owner_dashboard_identity(request: web.Request, handler):
+    """Stand in for the owner's dashboard cookie on the browser-called config route.
+
+    ``PUT /api/computer-use/config`` is owner-gated, so the Settings panel these
+    cases model carries ``app == ""`` and the owner's subject. With no
+    ``owner_id`` configured, the signed local bootstrap subject is the owner.
+    """
+    if request.path == "/api/computer-use/config":
+        request["user"] = "local-app"
+        request["app"] = ""
+    return await handler(request)
+
+
 def _make_app() -> web.Application:
-    app = web.Application(middlewares=[_grant_internal_auth])
+    app = web.Application(middlewares=[_grant_internal_auth, _owner_dashboard_identity])
+    app["state"] = SimpleNamespace(owner_id="")
     app.router.add_get("/api/computer-use/config", cu_api.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", cu_api.api_computer_use_config_save)
     app.router.add_post("/api/computer-use/invoke", cu_api.api_computer_use_invoke)

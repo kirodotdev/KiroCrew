@@ -1018,6 +1018,21 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             # not release the flag early. ``best_effort=False`` so a failure
             # propagates to the 503 below instead of being swallowed and
             # re-armed as a dirty retry.
+            #
+            # Both axes are pinned INTO the write, because the commit boundary is
+            # the only place either can be decided. ``expected_history_key``
+            # catches a RENAMED replacement; it cannot see a same-name
+            # close-and-recreate, which resumes the same transcript and so keeps
+            # the key identical. ``expected_slot_name`` carries this slot's map
+            # key in, where ``state._slots[name]`` is re-read inside the
+            # transcript lock with no await before the write: a map holding a
+            # different slot object refuses the save, nothing written. The
+            # loop-side identity check above cannot stand in for it -- the
+            # recreate can land during the executor wait, after that check and
+            # before the write -- and the loop-side check is still needed for the
+            # reservation axis (``slot.task``), which the persistence layer
+            # cannot see. A refusal returns ``False`` and reaches the 503 below
+            # with the live slot untouched.
             save_task = asyncio.ensure_future(
                 save_slot_off_loop(
                     state,
@@ -1025,6 +1040,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     msgs_snapshot,
                     best_effort=False,
                     expected_history_key=expected_history_key,
+                    expected_slot_name=name,
                 )
             )
             try:

@@ -15412,6 +15412,12 @@ async def run_gateway(
                         kiro_agents_dir(),
                         sweep_backups=cfg.agent.sweep_agents_backups,
                     )
+                    # The per-spawn skill-view prune is capped, so a backlog
+                    # left by earlier builds would take hundreds of spawns to
+                    # clear. Drain it once here, in lock-bounded batches.
+                    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+                    acp_driver.drain_skill_view_aliases()
 
                 await asyncio.to_thread(_sweep_in_thread)
             except Exception:

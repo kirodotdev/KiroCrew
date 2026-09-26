@@ -1351,17 +1351,24 @@ class TestWindowsGatewayCommand:
         monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(mod, "config_dir", lambda: crew)
         probed: list[str] = []
-        monkeypatch.setattr(
-            mod, "_run", lambda argv, timeout: (probed.append(argv[0]), (0, "v24.18.0\n", ""))[1]
-        )
+        probe_cwds: list[str | None] = []
+
+        def fake_run(argv, timeout, *, cwd=None):
+            probed.append(argv[0])
+            probe_cwds.append(cwd)
+            return (0, "v24.18.0\n", "")
+
+        monkeypatch.setattr(mod, "_run", fake_run)
 
         staged = mod._stage_managed_node(str(source))
 
         assert staged == crew / "playwright-cli" / "node.exe"
         assert staged.read_bytes() == b"trusted node"
-        # The smoke run exercised the staged copy inside the leaf, not the source.
+        # The smoke run exercised the staged copy inside the leaf, not the source,
+        # and ran FROM the leaf rather than from wherever the gateway was started.
         assert probed and Path(probed[-1]).parent == staged.parent
         assert Path(probed[-1]) != source
+        assert probe_cwds[-1] == str(staged.parent)
 
         source.write_bytes(b"replacement node")
         replaced = mod._stage_managed_node(str(source))
@@ -2169,7 +2176,7 @@ class TestPosixGatewayCommand:
         source.chmod(0o755)
         monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(mod, "config_dir", lambda: crew)
-        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (0, "v24.18.0\n", ""))
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout, cwd=None: (0, "v24.18.0\n", ""))
 
         staged = mod._stage_managed_node(str(source))
 
@@ -2184,7 +2191,9 @@ class TestPosixGatewayCommand:
         relative to its own path. It copies cleanly and passes the mode checks,
         but a copy in the managed leaf points at a file that is not there. The
         smoke run is a REAL process here: the copied script runs from the leaf,
-        its target is missing, and the install refuses, naming the source."""
+        its target is missing, and the install refuses, naming the source. The
+        process is the test's own shell script, never a host ``node``, and both
+        spawns run in a directory the test owns."""
         crew = tmp_path / "crew"
         bin_dir = tmp_path / "node" / "bin"
         bin_dir.mkdir(parents=True)
@@ -2198,7 +2207,7 @@ class TestPosixGatewayCommand:
         monkeypatch.setattr(mod, "config_dir", lambda: crew)
 
         # In place the wrapper works; that is what fooled the mode checks.
-        assert mod._run([str(wrapper), "--version"], 20.0)[0] == 0
+        assert mod._run([str(wrapper), "--version"], 20.0, cwd=str(tmp_path))[0] == 0
 
         with pytest.raises(OSError) as excinfo:
             mod._stage_managed_node(str(wrapper))
@@ -2232,7 +2241,11 @@ class TestPosixGatewayCommand:
         monkeypatch.setattr(
             mod,
             "_run",
-            lambda argv, timeout: (127, "", "error while loading shared libraries: libstdc++.so.6"),
+            lambda argv, timeout, cwd=None: (
+                127,
+                "",
+                "error while loading shared libraries: libstdc++.so.6",
+            ),
         )
 
         with pytest.raises(
@@ -2252,7 +2265,9 @@ class TestPosixGatewayCommand:
         binary.chmod(0o755)
         monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(mod, "config_dir", lambda: crew)
-        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (0, "usage: not-node\n", ""))
+        monkeypatch.setattr(
+            mod, "_run", lambda argv, timeout, cwd=None: (0, "usage: not-node\n", "")
+        )
 
         with pytest.raises(OSError, match=r"did not report a version"):
             mod._stage_managed_node(str(binary))

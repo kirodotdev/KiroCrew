@@ -2183,8 +2183,66 @@ class TestSyncKillProviderTree:
         provider._active_proc = None
         return provider
 
-    @staticmethod
-    def _spawn_tree(*, escape_group: bool) -> tuple[subprocess.Popen, int]:
+    #: pid -> start-time identity, captured while the pid was provably ours.
+    #: ``_reap`` signals a pid only while its identity still matches this record.
+    _pinned: dict[int, str]
+
+    @pytest.fixture(autouse=True)
+    def _identity_pins(self) -> None:
+        self._pinned = {}
+
+    def _pin(self, *pids: int) -> None:
+        """Record each pid's identity NOW, at the moment it is known to be ours.
+
+        Every pid these tests hand to ``_reap`` is proven dead by the body first, and
+        a grandchild's number is held by nobody once init has collected it -- the
+        root's, too, once production's ``_reap_provider_root`` has waited on it. A
+        bare ``os.kill`` in the ``finally`` would therefore go out on every PASSING
+        run at whatever holds that number by then. The identity is read through
+        ``process_start_time`` rather than ``get_process_start_id``: several tests
+        below patch the latter (and ``kill_pid``) on ``platform_compat`` to script
+        production's view of the root, and the teardown must read the real table.
+
+        An identity that cannot be read (the macOS ``ps`` leg times out or is
+        missing) is not stored as a pin ``_reap`` would then skip: that would leave
+        the 300-second sleeper behind. This is the one moment every pid here is
+        ours by construction -- just spawned, or just reported by a root that is
+        still ours -- so the whole batch is killed on the spot and the test fails
+        on the capture, before any of it can be mistaken for a stranger later.
+        """
+        tokens = {pid: platform_compat.process_start_time(pid) for pid in pids}
+        unreadable = [pid for pid, token in tokens.items() if token is None]
+        if unreadable:
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except (ChildProcessError, OSError):
+                    pass
+            raise AssertionError(
+                f"could not read the start-time identity of {unreadable}, so the "
+                f"teardown could not have pinned the kill; killed {list(pids)} now"
+            )
+        for pid, token in tokens.items():
+            self._pinned.setdefault(pid, token)
+
+    def _spawn_isolated(self) -> subprocess.Popen:
+        """A 300-second sleeper in its own session, pinned for ``_reap``.
+
+        The stand-in for a provider root, a stray or a bystander: a direct child
+        of this process whose status production may still collect before the
+        teardown runs, so its number is not guaranteed held either.
+        """
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
+        )
+        self._pin(proc.pid)
+        return proc
+
+    def _spawn_tree(self, *, escape_group: bool) -> tuple[subprocess.Popen, int]:
         """Spawn an isolated group leader that forks one stubborn grandchild.
 
         Returns the root AND its grandchild's pid, which the root reports on
@@ -2198,6 +2256,8 @@ class TestSyncKillProviderTree:
         survived, so a grandchild still holding the default SIGTERM disposition
         breaks the premise rather than the assertion -- the tree really is gone, and
         the teardown is right to stop early.
+
+        Both pids are pinned for ``_reap`` here, while the tree is provably ours.
         """
         grandchild = _STUBBORN_GRANDCHILD.format(setsid="os.setsid()\n" if escape_group else "")
         proc = subprocess.Popen(
@@ -2211,17 +2271,19 @@ class TestSyncKillProviderTree:
             proc.kill()
             proc.wait(timeout=10)
             raise AssertionError("provider root never reported its grandchild pid")
-        return proc, int(reported)
+        gc_pid = int(reported)
+        self._pin(proc.pid, gc_pid)
+        return proc, gc_pid
 
-    @staticmethod
-    def _await_descendants(pid: int, timeout: float = 10.0) -> list[int]:
-        """Wait for the root's fork to appear; return the descendant pids."""
+    def _await_descendants(self, pid: int, timeout: float = 10.0) -> list[int]:
+        """Wait for the root's fork to appear; return the (pinned) descendant pids."""
         from kiro_crew.acp.client import _get_child_pids
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             found = _get_child_pids(pid)
             if found:
+                self._pin(*found)
                 return found
             time.sleep(0.05)
         raise AssertionError(f"grandchild of {pid} never appeared")
@@ -2386,10 +2448,39 @@ class TestSyncKillProviderTree:
         left = self._await_gone([root.pid, *descendants], timeout=_left())
         assert left == [], f"pids still held after the tree was torn down: {left}"
 
-    @staticmethod
-    def _reap(pids: list[int]) -> None:
-        """Best-effort teardown so no test process survives the run."""
+    def _reap(self, pids: list[int]) -> None:
+        """Best-effort teardown so no test process survives the run.
+
+        Each pid is signalled ONLY while it still carries the identity ``_pin``
+        recorded when it was ours. A pid the body proved dead reads a different
+        identity here and is left alone: SIGKILL at a recycled number is a signal
+        at a stranger. An unpinned pid is a test bug, not a stranger to spare --
+        fail loudly rather than leak a 300-second sleeper.
+
+        A pid that is still present but whose identity cannot be read (the macOS
+        ``ps`` leg can time out under a loaded run) is neither proven ours nor
+        proven gone. The read is retried a few times; if it never answers, the
+        teardown does not guess -- it fails the test naming the pid, so the leak
+        is reported rather than silent. The sleeper itself exits within 300 s.
+
+        ``os.kill`` directly, not ``platform_compat.kill_pid``: tests in this class
+        patch ``kill_pid`` on ``platform_compat`` to observe production's decisions,
+        and the teardown must not route through the fake it left behind.
+        """
+        unconfirmable: list[int] = []
         for pid in pids:
+            assert pid in self._pinned, f"pid {pid} was never pinned; call _pin at spawn"
+            identity = platform_compat.process_start_time(pid)
+            for _ in range(3):
+                if identity is not None or not platform_compat.pid_exists(pid):
+                    break
+                time.sleep(0.2)
+                identity = platform_compat.process_start_time(pid)
+            if identity is None and platform_compat.pid_exists(pid):
+                unconfirmable.append(pid)
+                continue
+            if identity != self._pinned[pid]:
+                continue  # already gone and possibly reissued
             try:
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
@@ -2398,6 +2489,11 @@ class TestSyncKillProviderTree:
                 os.waitpid(pid, os.WNOHANG)
             except (ChildProcessError, OSError):
                 pass
+        assert not unconfirmable, (
+            f"pids {unconfirmable} are still present but their identity could not be "
+            "read, so the teardown could not confirm they are ours to kill; they were "
+            "left running (300-second sleepers)"
+        )
 
     def test_a_zombie_descendant_does_not_count_as_running(self) -> None:
         """The state reader separates a stopped descendant from a live one.
@@ -2502,12 +2598,8 @@ class TestSyncKillProviderTree:
         from kiro_crew.session_pid import _sync_kill_provider
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.5)
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        stray = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        stray = self._spawn_isolated()
         try:
             # Not a descendant of root at all — exactly the reparented case.
             provider = self._provider(root.pid, child_pids=_capture_child_records([stray.pid]))
@@ -2619,12 +2711,8 @@ class TestSyncKillProviderTree:
         from kiro_crew.session_pid import _sync_kill_provider
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.2)
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        stray = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        stray = self._spawn_isolated()
         try:
             provider = self._provider(
                 root.pid,
@@ -2657,12 +2745,8 @@ class TestSyncKillProviderTree:
         from kiro_crew.session_pid import _sync_kill_provider
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.2)
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        stray = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        stray = self._spawn_isolated()
         killpg_calls: list[tuple[int, int]] = []
         real_pgroup_of = platform_compat.pgroup_of
         seen = {"n": 0}
@@ -2751,9 +2835,7 @@ class TestSyncKillProviderTree:
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.2)
         root, gc_pid = self._spawn_tree(escape_group=False)
-        stray = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        stray = self._spawn_isolated()
         real_start_id = platform_compat.get_process_start_id
         self._await_descendants(root.pid)  # the walk has something to find
         # Built BEFORE the patch: _provider reads the start id itself, and counting
@@ -2807,12 +2889,8 @@ class TestSyncKillProviderTree:
         from kiro_crew.session_pid import _sync_kill_provider
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.2)
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        bystander = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        bystander = self._spawn_isolated()
         provider = self._provider(root.pid)
         walks = {"n": 0}
 
@@ -2990,12 +3068,8 @@ class TestSyncKillProviderTree:
         from kiro_crew.session_pid import _sync_kill_provider
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.2)
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        bystander = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        bystander = self._spawn_isolated()
         real_start_id = platform_compat.get_process_start_id
         provider = self._provider(root.pid)
         # Both scans report the pid, so the intersection keeps it; only the root
@@ -3107,12 +3181,8 @@ class TestSyncKillProviderTree:
 
         monkeypatch.setattr("kiro_crew.session_pid._PROVIDER_TERM_GRACE_SECONDS", 0.5)
 
-        root = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
-        bystander = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
-        )
+        root = self._spawn_isolated()
+        bystander = self._spawn_isolated()
         try:
             # A record claiming an impossible start time: the live process cannot
             # match it, so the sweep must refuse to signal that pid.
@@ -3133,14 +3203,13 @@ class TestSyncKillProviderTree:
             root.wait(timeout=10)
             bystander.wait(timeout=10)
 
-    @staticmethod
-    def _spawn_reaped_leader(ready_dir: Path) -> tuple[int, str | None, int, int]:
+    def _spawn_reaped_leader(self, ready_dir: Path) -> tuple[int, str | None, int, int]:
         """Spawn an isolated leader with two SIGTERM-ignoring children, then reap it.
 
         Returns the leader's pid, the start id recorded for it while it was alive,
-        and the two children's pids. On return the leader is gone from ``/proc``
-        while its group still holds both children -- the shape a pid alone cannot
-        tell apart from a recycled one.
+        and the two children's pids, pinned for ``_reap``. On return the leader is
+        gone from ``/proc`` while its group still holds both children -- the shape a
+        pid alone cannot tell apart from a recycled one.
 
         Both children ignore SIGTERM and touch ``ready_dir/<pid>`` once they have,
         so a caller can wait out the window in which a SIGTERM would still kill them
@@ -3184,6 +3253,7 @@ class TestSyncKillProviderTree:
             reported = output.split()
             assert len(reported) == 2, "provider root never reported both child pids"
             witness_pid, unrecorded_pid = (int(value) for value in reported)
+            self._pin(witness_pid, unrecorded_pid)
             return proc.pid, recorded_start, witness_pid, unrecorded_pid
         except BaseException:
             # Kill the GROUP, not just the root. One child can already be running

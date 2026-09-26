@@ -613,3 +613,34 @@ The consequence for how you write a test:
 - [ ] "Let it finish" is never a fixed `sleep`: wait on the state you are about to assert
       (poll it off-loop under a bounded deadline, or await its event) — two 200 ms sleeps
       that were enough at `-n0` read `starting` for every row on a loaded Windows worker
+- [ ] A store that hands each THREAD its own connection (`KnowledgeStore`) is torn down with
+      `_close_all_for_tests()`, never `close()` — `close()` releases the calling thread's handle and
+      leaves the ones `asyncio.to_thread` workers opened; and every inline `VectorMemoryStore`
+      / `SkillsLoader` / `SubagentManager` goes through the module's `opened` register-and-close
+      fixture, because an unclosed `sqlite3.Connection` is a self-cycle on 3.11+ and refcounting
+      never frees its `db`/`-wal`/`-shm`
+- [ ] A fixture that plants a path under `tmp_path` and asserts a production "not under
+      `$HOME`" refusal does NOT fire pins `Path.home` (the seam the product reads) to a
+      sibling that is not an ancestor of the fixture — a developer's `TMPDIR` may sit inside
+      home — and a mirror test plants INSIDE the patched home to prove the refusal still fires
+- [ ] A helper that asserts a WARNING count filters `caplog.records` by the logger the test
+      enabled (`rec.name == <logger>`), never the unfiltered root capture: an executor thread
+      another test's `SessionManager` armed logs on its own logger mid-test; and a test that
+      builds a real `SessionManager` relies on conftest's `_no_boot_sandbox_sweep` pin rather
+      than patching the sweep itself unless the sweep is its subject
+- [ ] A teardown that signals a pid the body has already proven dead (a reaped root, a
+      grandchild init collected) signals only while `process_start_time` still matches the
+      identity recorded at spawn, and refuses an unpinned pid; a "nonexistent pid" probe uses a
+      number above `/proc/sys/kernel/pid_max`, not a convention
+- [ ] A resolver the product caches for the process (`functools.lru_cache`d `ssh -V`,
+      `code_fingerprint()`) is pinned at MODULE scope with an explicit opt-out fixture — pinning
+      only the flagged tests moves the real spawn to the next reader; a class-local copy of a
+      conftest fixture re-implements ALL of its pins or requests the original instead
+- [ ] A production `git -C <scratch>` spawn the test cannot pass `cwd=` to runs under a
+      fixture `monkeypatch.chdir(tmp_path)`, so nothing inherits the checkout as process cwd;
+      the product keeps `cwd=None` there on purpose (a missing clone must stay git's rc=128,
+      not a `FileNotFoundError` before git runs)
+- [ ] A backend a daemon reaps on disconnect goes through the pool's TRACKED reap
+      (`pool.spawn_shutdown`), never an inline `await shutdown()` in a handler's `finally`:
+      teardown cancels the handler after the backend has left the map, and the child then
+      belongs to nobody

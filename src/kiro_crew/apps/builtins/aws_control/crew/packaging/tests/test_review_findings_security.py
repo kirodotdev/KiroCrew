@@ -627,16 +627,16 @@ def test_MUTATION_dropping_O_NOFOLLOW_would_follow_the_swapped_parent(
 
     Reddens the guard: with the flag gone, the open of ``mid`` follows the link into
     ``victim`` and the walk reaches ``victim/leaf`` and returns a descriptor -- exactly the
-    hole the per-component ``O_NOFOLLOW`` closes. The mutation anchor pins the two-line block
-    inside ``_open_dir_nofollow_pinned`` (the ``resolved =`` line is unique to that function),
-    so it cannot land on the identically-worded ``dir_flags`` line elsewhere in the module.
+    hole the per-component ``O_NOFOLLOW`` closes. The mutation anchor pins the ``dir_flags``
+    line inside ``_open_dir_nofollow_pinned`` by pairing it with the preceding bare ``raise``
+    from that function's resolve-error branch, so it cannot land on the identically-worded
+    ``dir_flags`` line elsewhere in the module.
     """
     mod = load_build(
         mutate=(
-            "    resolved = dir_path if already_resolved else dir_path.resolve()\n"
+            "            raise\n"
             '    dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)',
-            "    resolved = dir_path if already_resolved else dir_path.resolve()\n"
-            "    dir_flags = os.O_RDONLY | os.O_DIRECTORY",
+            "            raise\n" "    dir_flags = os.O_RDONLY | os.O_DIRECTORY",
         )
     )
     base = tmp_path / "base"

@@ -330,6 +330,17 @@ _MAX_PENDING_BYTES = 256 * 1024 * 1024
 #: silence here is what a stuck filesystem looks like from the outside.
 _WRITE_STALL_SECS = 30.0
 
+#: How long a spent warning budget stays quiet before that kind of failure is
+#: named again. A store that keeps failing is named once, then once per window
+#: carrying the number of failures the window swallowed, so an ongoing failure is
+#: never silent for longer than this and never logged per entry.
+_WARN_REARM_SECONDS = 300.0
+
+#: How many failure kinds may hold a budget at once. A key is an exception class
+#: and an OS or store error code, both program constants rather than caller data,
+#: so this is a guard on the map and not a limit routine traffic reaches.
+_MAX_WARN_KINDS = 64
+
 #: How long a synchronous caller waits for an in-flight writer batch before it
 #: hands its job over instead of writing inline. Bounded because the caller is a
 #: real thread doing real work, and generous because the alternative -- writing
@@ -570,7 +581,15 @@ _child_origin: "OrderedDict[str, tuple[str, int, bool]]" = OrderedDict()
 #: is exactly the idle-teardown path where a child keeps running -- reading it
 #: would report a live child as finished. Unset means no repair closes a child.
 _child_liveness: "Callable[[str], bool] | None" = None
-_warned = False
+#: Failure kind -> (monotonic instant it last warned, failures swallowed since).
+#: One warning budget per KIND of failure, so a store running out of space still
+#: gets named at default level after an unrelated listener error spent a slot
+#: hours earlier. The key is derived from the exception by :func:`_failure_kind`
+#: rather than from ``what``: six of the call sites interpolate a store name, an
+#: entry type or a unit into that string, so a budget keyed on it would hand
+#: every store its own warning and flood the log the budget exists to protect.
+#: Bounded FIFO, oldest kind evicted first; cleared by ``reset_caches``.
+_warn_budget: "OrderedDict[tuple[str, str, str], tuple[float, int]]" = OrderedDict()
 _warned_high_water = False
 #: True once the live-turn cap overage has been reported, so a genuinely busy
 #: gateway names the condition once rather than on every event while over the cap.
@@ -769,7 +788,7 @@ def reset_caches() -> None:
     the life of the process. A successful drain makes all of it a no-op, which is
     every call that is not recovering from a wedge.
     """
-    global _warned, _warned_high_water, _pending_high_water, _draining_for_shutdown
+    global _warned_high_water, _pending_high_water, _draining_for_shutdown
     global _shutdown_deadline, _shutdown_started
     global _inflight_since, _inflight_what, _stall_reported
     global _pending_count, _pending_total_bytes, _dropped_count, _draining, _drain_future
@@ -814,7 +833,7 @@ def reset_caches() -> None:
         _pending_high_water = 0
         _draining = False
         _drain_future = None
-        _warned = False
+        _warn_budget.clear()
         _warned_high_water = False
         _live_overage_reported = False
         _draining_for_shutdown = False
@@ -841,8 +860,41 @@ def session_id_of(client: Any) -> str:
     return ""
 
 
-def _report(what: str, exc: BaseException) -> None:
-    """Report a crew log failure once at warning level, then stay quiet.
+def _failure_kind(op: str, exc: BaseException) -> "tuple[str, str, str]":
+    """What KIND of failure this is, for the warning budget to spend a slot on.
+
+    Three stable parts: the operation that failed, the exception's class, and the
+    code the operating system or the store put on it. So a disk that is full and a
+    disk that is failing arrive as two kinds out of one ``OSError``, and a lost
+    write lease is not filed under an unrelated listener's ``RuntimeError``.
+
+    What is deliberately absent is the UNIT -- no store name, no session id, no
+    entry type. Those live in ``what`` for the message and never in the key,
+    because many units failing at once is one cause repeating, and a key holding
+    the unit would hand each of them its own warning and flood the log this budget
+    exists to protect. Every part is a program or OS constant, so the map is
+    bounded with no list of kinds for anyone to maintain: a new call site gets its
+    own slot by naming its own ``op``.
+    """
+    code = getattr(exc, "code", "") or getattr(exc, "errno", "")
+    return (op, type(exc).__qualname__, str(code or ""))
+
+
+def _report(what: str, exc: BaseException, *, op: str) -> None:
+    """Report a crew log failure at warning level once per KIND, then stay quiet.
+
+    The budget is one slot per kind of failure, not one per process:
+    :func:`_failure_kind` builds the key from *op* and the exception, so a store
+    refused for ENOSPC is named at default level even though an unrelated listener
+    error spent a slot hours before. *op* names the operation in a fixed string and
+    is the only part of the call that reaches the key; *what* carries the store,
+    unit or entry type for the reader and is kept out of it.
+
+    Repetition of a kind already named is swallowed and COUNTED, and the count
+    rides on the next warning for that kind once ``_WARN_REARM_SECONDS`` has
+    passed -- a budget that ran out has to say so, since a silently spent one hides
+    exactly the ongoing failure it was meant to surface, and naming every repeat
+    would flood the log instead.
 
     Both records carry the failure as TEXT -- the warning's ``%s`` argument, and on the
     debug line the traceback RENDERED to a string while the exception is live, rather than
@@ -853,17 +905,31 @@ def _report(what: str, exc: BaseException) -> None:
     record. A pre-rendered string holds no frames. See ``_run_job`` for why that handle
     must not outlive the pass.
     """
-    global _warned
+    kind = _failure_kind(op, exc)
+    now = time.monotonic()
     with _lock:
-        first = not _warned
-        _warned = True
-    if first:
+        held = _warn_budget.get(kind)
+        if held is None:
+            speak, swallowed = True, 0
+        else:
+            warned_at, swallowed = held
+            speak = now - warned_at >= _WARN_REARM_SECONDS
+        if speak:
+            _warn_budget[kind] = (now, 0)
+            _warn_budget.move_to_end(kind)
+            while len(_warn_budget) > _MAX_WARN_KINDS:
+                _warn_budget.popitem(last=False)
+        else:
+            _warn_budget[kind] = (warned_at, swallowed + 1)
+    if speak:
         logger.warning(
-            "session log writes are failing (%s: %s%s); further failures "
-            "are logged at debug only",
+            "session log writes are failing (%s: %s%s)%s; further failures of "
+            "this kind are logged at debug only for the next %.0fs",
             what,
             str(exc),
             f", code={getattr(exc, 'code', '')}" if getattr(exc, "code", "") else "",
+            f", and {swallowed} more went unreported since it was last named" if swallowed else "",
+            _WARN_REARM_SECONDS,
         )
     elif logger.isEnabledFor(logging.DEBUG):
         # The traceback rendered to text while the exception is live: full
@@ -903,7 +969,7 @@ def _notify_growth(session_id: str) -> None:
         try:
             listener(session_id)
         except Exception as exc:  # pragma: no cover - a listener's own failure
-            _report("growth listener", exc)
+            _report("growth listener", exc, op="growth-listener")
 
 
 def _on_event_loop() -> bool:
@@ -966,7 +1032,7 @@ def _run_job(job: Callable[[], None], what: str) -> type[BaseException] | None:
     try:
         job()
     except Exception as exc:
-        _report(what, exc)
+        _report(what, exc, op="queued-write")
         return type(exc)
     finally:
         with _lock:
@@ -1346,7 +1412,7 @@ def _drop(session_id: str, jobs: "list[_PendingJob]", *, mark: bool = False) -> 
             try:
                 hook()
             except Exception as exc:
-                _report(f"flagging a permanent drop of {job.what}", exc)
+                _report(f"flagging a permanent drop of {job.what}", exc, op="flag-permanent-drop")
         _finish(job)
     _notify()
 
@@ -1438,7 +1504,7 @@ def _finish(job: _PendingJob) -> None:
     try:
         after()
     except Exception as exc:
-        _report(f"finishing {job.what}", exc)
+        _report(f"finishing {job.what}", exc, op="finish-write")
 
 
 def _note_progress(session_id: str) -> None:
@@ -1506,7 +1572,7 @@ def _start_drain() -> None:
             _draining = False
             _drain_future = None
         _notify()
-        _report("scheduling the crew log writer", exc)
+        _report("scheduling the crew log writer", exc, op="schedule-writer")
         return
     with _lock:
         # Published so the barriers can tell a pass that is still coming from one
@@ -1938,7 +2004,7 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
             with _drained:
                 drained = _drained.wait_for(_quiet, timeout=timeout)
     except Exception as exc:
-        _report("draining the session log for shutdown", exc)
+        _report("draining the session log for shutdown", exc, op="shutdown-drain")
         drained = False
     if not drained:
         with _lock:
@@ -1953,7 +2019,7 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
             try:
                 drained = _drain_inline_until(time.monotonic() + _SECOND_CHANCE_DRAIN_SECONDS)
             except Exception as exc:
-                _report("draining the session log for shutdown", exc)
+                _report("draining the session log for shutdown", exc, op="shutdown-drain")
                 drained = False
     if not drained:
         with _lock:
@@ -2357,7 +2423,7 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
             if attempt > highest.get(turn, 0):
                 highest[turn] = attempt
     except Exception as exc:
-        _report("seeding turn attempts", exc)
+        _report("seeding turn attempts", exc, op="seed-turn-attempts")
         return
     if not highest:
         return
@@ -2499,7 +2565,7 @@ def _safe_text(text: Any) -> str:
         cleaned, _ = redact_credentials(cleaned)
         return cleaned
     except Exception as exc:
-        _report("redacting a body", exc)
+        _report("redacting a body", exc, op="redact-body")
         return ""
 
 
@@ -5220,7 +5286,7 @@ def _crew_append(store: str, entry_type: str, data: dict[str, Any], **envelope: 
             return 0
         return int(log.append(entry_type, data, src=envelope.pop("src"), **envelope).seq)
     except Exception as exc:  # noqa: BLE001 - see the best-effort note above
-        _report(f"appending {entry_type} for crew {store!r}", exc)
+        _report(f"appending {entry_type} for crew {store!r}", exc, op="crew-append")
         return 0
 
 
@@ -5305,7 +5371,7 @@ def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
             return 0
         last = int(subsystem.CrewLog.open(_KIND, cite_unit).last_seq)
     except Exception as exc:  # noqa: BLE001 - see _crew_append's best-effort note
-        _report(f"citing {cite_unit!r} for a crew report", exc)
+        _report(f"citing {cite_unit!r} for a crew report", exc, op="crew-report-cite")
         return 0
     if last < 1:
         return 0
@@ -5315,7 +5381,7 @@ def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
     try:
         log = _crew_unit(store)
     except Exception as exc:  # noqa: BLE001 - see _crew_append's best-effort note
-        _report(f"opening the crew log for {store!r}", exc)
+        _report(f"opening the crew log for {store!r}", exc, op="crew-log-open")
     if log is None:
         return 0
     thread = _crew_thread(log, data.get("item"))
@@ -5340,7 +5406,7 @@ def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
             )
         return int(entry.seq)
     except Exception as exc:  # noqa: BLE001 - see _crew_append's best-effort note
-        _report(f"appending {CREW_REPORT} for crew {store!r}", exc)
+        _report(f"appending {CREW_REPORT} for crew {store!r}", exc, op="crew-report-append")
         return 0
 
 

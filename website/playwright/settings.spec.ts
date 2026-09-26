@@ -72,7 +72,8 @@ test.describe('Settings Page', () => {
     // The Chat panel should render its content — check for a known setting label
     // ChatPanel contains the "Timestamps" toggle and other settings
     await expect(page.locator('[data-setting-label]').first()).toBeVisible({ timeout: 10000 })
-    expect(new URL(page.url()).pathname).toBe('/settings/chat')
+    // The Chat rail writes its default group into the path, as Channels does.
+    expect(new URL(page.url()).pathname).toMatch(/^\/settings\/chat(\/transcript)?$/)
   })
 
   test('a legacy ?tab= link translates to the path form and still renders the panel', async ({ page }) => {

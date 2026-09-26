@@ -196,7 +196,11 @@ if os.environ.pop("PROBE_FIRST", ""):
     async def run():
         if MODE == "dashboard-update":
             update_provider.apply_policy_update = apply
-            await updates.api_update_apply(SimpleNamespace(app={"state": state}))
+            # The owner's dashboard claims: POST /api/update is owner-gated.
+            class _OwnerRequest(dict):
+                app = {"state": state}
+
+            await updates.api_update_apply(_OwnerRequest(app="", user="local-app"))
         elif MODE == "automatic-update":
             await apply()
             orch = SimpleNamespace(_pending_update_respawn=None, dashboard_state=None,

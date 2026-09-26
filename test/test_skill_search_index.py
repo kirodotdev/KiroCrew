@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -43,8 +44,8 @@ def _skill(root: Path, key: str, *, description: str = "nothing relevant here", 
     return path
 
 
-def _loader(tmp_path: Path) -> SkillsLoader:
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def _loader(tmp_path: Path, *, opened) -> SkillsLoader:
+    return opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False))
 
 
 @pytest.fixture
@@ -62,31 +63,33 @@ def small_ceiling(monkeypatch):
 
 
 class TestBodyIndex:
-    def test_invalid_persisted_metadata_is_reparsed(self, tmp_path):
+    def test_invalid_persisted_metadata_is_reparsed(self, tmp_path, opened):
         import sqlite3
 
         _skill(tmp_path / "skills", "repair", description="zirconium", body="procedure")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         loader.list_skills()
-        with sqlite3.connect(tmp_path / SKILL_SEARCH_INDEX_FILENAME) as db:
-            db.execute("UPDATE skill_metadata SET metadata = '[]'")
-        assert _loader(tmp_path).search_skills("zirconium")[0]["key"] == "repair"
+        # ``with`` on a sqlite3 connection scopes a TRANSACTION, not the handle.
+        with closing(sqlite3.connect(tmp_path / SKILL_SEARCH_INDEX_FILENAME)) as db:
+            with db:
+                db.execute("UPDATE skill_metadata SET metadata = '[]'")
+        assert _loader(tmp_path, opened=opened).search_skills("zirconium")[0]["key"] == "repair"
 
-    def test_metadata_write_failure_retains_search_recall(self, tmp_path, monkeypatch):
+    def test_metadata_write_failure_retains_search_recall(self, tmp_path, monkeypatch, opened):
         _skill(tmp_path / "skills", "repair", description="zirconium", body="procedure")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(loader._search_index, "store_metadata", lambda rows: False)
         monkeypatch.setattr(loader, "_body_matches", lambda *args: {})
         assert loader.search_skills("zirconium")[0]["key"] == "repair"
 
-    def test_external_mapping_body_fallback_without_index(self, tmp_path):
+    def test_external_mapping_body_fallback_without_index(self, tmp_path, opened):
         path = _skill(tmp_path / "external", "repair", body="zirconium procedure")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         loader._search_index = None
         rows = loader.search_skills("zirconium", only=[str(path)])
         assert len(rows) == 1 and rows[0]["key"].startswith("mapped/")
 
-    def test_repeated_body_search_reads_no_files(self, tmp_path, monkeypatch):
+    def test_repeated_body_search_reads_no_files(self, tmp_path, monkeypatch, opened):
         """The second identical query must not touch a single body file.
 
         This is the whole point of the index: without it the metadata-miss path
@@ -96,7 +99,7 @@ class TestBodyIndex:
         skills_dir = tmp_path / "skills"
         for n in range(5):
             _skill(skills_dir, f"s{n}", body=f"This mentions kubernetes and topic{n} internally.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         reads: list[str] = []
         original = SkillsLoader.load_skill
@@ -114,17 +117,17 @@ class TestBodyIndex:
         assert second == first
         assert reads == []
 
-    def test_index_file_lands_beside_the_skills_root(self, tmp_path):
+    def test_index_file_lands_beside_the_skills_root(self, tmp_path, opened):
         _skill(tmp_path / "skills", "s1", body="This mentions kubernetes internally.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         assert [h["key"] for h in loader.search_skills("kubernetes")] == ["s1"]
         assert (tmp_path / SKILL_SEARCH_INDEX_FILENAME).exists()
 
-    def test_edited_body_is_reindexed(self, tmp_path):
+    def test_edited_body_is_reindexed(self, tmp_path, opened):
         """A changed fingerprint must re-read, or a skill keeps matching its old text."""
         skills_dir = tmp_path / "skills"
         path = _skill(skills_dir, "s1", body="This mentions kubernetes internally.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         assert [h["key"] for h in loader.search_skills("kubernetes")] == ["s1"]
 
         path.write_text(
@@ -135,42 +138,44 @@ class TestBodyIndex:
         assert [h["key"] for h in loader.search_skills("terraform")] == ["s1"]
         assert loader.search_skills("kubernetes") == []
 
-    def test_terms_after_index_ceiling_use_full_body_fallback(self, tmp_path, small_ceiling):
+    def test_terms_after_index_ceiling_use_full_body_fallback(
+        self, tmp_path, small_ceiling, opened
+    ):
         """A global skill remains searchable beyond the index's memory ceiling."""
         body = "x" * (small_ceiling + 1)
         _skill(tmp_path / "skills", "s1", body=f"{body} tailneedle")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         assert [h["key"] for h in loader.search_skills("tailneedle")] == ["s1"]
 
-    def test_prefix_match_still_finds_a_longer_body_word(self, tmp_path):
+    def test_prefix_match_still_finds_a_longer_body_word(self, tmp_path, opened):
         """``deploy`` must still reach a body that only says ``deployment``."""
         _skill(tmp_path / "skills", "s1", body="Covers the deployment pipeline.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         assert [h["key"] for h in loader.search_skills("deploy")] == ["s1"]
 
-    def test_unusable_index_falls_back_to_reading_bodies(self, tmp_path, monkeypatch):
+    def test_unusable_index_falls_back_to_reading_bodies(self, tmp_path, monkeypatch, opened):
         """Same results with the database refusing to open — the negative control.
 
         A read-only home or a held lock must cost the search nothing but speed.
         """
         _skill(tmp_path / "skills", "s1", body="This mentions kubernetes internally.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(SkillSearchIndex, "_db", lambda self: None)
         assert [h["key"] for h in loader.search_skills("kubernetes")] == ["s1"]
 
-    def test_missing_index_object_falls_back(self, tmp_path):
+    def test_missing_index_object_falls_back(self, tmp_path, opened):
         _skill(tmp_path / "skills", "s1", body="This mentions kubernetes internally.")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         loader._search_index = None
         assert [h["key"] for h in loader.search_skills("kubernetes")] == ["s1"]
 
-    def test_metadata_hit_outranks_a_body_hit(self, tmp_path):
+    def test_metadata_hit_outranks_a_body_hit(self, tmp_path, opened):
         """Ranking is unchanged: metadata is worth ten body hits, as before."""
         skills_dir = tmp_path / "skills"
         _skill(skills_dir, "meta", description="kubernetes rollout", body="unrelated prose")
         _skill(skills_dir, "body", body="kubernetes " * 20)
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         assert [h["key"] for h in loader.search_skills("kubernetes")][0] == "meta"
 
 
@@ -183,10 +188,10 @@ class TestIndexUnit:
         assert first is not None
         assert body_fingerprint(path) != first
 
-    def test_same_size_same_mtime_replacement_is_reindexed(self, tmp_path):
+    def test_same_size_same_mtime_replacement_is_reindexed(self, tmp_path, opened):
         path = tmp_path / "SKILL.md"
         path.write_text("alpha term", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         first = body_fingerprint(path)
         assert first is not None
         assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
@@ -211,10 +216,10 @@ class TestIndexUnit:
     def test_fingerprint_of_missing_path_is_none(self, tmp_path):
         assert body_fingerprint(tmp_path / "absent" / "SKILL.md") is None
 
-    def test_sync_prunes_keys_that_are_gone(self, tmp_path):
+    def test_sync_prunes_keys_that_are_gone(self, tmp_path, opened):
         path = tmp_path / "SKILL.md"
         path.write_text("terraform plan", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         assert index.sync([("gone", str(path), fingerprint)], live_keys=["gone"]) == frozenset()
@@ -222,10 +227,10 @@ class TestIndexUnit:
         assert index.sync([], live_keys=["other"]) == frozenset()
         assert index.body_hits(["gone"], ["terraform"]) == {}
 
-    def test_refused_hardened_read_clears_stale_terms(self, tmp_path, monkeypatch):
+    def test_refused_hardened_read_clears_stale_terms(self, tmp_path, monkeypatch, opened):
         path = tmp_path / "SKILL.md"
         path.write_text("oldterm", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         first = body_fingerprint(path)
         assert first is not None
         assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
@@ -250,23 +255,23 @@ class TestIndexUnit:
         # treating the refusal as a cached answer.
         assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset({"k"})
 
-    def test_body_hits_counts_each_term_once(self, tmp_path):
+    def test_body_hits_counts_each_term_once(self, tmp_path, opened):
         path = tmp_path / "SKILL.md"
         path.write_text("terraform terraform plan plan plan", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         index.sync([("k", str(path), fingerprint)], live_keys=["k"])
         assert index.body_hits(["k"], ["terraform", "plan"]) == {"k": 2}
 
-    def test_unreadable_database_reports_none(self, tmp_path):
+    def test_unreadable_database_reports_none(self, tmp_path, opened):
         """A directory where the file belongs makes every method report None."""
         (tmp_path / "index.sqlite3").mkdir()
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         assert index.sync([]) is None
         assert index.body_hits(["k"], ["terraform"]) is None
 
-    def test_astral_term_is_found_by_its_prefix(self, tmp_path):
+    def test_astral_term_is_found_by_its_prefix(self, tmp_path, opened):
         """A body word continuing with an astral character must still match.
 
         ``\\uffff`` encodes as ``EF BF BF`` and an astral character starts at
@@ -275,7 +280,7 @@ class TestIndexUnit:
         """
         path = tmp_path / "SKILL.md"
         path.write_text("\U00020000\U00020001 计划", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         index.sync([("k", str(path), fingerprint)], live_keys=["k"])
@@ -292,17 +297,17 @@ class TestIndexUnit:
         assert prefix_upper_bound("\U0010ffff") is None
         assert prefix_upper_bound("") is None
 
-    def test_max_code_point_term_still_matches(self, tmp_path):
+    def test_max_code_point_term_still_matches(self, tmp_path, opened):
         """The unbounded branch must still find the term it scans for."""
         path = tmp_path / "SKILL.md"
         path.write_text("terraform", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         index.sync([("k", str(path), fingerprint)], live_keys=["k"])
         assert index.body_hits(["k"], ["\U0010ffff"]) == {}
 
-    def test_index_survives_use_from_another_thread(self, tmp_path):
+    def test_index_survives_use_from_another_thread(self, tmp_path, opened):
         """A second thread must not latch the index unusable.
 
         Searches legitimately arrive on different threads — the dashboard route
@@ -312,7 +317,7 @@ class TestIndexUnit:
         """
         path = tmp_path / "SKILL.md"
         path.write_text("terraform plan", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
@@ -364,7 +369,7 @@ class TestFamilyLine:
                 families.append((label, int(count.strip("()"))))
         return named, families
 
-    def test_family_counts_are_the_members_the_entry_hides(self, tmp_path):
+    def test_family_counts_are_the_members_the_entry_hides(self, tmp_path, opened):
         """Each count must equal that family's UNNAMED members, not its size.
 
         The line exists to cover what the entry hides. Counting a member the
@@ -380,7 +385,7 @@ class TestFamilyLine:
         keys = [f"alpha-{n}" for n in range(6)] + [f"beta-{n}" for n in range(6)]
         for key in keys:
             _skill(skills_dir, key, body="body")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=4000, discovery_only=True)
 
         named, families = self._parse(text)
@@ -393,7 +398,7 @@ class TestFamilyLine:
         assert expected, "an entry hiding four skills must name at least one family"
         assert dict(families) == expected
 
-    def test_named_skills_win_a_tight_budget(self, tmp_path):
+    def test_named_skills_win_a_tight_budget(self, tmp_path, opened):
         """Under pressure the descriptions survive and the family line is dropped.
 
         A name carries the only text that says what a skill DOES, so it outranks
@@ -402,19 +407,19 @@ class TestFamilyLine:
         skills_dir = tmp_path / "skills"
         for n in range(12):
             _skill(skills_dir, f"web-{n}", body="body")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         full = loader.get_context(budget=4000, discovery_only=True)
         assert "More families" in full
         tight = loader.get_context(budget=len(full) - 20, discovery_only=True)
         assert "More families" not in tight
         assert tight.count("\n- ") == 8
 
-    def test_no_family_line_when_nothing_is_hidden(self, tmp_path):
+    def test_no_family_line_when_nothing_is_hidden(self, tmp_path, opened):
         """Eight or fewer skills are all named, so the line would repeat them."""
         skills_dir = tmp_path / "skills"
         for key in ("web-verify", "web-browse"):
             _skill(skills_dir, key, body="body")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=4000, discovery_only=True)
         assert "web-verify" in text
         assert "More families" not in text
@@ -429,18 +434,20 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
     reading files on every search, which is the cost this index exists to remove.
     """
 
-    def test_an_oversized_body_defers_only_itself(self, tmp_path, monkeypatch, small_ceiling):
+    def test_an_oversized_body_defers_only_itself(
+        self, tmp_path, monkeypatch, small_ceiling, opened
+    ):
         skills = tmp_path / "skills"
         _skill(skills, "small", body="smallneedle")
         big = "x" * (small_ceiling + 1)
         _skill(skills, "huge", body=f"{big} tailneedle")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         # Both stay findable: the small one from the index, the huge one by a read.
         assert [h["key"] for h in loader.search_skills("smallneedle")] == ["small"]
         assert [h["key"] for h in loader.search_skills("tailneedle")] == ["huge"]
 
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         rows = []
         for key in ("small", "huge"):
             body = skills / key / "SKILL.md"
@@ -451,7 +458,9 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
         # The small body was still indexed by that very same call.
         assert index.body_hits(["small"], ["smallneedle"]) == {"small": 1}
 
-    def test_only_the_deferred_body_is_read_from_disk(self, tmp_path, monkeypatch, small_ceiling):
+    def test_only_the_deferred_body_is_read_from_disk(
+        self, tmp_path, monkeypatch, small_ceiling, opened
+    ):
         """The caller must read the ONE key the index declines, not the catalog.
 
         This is the whole point of a per-key answer: declining for the whole call
@@ -463,7 +472,7 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
             _skill(skills, f"plain-{n}", body=f"plainneedle{n}")
         big = "x" * (small_ceiling + 1)
         _skill(skills, "huge", body=f"{big} tailneedle")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         loader.search_skills("warmup")  # build the index once
 
         read: list[str] = []
@@ -477,7 +486,7 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
         assert [h["key"] for h in loader.search_skills("tailneedle")] == ["huge"]
         assert read == ["huge"]
 
-    def test_a_hardlinked_body_is_not_served(self, tmp_path):
+    def test_a_hardlinked_body_is_not_served(self, tmp_path, opened):
         """A declined index read must not fall back to an unsafe direct read."""
         skills = tmp_path / "skills"
         _skill(skills, "ordinary", body="ordinaryneedle")
@@ -489,7 +498,7 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
         linked.mkdir(parents=True)
         os.link(outside, linked / "SKILL.md")
         assert (linked / "SKILL.md").stat().st_nlink > 1
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         assert loader.search_skills("linkedneedle") == []
         assert [h["key"] for h in loader.search_skills("ordinaryneedle")] == ["ordinary"]
@@ -502,14 +511,14 @@ class TestTransientLockDoesNotLatch:
     timeout. Latching there would make one contended moment permanent.
     """
 
-    def test_a_busy_database_is_retried(self, tmp_path, monkeypatch):
+    def test_a_busy_database_is_retried(self, tmp_path, monkeypatch, opened):
         """Driven by a REAL contended lock, so the message this matches on is real."""
         db_path = tmp_path / "index.sqlite3"
         path = tmp_path / "SKILL.md"
         path.write_text("alpha term", encoding="utf-8")
         # Patch before construction: the connection takes its timeout at connect.
         monkeypatch.setattr(skill_search_index_module, "_BUSY_TIMEOUT_SECS", 0.05)
-        index = SkillSearchIndex(db_path)
+        index = opened(SkillSearchIndex(db_path))
         first = body_fingerprint(path)
         assert first is not None
         assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
@@ -532,10 +541,10 @@ class TestTransientLockDoesNotLatch:
         assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset()
         assert index.body_hits(["k"], ["bravo"]) == {"k": 1}
 
-    def test_a_broken_database_still_latches(self, tmp_path, monkeypatch):
+    def test_a_broken_database_still_latches(self, tmp_path, monkeypatch, opened):
         path = tmp_path / "SKILL.md"
         path.write_text("alpha term", encoding="utf-8")
-        index = SkillSearchIndex(tmp_path / "index.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
         assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
@@ -575,14 +584,16 @@ class TestTokenizerChangeInvalidatesTheIndex:
         )
         assert skill_search_index_module.tokenizer_signature() != before
 
-    def test_stored_terms_are_dropped_when_the_tokenizer_changes(self, tmp_path, monkeypatch):
+    def test_stored_terms_are_dropped_when_the_tokenizer_changes(
+        self, tmp_path, monkeypatch, opened
+    ):
         db_path = tmp_path / "index.sqlite3"
         path = tmp_path / "SKILL.md"
         path.write_text("alpha term", encoding="utf-8")
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
 
-        index = SkillSearchIndex(db_path)
+        index = opened(SkillSearchIndex(db_path))
         assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
         assert index.body_hits(["k"], ["alpha"]) == {"k": 1}
 
@@ -594,7 +605,7 @@ class TestTokenizerChangeInvalidatesTheIndex:
             "recall_terms",
             lambda text: frozenset({f"z{t}" for t in real(text)}),
         )
-        rebuilt = SkillSearchIndex(db_path)
+        rebuilt = opened(SkillSearchIndex(db_path))
         assert rebuilt.body_hits(["k"], ["alpha"]) == {}
         assert rebuilt.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
         assert rebuilt.body_hits(["k"], ["zalpha"]) == {"k": 1}
@@ -608,13 +619,15 @@ class TestBothPathsScoreTheSameWay:
     other would make a skill's rank depend on which side answered for it.
     """
 
-    def test_a_term_inside_a_longer_word_matches_neither_path(self, tmp_path, small_ceiling):
+    def test_a_term_inside_a_longer_word_matches_neither_path(
+        self, tmp_path, small_ceiling, opened
+    ):
         skills = tmp_path / "skills"
         _skill(skills, "indexed", body="scrollback history")
         big = "x" * (small_ceiling + 1)
         # Deferred to a direct read, and carrying the same near-miss word.
         _skill(skills, "deferred", body=f"{big} scrollback history")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         # `rollback` is strictly inside `scrollback`: a near miss on both paths.
         assert loader.search_skills("rollback") == []
@@ -624,12 +637,12 @@ class TestBothPathsScoreTheSameWay:
             "indexed",
         ]
 
-    def test_a_prefix_matches_on_both_paths(self, tmp_path, small_ceiling):
+    def test_a_prefix_matches_on_both_paths(self, tmp_path, small_ceiling, opened):
         skills = tmp_path / "skills"
         _skill(skills, "indexed", body="deployment runbook")
         big = "x" * (small_ceiling + 1)
         _skill(skills, "deferred", body=f"{big} deployment runbook")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
 
         assert sorted(h["key"] for h in loader.search_skills("deploy")) == [
             "deferred",
@@ -639,15 +652,15 @@ class TestBothPathsScoreTheSameWay:
 
 class TestCoverageAndPersistedMetadata:
     def test_new_loader_dedupes_from_persisted_digest_without_content_reads(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, opened
     ):
         root = tmp_path / "skills"
         first_path = _skill(root, "one/payment", body="payment procedure")
         second_path = _skill(root, "two/payment", body="payment procedure")
         second_path.write_bytes(first_path.read_bytes())
-        assert len(_loader(tmp_path).search_skills("payment")) == 1
+        assert len(_loader(tmp_path, opened=opened).search_skills("payment")) == 1
 
-        warm = _loader(tmp_path)
+        warm = _loader(tmp_path, opened=opened)
 
         def unexpected(*args, **kwargs):
             pytest.fail("persisted metadata and body index should avoid content reads")
@@ -656,12 +669,12 @@ class TestCoverageAndPersistedMetadata:
         monkeypatch.setattr(warm._search_index, "_read_terms", unexpected)
         assert len(warm.search_skills("payment")) == 1
 
-    def test_multiword_body_coverage_beats_single_metadata_word(self, tmp_path):
+    def test_multiword_body_coverage_beats_single_metadata_word(self, tmp_path, opened):
         root = tmp_path / "skills"
         for n in range(60):
             _skill(root, f"distractor-{n}", description="deploy", body="unrelated")
         _skill(root, "rare-repair", body="zirconium deployment")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         # Complete the bounded incremental refresh before testing the ranking.
         for _ in range(80):
             result = loader.search_skills("deploy zirconium")
@@ -671,13 +684,13 @@ class TestCoverageAndPersistedMetadata:
         assert result[0]["key"] == "rare-repair"
 
     def test_new_loader_reuses_metadata_and_body_then_refreshes_a_change(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, opened
     ):
         root = tmp_path / "skills"
         path = _skill(root, "team/repair", description="deployment", body="zirconium")
-        first = _loader(tmp_path)
+        first = _loader(tmp_path, opened=opened)
         assert first.search_skills("zirconium")[0]["key"] == "team/repair"
-        second = _loader(tmp_path)
+        second = _loader(tmp_path, opened=opened)
 
         def unexpected(*args, **kwargs):
             pytest.fail("unchanged persistent index should not read skill content")
@@ -688,14 +701,16 @@ class TestCoverageAndPersistedMetadata:
             assert second.search_skills("deployment")[0]["key"] == "team/repair"
             assert second.search_skills("zirconium")[0]["key"] == "team/repair"
         path.write_text("---\nname: repair\ndescription: updated\n---\nnewword", encoding="utf-8")
-        third = _loader(tmp_path)
+        third = _loader(tmp_path, opened=opened)
         assert third.search_skills("zirconium") == []
         assert third.search_skills("newword")[0]["key"] == "team/repair"
 
-    def test_bounded_refresh_reports_pending_keys_and_eventually_reaches_tail(self, tmp_path):
+    def test_bounded_refresh_reports_pending_keys_and_eventually_reaches_tail(
+        self, tmp_path, opened
+    ):
         root = tmp_path / "skills"
         paths = [_skill(root, f"s{n}", body="zirconium") for n in range(4)]
-        index = SkillSearchIndex(tmp_path / "bounded.sqlite3")
+        index = opened(SkillSearchIndex(tmp_path / "bounded.sqlite3"))
         rows = [(p.parent.name, str(p), body_fingerprint(p)) for p in paths]
         assert index.sync(rows, budget_seconds=0) == frozenset(p.parent.name for p in paths)
         assert index.pending_keys

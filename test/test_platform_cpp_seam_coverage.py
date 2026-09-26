@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import pytest
-from source_corpus import candidate_sources
+from source_corpus import parsed_candidates
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig
@@ -170,23 +170,22 @@ def _parsed_core_source_files() -> Iterator[Tuple[Path, ast.AST]]:
     consumer, :func:`_scan_seam_reads`, extracts what it needs from each tree and
     drops it before the next is parsed.
 
-    Narrowed through ``test/source_corpus.py``'s ``candidate_sources`` rather than a
+    Narrowed through ``test/source_corpus.py``'s ``parsed_candidates`` rather than a
     private ``rglob`` + ``read_text``: a seam read is an attribute on a call to one
     of ``_CONTEXT_FACTORIES`` or on a name in ``_CONTEXT_VAR_NAMES``, so a file whose
     text contains none of those identifiers cannot produce a match and is never a
     false negative to skip (the corpus NFKC-folds both sides, as CPython does for
-    identifiers). The ``platform``/``_vendor`` exclusion stays here, because which
-    files this gate polices is this gate's contract. A file that fails to parse is
-    skipped, matching the defensive behavior the previous per-scanner parses had.
+    identifiers). Streamed as well as narrowed: ``ctx`` is a substring of
+    ``context``, so the candidate set is most of the tree, and a tuple of every
+    candidate's text would be ~120 MiB live before the first parse. The
+    ``platform``/``_vendor`` exclusion stays here, because which files this gate
+    polices is this gate's contract. A file that fails to parse is skipped,
+    the same defensive behavior as a per-scanner parse.
     """
-    for path, text in candidate_sources(
+    for path, _text, tree in parsed_candidates(
         require_any=tuple(sorted(_CONTEXT_FACTORIES | _CONTEXT_VAR_NAMES))
     ):
         if _EXCLUDED_DIRS & set(path.relative_to(_SRC_ROOT).parts):
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:  # pragma: no cover - defensive
             continue
         yield path, tree
 

@@ -39,6 +39,17 @@ pytestmark = pytest.mark.skipif(
 _STAGING_LEAF = "aws-control-staging"
 
 
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    Every test here reads the generated mask list; none is about that probe, and a
+    real ssh spawned from the test process is a host dependency the launcher text
+    must not vary with. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sb, "_ssh_supports_accept_new", lambda: True)
+
+
 def _hidden_dirs(mode: str = "standard", **kwargs) -> set[str]:
     script = sb._build_launcher_script(mode, **kwargs)
     match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)

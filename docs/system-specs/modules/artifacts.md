@@ -735,9 +735,10 @@ every write-side unit test still green — so test the round-trip
 - **Sensitive paths** — every read and write goes through
   the sensitive-path fence. The store's own file helpers (`_read_text` /
   `_write_text` / `_read_bytes` / `_write_bytes`) canonicalise the path with
-  `os.path.realpath` and ask `security.is_sensitive_canonical_path()` (through
-  `_fence_refuses`), the shared entry point for a caller-canonicalised path: it
-  answers with `security.is_sensitive_path()` on the event loop and with
+  `os.path.realpath` and ask `security.canonical_path_refusal()` (through
+  `_fence_refusal`), the reason-or-None form of the shared entry point for a
+  caller-canonicalised path: it answers with `security.sensitive_path_refusal()`
+  on the event loop and with
   `security.is_sensitive_resolved_path()` off it, so a caller earns the
   off-pool gate by offloading, never by declaring anything; `GET
   /api/artifacts` runs `store.list()` on a worker for that reason. The two read
@@ -745,9 +746,11 @@ every write-side unit test still green — so test the round-trip
   `_open_pinned_for_read`): a link at the final name is refused, the inode must
   be a regular file with one link, and the fence judges the kernel's path for
   the opened inode whenever it differs from the path already judged. The root
-  check and the file-backed `source_path` pointers stay on
-  `security.is_sensitive_path()` unconditionally; the store refuses to
-  instantiate at any sensitive root.
+  check asks `security.sensitive_path_refusal()`: the store refuses to
+  instantiate at any sensitive root, and a resolver stall is refused like a
+  match but raised with the producer's own "could not be verified" wording.
+  The file-backed `source_path` pointers stay on the bounded
+  `security.is_sensitive_path()` and fall back to the snapshot silently.
 - **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
   points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable

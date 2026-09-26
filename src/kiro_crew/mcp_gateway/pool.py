@@ -837,13 +837,17 @@ class BackendPool:
             return backend
         return None
 
-    def _spawn_shutdown(self, backend: "Backend") -> None:
+    def spawn_shutdown(self, backend: "Backend") -> None:
         """Reap ``backend`` on the event loop without awaiting it here.
 
         Used where the caller may itself be cancelled: an ``await`` on a
         cancelled task re-raises before the shutdown runs, leaking the child.
         The task is strongly referenced until done, since the loop holds only a
-        weak reference to a bare ``create_task``.
+        weak reference to a bare ``create_task`` -- and :meth:`shutdown_all`
+        joins it, so a reap the daemon's teardown interrupted is still finished
+        before the daemon returns. The stub-disconnect path in ``gatewayd`` reaps
+        a connection-private backend this way for exactly that reason: the
+        connection handler is what teardown cancels.
         """
         task = asyncio.create_task(_safe_shutdown(backend))
         self._shutdown_tasks.add(task)
@@ -882,7 +886,7 @@ class BackendPool:
             # here would leak the process. Reap it on the way out, as a tracked
             # task rather than an await — this handler may itself be cancelled,
             # and an await would re-raise before the shutdown ran.
-            self._spawn_shutdown(backend)
+            self.spawn_shutdown(backend)
             raise
         if existing is not None:
             # stub_uuid is a fresh uuid4 per connection, so this means the same

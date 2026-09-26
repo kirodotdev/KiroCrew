@@ -56,7 +56,7 @@ def store(tmp_path):
     """A store built OFF the loop -- construction is the one sanctioned take."""
     s = KnowledgeStore(str(tmp_path / "kb.db"))
     yield s
-    s.close()
+    s._close_all_for_tests()
 
 
 @pytest.fixture(autouse=True)

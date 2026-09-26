@@ -1994,6 +1994,18 @@ class TestCuratedTips:
                 f"{tip['id']} highlights {anchor!r}, which lives on the "
                 f"{entry['tab']!r} tab, not {route_tab!r}"
             )
+            # A control on a sub-navigated tab (Settings -> Chat pages) is only
+            # mounted when the route carries the page segment; without it the
+            # tab opens on its default page and the highlight misses.
+            sub = (entry.get("params") or {}).get("sub")
+            if sub:
+                segments = route_path.split("/")
+                route_sub = segments[3] if len(segments) > 3 else None
+                assert route_sub == sub, (
+                    f"{tip['id']} highlights {anchor!r}, which lives on the "
+                    f"{sub!r} page of the {entry['tab']!r} tab, but its route "
+                    f"{route!r} opens {route_sub!r}"
+                )
 
     @pytest.mark.asyncio
     async def test_curated_action_survives_serve(self, tmp_path: Path) -> None:

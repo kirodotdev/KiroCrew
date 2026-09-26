@@ -314,16 +314,15 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
 
     Two mechanisms reach a channel -- a channel-BORN key, and a dashboard-born
     session given an outbound mirror (:func:`_reaches_a_channel`) -- and one
-    exemption applies to both: ``session_control.session_audience_is_owner``, a
-    1:1 DM whose only human is the configured owner and whose mirror (if any) is
-    that same DM. It is the SAME predicate the session-control gates consult, over
-    the slot ``caller_slot_key`` resolves, so a session this gate admits is one
-    ``session_create`` admits as a conductor and vice versa -- the two cannot
-    disagree about a slot. Fails CLOSED with the predicate: an unreadable roster
-    or store, an unknown origin conversation, or a key no open slot answers to all
-    read as contained. The string is the predicate's own reason
-    (``session_control.session_owner_dm_refusal``), so the ledger and session
-    control tell the caller the same thing.
+    exemption applies to both: ``session_control.session_owner_dm_refusal``
+    answering ``""``, a 1:1 DM whose only human is the configured owner and whose
+    mirror (if any) is that same DM. It is the SAME predicate the session-control
+    gates consult, over the slot ``caller_slot_key`` resolves, so a session this
+    gate admits is one ``session_create`` admits as a conductor and vice versa --
+    the two cannot disagree about a slot. Fails CLOSED with the predicate: an
+    unreadable roster or store, an unknown origin conversation, or a key no open
+    slot answers to all read as contained. The string is the predicate's own
+    reason, so the ledger and session control tell the caller the same thing.
 
     Consulted on entry AND re-checked after every read the routes await across,
     because the exemption rests on live state -- a mirror retargeted at a thread

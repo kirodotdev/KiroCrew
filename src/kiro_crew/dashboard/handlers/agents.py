@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -111,12 +112,14 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers._shared import (
     MAX_AGENT_SKILLS,
+    SkillCatalogSnapshot,
     _capability_manager,
     _read_session_key,
     active_project_dir,
     agent_skill_keys,
     agent_skill_views,
     apply_skill_mapping,
+    enumerate_skill_catalog,
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.agent_templates import (
@@ -3504,13 +3507,25 @@ def _agent_detail_candidates(name: str) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def _merge_resources_delta(
-    fresh: dict[str, Any], before: dict[str, Any], after: dict[str, Any]
+    fresh: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    ordered: Sequence[str] = (),
 ) -> None:
     """Apply this patch's ``resources`` delta to the freshly-read spec, element-wise.
 
     ``after`` was built from a snapshot taken before the spec lock, so assigning it whole
     would drop a URI a concurrent writer added into *fresh* since. Only what this patch
-    NAMED -- the URIs it removed and the ones it added -- may move.
+    NAMED -- the URIs it removed, the ones it added, and the order it asked for -- may
+    move.
+
+    ``ordered`` is the managed ``skill://`` URIs the patch mapped, in the order it asked
+    for. That order is re-applied within those URIs' own slots of the merged list and
+    nowhere else: a ``file://`` glob or a hand-written wildcard the author interleaved
+    between two skills keeps its index. The order is the ONLY thing read from
+    ``ordered`` -- membership still comes from the delta above -- and it is applied to
+    the URIs the merged list carries, so a URI a concurrent writer removed is never put
+    back by a reorder that still names it.
     """
 
     def _uris(doc: dict[str, Any]) -> list[str]:
@@ -3538,13 +3553,39 @@ def _merge_resources_delta(
     # Only the STRINGS this patch named may leave: an entry of any other shape is not
     # something this merge has an opinion about, so it is carried through unread.
     kept = [e for e in fresh_entries if not isinstance(e, str) or e not in removed]
-    merged = kept + [r for r in added if r not in kept]
+    merged = _reorder_named(kept + [r for r in added if r not in kept], ordered)
     if merged:
         fresh["resources"] = merged
     else:
         # Same reason the mapping writer drops the key rather than writing []: an empty
         # list suppresses the shipped steering defaults.
         fresh.pop("resources", None)
+
+
+def _reorder_named(entries: list[Any], ordered: Sequence[str]) -> list[Any]:
+    """Refill the slots of the URIs *ordered* names with those URIs, in its order.
+
+    A slot is the first index at which a named URI occurs in *entries*; every other
+    entry -- a ``file://`` glob, an unmanaged ``skill://`` wildcard, a non-string, a
+    further copy of a named URI -- keeps its index. Only URIs *entries* carries take a
+    slot, so a named URI that is absent is skipped, never inserted, and the slots and
+    the URIs refilling them always count the same.
+    """
+    carried = {e for e in entries if isinstance(e, str)}
+    present = [u for u in dict.fromkeys(ordered) if u in carried]
+    if not present:
+        return entries
+    named = set(present)
+    slots: list[int] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        if isinstance(entry, str) and entry in named and entry not in seen:
+            seen.add(entry)
+            slots.append(index)
+    reordered = list(entries)
+    for index, uri in zip(slots, present):
+        reordered[index] = uri
+    return reordered
 
 
 async def api_agent_detail(request: web.Request) -> web.Response:
@@ -3658,6 +3699,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             status=409,
                         )
                 mapped: list[str] = []
+                mapped_uris: list[str] = []
+                # The catalog walk the mapping validated the keys against, with its
+                # staleness stamp; the reply is resolved off the written spec against
+                # it, so a skills PATCH walks the skill roots once unless they moved.
+                snapshot: SkillCatalogSnapshot | None = None
+                session_key = _read_session_key(request)
                 loop = asyncio.get_running_loop()
                 async with _get_config_lock():
                     # Re-read under the lock: the copy above was read before
@@ -3713,14 +3760,18 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     # to stall the event loop — the same reason /api/skills and
                     # /api/agents/installed run off the loop.
                     if "skills" in patch_body:
-                        mapped, unknown = await loop.run_in_executor(
+                        # The applied keys are the REQUEST's view of the mapping and are
+                        # not read again: the reply is resolved off the spec as written
+                        # under the lock, below, against this same catalog walk. The URIs
+                        # steer the merge's reorder.
+                        _applied, unknown, mapped_uris, snapshot = await loop.run_in_executor(
                             discovery_executor(),
                             apply_skill_mapping,
                             data,
                             f,
                             state,
                             list(patch_body["skills"]),
-                            _read_session_key(request),
+                            session_key,
                         )
                         if unknown:
                             return web.json_response(
@@ -3734,10 +3785,11 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             data,
                             f,
                             state,
-                            _read_session_key(request),
+                            session_key,
                         )
+                        mapped_uris = []
 
-                    def _locked_overwrite() -> None:
+                    def _locked_overwrite() -> list[str]:
                         # Same spec lock as fork/publish and the background
                         # fork refresh — and a full read-merge-write inside
                         # it: our `data` snapshot was taken before the lock,
@@ -3747,7 +3799,8 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # patch changed onto the fresh read, then run the
                         # mandated whole-config governance funnel immediately
                         # before persisting (same contract as
-                        # _write_spec_file and the PUT handler).
+                        # _write_spec_file and the PUT handler). Returns the
+                        # skills the WRITTEN spec maps, for the reply.
                         with agents_spec_lock(f.parent):
                             # The pre-lock ambiguity check re-run where it
                             # decides: a second claimant that landed after the
@@ -3785,16 +3838,34 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             for key in before_patch:
                                 if key not in data and key != "resources":
                                     fresh.pop(key, None)
-                            _merge_resources_delta(fresh, before_patch, data)
+                            _merge_resources_delta(fresh, before_patch, data, mapped_uris)
                             sanitize_agent_config_governance(fresh)
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing
                             # template. Same tmp+rename helper as the fork
                             # refresh and install paths.
                             _atomic_json_write(f, fresh)
+                        if snapshot is None:
+                            # No skills in this patch: the mapping is the pre-lock read's.
+                            return mapped
+                        # Report the skills the WRITTEN spec maps -- the view a GET answers --
+                        # rather than the request: the locked merge applies the request onto
+                        # the fresh read, so the two differ whenever a concurrent writer
+                        # removed or added a URI in between, and the skills editor takes this
+                        # reply as its next state. Resolved against the catalog walk the
+                        # mapping validated the keys with, re-walked only when a stat of the
+                        # directories that walk read says the roots moved since: a skill
+                        # a co-owner installed AND mapped in between is not in the
+                        # snapshot, and a reply missing it would have the editor's next
+                        # toggle unmap it. Still off the loop, since a hand-authored URI's
+                        # inversion resolves paths.
+                        catalog = snapshot.entries
+                        if snapshot.changed():
+                            catalog = enumerate_skill_catalog(state, session_key)
+                        return agent_skill_keys(fresh, f, state, catalog=catalog)
 
                     try:
-                        await asyncio.to_thread(_locked_overwrite)
+                        mapped = await asyncio.to_thread(_locked_overwrite)
                     except CapabilityError as exc:
                         return web.json_response(
                             {"error": exc.code, "code": exc.code}, status=exc.status

@@ -557,7 +557,20 @@ async def fork_slot(
                             # this rewrite was the LEAST ordered truncating save in
                             # the codebase, not the most, and the fork is the one
                             # caller that then republishes the file it wrote.
+                            #
+                            # The key alone pins only ROUTING at that boundary,
+                            # and a same-name close-and-recreate resumes the same
+                            # transcript, so the key stays identical while the
+                            # object under the name changes.
+                            # ``expected_slot_name`` re-reads the map inside the
+                            # transcript lock, with no await before the write, and
+                            # refuses when the name holds a different slot. It
+                            # matters most for this caller: the refusal arm below
+                            # aborts the fork, where committing would copy a
+                            # window the replacement never authorized under a
+                            # fresh key.
                             expected_history_key=slot_history_key(slot),
+                            expected_slot_name=slot.key,
                         )
                     except Exception:
                         logger.warning(
@@ -575,11 +588,12 @@ async def fork_slot(
                             status=503,
                         )
                     if not saved:
-                        # The save declined WITHOUT writing, and the three reasons
-                        # it can decline are indistinguishable from a bool: the
+                        # The save declined WITHOUT writing, and the reasons it
+                        # can decline are indistinguishable from a bool: the
                         # source session was permanently deleted while this flush
                         # awaited the lock, the routing moved off the transcript the
-                        # key authorizes, or a retraction of this slot's name is
+                        # key authorizes, the name now holds a different slot
+                        # object, or a retraction of this slot's name is
                         # already past the point where it can wait for this write.
                         # Every one of them says the same thing about forking: the
                         # file on disk still holds the discarded turns, so copying

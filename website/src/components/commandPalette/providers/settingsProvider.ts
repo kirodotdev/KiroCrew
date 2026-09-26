@@ -252,8 +252,15 @@ export function useSettingsProvider(): ResourceProvider {
   // Offer unless the read SUCCEEDED and said otherwise: a failed or in-flight read
   // is not a denial, and the card this navigates to reports the failure itself.
   const decisionsEnabled = !dashCfgQ.isSuccess || dashCfgQ.data?.decisions_enabled === true
+  // The same `['tipsStatus']` read ChatPanel uses to drop its Discovery rail group.
+  const tipsQ = useQuery<{ enabled_config: boolean }>({
+    queryKey: ['tipsStatus'],
+    queryFn: () => api.tipsStatus(),
+    staleTime: 30_000,
+  })
+  const tipsEnabled = !tipsQ.isSuccess || tipsQ.data?.enabled_config !== false
   return useMemo(
-    () => createSettingsProvider(navigate, { decisionsEnabled }),
-    [navigate, decisionsEnabled],
+    () => createSettingsProvider(navigate, { decisionsEnabled, tipsEnabled }),
+    [navigate, decisionsEnabled, tipsEnabled],
   )
 }

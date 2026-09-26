@@ -247,3 +247,51 @@ describe('LinkPatternsEditor save serialization', () => {
     expect(launches[1]).toEqual(['CC-\\d+'])
   })
 })
+
+describe('LinkPatternsEditor draft holder', () => {
+  // The Chat settings rail unmounts the editor on a page switch. A row the
+  // commit gate refused (pattern typed, URL still missing) must be there on return.
+  it('keeps a half-typed row across an unmount when the host holds the draft', () => {
+    const rules: LinkPatternRule[] = [{ pattern: 'AA-\\d+', url: URL_A }]
+    const draft = { current: null }
+    const saves: LinkPatternRule[][] = []
+    const first = render(<LinkPatternsEditor label="Text link patterns" rules={rules} onSave={next => { saves.push(next) }} draft={draft} />)
+    fireEvent.change(patternInputs()[0], { target: { value: 'BB-\\d+' } })
+    fireEvent.change(screen.getAllByDisplayValue(URL_A)[0], { target: { value: 'https://' } })
+    fireEvent.blur(patternInputs()[0])
+    expect(saves).toHaveLength(0)
+    first.unmount()
+
+    render(<LinkPatternsEditor label="Text link patterns" rules={rules} onSave={() => {}} draft={draft} />)
+    expect(patternInputs()[0].value).toBe('BB-\\d+')
+    expect(screen.getByDisplayValue('https://')).toBeInTheDocument()
+  })
+
+  it('still merges a server change made while the editor was unmounted', () => {
+    const draft = { current: null }
+    const first = render(<LinkPatternsEditor label="Text link patterns" rules={[]} onSave={() => {}} draft={draft} />)
+    first.unmount()
+    render(<LinkPatternsEditor label="Text link patterns" rules={[{ pattern: 'CC-\\d+', url: URL_B }]} onSave={() => {}} draft={draft} />)
+    expect(patternInputs().map(i => i.value)).toContain('CC-\\d+')
+  })
+
+  it('adopts an external restore after a save that confirmed while unmounted', async () => {
+    const before: LinkPatternRule[] = [{ pattern: 'AA-\\d+', url: URL_A }]
+    const after: LinkPatternRule[] = [{ pattern: 'BB-\\d+', url: URL_A }]
+    const draft = { current: null }
+    let confirm!: () => void
+    const settled = new Promise<void>(res => { confirm = res })
+    const first = render(<LinkPatternsEditor label="Text link patterns" rules={before} onSave={() => settled} draft={draft} />)
+    fireEvent.change(patternInputs()[0], { target: { value: 'BB-\\d+' } })
+    fireEvent.blur(patternInputs()[0])
+    first.unmount()
+
+    const { rerender } = render(<LinkPatternsEditor label="Text link patterns" rules={after} onSave={() => {}} draft={draft} />)
+    await act(async () => {
+      confirm()
+      await settled
+    })
+    rerender(<LinkPatternsEditor label="Text link patterns" rules={before} onSave={() => {}} draft={draft} />)
+    expect(patternInputs()[0].value).toBe('AA-\\d+')
+  })
+})

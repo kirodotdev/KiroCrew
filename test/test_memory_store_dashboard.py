@@ -694,6 +694,7 @@ class TestAnAbsentParameterDoesNotFollowTheSessionKeyHeader:
                 "/api/memory/preferences",
                 env.state(bound_to=_FINANCE),
                 body={"content": "zzq-written-by-a-named-session-key"},
+                owner=True,
             )
         )
         assert resp.status == 200

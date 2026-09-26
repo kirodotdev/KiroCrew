@@ -64,7 +64,16 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
       {ordered.map(({ folder: f, depth, path }) => (
         <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} onSelect={() => onPick(f.id)}>
           <Folder size={13} className="text-accent shrink-0" />
-          <span className="truncate">{f.name}</span>
+          {/* Two nested folders can share a name, and the indent that tells them
+              apart is visual only. `title` shows the full path on pointer hover,
+              which no browser opens on keyboard focus, so the path rides along
+              as visually-hidden text and becomes part of the item's name. Only
+              when it says something the name does not -- and then the visible
+              name is aria-hidden, so the item is spoken as its path once rather
+              than as the leaf name followed by a path ending in that same name.
+              `select-none` keeps the hidden path out of a copied selection. */}
+          <span className="truncate" aria-hidden={path !== f.name || undefined}>{f.name}</span>
+          {path !== f.name && <span className="sr-only select-none">{path}</span>}
           {currentFolderId === f.id && <Check size={13} className="ml-auto text-accent shrink-0" />}
         </Item>
       ))}

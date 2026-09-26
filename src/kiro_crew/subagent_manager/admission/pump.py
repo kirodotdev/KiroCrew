@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
 
     from ...subagent import (
+        _RELEASE_REPUMP_SECS,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
         Stats,
@@ -45,10 +46,17 @@ class _PumpMixin(ManagerComponent):
     def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
 
-        Returns ``(should_queue, slot_free)``. A spawn is queued when either no
-        slot is free (at capacity) OR a spawn started within the stagger window
-        (``subagent_spawn_stagger_secs``) — so the initial fill never bursts and
-        no two agents start within the interval (dynamic-subagent-sizing.md §5.3).
+        Returns ``(should_queue, slot_free)``. A spawn is queued when any of
+        three holds: no slot is free (at capacity); a spawn started within the
+        stagger window (``subagent_spawn_stagger_secs``) -- so the initial fill
+        never bursts and no two agents start within the interval
+        (dynamic-subagent-sizing.md §5.3); or as many agents are already in
+        startup as ``_startup_cap`` allows (two session-start gate rounds)
+        -- so a slow-start regime cannot pile the whole cap into startup at
+        once. The three bound different things: the RUNNING population, the
+        RATE of starts, and the IN-STARTUP population. ``slot_free`` reports
+        only the first, so the caller can tell a hold that a running agent's
+        exit will release from one that needs the pump re-armed.
         """
         # The cap as the fairness dispatcher reads it: the effective cap, lifted
         # for the child reserve while a parent waits under an adaptive squeeze
@@ -56,7 +64,8 @@ class _PumpMixin(ManagerComponent):
         # the caller, which knows whether the spawn is nested.
         slot_free = self._manager._admission.capacity_view().any_slot
         too_soon = (now - self._manager._last_spawn_ts) < self._manager._spawn_stagger_secs
-        return (not slot_free or too_soon, slot_free)
+        startup_full = self._manager._startup_population() >= self._manager._startup_cap()
+        return (not slot_free or too_soon or startup_full, slot_free)
 
     def _drain_queue_impl(self) -> None:
         """Spawn the next queued task if a slot is available and the stagger
@@ -401,6 +410,7 @@ class _PumpMixin(ManagerComponent):
     def release_reservation(self, agent_id: str) -> None:
         """Give back the slot a ``ClaimPoint`` reserved for a row that did not start."""
         self._manager._running_count = max(0, int(self._manager._running_count) - 1)
+        self._manager._startup_reservations = max(0, int(self._manager._startup_reservations) - 1)
         _glue_logger.debug("taskq: reservation for %s released", agent_id)
 
     def _drain_queue_sync_impl(
@@ -423,6 +433,16 @@ class _PumpMixin(ManagerComponent):
         off the loop by the caller for the same reason as the rest."""
         if not self._manager._queue and self._manager._admission.taskq_store() is None:
             return
+        # Approval-released starts first (they hold their slots already, so
+        # this must precede the capacity check): one per pass, under the
+        # stagger and the in-startup bound. Neither outcome ends the pass --
+        # a RESUME waits on a lane slot, never on the startup bound or the
+        # stagger, so the grants below run whether a start was released or is
+        # being held; and the fresh-spawn pick further down applies the same
+        # two checks itself, so a hold here is a hold there too. Guarded by the
+        # scan so a minimal facade with only a queue still pumps.
+        if any(p.get("_startup_release") for p in self._manager._queue):
+            self._release_admitted_start_impl()
         view = self._manager._admission.capacity_view()
         if not view.any_slot:
             return
@@ -452,6 +472,7 @@ class _PumpMixin(ManagerComponent):
                     i
                     for i, p in enumerate(self._manager._queue)
                     if p.get("_resume_id")
+                    and not p.get("_startup_release")
                     and not (
                         callable(boundary_cancellation_pending) and boundary_cancellation_pending(p)
                     )
@@ -484,6 +505,16 @@ class _PumpMixin(ManagerComponent):
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)
+            return
+        # In-startup bound (``_startup_cap``, two session-start gate rounds): as many
+        # agents as ``_startup_cap`` allows are past admission but have no
+        # runtime, stream or turn yet. Hold the pick -- the resumes above were
+        # granted, a resume is not a start -- and arm nothing: the next edge is
+        # one of them leaving startup, which ``_note_startup_progress`` (PID or
+        # first stream) and the slot-release drain (terminal, including the
+        # watchdog's reap of a wedged one) both pump. A timer here would only
+        # poll for those same edges.
+        if self._manager._startup_population() >= self._manager._startup_cap():
             return
         # Lane-aware pick: the weighted round-robin over the lanes with
         # eligible entries (resumes were granted above). When only the child
@@ -753,7 +784,205 @@ class _PumpMixin(ManagerComponent):
             return
 
         self._manager._log_spawned(info)
+        # The prompt resolved; the START has not been admitted. While parked
+        # this agent counted against nothing (it was starting nothing), so its
+        # release is where the in-startup bound has to be applied -- and a bulk
+        # trust/yolo grant releases every parked prompt in one pass. It goes
+        # through the pump like a fresh spawn and is metered into startup by
+        # the same stagger and in-startup checks; a stop while it waits ends
+        # it here without a run.
+        if not await self._manager._admit_released_start(info):
+            if not info.done:
+                # Refused at release (gateway admission closed): the run holds
+                # a slot and a row but never started. Same terminal bookkeeping
+                # as a declined prompt, so the slot, the queue and the parent's
+                # completion event all settle.
+                info.done = True
+                info.error = (
+                    "spawn rejected: the gateway closed admission before this "
+                    "approved spawn could start"
+                )
+                if self._manager._release_slot(info):
+                    self._manager._running_count -= 1
+                    self._manager._drain_queue()
+                self._manager._tasks.pop(info.id, None)
+                sel().log_tool_invocation(
+                    session_key=info.parent_session_key,
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected",
+                    metadata={"subagent_id": info.id, "reason": "admission_closed"},
+                )
+                if self._manager._on_done and self._manager._claim_finalize(info):
+                    await self._manager._safe_announce(info)
+            return
         await self._manager._run(info)
+
+    async def _admit_released_start_impl(self, info: SubagentInfo) -> bool:
+        """Wait for the pump to meter *info* -- released from the approval
+        prompt -- into startup. True when it may run, False when it ended
+        (stopped / reaped) while waiting or when gateway admission is closed
+        at release time -- an approved start that has not begun is new work,
+        and the updater's pause admits none (the caller writes that refusal).
+
+        The entry reuses the queue's RESIDENT shape (``_resume_id``): every
+        scan that separates unstarted spawns from resident runs -- the
+        queued-stop paths, the refill census, the eviction, the continuation
+        lookup -- already leaves such an entry alone, and the run IS resident:
+        registered, holding its slot, its row claimed. ``_startup_release``
+        tells the pump this resident is waiting to START rather than to resume,
+        so it is admitted by the stagger + in-startup gate
+        (:meth:`_release_admitted_start_impl`) and never by the resume grant, which
+        hands back a yielded lane slot this run never gave up. Accounting while
+        it waits: in ``_agents``, in ``_running_count``, in the queue depth its
+        parent's chip shows, and NOT in ``_startup_population`` -- it is not
+        starting until the pump says so.
+        """
+        # The same admission gate every registration in this package sits
+        # behind: yield-free with the append below, so the start is either
+        # queued for release before the updater's pause or refused after it.
+        if getattr(self._manager._sessions, "admission_closed", False) is True:
+            logger.info(
+                "Subagent %s: approved start refused (gateway admission is closed)", info.id
+            )
+            return False
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future = loop.create_future()
+        info._start_release = fut
+        entry = {
+            "_resume_id": info.id,
+            "_startup_release": True,
+            # The waiter itself, so the pump can always wake it -- including a
+            # run that is not registered in ``_agents`` at the time it is metered.
+            "_start_info": info,
+            "parent_session_key": info.parent_session_key,
+            "batch_id": info.batch_id,
+        }
+        self._manager._queue.append(entry)
+        self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+        # The wait is edge-driven (PID / first stream / terminal / stagger
+        # boundary all pump), with a slow self-re-arming re-pump as the
+        # backstop: a pump pass that failed on an unrelated row is logged and
+        # swallowed, and without this the released start would wait for the
+        # next edge to arrive by itself. A timer rather than ``wait_for`` so the
+        # wake stays ONE hop from ``set_result``: the pump re-arms itself at the
+        # stagger boundary right after a release, and the released run's first
+        # step (which puts it in ``_startup_population``) must land before that
+        # re-arm can admit the next one -- the same ordering the direct
+        # dispatch paths rely on.
+        repump: Any = None
+
+        def _repump() -> None:
+            nonlocal repump
+            repump = None
+            if fut.done():
+                return
+            self._manager._drain_queue()
+            repump = loop.call_later(_RELEASE_REPUMP_SECS, _repump)
+
+        try:
+            self._manager._drain_queue()
+            if not fut.done():
+                repump = loop.call_later(_RELEASE_REPUMP_SECS, _repump)
+            granted = bool(await fut)
+        finally:
+            if repump is not None:
+                repump.cancel()
+            info._start_release = None
+            # A stop or a reap while waiting leaves the entry behind; drop it
+            # so the pump never meters a run that already ended.
+            for index, params in enumerate(list(self._manager._queue)):
+                if (
+                    params.get("_startup_release")
+                    and str(params.get("_resume_id") or "") == info.id
+                ):
+                    self._manager._queue.pop(index)
+                    self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+                    break
+        return granted and not (info.done or info.user_stopped or info.reaped or info._reap_started)
+
+    def _release_admitted_start_impl(self) -> str:
+        """The pump's released-start phase: meter ONE approval-released start
+        into startup, under the same stagger and in-startup checks a fresh
+        spawn passes. Returns ``"released"`` when a start was let into startup
+        this pass, ``"held"`` when one is waiting but may not start yet (the
+        stagger or the in-startup bound), and ``""`` when none is waiting. The
+        caller treats none of these as the end of the pass: a held start holds
+        only STARTS, and the resume grants that follow it wait on lane slots,
+        not on the startup bound.
+
+        Runs BEFORE the capacity check on purpose: a released start already
+        holds its slot, so at a full cap ``any_slot`` is False and a pass that
+        checked capacity first would never reach it -- two approved spawns at a
+        cap of two would wait on each other forever. It also runs before the
+        resume grants, since a released start is older than anything admitted
+        after it and the bound it waits on is the one the resumes skip.
+        """
+        queue = self._manager._queue
+        while True:
+            index = next(
+                (i for i, p in enumerate(queue) if p.get("_startup_release")),
+                None,
+            )
+            if index is None:
+                return ""
+            params = queue[index]
+            info = params.get("_start_info")
+            fut = getattr(info, "_start_release", None) if info is not None else None
+            if (
+                info is None
+                or fut is None
+                or fut.done()
+                or info.done
+                or info.user_stopped
+                or info.reaped
+                or info._reap_started
+            ):
+                # Ended while waiting, or already released: not a start. Wake
+                # the waiter with False so it returns without running.
+                queue.pop(index)
+                if fut is not None and not fut.done():
+                    fut.set_result(False)
+                continue
+            break
+        elapsed = time.monotonic() - self._manager._last_spawn_ts
+        if elapsed < self._manager._spawn_stagger_secs:
+            try:
+                asyncio.get_event_loop().call_later(
+                    self._manager._spawn_stagger_secs - elapsed, self._manager._drain_queue
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
+            return "held"
+        if self._manager._startup_population() >= self._manager._startup_cap():
+            # Held; the next edge out of startup pumps again (see the same
+            # hold on the spawn side below).
+            return "held"
+        queue.pop(index)
+        # This start begins NOW. Stamp the stagger clock as every direct
+        # dispatch does at ``create_task``: ``_run_inner`` writes
+        # ``_exec_started`` on its first step, one loop iteration from here,
+        # and the stamp keeps the pump from admitting into that gap -- the
+        # same cover the direct paths rely on. One release per pass; the
+        # re-arm at the stagger boundary takes the next.
+        self._manager._last_spawn_ts = time.monotonic()
+        logger.info(
+            "Releasing approved spawn %s into startup (%d left queued, in_startup=%d/%d)",
+            info.id,
+            len(queue),
+            self._manager._startup_population(),
+            self._manager._startup_cap(),
+        )
+        fut.set_result(True)
+        self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+        if queue:
+            try:
+                asyncio.get_event_loop().call_later(
+                    self._manager._spawn_stagger_secs, self._manager._drain_queue
+                )
+            except RuntimeError:
+                pass
+        return "released"
 
     def _log_spawned_impl(self, info: SubagentInfo) -> None:
         """Record spawn metrics and audit log entry.

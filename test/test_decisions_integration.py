@@ -72,6 +72,11 @@ def tree(tmp_path):
     return root
 
 
+@pytest.fixture(autouse=True)
+def _close_skills_loaders(close_skills_loaders):
+    """Every test here builds a ``ContextBuilder``: close its ``SkillsLoader`` (rootdir conftest)."""
+
+
 def _builder(tmp_path, skills_root, *, cap=3, conversation_log=None):
     """A real ContextBuilder. MUST be called on the loop, as production does."""
     from kiro_crew.context import ContextBuilder

@@ -184,6 +184,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanel.tsx': 'instances',
 }
 
+/** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;
+ *  each entry gets `params.sub` from the case it is rendered under. */
+const SUBNAV_CASE_PANELS = new Set(['ChatPanel.tsx'])
+
 /** Map component name → our type enum. */
 const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {
   SettingsToggle: 'toggle',
@@ -371,9 +375,15 @@ export function extractFromSource(
       const description = extractStringProp(props, 'description')
       const configKey = extractStringProp(props, 'configKey')
       const settingId = extractStringProp(props, 'settingId')
+      // A rail-hosting panel renders each page in a `case '<key>':` block;
+      // search must open that page or the highlight finds nothing.
+      const caseKey = SUBNAV_CASE_PANELS.has(path.basename(fileName))
+        ? [...source.slice(0, tagStartMatch.index).matchAll(/\bcase '([a-z0-9-]+)':/g)].pop()?.[1]
+        : undefined
       for (const target of targets) {
         const tab = typeof target === 'string' ? target : target.tab
-        const params = typeof target === 'string' ? undefined : target.params
+        const targetParams = typeof target === 'string' ? undefined : target.params
+        const params = caseKey ? { ...targetParams, sub: caseKey } : targetParams
         const suffix = typeof target === 'string' ? undefined : target.labelSuffix
         // Suffix only labelKey entries: highlighting resolves labelKey to the
         // rendered (un-suffixed) label, so DOM lookup still works. A literal

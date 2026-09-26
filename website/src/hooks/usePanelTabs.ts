@@ -452,6 +452,88 @@ export function openPanelView(slotKey: string | null, kind: ViewKind): void {
   mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }))
 }
 
+/** Drop every document body the panel holds in memory, in EVERY slot, so the
+ *  next look at a tab re-reads the file through `/api/file-read` under whatever
+ *  redaction pass is in force NOW. The owner's credential-redaction switch calls
+ *  this when it changes: a file opened while the switch was off holds raw
+ *  credentials in its tab body, and a react-query purge alone leaves that copy on
+ *  screen after redaction is back on.
+ *
+ *  A CLEAN file tab loses only `content`/`savedContent` and becomes the same
+ *  self-hydrating reference a reload restores (`HydratingFileTab`). A DIRTY tab
+ *  (edits the owner has not saved) is kept whole: discarding it would destroy
+ *  work silently, and its buffer is the owner's own typing, not a fresh read.
+ *  Diff tabs are closed: their bodies are not re-fetchable by shape (the persist
+ *  path drops them for the same reason). Returns how many tabs were touched. */
+/** Bumped by every `evictDocumentBodies`. A DIRECT file read -- `MarkdownPanel`'s
+ *  refresh / watch re-read, which bypasses react-query -- captures it before the
+ *  fetch and discards its result if it moved: a read that STARTED while the
+ *  owner's redaction switch was off can otherwise complete after the switch is
+ *  back on and write raw credentials into a tab the purge had just emptied. The
+ *  react-query reads (a chip click's `fetchQuery`, a hydrating tab, the cold-tab
+ *  queries) need no epoch: `purgeDocumentBodiesForRedactionChange` resets their
+ *  queries, which CANCELS an in-flight fetch, so a straddling read rejects and
+ *  never becomes a body (covered by usePanelDocumentActions.redactionEpoch.test). */
+let documentBodyEpoch = 0
+export function documentBodyEpochNow(): number { return documentBodyEpoch }
+
+export function evictDocumentBodies(): number {
+  documentBodyEpoch++
+  let touched = 0
+  for (const key of Object.keys(store)) {
+    mutateSlot(key, b => {
+      let changed = false
+      const tabs: PanelTab[] = []
+      for (const t of b.tabs) {
+        if (t.kind === 'diff') { changed = true; touched++; continue }
+        const dirty = t.kind === 'file' && t.content !== undefined && t.savedContent !== undefined && t.content !== t.savedContent
+        if (t.kind === 'file' && t.content !== undefined && !dirty) {
+          const copy = { ...t }; delete copy.content; delete copy.savedContent
+          tabs.push(copy); changed = true; touched++
+          continue
+        }
+        tabs.push(t)
+      }
+      if (!changed) return b
+      // Refocus ONLY when the focused tab was one of the dropped diff tabs. A
+      // focus that names no bucket tab at all is one of the host's leading tabs
+      // (`usePanelTabs(…, { leadingIds })` -- the Crewmates page's Notes / Work
+      // log / Dashboard), which live outside the bucket by design and must keep
+      // the focus -- the same `droppedFocus` rule `serializeBucket` applies.
+      const droppedFocus = b.activeId !== null
+        && b.tabs.some(t => t.id === b.activeId)
+        && !tabs.some(t => t.id === b.activeId)
+      const activeId = droppedFocus
+        ? (tabs.length ? tabs[tabs.length - 1].id : null)
+        : b.activeId
+      return { tabs, activeId }
+    })
+  }
+  return touched
+}
+
+/** Everything a change of the owner's credential-redaction switch must drop in
+ *  THIS document: the react-query file bodies (`['file-read', path]` and the
+ *  `['file-diff', path]` the panel compares them against) and the open tab
+ *  bodies (`evictDocumentBodies`). The queries are RESET, not removed and not
+ *  invalidated: an invalidate keeps the raw body on screen while revalidating,
+ *  and a remove drops the cache entry but leaves a MOUNTED observer (the
+ *  Library's `SessionDocPreview`, a `useQuery` on the same key) holding its
+ *  last result with nothing to re-render it, so the plaintext stays rendered
+ *  until an unrelated re-render happens to rebuild the query. A reset puts every
+ *  matching query back to its initial state -- observers see `data: undefined`
+ *  at once and re-render -- cancels an in-flight fetch exactly as a remove did,
+ *  and refetches the ACTIVE ones, so a mounted preview re-reads under the pass
+ *  now in force while an inactive entry is simply emptied. Called by the
+ *  Settings card that made the change AND by the WebSocket handler for
+ *  `credential_redaction_changed`, so a second browser tab purges too -- the
+ *  two callers share one list on purpose. */
+export function purgeDocumentBodiesForRedactionChange(qc: { resetQueries: (f: { queryKey: unknown[] }) => unknown }): void {
+  void qc.resetQueries({ queryKey: ['file-read'] })
+  void qc.resetQueries({ queryKey: ['file-diff'] })
+  evictDocumentBodies()
+}
+
 /** Strip heavy bodies (file/diff/artifact content) before persisting — those
  *  can be MBs and blow the localStorage quota. Terminal + view tabs and all
  *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so

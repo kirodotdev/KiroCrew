@@ -146,10 +146,10 @@ class TestUpdateCheckGitGuard:
 
         monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _boom)
 
-        class _Req:
+        class _Req(dict):
             app = {"state": None}
 
-        resp = asyncio.run(updates.api_update_apply(_Req()))
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
         assert resp.status == 409
         assert b"kirocrew update" in resp.body
 
@@ -195,10 +195,10 @@ class TestUpdateCheckGitGuard:
             def push_refresh(self, kind: str) -> None:
                 pass
 
-        class _Req:
+        class _Req(dict):
             app = {"state": _State()}
 
-        resp = asyncio.run(updates.api_update_apply(_Req()))
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
         assert resp.status == 409
         body = json.loads(resp.body)
         assert body["code"] == "checkout_diverged"
@@ -249,10 +249,10 @@ class TestUpdateCheckGitGuard:
             def push_refresh(self, kind: str) -> None:
                 pass
 
-        class _Req:
+        class _Req(dict):
             app = {"state": _State()}
 
-        resp = asyncio.run(updates.api_update_apply(_Req()))
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
         assert resp.status == 409
         assert json.loads(resp.body)["code"] == "git_fetch_failed"
         assert not any("pull" in c for c in calls)
@@ -307,10 +307,10 @@ class TestUpdateCheckGitGuard:
             def push_refresh(self, kind: str) -> None:
                 pass
 
-        class _Req:
+        class _Req(dict):
             app = {"state": _State()}
 
-        resp = asyncio.run(updates.api_update_apply(_Req()))
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
         assert resp.status == 409
         assert json.loads(resp.body)["code"] == "git_read_failed"
         assert not any("pull" in c for c in calls)

@@ -33,6 +33,27 @@ from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 pytestmark = pytest.mark.xdist_group("member_memory_api")
 
 
+@pytest.fixture
+def on_teardown():
+    """Run each registered callable after the test, whichever way it ended.
+
+    For handles the test opens itself (a ``SkillsLoader`` and its search index,
+    a tier the handler publishes on ``state``) that ``env`` does not own: an
+    unclosed sqlite connection is a reference cycle on CPython 3.11+, so its
+    descriptors survive the test until the cyclic collector runs.
+    """
+    callbacks: list = []
+    yield callbacks.append
+    for callback in reversed(callbacks):
+        callback()
+
+
+def _close_standalone_vector(state) -> None:
+    standalone = getattr(state, "_standalone_vector", None)
+    if standalone is not None:
+        standalone.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["", "bob"])
 async def test_spawn_inherits_member_or_uses_explicit_target(env, target):
@@ -1391,7 +1412,7 @@ async def test_member_history_oversized_document_is_unavailable_without_overwrit
     "question", ["{}", "What do we know about {}?", "Which project does {} belong to?"]
 )
 async def test_markdown_only_facts_reachable_from_agent_recall(
-    env, monkeypatch, mode, vector_available, question
+    env, monkeypatch, mode, vector_available, question, on_teardown
 ):
     from kiro_crew import context, member_memory_auth
     from kiro_crew.hooks import HookManager
@@ -1402,10 +1423,15 @@ async def test_markdown_only_facts_reachable_from_agent_recall(
     store.write_projects("# Active Projects\nNotebookquartz task belongs to the synthetic project.")
     store.append_history("Dailyquartz milestone was verified.")
     assert env.tiers[""].get_semantic("Notebookquartz") is None
+    skills = SkillsLoader(skills_path=env.home / "synthetic-skills", install_builtins=False)
+    on_teardown(skills.close)
+    # With no vector tier on the memory store the recall handler opens a standalone
+    # one and publishes it on ``state``, where production keeps it for the process.
+    on_teardown(lambda: _close_standalone_vector(env.state))
     builder = context.ContextBuilder(
         memory=store,
         lessons=LessonStore(base_dir=env.home / "synthetic-lessons"),
-        skills=SkillsLoader(skills_path=env.home / "synthetic-skills", install_builtins=False),
+        skills=skills,
         hooks=HookManager(),
     )
     monkeypatch.setattr(context, "kiro_agents_dir", lambda: env.home / "empty-agents")

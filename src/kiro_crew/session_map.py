@@ -1648,6 +1648,21 @@ class SessionMap:
         that only carries ``slack_thread_ts`` / ``slack_channel_id`` it
         synthesizes the equivalent Slack ``ChannelLink`` so callers never have
         to special-case Slack. Returns None when the session mirrors nowhere.
+
+        A Slack row that names NO thread is not a mirror and is never synthesized
+        into one. ``set_channel`` writes a channel conversation's namespaced bucket
+        (``discord:<id>``) into the legacy ``slack_channel_id`` field on the first
+        turn, and ``clear_mirror_link`` pops only the ``mirror`` row -- so without
+        this filter every unlinked channel session, and every new one on its first
+        turn, read back a Slack link nobody chose. An empty ``thread_ts`` is Slack's
+        own clear sentinel and never enters the thread index, so nothing can be
+        delivered through such a row: it is bookkeeping, and it names no audience.
+        Filtered HERE rather than by each reader because the readers cannot all be
+        enumerated: ``bind_origin_mirror`` and the owner-DM predicate each carried
+        their own copy of the test, and the ``!sessions`` resume, the dashboard's
+        link projection and the containment probe read this method too and would
+        each have needed one. The thread, not the channel type, is what separates
+        a binding from bookkeeping: a real Slack mirror always names its thread.
         """
         entry = self._data.get(self._mirror_key(key))
         if not entry:
@@ -1657,7 +1672,7 @@ class SessionMap:
             return ChannelLink.from_dict(raw)
         ts = entry.get("slack_thread_ts")
         ch = entry.get("slack_channel_id")
-        if ts or ch:
+        if ts:
             return ChannelLink(channel_type=SLACK_NAMESPACE, channel_id=ch, thread_id=ts)
         return None
 

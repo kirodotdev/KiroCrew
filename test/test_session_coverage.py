@@ -682,12 +682,15 @@ class TestExpireIdle:
         exactly what ``reset`` means -- and why it is the verb here rather than
         ``remove``. Asserting the WHOLE call keeps a later edit from reaching for an
         ending verb, which would take the session's in-flight sub-agent runs with it.
+        The call is pinned to the entry the sweep scanned: the sub-agent probe
+        suspends before the reset, so a replacement under the same key must not be
+        reset on its verdict.
         """
-        _register(mgr, "dashboard:1", last_used=0.0)
+        sess = _register(mgr, "dashboard:1", last_used=0.0)
         with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
             await mgr._expire_idle(1)
         reset.assert_awaited_once_with(
-            "dashboard:1", skip_if_busy=True, skip_if_injecting=True
+            "dashboard:1", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )
 
     @pytest.mark.asyncio

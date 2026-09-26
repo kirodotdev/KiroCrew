@@ -659,6 +659,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
     "ssh_auth_sock_consent.json",
+    # The owner's credential-redaction switch. Same class of control as the
+    # consent records above: the record is what AUTHORIZES the credential scrubber
+    # to stand down in the owner's dashboard file viewer (the one surface it
+    # governs), so an agent that could write it would switch off the pass that
+    # keeps the secrets it can read out of that view. A missing or unreadable
+    # file reads as ENABLED, so fencing the
+    # write is what keeps the switch the owner's. The owner-gated dashboard
+    # ``/api/security/credential-redaction`` handler is the only writer and opens
+    # the path directly, not through this gate.
+    "credential_redaction.json",
     # The single-use step-up nonce that authorizes RECORDING a flagged-file
     # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
     # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
@@ -3159,6 +3169,20 @@ def is_sensitive_canonical_path(resolved: str) -> bool:
     except RuntimeError:
         return is_sensitive_resolved_path(resolved)
     return is_sensitive_path(resolved)
+
+
+def canonical_path_refusal(resolved: str) -> str | None:
+    """:func:`is_sensitive_canonical_path` as reason-or-``None``: same gate per thread.
+
+    Only the on-loop (bounded) gate can stall, so only it can return the stall wording.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        if is_sensitive_canonical_path(resolved):
+            return f"Blocked: access to sensitive path: {resolved}"
+        return None
+    return sensitive_path_refusal(resolved)
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a

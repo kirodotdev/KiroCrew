@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import FileChangeChips, { countLines, headerClickAction, type FileChangeEntry } from '../components/FileChangeChips'
+import enManual from '../i18n/locales/en.manual.json'
+import pluralKeys from '../i18n/pluralKeys.json'
+import { CATALOGS } from '../i18n/catalogs'
 
 const change = (path: string, before: string, after: string) => ({ path, before, after })
 const rows = (c: HTMLElement) => c.querySelectorAll('[data-testid^="fcc-row-"]')
@@ -129,6 +132,310 @@ describe('FileChangeChips', () => {
     expect(screen.queryByText('no changes')).not.toBeInTheDocument()
     expect(screen.queryByText(/addition|removal/)).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Show or hide the diff for /large.ts')).not.toBeInTheDocument()
+  })
+
+  const TURN_SENTENCE = "This turn's changes were too large to keep every file's diff (over 400,000 characters total)."
+  const OPEN_HINT = 'Click a file name to open it.'
+  /* The per-file marker names what a demoted row still offers: the file,
+   * without its diff. It never describes a file that is absent. */
+  const FILE_ONLY = 'File only'
+  const demoted = (path: string) => ({ ...change(path, '', ''), truncated: true, content_omitted: true, turn_budget_chars: 400_000 })
+
+  it('names the turn budget, not this file\'s size, when a turn drops a file\'s content', () => {
+    // A small file demoted to path-only must not be described as too large:
+    // the size that ran out belongs to the turn, not to this file.
+    render(<FileChangeChips fileChanges={[demoted('/small.ts')]} />)
+    expect(screen.getByText(TURN_SENTENCE)).toBeInTheDocument()
+    expect(screen.queryByText(/too large to compare/)).not.toBeInTheDocument()
+  })
+
+  it('says the turn-budget sentence once per card and tags each demoted row', () => {
+    // The sentence describes the turn. Three demoted rows carry three short
+    // tags under ONE notice row, so each row keeps its width for the filename.
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/kept.ts', 'a', 'a\nb'), demoted('/a.ts'), demoted('/b.ts'), demoted('/c.ts')]} />,
+    )
+    expect(screen.getAllByText(TURN_SENTENCE)).toHaveLength(1)
+    expect(container.querySelector('[data-fcc-turn-notice]')).toBeInTheDocument()
+    expect(screen.getAllByText(FILE_ONLY)).toHaveLength(3)
+    for (const path of ['/a.ts', '/b.ts', '/c.ts']) {
+      expect(screen.getByTestId(`fcc-row-${path}`).querySelector('[data-fcc-demoted-tag]')).toBeInTheDocument()
+    }
+    expect(screen.getByTestId('fcc-row-/kept.ts').querySelector('[data-fcc-demoted-tag]')).toBeNull()
+  })
+
+  it('restates the turn-budget reason on the demoted tag, as the artifact badge does', () => {
+    // The tag is neither a button nor a label; its title is where a hover finds
+    // the reason the card's notice row gives once.
+    render(<FileChangeChips fileChanges={[demoted('/small.ts')]} />)
+    expect(screen.getByText(FILE_ONLY)).toHaveAttribute('title', TURN_SENTENCE)
+  })
+
+  /* ── `meta.file_changes_omitted_files`: files the turn's snapshot limits
+   *   left out of `fileChanges` altogether (row-cap refusals plus budget-dropped
+   *   entries). It counts files, the header's unit, and it is one fact about
+   *   the turn. */
+  const OMITTED_RE = /more files? changed in this turn (is|are) not listed\./
+
+  it('states the omitted-files notice once per card when the count is above zero', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/a.ts', 'a', 'a\nb'), demoted('/b.ts'), demoted('/c.ts')]} omittedFiles={7} />,
+    )
+    expect(screen.getAllByText(OMITTED_RE)).toHaveLength(1)
+    const notice = container.querySelector('[data-fcc-omitted-notice]')
+    expect(notice).toHaveTextContent('7 more files changed in this turn are not listed.')
+    // Same unit as the "3 files changed" header, so the two numbers add up;
+    // no word a reader has no referent for, and no promise of a way to see
+    // a file the turn did not keep.
+    expect(screen.getByText('3 files changed')).toBeInTheDocument()
+    expect(notice).toHaveTextContent(/files/)
+    expect(notice).not.toHaveTextContent(/snapshot|write|shown|show/i)
+  })
+
+  it('agrees the noun and verb with a count of one', () => {
+    render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} omittedFiles={1} />)
+    expect(screen.getByText('1 more file changed in this turn is not listed.')).toBeInTheDocument()
+  })
+
+  it('gives each state its own words: a listed file says what it offers, an absent file says it is not listed', () => {
+    // A demoted row is still a file the reader can open, so its marker names
+    // what is here. The card-level line is about files that are not here at
+    // all. Neither state borrows the other's wording, in either style.
+    for (const style of ['expanded', 'minimal'] as const) {
+      const { container, unmount } = render(
+        <FileChangeChips fileChanges={[change('/a.ts', 'a', 'a\nb'), demoted('/b.ts')]} style={style} omittedFiles={4} />,
+      )
+      const omitted = container.querySelector('[data-fcc-omitted-notice]')
+      expect(omitted, style).toHaveTextContent('4 more files changed in this turn are not listed.')
+      expect(omitted, style).not.toHaveTextContent(FILE_ONLY)
+      expect(omitted, style).not.toHaveTextContent(/kept/)
+      const marker = container.querySelector(style === 'expanded' ? '[data-fcc-demoted-tag]' : '[data-fcc-pill-marker]')
+      expect(marker, style).toHaveTextContent(FILE_ONLY)
+      expect(marker, style).not.toHaveTextContent(/listed|kept/)
+      expect(screen.getAllByText(FILE_ONLY), style).toHaveLength(1)
+      expect(screen.queryByText(/not kept/), style).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('carries the new vocabulary in every catalogue and the old key in none', () => {
+    // The marker key is renamed with its meaning, so a catalogue that still
+    // held the old key would be the old wording under a new face.
+    const languages = Object.keys(CATALOGS)
+    expect(languages.length).toBeGreaterThanOrEqual(12)
+    for (const language of languages) {
+      const chips = (CATALOGS[language].translation as { components: { fileChangeChips: Record<string, string> } }).components.fileChangeChips
+      expect(chips.diff_not_kept, language).toBeUndefined()
+      expect(chips.file_only, language).toMatch(/\S/)
+      const forms = Object.keys(chips).filter(k => k.startsWith('omitted_files_notice_'))
+      expect(forms.length, language).toBeGreaterThan(0)
+      for (const form of forms) {
+        expect(chips[form], `${language}.${form}`).toContain('{{files}}')
+        expect(chips[form], `${language}.${form}`).not.toBe(chips.file_only)
+      }
+    }
+    const en = (CATALOGS.en.translation as { components: { fileChangeChips: Record<string, string> } }).components.fileChangeChips
+    expect(en.file_only).toBe(FILE_ONLY)
+    expect(Object.values(en).some(v => /not kept/.test(v))).toBe(false)
+  })
+
+  it('reads the notice from the omitted_files plural base and carries no omitted_writes key', () => {
+    const chips = (enManual as { components: { fileChangeChips: Record<string, string> } }).components.fileChangeChips
+    expect(chips.omitted_files_notice_one).toBe('{{files}} more file changed in this turn is not listed.')
+    expect(chips.omitted_files_notice_other).toBe('{{files}} more files changed in this turn are not listed.')
+    expect(Object.keys(chips).filter(k => k.startsWith('omitted_writes_notice'))).toEqual([])
+    expect(pluralKeys).toContain('components.fileChangeChips.omitted_files_notice')
+    expect(pluralKeys).not.toContain('components.fileChangeChips.omitted_writes_notice')
+  })
+
+  it('renders nothing for an empty file list, whatever the omitted-files count says', () => {
+    // The gateway attaches the count only beside a non-empty list and the
+    // budget always retains one entry, so this state has no producer and the
+    // component draws nothing rather than a notice with no rows under it.
+    for (const style of ['expanded', 'minimal'] as const) {
+      const { container, unmount } = render(<FileChangeChips fileChanges={[]} style={style} omittedFiles={5} />)
+      expect(container.firstChild, style).toBeNull()
+      unmount()
+    }
+  })
+
+  it('renders no omitted-files notice when the count is zero or the field is absent', () => {
+    const { container, unmount } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} omittedFiles={0} />)
+    expect(container.querySelector('[data-fcc-omitted-notice]')).toBeNull()
+    expect(screen.queryByText(OMITTED_RE)).not.toBeInTheDocument()
+    unmount()
+    const absent = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} />)
+    expect(absent.container.querySelector('[data-fcc-omitted-notice]')).toBeNull()
+  })
+
+  it('renders a huge count as the plain formatted number, with no lower-bound marker', () => {
+    // The gateway sends a plain count with no ceiling, so the notice has no
+    // saturation branch and never appends a plus.
+    render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} omittedFiles={9_876_543_210} />)
+    expect(screen.getByText('9,876,543,210 more files changed in this turn are not listed.')).toBeInTheDocument()
+    expect(screen.queryByText(/\+ more files/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a malformed omitted-files field rather than drawing a notice for it', () => {
+    for (const bad of ['7', -3, Number.NaN, {}, null]) {
+      const { container, unmount } = render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'b')]} omittedFiles={bad} />)
+      expect(container.querySelector('[data-fcc-omitted-notice]'), String(bad)).toBeNull()
+      unmount()
+    }
+  })
+
+  it('minimal style says the omitted-files notice once after the pills', () => {
+    // The pill row is the other surface; it renders the sentence itself, so the
+    // assertion lives here and not in a count across both surfaces.
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/a.ts', 'a', 'a\nb'), demoted('/b.ts')]} style="minimal" omittedFiles={3} />,
+    )
+    expect(screen.getAllByText(OMITTED_RE)).toHaveLength(1)
+    expect(container.querySelector('[data-fcc-omitted-notice]')).toHaveTextContent(
+      '3 more files changed in this turn are not listed.',
+    )
+    expect(container.querySelector('[data-fcc-omitted-notice]')?.closest('button')).toBeNull()
+  })
+
+  it('renders no notice row and no tag when nothing was demoted', () => {
+    const { container } = render(<FileChangeChips fileChanges={[change('/kept.ts', 'a', 'a\nb')]} />)
+    expect(container.querySelector('[data-fcc-turn-notice]')).toBeNull()
+    expect(screen.queryByText(FILE_ONLY)).not.toBeInTheDocument()
+  })
+
+  it('keeps the per-file notice on its own row: that one really is about one file', () => {
+    const large = { ...change('/large.ts', 'same', 'same'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(<FileChangeChips fileChanges={[large, demoted('/small.ts')]} />)
+    expect(screen.getByTestId('fcc-row-/large.ts')).toHaveTextContent('Diff unavailable: file is too large to compare (over 200,000 characters).')
+    expect(screen.getByTestId('fcc-row-/large.ts').querySelector('[data-fcc-demoted-tag]')).toBeNull()
+    expect(screen.getByTestId('fcc-row-/small.ts')).toHaveTextContent(FILE_ONLY)
+    expect(screen.getByTestId('fcc-row-/small.ts')).not.toHaveTextContent(/too large/)
+  })
+
+  it('tells the reader the files still open only when opening is wired', () => {
+    // A demoted row's filename is a button exactly when onFileOpen exists;
+    // the hint must not promise a click that does nothing.
+    const onFileOpen = vi.fn()
+    const { unmount } = render(<FileChangeChips fileChanges={[demoted('/small.ts')]} onFileOpen={onFileOpen} />)
+    expect(screen.getByText(new RegExp(OPEN_HINT.replace('.', '\\.')))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /small.ts in side panel' }))
+    expect(onFileOpen).toHaveBeenCalledWith('/small.ts')
+    unmount()
+    render(<FileChangeChips fileChanges={[demoted('/small.ts')]} />)
+    expect(screen.queryByText(/Click a file name/)).not.toBeInTheDocument()
+  })
+
+  it('minimal style says the turn-budget sentence once after the pills and never in one', () => {
+    // The sentence is about the turn: three demoted pills share it, so the row
+    // carries it once and each pill keeps only what differs, its filename.
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/kept.ts', 'a', 'a\nb'), demoted('/a.ts'), demoted('/b.ts'), demoted('/c.ts')]} style="minimal" />,
+    )
+    expect(screen.getAllByText(TURN_SENTENCE)).toHaveLength(1)
+    const notice = container.querySelector('[data-fcc-turn-notice]')
+    expect(notice).toBeInTheDocument()
+    expect(notice?.closest('button')).toBeNull()
+    for (const [path, name] of [['/a.ts', 'a.ts'], ['/b.ts', 'b.ts'], ['/c.ts', 'c.ts']]) {
+      const pill = screen.getByRole('button', { name: path })
+      expect(pill.querySelector('[data-fcc-pill-filename]'), path).toHaveTextContent(name)
+      expect(pill.querySelector('[data-fcc-pill-marker]'), path).toHaveTextContent(FILE_ONLY)
+    }
+    // The marker is the tag's text at a muted size, never the bordered tag
+    // itself: the tag belongs to the card.
+    expect(container.querySelector('[data-fcc-demoted-tag]')).toBeNull()
+    expect(screen.getAllByText(FILE_ONLY)).toHaveLength(3)
+    expect(screen.queryByText(/too large to compare/)).not.toBeInTheDocument()
+  })
+
+  it('minimal style renders no turn-budget line when nothing was demoted', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/kept.ts', 'a', 'a\nb'), { ...change('/large.ts', 'x', 'y'), truncated: true, snapshot_limit_chars: 200_000 }]} style="minimal" />,
+    )
+    expect(container.querySelector('[data-fcc-turn-notice]')).toBeNull()
+    expect(screen.queryByText(TURN_SENTENCE)).not.toBeInTheDocument()
+  })
+
+  it('minimal style adds the open hint to its turn-budget line only when opening is wired', () => {
+    const { unmount } = render(<FileChangeChips fileChanges={[demoted('/small.ts')]} style="minimal" onFileOpen={vi.fn()} />)
+    expect(screen.getByText(new RegExp(OPEN_HINT.replace('.', '\\.')))).toBeInTheDocument()
+    unmount()
+    render(<FileChangeChips fileChanges={[demoted('/small.ts')]} style="minimal" />)
+    expect(screen.getByText(TURN_SENTENCE)).toBeInTheDocument()
+    expect(screen.queryByText(/Click a file name/)).not.toBeInTheDocument()
+  })
+
+  it('minimal style names a demoted pill\'s own file in the pill face', () => {
+    // The filename is the one fact that differs between demoted pills, so it is
+    // the pill's whole face; the turn-budget sentence is said once by the row.
+    render(<FileChangeChips fileChanges={[demoted('/src/a.ts'), demoted('/src/b.ts')]} style="minimal" />)
+    for (const [path, name] of [['/src/a.ts', 'a.ts'], ['/src/b.ts', 'b.ts']]) {
+      const pill = screen.getByRole('button', { name: path })
+      expect(pill.querySelector('[data-fcc-pill-filename]'), path).toHaveTextContent(name)
+      expect(pill.textContent, path).toBe(`${name}${FILE_ONLY}`)
+      expect(pill, path).toHaveClass('text-left')
+    }
+  })
+
+  it('minimal style marks a demoted pill and leaves a healthy or per-file truncated pill unmarked', () => {
+    // Without the marker a demoted pill is a bare filename that reads as a
+    // healthy one. Muted and a size down, so the filename stays the face.
+    const large = { ...change('/src/large.ts', 'x', 'y'), truncated: true, snapshot_limit_chars: 200_000 }
+    render(<FileChangeChips fileChanges={[change('/src/kept.ts', 'a', 'a\nb'), large, demoted('/src/gone.ts')]} style="minimal" />)
+    const marker = screen.getByRole('button', { name: '/src/gone.ts' }).querySelector('[data-fcc-pill-marker]')
+    expect(marker).toHaveTextContent(FILE_ONLY)
+    expect(marker).toHaveClass('text-muted', 'text-[10px]')
+    expect(marker).not.toHaveClass('border', 'rounded-full')
+    expect(screen.getByRole('button', { name: '/src/kept.ts' }).querySelector('[data-fcc-pill-marker]')).toBeNull()
+    expect(screen.getByRole('button', { name: '/src/large.ts' }).querySelector('[data-fcc-pill-marker]')).toBeNull()
+    expect(screen.getAllByText(FILE_ONLY)).toHaveLength(1)
+  })
+
+  it('minimal style names the kept file\'s stats pill only in a row that holds a demoted pill', () => {
+    // A row where the demoted pills say which file they are about and the
+    // stats pill does not leaves the reader guessing what the stats stand for,
+    // so in that row the stats pill names its file too. Alone, the stats pill
+    // keeps its stats-only face (asserted by the hover-label test below).
+    const { unmount } = render(
+      <FileChangeChips fileChanges={[change('/src/kept.ts', 'a', 'a\nb'), demoted('/src/gone.ts')]} style="minimal" />,
+    )
+    const kept = screen.getByRole('button', { name: '/src/kept.ts' })
+    expect(kept.querySelector('[data-fcc-pill-filename]')).toHaveTextContent('kept.ts')
+    expect(kept).toHaveTextContent('+1')
+    expect(kept).not.toHaveClass('text-left')
+    unmount()
+    render(
+      <FileChangeChips fileChanges={[change('/src/kept.ts', 'a', 'a\nb'), { ...change('/src/large.ts', 'x', 'y'), truncated: true, snapshot_limit_chars: 200_000 }]} style="minimal" />,
+    )
+    // A per-file truncated pill is not a demoted one: the stats pill beside it
+    // stays anonymous, as it does with no truncated neighbour at all.
+    expect(screen.getByRole('button', { name: '/src/kept.ts' }).querySelector('[data-fcc-pill-filename]')).toBeNull()
+  })
+
+  it('renders the per-file truncated pill as the sentence alone, with no filename element', () => {
+    // This pill predates the turn budget and is not the budget's to restyle:
+    // its face is the per-file sentence, its filename stays on hover, and it
+    // carries no left-alignment override.
+    render(<FileChangeChips fileChanges={[{ ...change('/src/large.ts', 'x', 'y'), truncated: true, snapshot_limit_chars: 200_000 }, demoted('/src/gone.ts')]} style="minimal" />)
+    const pill = screen.getByRole('button', { name: '/src/large.ts' })
+    expect(pill.textContent).toBe('Diff unavailable: file is too large to compare (over 200,000 characters).')
+    expect(pill.querySelector('[data-fcc-pill-filename]')).toBeNull()
+    expect(pill).not.toHaveClass('text-left')
+  })
+
+  it('opens a path-only minimal chip as the file, not an empty diff', () => {
+    const onOpenDiff = vi.fn()
+    const onFileOpen = vi.fn()
+    render(
+      <FileChangeChips
+        fileChanges={[demoted('/small.ts')]}
+        style="minimal"
+        onOpenDiff={onOpenDiff}
+        onFileOpen={onFileOpen}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '/small.ts' }))
+    expect(onFileOpen).toHaveBeenCalledWith('/small.ts')
+    expect(onOpenDiff).not.toHaveBeenCalled()
   })
 
   it('suppresses aggregate totals when any snapshot in the batch is truncated', () => {

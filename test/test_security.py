@@ -10,6 +10,7 @@ import math
 import os
 import random
 import re
+import socket
 import string
 import struct
 import sys
@@ -2497,6 +2498,54 @@ class TestKiroCliBundledDeniedCommands:
         assert not self._is_denied("kill 12345 | tee /tmp/kirocrew.log")
 
 
+#: The peers the ssh-to-self floor's own-host seed UDP-``connect``s to learn this
+#: machine's primary outbound address per family: RFC 5737 TEST-NET-2 and the
+#: RFC 3849 documentation prefix, which no router forwards, so a datagram
+#: ``connect`` to them sends no packet. This is what the seed MUST keep pointing
+#: at; the stub below records what it pointed at instead of asking the routing
+#: table.
+_OWN_HOST_PROBE_PEERS = frozenset({("198.51.100.1", 53), ("2001:db8::1", 53)})
+#: What the stubbed probe answers as this machine's outbound address, per family:
+#: documentation addresses too, distinct from the peers, so a test can tell the
+#: seed read the STUB (these turn up in the own-name set) from a real interface.
+_STUB_OWN_ADDRESS: dict[int, str] = {
+    socket.AF_INET: "203.0.113.7",
+    socket.AF_INET6: "2001:db8::7",
+}
+
+
+class _InertDatagramSocket:
+    """A datagram socket that connects nothing.
+
+    ``connect`` records the peer instead of asking the routing table for a
+    source address; ``getsockname`` answers the documentation address for the
+    family; ``fileno`` refuses so the per-interface ioctl sweep, which needs a
+    real descriptor, contributes nothing (its own ``except`` swallows this).
+    """
+
+    def __init__(self, family: int, recorded: list[tuple[int, object]]) -> None:
+        self._family = family
+        self._recorded = recorded
+
+    def __enter__(self) -> _InertDatagramSocket:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def connect(self, peer: object) -> None:
+        self._recorded.append((self._family, peer))
+
+    def getsockname(self) -> tuple[str, int]:
+        return (_STUB_OWN_ADDRESS.get(self._family, ""), 0)
+
+    def fileno(self) -> int:
+        raise OSError("inert datagram socket has no descriptor")
+
+    def close(self) -> None:
+        return None
+
+
 class TestBuiltinDenyPatterns:
     """Tests for is_denied() from security.py BUILTIN_DENY_PATTERNS.
 
@@ -2507,21 +2556,58 @@ class TestBuiltinDenyPatterns:
     """
 
     @pytest.fixture(autouse=True)
-    def _own_host_seed_stays_local(self, monkeypatch) -> None:
+    def _own_host_seed_connects_nothing(self, monkeypatch) -> list[tuple[int, object]]:
         """The ``ssh`` cases here are the first own-host lookup in the process.
 
         ``is_denied("ssh ...")`` seeds the ssh-to-self floor's own-host set on
         first use and, once the backoff allows, starts a DNS enrichment thread.
         The seed learns this machine's outbound address with a UDP ``connect``
-        to a documentation peer -- packet-less, but a real off-loopback connect
-        the routing table has to answer -- and the worker resolves real names.
-        These tests are about the deny patterns, not about this host's identity,
-        so the seed is pinned to the hostname alone and the worker never starts.
+        to a documentation peer -- packet-less, but a real socket the routing
+        table has to answer -- and the worker resolves real names. These tests
+        are about the deny patterns, not about this host's identity, so the
+        datagram socket is stubbed at the seam production reads -- the module's
+        ``socket`` binding, datagram construction only; every other socket kind
+        passes through -- and the enrichment backoff is pushed past the test.
+        The seed still RUNS, through the stub, so the peers it names are
+        observable (``_OWN_HOST_PROBE_PEERS``) and the address it reads back is
+        the stub's. The enumeration's other layers -- the per-interface ioctl
+        sweep (its ``fileno`` is refused), ``/proc/net/if_inet6`` and the
+        Windows / macOS adapter tables -- are local reads that may still yield
+        this host's real addresses, so the enumeration's result is filtered to
+        the stub's addresses before it enters the own-name set: what the deny
+        patterns see is host-independent, and the filter admitting the stub's
+        addresses is what proves the seed read the stub.
+
+        The own-host cache is reset for the test and restored after it, so the
+        stub's addresses never become another test's idea of this machine.
         """
         from kiro_crew.security import argv_floor
 
-        monkeypatch.setattr(argv_floor, "_own_interface_addresses", set)
+        recorded: list[tuple[int, object]] = []
+        real_socket = argv_floor.socket
+        real_interface_addresses = argv_floor._own_interface_addresses
+        stub_addresses = set(_STUB_OWN_ADDRESS.values())
+
+        def _stub_addresses_only() -> set[str]:
+            return real_interface_addresses() & stub_addresses
+
+        class _SocketModule:
+            """``socket`` with datagram construction routed to the inert stub."""
+
+            def __getattr__(self, name: str):
+                return getattr(real_socket, name)
+
+            def socket(self, family: int = -1, type: int = -1, proto: int = -1, fileno=None):
+                if type == real_socket.SOCK_DGRAM:
+                    return _InertDatagramSocket(family, recorded)
+                return real_socket.socket(family, type, proto, fileno)
+
+        monkeypatch.setattr(argv_floor, "socket", _SocketModule())
+        monkeypatch.setattr(argv_floor, "_own_interface_addresses", _stub_addresses_only)
+        monkeypatch.setattr(argv_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        return recorded
 
     def test_allows_command_with_credential_in_path(self) -> None:
         """Commands in dirs like CredentialValidatorServiceCDK must not be blocked."""
@@ -2964,17 +3050,31 @@ class TestBuiltinDenyPatterns:
         # ``git remote`` referencing a remote literally named "push".
         assert is_denied("git remote show push") is None
 
-    def test_allows_ssh_remote_command_without_publish(self) -> None:
+    def test_allows_ssh_remote_command_without_publish(
+        self, _own_host_seed_connects_nothing: list[tuple[int, object]]
+    ) -> None:
         """A plain ``ssh host '<cmd>'`` whose remote command contains the word
         ``push`` (but is not a real ``git push``) must be ALLOWED.
 
         Covers the ssh symptom from the same thread: remote
         interactions starting with ``ssh xxxx`` were aborting.
+
+        The first ``ssh`` verdict in a process also seeds the own-host set. That
+        seed runs here through the inert datagram stub: the peers it names are
+        the documentation addresses (the seam kept pointing where it must), and
+        the own addresses that reached the own-name set are the STUB's: they
+        got there only because the real enumeration read them back from the
+        stubbed socket, and the fixture's filter admits nothing else.
         """
-        from kiro_crew.security import is_denied
+        from kiro_crew.security import argv_floor, is_denied
 
         assert is_denied("ssh dev-dsk 'cd /workplace && git status'") is None
         assert is_denied("ssh dev-dsk 'git commit -m \"address push-back from review\"'") is None
+        recorded = _own_host_seed_connects_nothing
+        assert {peer for _family, peer in recorded} == _OWN_HOST_PROBE_PEERS, recorded
+        assert {family for family, _peer in recorded} == {socket.AF_INET, socket.AF_INET6}
+        assert argv_floor._OWN_HOST_NAMES_CACHE is not None
+        assert set(_STUB_OWN_ADDRESS.values()) <= argv_floor._OWN_HOST_NAMES_CACHE
 
     def test_blocks_ssh_remote_real_git_push(self) -> None:
         """A real ``git push`` inside an ``ssh`` remote command stays BLOCKED."""

@@ -45,7 +45,13 @@ def rig(tmp_path, monkeypatch):
     skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
     lessons = LessonStore(base_dir=tmp_path / "lessons")
     builder = ctx.ContextBuilder(memory=memory, skills=skills, lessons=lessons, hooks=HookManager())
-    return builder, memory, skills, lessons, cfg
+    try:
+        yield builder, memory, skills, lessons, cfg
+    finally:
+        # The loader's skill search index is a SQLite connection (``db`` +
+        # ``-wal`` + ``-shm``) and its first discovery starts the
+        # ``skill-catalog-refresh`` worker; production closes both by exiting.
+        skills.close()
 
 
 def seed_skill(root: Path, name: str, *, always=False, body="Synthetic procedure"):
@@ -801,6 +807,7 @@ def test_member_lessons_renderer_ranks_against_the_request(tmp_path, monkeypatch
         member_id=cfg.agents["writer"].member_id,
         store_id=store,
     )
+    skills: SkillsLoader | None = None
     try:
         # Oldest, and the only rule that mentions the request term. Recency order
         # would place it LAST; relevance ranking places it first. set_semantic
@@ -839,9 +846,10 @@ def test_member_lessons_renderer_ranks_against_the_request(tmp_path, monkeypatch
         monkeypatch.setattr(ctx, "_memory_stores", {})
         monkeypatch.setattr(ctx, "_vector_stores", {store: tier})
 
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
         builder = ctx.ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "global"),
-            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            skills=skills,
             lessons=LessonStore(base_dir=tmp_path / "lessons"),
             hooks=HookManager(),
         )
@@ -857,3 +865,5 @@ def test_member_lessons_renderer_ranks_against_the_request(tmp_path, monkeypatch
         assert "omitted" in text and "use memory_recall." in text
     finally:
         tier.close()
+        if skills is not None:
+            skills.close()

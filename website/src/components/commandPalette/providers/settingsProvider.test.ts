@@ -11,7 +11,7 @@ import type { SettingsSearchGovernance } from '../settingsSearchCore'
 
 /** Governance that offers everything: these cases are about scoring, not availability.
  *  The withdrawn direction is covered in `settingsSearchGovernance.test.ts`. */
-const OFFERED: SettingsSearchGovernance = { decisionsEnabled: true }
+const OFFERED: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: true }
 
 function navigate(): { nav: NavigateFunction; spy: ReturnType<typeof vi.fn> } {
   const spy = vi.fn()

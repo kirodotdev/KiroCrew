@@ -12,9 +12,10 @@ import { Settings, Terminal } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { resolveSettingRef } from './resolveSettingRef'
 import type { SchemaEntry } from './resolveSettingRef'
+import type { SettingEntry } from '../commandPalette/settingsTypes'
 import { useConfigSchema } from './useConfigSchema'
 import { i18nT } from '../../i18n/t'
-import { toPathSegment } from '../subNavParams'
+import { toPathSegment, SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS } from '../subNavParams'
 import { settingsPath } from '../settingsPath'
 import { CopyCommandButton } from './CopyCommandButton'
 
@@ -43,12 +44,16 @@ import type { EnvIntent } from './envShellCommands'
  * Uses highlight=key:<configKey> format so the consumer (useSettingHighlight) can
  * resolve directly via data-setting-key attribute, avoiding the label round-trip.
  */
-function buildSettingsRoute(tab: string, configKey: string): string | null {
+function buildSettingsRoute(entry: SettingEntry, configKey: string): string | null {
   // toPathSegment rejects the dot-only values ('.', '..') whose percent-forms
   // the WHATWG URL parser still resolves as dot-segments — a crafted registry
   // tab must not mint a route that normalizes outside /settings.
-  if (!toPathSegment(tab)) return null
-  return settingsPath({ tab, highlight: `key:${configKey}` })
+  if (!toPathSegment(entry.tab)) return null
+  // Same second-level precedence settingsRoute applies: without it a SubNav
+  // tab opens its first page and the highlight never finds the control.
+  const params = entry.params ?? {}
+  const sub = params[SUBNAV_PARAM] ?? SUBNAV_LEGACY_PARAMS.map(k => params[k]).find(v => v != null) ?? null
+  return settingsPath({ tab: entry.tab, sub, highlight: `key:${configKey}` })
 }
 
 /**
@@ -124,7 +129,7 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
   const resolution = resolveSettingRef(configKey, schemaIndex)
 
   if (resolution.mode === 'ui') {
-    const route = buildSettingsRoute(resolution.entry.tab, configKey)
+    const route = buildSettingsRoute(resolution.entry, configKey)
     if (!route) {
       // Safety fallback: cannot build a valid route
       return <code className="text-xs font-mono px-1 py-0.5 rounded bg-bg-accent border border-border">{configKey}</code>

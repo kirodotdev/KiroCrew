@@ -30,6 +30,7 @@ import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
 import {
   DECISIONS_SETTING_ID,
   DECISIONS_SETTING_IDS,
+  FEATURE_TIPS_SETTING_ID,
   settingEntryOffered,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
@@ -42,15 +43,24 @@ const decisionsEntry = (): SettingEntry => {
   return entry
 }
 
-/** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
-const otherEntry = (): SettingEntry => {
-  const entry = SETTINGS_REGISTRY.find(e => !DECISIONS_SETTING_IDS.has(e.id))
-  if (!entry) throw new Error('registry has only the Decisions entries')
+const tipsEntry = (): SettingEntry => {
+  const entry = SETTINGS_REGISTRY.find(e => e.id === FEATURE_TIPS_SETTING_ID)
+  if (!entry) throw new Error(`${FEATURE_TIPS_SETTING_ID} missing from the registry`)
   return entry
 }
 
-const ON: SettingsSearchGovernance = { decisionsEnabled: true }
-const OFF: SettingsSearchGovernance = { decisionsEnabled: false }
+/** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
+const otherEntry = (): SettingEntry => {
+  const entry = SETTINGS_REGISTRY.find(
+    e => !DECISIONS_SETTING_IDS.has(e.id) && e.id !== FEATURE_TIPS_SETTING_ID,
+  )
+  if (!entry) throw new Error('registry has only the governed entries')
+  return entry
+}
+
+const ON: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: true }
+const OFF: SettingsSearchGovernance = { decisionsEnabled: false, tipsEnabled: true }
+const TIPS_OFF: SettingsSearchGovernance = { decisionsEnabled: true, tipsEnabled: false }
 
 describe('settingEntryOffered', () => {
   it('withholds the Decisions entry when the ceiling withdrew the feature', () => {
@@ -67,6 +77,20 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(otherEntry(), OFF)).toBe(true)
     expect(settingEntryOffered(otherEntry(), ON)).toBe(true)
   })
+
+  it('withholds the Feature Tips entry when the instance config turned tips off', () => {
+    // With tips off the Chat rail can drop its Discovery group entirely, and the
+    // sub-nav self-heals `sub=discovery` to the first group -- a hit would land the
+    // reader on a page without the toggle.
+    expect(settingEntryOffered(tipsEntry(), TIPS_OFF)).toBe(false)
+    expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
+  })
+
+  it('the two governed answers do not leak into each other', () => {
+    expect(settingEntryOffered(tipsEntry(), OFF)).toBe(true)
+    expect(settingEntryOffered(decisionsEntry(), TIPS_OFF)).toBe(true)
+    expect(settingEntryOffered(otherEntry(), TIPS_OFF)).toBe(true)
+  })
 })
 
 describe('a read that did not succeed is not a denial', () => {
@@ -74,14 +98,19 @@ describe('a read that did not succeed is not a denial', () => {
   // expression: the first version of this block recomputed
   // `!isSuccess || data?.decisions_enabled === true` locally and asserted THAT, so
   // reverting the production line left it green. Mutation-checked now.
-  const renderProvider = async (dashboardConfig: () => Promise<unknown>) => {
+  const renderProvider = async (
+    dashboardConfig: () => Promise<unknown>,
+    tipsStatus: () => Promise<unknown> = () => Promise.resolve({ enabled_config: true }),
+  ) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.spyOn(api, 'dashboardConfig').mockImplementation(dashboardConfig as never)
+    vi.spyOn(api, 'tipsStatus').mockImplementation(tipsStatus as never)
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children))
     const hook = renderHook(() => useSettingsProvider(), { wrapper })
     await waitFor(() => {
       expect(client.getQueryState(['dashboardConfig'])?.status).not.toBe('pending')
+      expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending')
     })
     return hook
   }
@@ -89,6 +118,11 @@ describe('a read that did not succeed is not a denial', () => {
   const offersDecisions = (provider: ResourceProvider) =>
     (provider.search('Decisions') as { id?: string }[]).some(r =>
       (r.id ?? '').includes(DECISIONS_SETTING_ID),
+    )
+
+  const offersTips = (provider: ResourceProvider) =>
+    (provider.search('Feature Tips') as { id?: string }[]).some(r =>
+      (r.id ?? '').endsWith(FEATURE_TIPS_SETTING_ID),
     )
 
   afterEach(() => {
@@ -118,6 +152,30 @@ describe('a read that did not succeed is not a denial', () => {
   it('offers it on a successful read that permits', async () => {
     const { result } = await renderProvider(() => Promise.resolve({ decisions_enabled: true }))
     expect(offersDecisions(result.current)).toBe(true)
+  })
+
+  it('withholds Feature Tips when the tips read SUCCEEDED with the config off', async () => {
+    const { result } = await renderProvider(
+      () => Promise.resolve({ decisions_enabled: true }),
+      () => Promise.resolve({ enabled_config: false, opted_out: false }),
+    )
+    expect(offersTips(result.current)).toBe(false)
+  })
+
+  it('offers Feature Tips when the tips read FAILED', async () => {
+    const { result } = await renderProvider(
+      () => Promise.resolve({ decisions_enabled: true }),
+      () => Promise.reject(new Error('offline')),
+    )
+    expect(offersTips(result.current)).toBe(true)
+  })
+
+  it('offers Feature Tips on a successful read with the config on', async () => {
+    const { result } = await renderProvider(
+      () => Promise.resolve({ decisions_enabled: true }),
+      () => Promise.resolve({ enabled_config: true, opted_out: true }),
+    )
+    expect(offersTips(result.current)).toBe(true)
   })
 })
 
@@ -165,6 +223,16 @@ describe('the palette provider honours it', () => {
       results.some(id => id.endsWith('developer.jev-api-key'))
     expect(hasKeyRow(ids(search(ON, 'Jev API key')))).toBe(true)
     expect(hasKeyRow(ids(search(OFF, 'Jev API key')))).toBe(false)
+  })
+
+  it('drops Feature Tips from both the corpus query and the chat tab listing', () => {
+    const hasTips = (results: string[]) => results.some(id => id.endsWith(FEATURE_TIPS_SETTING_ID))
+    expect(hasTips(ids(search(ON, 'Feature Tips')))).toBe(true)
+    expect(hasTips(ids(search(TIPS_OFF, 'Feature Tips')))).toBe(false)
+    expect(hasTips(ids(search(ON, 'chat:')))).toBe(true)
+    const listed = ids(search(TIPS_OFF, 'chat:'))
+    expect(hasTips(listed)).toBe(false)
+    expect(listed.length).toBe(ids(search(ON, 'chat:')).length - 1)
   })
 })
 

@@ -79,6 +79,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("fast-gate.yml", "builtin-skill-scope"),
     ("fast-gate.yml", "loop-bound-locks"),
     ("fast-gate.yml", "testpaths-coverage"),
+    ("fast-gate.yml", "cwd-relative-repo-reads"),
     ("fast-gate.yml", "harness-parity"),
     ("fast-gate.yml", "memory-store-seam"),
     ("fast-gate.yml", "docs-lint"),

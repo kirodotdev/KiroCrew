@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { InstantTip, useInstantTip, OPEN_DELAY_MS, scrollMovesAnchor } from '../components/InstantTip'
 
@@ -33,6 +34,58 @@ function BelowHarness() {
     <>
       <button type="button" {...tipHandlers}>anchor</button>
       <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
+/** One anchor whose placement can be switched, so both placements are read
+ *  from the SAME rects: `above` from the first line fragment, `below` from the
+ *  bounding box. */
+function PlacementHarness({ placement }: { placement: 'above' | 'below' }) {
+  const { tip, tipHandlers, tipId } = useInstantTip({ placement })
+  return (
+    <>
+      <button type="button" {...tipHandlers}>anchor</button>
+      <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
+/** A consumer that can HOLD the bubble — the shape a copy chip has while its
+ *  "Copied!" flash runs. `hold` is a counter: 0 is no hold, and every press's
+ *  outcome is a new value, the way a copy chip hands over its attempt number.
+ *  "outcome" bumps it (a new outcome), "idle" clears it (the flash ended), and
+ *  "act" arms the anchor the way a press does. */
+function HoldHarness() {
+  const [hold, setHold] = useState(0)
+  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold })
+  return (
+    <>
+      <button type="button" {...tipHandlers} onMouseDown={e => arm(e.currentTarget)}>anchor</button>
+      <button type="button" onClick={() => setHold(h => (h ? 0 : 1))}>toggle hold</button>
+      <button type="button" onClick={() => setHold(h => h + 1)}>outcome</button>
+      <button type="button" onClick={() => setHold(0)}>idle</button>
+      <InstantTip tip={tip} tipId={tipId}>{hold ? 'held content' : 'bubble content'}</InstantTip>
+    </>
+  )
+}
+
+/** Two anchors, each with its own hook — two chips on one line. Either can
+ *  hold (a press's outcome), and A's hold can end (its flash ran out). */
+function TwoHarness() {
+  const [holdA, setHoldA] = useState(0)
+  const [holdB, setHoldB] = useState(0)
+  const a = useInstantTip({ hold: holdA })
+  const b = useInstantTip({ hold: holdB })
+  return (
+    <>
+      <button type="button" {...a.tipHandlers}>anchor A</button>
+      <button type="button" {...b.tipHandlers} onMouseDown={e => b.arm(e.currentTarget)}>anchor B</button>
+      <button type="button" onClick={() => setHoldA(1)}>hold A</button>
+      <button type="button" onClick={() => setHoldA(0)}>release A</button>
+      <button type="button" onClick={() => setHoldB(h => h + 1)}>hold B</button>
+      <InstantTip tip={a.tip} tipId={a.tipId}>bubble A</InstantTip>
+      <InstantTip tip={b.tip} tipId={b.tipId}>bubble B</InstantTip>
     </>
   )
 }
@@ -75,6 +128,231 @@ describe('InstantTip', () => {
     expect(screen.getByRole('tooltip')).toBeInTheDocument()
     fireEvent.mouseLeave(anchor)
     expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a HELD bubble survives the pointer leaving, and closes when the hold ends', () => {
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    fireEvent.mouseLeave(anchor)
+    // Still there: the content is an outcome the user must be able to read.
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    fireEvent.click(toggle)
+    // The hold ended with the pointer gone, so the bubble closes on its own.
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a hold that ends under a resting pointer leaves the bubble open', () => {
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(toggle)
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('bubble content')
+  })
+
+  it('a hold that starts while the bubble is closed opens it at the last anchor', () => {
+    // A click inside the intent window, or after the pointer already left: the
+    // outcome still owes its bubble, at the element the user acted on.
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.mouseEnter(anchor)
+    fireEvent.mouseLeave(anchor)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    expect(anchor).toHaveAttribute('aria-describedby', screen.getByRole('tooltip').id)
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a re-entered pointer cancels the deferred close, so the bubble stays after the hold', () => {
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(toggle)
+    fireEvent.mouseLeave(anchor)
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('bubble content')
+  })
+
+  it('blur closes even a held bubble — a tab stop moved on deliberately', () => {
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    fireEvent.focus(anchor)
+    fireEvent.click(screen.getByRole('button', { name: 'toggle hold' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    fireEvent.blur(anchor)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('keyboard focus keeps the bubble open past the hold; the focus a mouse click leaves does not', () => {
+    // A tab stop: focus arrived without the pointer, so the user is still here.
+    const { unmount } = render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.focus(anchor)
+    fireEvent.click(toggle)
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('bubble content')
+    unmount()
+
+    // A mouse click: the browser focuses the anchor too, then the pointer moves
+    // on. That focus must not pin a hint over a chip the user is done with.
+    render(<HoldHarness />)
+    const anchor2 = screen.getByRole('button', { name: 'anchor' })
+    const toggle2 = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.mouseEnter(anchor2)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.focus(anchor2)
+    fireEvent.click(toggle2)
+    fireEvent.mouseLeave(anchor2)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    fireEvent.click(toggle2)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('Escape closes a held bubble too', () => {
+    render(<HoldHarness />)
+    fireEvent.focus(screen.getByRole('button', { name: 'anchor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'toggle hold' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a hold that starts after Escape or blur dismissed the bubble does not reopen it', () => {
+    // Those two are the user moving on deliberately; an outcome that settles
+    // afterwards must not bring the bubble back. (A mouse leave is different:
+    // the outcome still owes its bubble there, pinned above.)
+    const { unmount } = render(<HoldHarness />)
+    let anchor = screen.getByRole('button', { name: 'anchor' })
+    let toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.focus(anchor)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    // Blur dismisses the same way.
+    fireEvent.click(toggle)
+    fireEvent.focus(anchor)
+    fireEvent.blur(anchor)
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    unmount()
+
+    // A later activation (a hover) re-arms the anchor.
+    render(<HoldHarness />)
+    anchor = screen.getByRole('button', { name: 'anchor' })
+    toggle = screen.getByRole('button', { name: 'toggle hold' })
+    fireEvent.focus(anchor)
+    fireEvent.blur(anchor)
+    fireEvent.mouseEnter(anchor)
+    fireEvent.mouseLeave(anchor)
+    fireEvent.click(toggle)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+  })
+
+  it('a press after Escape re-arms the anchor, so ITS outcome opens the bubble', () => {
+    // Escape dismissed the hint; the user then pressed again with the pointer
+    // still resting on the chip. No enter or focus fires for that press, so the
+    // press itself (`arm`) is what tells the hook where the outcome belongs.
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    fireEvent.focus(anchor)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.mouseDown(anchor)
+    fireEvent.click(screen.getByRole('button', { name: 'outcome' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+  })
+
+  it('every new outcome is its own edge: a retry of the same kind reopens a closed bubble', () => {
+    // The transcript auto-scrolls during streaming and `scrollMovesAnchor`
+    // hides the bubble; the user, pointer still on the chip, presses again and
+    // the copy fails AGAIN. Same kind of outcome — it must still show.
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const outcome = screen.getByRole('button', { name: 'outcome' })
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(outcome)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+    fireEvent.scroll(window)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(outcome)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
+  })
+
+  it('one bubble at a time, held ones first: a neighbour\'s hint yields to a held outcome and returns when the hold ends', () => {
+    // Each chip owns its own hook; without the registry, "Copied!" on chip A
+    // and the hint on chip B paint two portals at once, overlapping on one
+    // line. And the held one must WIN: it is the only sign the write landed
+    // (or was refused), the hint is a hover cue the user gets again by
+    // re-entering — an eviction lost a 3s "Copy failed" ~300ms after the move.
+    render(<TwoHarness />)
+    const a = screen.getByRole('button', { name: 'anchor A' })
+    const b = screen.getByRole('button', { name: 'anchor B' })
+    fireEvent.mouseEnter(a)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(screen.getByRole('button', { name: 'hold A' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('bubble A')
+    fireEvent.mouseLeave(a)
+    fireEvent.mouseEnter(b)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    // Still exactly one bubble, and it is the held one.
+    let tips = screen.getAllByRole('tooltip')
+    expect(tips).toHaveLength(1)
+    expect(tips[0]).toHaveTextContent('bubble A')
+    // The hold ends with the pointer resting on B: A closes (the pointer is not
+    // on it), and B's hint, which yielded, gets its turn — still one bubble.
+    fireEvent.click(screen.getByRole('button', { name: 'release A' }))
+    tips = screen.getAllByRole('tooltip')
+    expect(tips).toHaveLength(1)
+    expect(tips[0]).toHaveTextContent('bubble B')
+  })
+
+  it('a hint that yielded does not come back once the pointer has moved on', () => {
+    render(<TwoHarness />)
+    const a = screen.getByRole('button', { name: 'anchor A' })
+    const b = screen.getByRole('button', { name: 'anchor B' })
+    fireEvent.mouseEnter(a)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(screen.getByRole('button', { name: 'hold A' }))
+    fireEvent.mouseLeave(a)
+    fireEvent.mouseEnter(b)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.mouseLeave(b)
+    fireEvent.click(screen.getByRole('button', { name: 'release A' }))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a new outcome supersedes a held neighbour: the latest press owns the one bubble', () => {
+    // Two outcomes cannot both be read; the press the user just made is the
+    // one whose result matters.
+    render(<TwoHarness />)
+    const a = screen.getByRole('button', { name: 'anchor A' })
+    const b = screen.getByRole('button', { name: 'anchor B' })
+    fireEvent.mouseEnter(a)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    fireEvent.click(screen.getByRole('button', { name: 'hold A' }))
+    fireEvent.mouseLeave(a)
+    fireEvent.mouseEnter(b)
+    fireEvent.mouseDown(b)
+    fireEvent.click(screen.getByRole('button', { name: 'hold B' }))
+    const tips = screen.getAllByRole('tooltip')
+    expect(tips).toHaveLength(1)
+    expect(tips[0]).toHaveTextContent('bubble B')
   })
 
   it('Escape dismisses while open, without requiring blur', () => {
@@ -234,5 +512,51 @@ describe('InstantTip', () => {
     expect(tip.className).not.toMatch(/-translate-y-full/)
     expect(tip).toHaveAttribute('data-placement', 'below')
     expect(tip.id).toBe(anchor.getAttribute('aria-describedby'))
+  })
+
+  it('anchors to the FIRST line fragment of an inline anchor that wraps', () => {
+    // An inline chip broken across two lines: fragment one ends line 1 at the
+    // right (left 700), fragment two starts line 2 at the left margin (left 20).
+    // The bounding box's top-left (20, 300) is where NO fragment is; the bubble
+    // belongs above where the chip starts, (700, 300).
+    render(<Harness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    const rect = (top: number, left: number, right: number): DOMRect =>
+      ({ top, left, right, bottom: top + 20, width: right - left, height: 20, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+    anchor.getBoundingClientRect = () => rect(300, 20, 900)
+    anchor.getClientRects = () => [rect(300, 700, 900), rect(324, 20, 300)] as unknown as DOMRectList
+    fireEvent.focus(anchor)
+    const tip = screen.getByRole('tooltip')
+    expect(parseFloat(tip.style.top)).toBe(292)
+    expect(parseFloat(tip.style.left)).toBe(700)
+  })
+
+  it('both placements read the same anchor: above from the first line fragment, below from the bounding box', () => {
+    // The two consumers must not regress each other: the chip rows want the
+    // bubble above where a wrapped chip STARTS (its first fragment), the
+    // top-bar pill (#13516) wants it under the anchor's box. Same rects, both
+    // placements, on one tip.
+    const rect = (top: number, left: number, right: number): DOMRect =>
+      ({ top, left, right, bottom: top + 20, width: right - left, height: 20, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+    const { rerender } = render(<PlacementHarness placement="above" />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    anchor.getBoundingClientRect = () => rect(300, 20, 900)
+    anchor.getClientRects = () => [rect(300, 700, 900), rect(324, 20, 300)] as unknown as DOMRectList
+    fireEvent.focus(anchor)
+    let tip = screen.getByRole('tooltip')
+    expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([292, 700])
+    expect(tip).toHaveAttribute('data-placement', 'above')
+    expect(tip.className).toMatch(/-translate-y-full/)
+
+    fireEvent.blur(anchor)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    rerender(<PlacementHarness placement="below" />)
+    fireEvent.focus(anchor)
+    tip = screen.getByRole('tooltip')
+    // Bounding box bottom (320) + 8, at the box's left (20): exactly #13516's
+    // shape, untouched by the fragment rule.
+    expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([328, 20])
+    expect(tip).toHaveAttribute('data-placement', 'below')
+    expect(tip.className).not.toMatch(/-translate-y-full/)
   })
 })

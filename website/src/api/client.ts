@@ -115,6 +115,12 @@ export interface SkillScriptValidation {
   report: Record<string, string[]>
 }
 
+/** Category of a welcome-screen suggestion; drives its icon tile. */
+export type SuggestionKind = 'code' | 'review' | 'ops' | 'tasks' | 'write' | 'research' | 'schedule' | 'general'
+
+/** One `/api/suggestions` item. `kind` is a string on the wire, so an unknown value is possible. */
+export type SuggestionItem = string | { text: string; kind?: string }
+
 export type McpShareReason = {
   code: string
   detail: string
@@ -1041,6 +1047,17 @@ export interface FileDeliveryConsentStatus {
   never_grantable: string[]
   labels: Record<string, string>
   grants: Record<string, FileDeliveryGrant | null>
+}
+
+/**
+ * The owner's credential-redaction switch (Settings > Security > Credential
+ * redaction). `enabled` is the position as RECORDED by the backend, which reads a
+ * missing or unreadable record as `true`; `changed_at` is empty until the owner
+ * has flipped it at least once.
+ */
+export interface CredentialRedactionState {
+  enabled: boolean
+  changed_at: string
 }
 
 /** The SPA-safe view of an armed grant request. The approval NONCE is never
@@ -3450,7 +3467,8 @@ export const api = {
   // Read-only governance policy viewer (Settings → Security). No write path —
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
-  suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
+  // Items are a bare string (legacy / cached payloads) or `{ text, kind }`.
+  suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: SuggestionItem[]; generated_at: number; stale: boolean }>,
   branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.
   // listInstances throws ApiError(403) when the feature is disabled; callers
@@ -5110,6 +5128,14 @@ export const api = {
   revokeFileDeliveryConsent: (destinationClass: string) =>
     del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
       .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
+  // Credential-redaction switch (Settings > Security > Credential redaction).
+  // Two explicit verbs for the same reason the consent helpers above keep
+  // theirs: the handler applies the owner gate to the read and the write
+  // separately, and the write is the ONLY writer of the keystone.
+  credentialRedaction: () =>
+    fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
+  setCredentialRedaction: (enabled: boolean) =>
+    put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
   voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string; request_id?: string }) => {
     const request_id = opts?.request_id || createVoiceRequestId()
     window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id } }))

@@ -175,6 +175,19 @@ jobs:
           python3 scripts/check_sync_io_in_async.py --test
           python3 scripts/check_sync_io_in_async.py
 
+      # Whole-tree by construction, so main's integrated tree is exactly the
+      # question it answers: the gate takes no base ref and no diff, deriving its
+      # scan roots from setup.cfg testpaths and the repository's own top-level
+      # entries. Measured here as well as on a pull request because the drift it
+      # catches has no diff to appear in -- a test file that moves, or a module
+      # that does, leaves a relative literal naming nothing while nobody's change
+      # touches that line.
+      - name: Check that no test reaches the repository through the working directory
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_cwd_relative_repo_reads.py --test
+          python3 scripts/check_cwd_relative_repo_reads.py
+
       - name: Check lockdown-before-publish (secret writers)
         if: ${{ !cancelled() }}
         run: python3 scripts/check_lockdown_before_publish.py
@@ -362,7 +375,7 @@ jobs:
           # via printf so the body is a proper list.
           FAILED=""
           if [ "$RATCHET_RESULT" != "success" ]; then
-            FAILED="$(printf '%s\n- `ratchet-gates` (backend black/subprocess/agent-sdk/sync-io/lockdown + census & config-baseline): **%s**' "$FAILED" "$RATCHET_RESULT")"
+            FAILED="$(printf '%s\n- `ratchet-gates` (backend black/subprocess/agent-sdk/sync-io/lockdown/cwd-reads + census & config-baseline): **%s**' "$FAILED" "$RATCHET_RESULT")"
           fi
           if [ "$FRONTEND_RESULT" != "success" ]; then
             FAILED="$(printf '%s\n- `frontend-ceiling` (eslint warning ceiling): **%s**' "$FAILED" "$FRONTEND_RESULT")"

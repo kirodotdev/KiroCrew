@@ -143,15 +143,16 @@ logger = logging.getLogger(__name__)
 # so the name is kept and read through ``_agents_dir()``.
 KIRO_AGENTS_DIR: Path | None = None
 
-# Alias count above which the skill-view census warns. Every spawn projects one
-# ``kirocrew-skill-view-*.json`` per authored agent into the shared agents
-# directory, and kiro-cli reads EVERY file there on startup, so the count is a
-# startup cost for every session on the host. A healthy host carries live
-# sessions x authored agents (a few hundred); the measured trouble starts past a
-# couple of thousand -- about 8s of prune walk per spawn at 2,360 files, and
-# ``EMFILE: too many open files`` from kiro-cli at 15k. The reclaim drains a
-# backlog by a bounded number per spawn, so a count above this is either a
-# pre-reclaim backlog still draining or one this gateway cannot drain (another
+# Alias count above which the skill-view census warns. The projection publishes
+# one ``kirocrew-skill-view-*.json`` per distinct agent view into the shared
+# agents directory -- spawns that derive the same view share one file -- and
+# kiro-cli reads EVERY file there on startup, so the count is a startup cost for
+# every session on the host. A healthy host carries roughly authored agents x
+# workspaces; the measured trouble starts past a couple of thousand -- about 8s
+# of prune walk per spawn at 2,360 files, and ``EMFILE: too many open files``
+# from kiro-cli at 15k. A boot drain clears a backlog at gateway start and the
+# per-spawn reclaim covers steady-state orphans, so a count above this is either
+# a backlog this gateway has not drained yet or one it cannot drain (another
 # data home's aliases, an unreadable lease record); the warning tells which.
 _SKILL_VIEW_BACKLOG_WARN = 2000
 
@@ -4093,10 +4094,12 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
 
     Advisory and read-only, like the janitor line above it. The count matters
     because kiro-cli enumerates every file in this directory on every startup
-    and the projection writes one alias per authored agent per spawn: a backlog
-    from a build that predates the lease-based reclaim reached 28k files on one
-    host and made every session start crawl. The gateway's reclaim drains its
-    own home's unreferenced aliases a bounded number per spawn; the report says
+    and the projection writes one alias per distinct agent view, shared by
+    every spawn of that agent: a backlog from a build that predates the
+    lease-based reclaim reached 28k files on one host and made every session
+    start crawl. The gateway drains its own home's unreferenced aliases -- the
+    whole backlog at boot in lock-bounded batches, a bounded number per spawn
+    after that; the report says
     exactly which share that covers -- not aliases another data home owns, not
     lease-named ones while their lease is held -- and refuses to promise any
     drain while a lease record is unreadable, since the reclaim then keeps

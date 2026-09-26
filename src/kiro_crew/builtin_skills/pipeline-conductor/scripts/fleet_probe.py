@@ -267,9 +267,15 @@ DEFAULT_ERR_RES = (
 #: carrying no numeric ``-n`` -- including a targeted single-file run -- do not.
 #: ``-n0`` is the repo's own documented override and is genuinely in-process, so
 #: the safest form a worker can run is also a passing one.
+#: The vitest rule's pattern, bound to a name so the scan can recognise the rule
+#: it belongs to without depending on where it sits in ``DEFAULT_BANNED_RES``.
+#: The pattern SELECTS a candidate out of the joined cmdline; ``argv`` decides
+#: whether that candidate is an invocation. See ``_invokes_bare_vitest_run``.
+_VITEST_BANNED_RE = r"\bvitest\b\s+run\s*$"
+
 DEFAULT_BANNED_RES = (
     r"\bpytest\b(?!.*(?:-n|--numprocesses)\s*=?\s*\d)",
-    r"\bvitest\b\s+run\s*$",
+    _VITEST_BANNED_RE,
 )
 
 #: Token bases that identify the test runner inside a ``/proc`` argv.
@@ -393,6 +399,54 @@ def _run_scope(argv: list[str]) -> str:
         if "::" in tok or tok.endswith(".py") or "/" in tok or "\\" in tok:
             return "paths"
     return "suite"
+
+
+def _invokes_bare_vitest_run(argv: list[str]) -> bool:
+    """Does *argv* invoke a whole-suite ``vitest run``, rather than merely name one?
+
+    The rule's pattern is matched against the space-joined cmdline, and that text
+    cannot answer this question -- not with a wider boundary class, not with a
+    different anchor. ``/proc/<pid>/cmdline`` separates arguments with NUL bytes, so
+    ``["grep", "-rn", "vitest run"]`` and ``["grep", "-rn", "vitest", "run"]`` join
+    to the SAME string: one greps for a phrase, the other is the phrase. Any
+    expression over the joined form necessarily treats them alike, so the decision
+    belongs where the separators still exist.
+
+    On the argv the statement is short. A whole-suite run is the program, then its
+    ``run`` subcommand, then nothing:
+
+    * the program has to be vitest's own token, so a phrase carried INSIDE one
+      argument -- a grep pattern, a filename, an echoed string -- names no program.
+      The name is compared whole, after ``_basename`` drops any directory it was
+      qualified with, which is every spelling the pattern can select: the pattern
+      wants whitespace directly after ``vitest``, so a suffixed entry point
+      (``vitest.cmd``, ``vitest.mjs``) never reaches this function at all;
+    * ``run`` has to be its own final token, so a mention that trails a command
+      cannot supply it;
+    * nothing may follow, which is what "invoked with no file argument" means and
+      is the condition the ``\\s*$`` anchor reaches for. Keeping it as "no argument
+      at all" rather than "no TARGET argument" makes this decision a strict SUBSET
+      of the pattern's: every argv answered True here also matches the pattern, so
+      the set of processes reported can only shrink. A run carrying an option and no
+      file (``vitest run --reporter=dot``) is whole-suite in fact and stays quiet,
+      the same as under the pattern alone -- widening that is a change to which
+      shapes the conductor stops mid-turn, which is a decision of its own and not
+      this one's to make.
+
+    Of those three, the SEPARATION is what the joined text cannot supply and what
+    the pattern therefore cannot check. The trailing shape it can: ``\\s*$`` already
+    implies ``run`` ends the text for every cmdline the pattern selects. Stating the
+    whole shape here regardless keeps the decision readable on its own and keeps it
+    correct if the pattern is ever retuned, rather than leaving it right only
+    because something upstream happened to filter its input.
+
+    What this does NOT separate: a runner name standing alone as another program's
+    argument, ``echo vitest run``. Telling that from a launcher that really does run
+    vitest needs a list of every launcher rather than a shape, and a list is what
+    silently loses the launcher nobody added -- so the residual error stays on the
+    reporting side, where a line names a pid an operator can dismiss.
+    """
+    return len(argv) >= 2 and argv[-1] == "run" and _basename(argv[-2]) == "vitest"
 
 
 #: An initialize-timeout tail: the session never got a live backend, so nothing
@@ -1374,6 +1428,17 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                 # probe was ever going to get. A custom rule therefore reports the
                 # wrapper, which is the pre-fix behaviour and the fail-closed
                 # direction for a monitoring control.
+                # A built-in pattern selects a CANDIDATE out of the joined cmdline;
+                # for the vitest rule the argv then decides whether the candidate is
+                # an invocation, because the joined text cannot tell a phrase inside
+                # one argument from two adjacent arguments. See
+                # ``_invokes_bare_vitest_run``. A custom ``banned_process_res`` keeps
+                # the joined-text decision whole: an operator's rule is a statement
+                # about the text they wrote it against, and narrowing it with a
+                # built-in runner's argv shape would answer a question they never
+                # asked.
+                if matched == _VITEST_BANNED_RE and not _invokes_bare_vitest_run(argv):
+                    continue
                 if matched in DEFAULT_BANNED_RES and _is_shell_command_wrapper(
                     argv, _trusted_program_base(entry)
                 ):

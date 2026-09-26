@@ -1761,9 +1761,16 @@ async def callback(job):
             # Subagent admission is a PACKAGE: every module in it is read as one
             # unit, so a registration site anywhere inside counts here and a new
             # module cannot carry one in unseen.
+            # Six sites: three in gate.py (the spawn queue append, the
+            # ClaimPoint reserve-then-commit running-count increment, the
+            # registered start's running-count increment), the window refill
+            # append in taskq_bridge.py, the resume reservation in waits.py,
+            # and the approval-released start's queue append in pump.py
+            # (``_admit_released_start_impl``: a start whose spawn prompt
+            # resolved re-enters the queue to be metered into startup).
             "subagents": (
                 sorted((root / "subagent_manager" / "admission").glob("*.py")),
-                5,
+                6,
                 ("subagents.pending_work_count",),
             ),
             "cron": (

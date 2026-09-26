@@ -385,14 +385,18 @@ class TestCorpusHealth:
 
     def test_sources_are_the_real_file_contents(self):
         """Pins the read, not just the count: a corpus of empty strings is worse."""
-        by_name = {path.name: text for path, text in source_texts()}
-        by_rel = {path.relative_to(src_root()).as_posix(): text for path, text in source_texts()}
+        # One materialisation: ``source_texts()`` is not memoised, so two calls
+        # in one expression would hold the corpus twice.
+        texts = source_texts()
+        by_name = {path.name: text for path, text in texts}
+        by_rel = {path.relative_to(src_root()).as_posix(): text for path, text in texts}
         assert "def redact" in by_rel["security/__init__.py"]
         assert "def batched_save" in by_name["session_map.py"]
 
     def test_a_filter_returns_a_subset_and_no_filter_returns_everything(self):
-        assert set(candidate_sources(blocking._REQUIRE_ALL)) <= set(source_texts())
-        assert candidate_sources() == source_texts()
+        everything = source_texts()
+        assert set(candidate_sources(blocking._REQUIRE_ALL)) <= set(everything)
+        assert candidate_sources() == everything
 
 
 class TestFilterLiteralsStillMatchWhatTheGatesReject:

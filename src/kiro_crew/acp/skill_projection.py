@@ -73,6 +73,17 @@ _PRUNE_MAX_RECLAIMS_PER_RUN = 64
 # writes in the same section -- two atomic writes per alias plus the settings
 # commit -- so it has to leave room for those, not merely fit under the ceiling.
 _PRUNE_MAX_SECONDS_PER_RUN = 0.4
+# The boot drain runs the per-spawn prune in a loop, so each batch holds the
+# publication lock at most as long as one spawn's prune does. The pause between
+# batches lets a waiting spawn take the lock: a blocked acquire polls with
+# backoff up to the lock's poll cap, so the pause exceeds that cap (asserted by
+# test). One batch reclaiming nothing can be a budget spent on kept or leased
+# entries before its random start offset reached a stale one, so the drain
+# stops only after this many CONSECUTIVE idle batches, and the batch count
+# bounds it even if another writer keeps refilling the directory.
+_DRAIN_MAX_BATCHES = 1000
+_DRAIN_IDLE_BATCHES = 3
+_DRAIN_BATCH_PAUSE_SECS = platform_compat._LOCK_POLL_MAX_SECS * 2
 # The ONE window the re-preparation contract does not cover, and the only thing
 # this age excludes. A publisher from a build that predates the lease holds no
 # lease, so between its write and kiro-cli reading `--agent` its alias looks
@@ -93,7 +104,6 @@ _PROJECTION_LOCK_TIMEOUT_SECS = 2.0
 _MANAGED_MARKER = "x-kirocrew-managed"
 _MANAGED_MARKER_VALUE = "skill-view"
 _MANAGED_CREW_HOME = "x-kirocrew-home"
-_MANAGED_WORK_DIR = "x-kirocrew-work-dir"
 _MANAGED_AGENT = "x-kirocrew-agent"
 _MANAGED_SOURCE = "x-kirocrew-source"
 _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
@@ -555,7 +565,7 @@ def _is_legacy_projected_view(path: Path, alias_raw: bytes) -> bool:
         return False
     try:
         spec = json.loads(alias_raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return False
     if not isinstance(spec, dict) or spec.get("name") != path.stem:
         return False
@@ -600,7 +610,7 @@ def _managed_metadata_for_alias(
                 return None
             try:
                 metadata = json.loads(metadata_raw)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 return None
             if (
                 not _managed_marker(metadata)
@@ -637,7 +647,7 @@ def _prune_start_offset(count: int) -> int:
     return secrets.randbelow(count)
 
 
-def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: set[str]) -> None:
+def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: set[str]) -> int:
     """Remove aliases owned by this Kiro Crew data home that no projection uses.
 
     Runs while the publication lock is held, so a deletion cannot land on an alias
@@ -645,21 +655,22 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
     no part in it, and the minimum age is what covers that one. A time budget keeps
     the held lock down to a slice of the walk rather than all of it. An alias is
     kept when this run publishes it, a projection in this process holds it, or a
-    held lease in any process names it. Everything else this data home
-    recorded is a cache entry for a projection that has ended: every consumer
-    re-prepares before it sends an alias, so removing one costs the next spawn
-    for that work directory one rewrite and nothing else. Whether the recorded work directory still exists
-    is not consulted: a per-run work directory outlives its run, so keying on
-    it keeps one alias per agent for every run ever spawned.
+    held lease in any process names it. Everything else this data home recorded
+    is a cache entry for a projection that has ended: every consumer re-prepares
+    before it sends an alias, so removing one costs the next spawn of that agent
+    one rewrite and nothing else. Aliases are keyed on the agent's view, so a new
+    one appears when an agent's spec changes, not once per run.
+
+    Returns how many aliases it removed.
     """
     try:
         candidates = list(directory.glob(f"{NATIVE_SKILL_ALIAS_PREFIX}*.json"))
     except OSError:
         logger.debug("skill projection: cannot list %s to prune aliases", directory, exc_info=True)
-        return
+        return 0
     active = _active_aliases()
-    # Each run publishes len(keep) aliases and leaves that many behind when it
-    # ends, so the cap covers that steady-state rate plus bounded backlog drain.
+    # A spec edit leaves at most len(keep) superseded aliases behind, so the
+    # cap covers that plus a bounded share of any older backlog.
     cap = _PRUNE_MAX_RECLAIMS_PER_RUN + len(keep)
     offset = _prune_start_offset(len(candidates))
     candidates = candidates[offset:] + candidates[:offset]
@@ -668,13 +679,13 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
     examined = 0
     for path in candidates:
         if reclaimed >= cap:
-            logger.info(
+            logger.debug(
                 "skill projection: reclaim cap reached (%d); the rest drains on later spawns",
                 cap,
             )
             break
         if time.monotonic() >= deadline:
-            logger.info(
+            logger.debug(
                 "skill projection: prune budget spent after %d candidate(s); the rest drains on later spawns",
                 examined,
             )
@@ -769,6 +780,57 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
             logger.debug("skill projection: unused alias changed before removal: %s", path)
     if reclaimed > 0:
         logger.info("skill projection: reclaimed %d unused alias(es)", reclaimed)
+    return reclaimed
+
+
+def drain_stale_aliases() -> int:
+    """Best-effort boot drain of unused aliases this data home owns; never raises.
+
+    The per-spawn prune is capped, so a backlog of thousands takes hundreds of
+    spawns to clear, and every spawn in between still lists the backlog in
+    kiro-cli's subagent tool. This runs once at gateway boot and repeats that
+    same prune, under the publication lock, until three batches in a row
+    reclaim nothing or the batch limit is reached, so some unused aliases can
+    remain for later spawns. Returns how many aliases it removed.
+    """
+    try:
+        directory = kiro_agents_dir()
+        crew_home_id = data_home().absolute().as_posix()
+    except (OSError, ValueError, RuntimeError):
+        logger.debug("skill projection: cannot resolve directories to drain", exc_info=True)
+        return 0
+    if pinned_fs.lstat_by_name(directory) is None:
+        return 0
+    total = 0
+    idle_batches = 0
+    for batch in range(_DRAIN_MAX_BATCHES):
+        if batch:
+            time.sleep(_DRAIN_BATCH_PAUSE_SECS)
+        try:
+            with _projection_alias_lock(directory):
+                reclaimed = _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+        except OSError as exc:
+            # A concurrent spawn holding the lock, or a lock-file fault; either
+            # way an idle batch, so a fault ends the drain at the idle bound.
+            logger.debug("skill projection: drain batch skipped; lock or I/O error: %s", exc)
+            reclaimed = 0
+        except Exception:
+            logger.warning("skill projection: drain failed", exc_info=True)
+            break
+        total += reclaimed
+        idle_batches = 0 if reclaimed else idle_batches + 1
+        if idle_batches >= _DRAIN_IDLE_BATCHES:
+            break
+    else:
+        logger.warning(
+            "skill projection: drain stopped at its batch bound (%d) after %d alias(es); "
+            "the rest drains on later spawns or the next boot",
+            _DRAIN_MAX_BATCHES,
+            total,
+        )
+    if total > 0:
+        logger.info("skill projection: boot drain removed %d unused alias(es)", total)
+    return total
 
 
 # Bounds on what the census RETAINS, not on what it counts: every retained
@@ -898,6 +960,27 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
     return counts
 
 
+def _is_current_publication(
+    directory: Path, alias_path: Path, alias_raw: str, crew_home_id: str
+) -> bool:
+    """Whether *alias_path* already holds *alias_raw* with this home's sidecar."""
+    info = pinned_fs.lstat_by_name(alias_path)
+    if (
+        info is None
+        or platform_compat.is_link_or_junction(alias_path)
+        or not stat.S_ISREG(info.st_mode)
+    ):
+        return False
+    try:
+        existing = safe_read_file_bytes(str(alias_path))
+    except FileTooLargeError:
+        return False
+    if existing != alias_raw.encode():
+        return False
+    managed = _managed_metadata_for_alias(directory, alias_path, existing)
+    return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
+
+
 def prepare_native_skill_projection(
     work_dir: Path, *, enabled: bool | None = None
 ) -> NativeSkillProjection | None:
@@ -908,7 +991,6 @@ def prepare_native_skill_projection(
     """
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
-    work_dir_id = work_dir.absolute().as_posix()
     if enabled is None:
         enabled = os.environ.get("KIROCREW_NATIVE_SKILL_PROJECTION", "1") != "0"
     if not enabled:
@@ -926,7 +1008,7 @@ def prepare_native_skill_projection(
     global_settings = _settings(kiro_home() / "settings" / "cli.json")
     aliases: dict[str, str] = {}
     specs: dict[str, dict[str, Any]] = {}
-    ownership: dict[str, dict[str, Any]] = {}
+    sources: dict[str, str] = {}
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
     for agent in list_agents(project_dir=str(work_dir)):
@@ -939,16 +1021,7 @@ def prepare_native_skill_projection(
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             continue
-        # The RECORD carries the posix spelling for legibility, but the alias
-        # identity keeps the platform's own. Hashing the posix form would re-key
-        # every existing (work_dir, agent) pair on Windows, where str() spells
-        # the separator differently, and nothing reads this digest across hosts:
-        # the agents directory is per-host, so a platform-stable hash buys
-        # nothing and costs one orphaned file per pair on upgrade.
-        identity = f"{work_dir.absolute()}\n{agent.name}"
-        alias = NATIVE_SKILL_ALIAS_PREFIX + hashlib.sha256(identity.encode()).hexdigest()[:24]
         view = copy.deepcopy(spec)
-        view["name"] = alias
         resources = view.get("resources", [])
         resources = resources if isinstance(resources, list) else []
         view["resources"] = [
@@ -1013,15 +1086,8 @@ def prepare_native_skill_projection(
             path = Path(prompt[7:]).expanduser()
             if not path.is_absolute():
                 view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
-        aliases[agent.name] = alias
         specs[agent.name] = view
-        ownership[alias] = {
-            _MANAGED_MARKER: _MANAGED_MARKER_VALUE,
-            _MANAGED_CREW_HOME: crew_home_id,
-            _MANAGED_WORK_DIR: work_dir_id,
-            _MANAGED_AGENT: agent.name,
-            _MANAGED_SOURCE: source.absolute().as_posix(),
-        }
+        sources[agent.name] = source.absolute().as_posix()
 
     try:
         alias_lock = _projection_alias_lock(directory)
@@ -1071,6 +1137,38 @@ def prepare_native_skill_projection(
                             if resource not in view["resources"]:
                                 view["resources"].append(resource)
 
+                # The alias is named by what the view says, not by where it is
+                # used: spawns that derive the same view -- any run folder, any
+                # session -- share one file, and the directory holds one view per
+                # distinct view content instead of one per agent per run. Views
+                # can still differ per workspace: a SCOPE_PROJECT agent's prompt
+                # is a file:// path under its project, and workspace-local
+                # inheritance shapes the resources, so those get one alias per
+                # workspace. The agent name is hashed too, so two agents with
+                # identical specs still get distinct aliases, and so is the Crew
+                # data home, so two homes sharing one agents directory never
+                # contend for (and re-own) the same file.
+                ownership: dict[str, dict[str, Any]] = {}
+                for agent_name, view in list(specs.items()):
+                    view.pop("name", None)
+                    digest = hashlib.sha256(
+                        json.dumps(
+                            {"agent": agent_name, "home": crew_home_id, "view": view},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()[:24]
+                    alias = NATIVE_SKILL_ALIAS_PREFIX + digest
+                    specs[agent_name] = {"name": alias, **view}
+                    aliases[agent_name] = alias
+                    ownership[alias] = {
+                        _MANAGED_MARKER: _MANAGED_MARKER_VALUE,
+                        _MANAGED_CREW_HOME: crew_home_id,
+                        _MANAGED_AGENT: agent_name,
+                        _MANAGED_SOURCE: sources[agent_name],
+                    }
+
                 metadata_dir = _ensure_projection_metadata_directory(directory) if aliases else None
                 lease_stack = _acquire_projection_lease(directory, set(aliases.values()))
                 try:
@@ -1080,11 +1178,12 @@ def prepare_native_skill_projection(
                             **ownership[alias],
                             _MANAGED_ALIAS_SHA256: hashlib.sha256(alias_raw.encode()).hexdigest(),
                         }
-                        atomic_write(
-                            directory / f"{alias}.json",
-                            alias_raw,
-                            restrict_to_owner=True,
-                        )
+                        alias_path = directory / f"{alias}.json"
+                        if _is_current_publication(directory, alias_path, alias_raw, crew_home_id):
+                            # Another spawn already published these exact bytes
+                            # with this home's record; keep its inode as is.
+                            continue
+                        atomic_write(alias_path, alias_raw, restrict_to_owner=True)
                         assert metadata_dir is not None
                         atomic_write(
                             metadata_dir / f"{alias}.json",

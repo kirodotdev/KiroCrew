@@ -159,6 +159,8 @@ with no row here.
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
        answers the three hook methods; no consumer above the boundary asks it)
+   * - ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``
+     - semantic question (``SessionCapabilities.crew_fires_spec_hooks``)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -2055,6 +2057,16 @@ ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 #: Membership authorizes the ROUTE only. The handshake does not announce the
 #: channel (``KAS_CLIENT_CAPABILITIES``), so a member asks nothing yet.
 ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
+
+#: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn
+#: loop fires them instead
+#: (:mod:`kiro_crew.agent_sdk.spec_hooks`). KAS takes its agent over
+#: the wire and the ``customAgents`` schema has no slot for them
+#: (``acp.kas_agents.UNSUPPORTED_SPEC_KEYS``). kiro-cli is NOT a member and must
+#: never become one: it reads the spec off disk and runs the field itself, so
+#: membership there would run every spec hook twice. A harness added later stays
+#: out until it is shown to drop the field.
+ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset({ACP_BACKEND_KAS})
 
 # Backends that keep their OWN session records and resolve a resume from the
 # ``sessionId`` alone. For a member there is no Crew-side transcript to check

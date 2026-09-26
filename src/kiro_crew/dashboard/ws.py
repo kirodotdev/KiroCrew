@@ -26,6 +26,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     _audit_deny,
     effective_allowed_events,
     filter_slots_for_app,
+    global_event_declared,
     load_declared_events_for_connect,
     slots_envelope_extras,
 )
@@ -784,6 +785,73 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     # provider subprocess. App tokens never render status either way.
     _run_status_driver = owner_request
     check_task = asyncio.create_task(_refresh_check_loop()) if _run_status_driver else None
+
+    # Background task, ONLY for a connection that declared the `sessions` scope:
+    # recompute session health on a timer so `session_health_changed` fires for a
+    # verdict that moves with the CLOCK. Same shape of bug as the frozen PR chips
+    # above: the verdict is computed only when `GET /api/sessions/health` is
+    # requested, so a turn crossing the stall threshold, a queue draining, or a
+    # cap being cut produces no signal unless somebody happens to poll -- and the
+    # subscriber that most needs the signal is exactly the one whose manifest does
+    # not list that path, so it cannot poll.
+    #
+    # Gated on the declaration rather than started for every socket because the
+    # driver exists solely to feed this event: a host where no app declared
+    # `sessions` has no possible recipient, so it should run no driver at all
+    # instead of recomputing health forever for nobody. A dashboard user carries
+    # no declaration set (it is not gated by declarations) and no dashboard
+    # surface subscribes to this signal -- it reads the endpoint directly, which
+    # it is entitled to -- so it drives nothing either.
+    #
+    # This is work avoidance, not the permission decision: delivery is still
+    # judged per frame by `_send_ws_all` -> `ws_event_allowed` against the LIVE
+    # scope, so a declaration revoked mid-connection stops the frames even though
+    # this connect-time reading already started the driver.
+    #
+    # refresh_session_health is TTL-gated and single-flighted, so every declaring
+    # socket together still costs at most one computation per interval; it spends
+    # no credentials and reads no provider, which is why this is not owner-only
+    # like the check driver.
+    async def _refresh_health_loop() -> None:
+        # Function-local import: ws.py is imported by handlers/side.py (via the
+        # handlers package), so importing handlers.sessions at module scope closes
+        # a ws -> handlers.sessions -> handlers/__init__ -> handlers.side -> ws
+        # cycle. The cadence is the handler's OWN cache TTL rather than a second
+        # constant, so the driver cannot drift out of step with the gate it
+        # depends on for single-flighting.
+        from kiro_crew.dashboard.handlers.sessions import (
+            _HEALTH_REFRESH_SECS,
+            refresh_session_health,
+        )
+
+        while not ws.closed and not shutdown_event.is_set():
+            # Guard the BODY, not the loop: one transient failure must log and
+            # keep the driver alive rather than silently reverting to the
+            # signal-only-on-poll behaviour this loop exists to fix.
+            #
+            # Refresh FIRST, then sleep. The first computation in a process is
+            # the silent baseline, so a driver that slept before its first tick
+            # would let a verdict that moved during that sleep BECOME the
+            # baseline and never signal it; computing at connect time pins the
+            # baseline to what the subscriber sees when it connects. TTL-gated,
+            # so a burst of connects still costs one computation. The sleep sits
+            # OUTSIDE the guard so a refresh that keeps failing waits out the
+            # interval like a successful one instead of spinning.
+            try:
+                await refresh_session_health(state)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("session health refresh tick failed; continuing", exc_info=True)
+            await asyncio.sleep(_HEALTH_REFRESH_SECS)
+
+    # Function-local import for the same boot-path reason the loop above imports
+    # its handler seam locally: `session_health` is not otherwise on ws.py's
+    # import graph, and ws.py is imported while the gateway is starting.
+    from kiro_crew.dashboard.session_health import SESSION_HEALTH_EVENT
+
+    _run_health_driver = global_event_declared(SESSION_HEALTH_EVENT, allowed_events)
+    health_task = asyncio.create_task(_refresh_health_loop()) if _run_health_driver else None
     # The resume prefetch this socket's most recent slot_focused frame armed.
     # Tracked per connection so a focus change (or blur/disconnect) cancels
     # only this socket's speculation, never another window's.
@@ -1059,6 +1127,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         status_task.cancel()
         if check_task is not None:
             check_task.cancel()
+        if health_task is not None:
+            health_task.cancel()
         # A prefetch still debouncing for a closed dashboard serves nobody.
         if _focus_task is not None and not _focus_task.done():
             _focus_task.cancel()

@@ -15,6 +15,7 @@ stored nothing.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -983,6 +984,7 @@ class TestCliLearnAddReportsTheOutcome:
         jsonl = MagicMock()
         args = argparse.Namespace(learn_action="add", rule=rule, category="tool", negative=negative)
         with (
+            closing(store),
             patch.object(cli_commands, "VectorMemoryStore", return_value=store),
             patch.object(cli_commands, "LessonStore", return_value=jsonl),
             patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
@@ -2030,6 +2032,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
             negative=None,
         )
         with (
+            closing(store),
             patch.object(cli_commands, "VectorMemoryStore", return_value=store),
             patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
             patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
@@ -2083,6 +2086,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
             negative=None,
         )
         with (
+            closing(store),
             patch.object(cli_commands, "VectorMemoryStore", return_value=store),
             patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
             patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
@@ -2126,6 +2130,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
             negative=None,
         )
         with (
+            closing(store),
             patch.object(cli_commands, "VectorMemoryStore", return_value=store),
             patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
             patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),

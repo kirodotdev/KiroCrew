@@ -888,6 +888,11 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     instead of ``message``; the model still receives ``message`` in full every
     cycle. Omitting it keeps the row exactly as it has always been.
     """
+    # Same owner gate as every ``api_monitor_*`` route: a loop's message becomes
+    # the owner session's next turn, so arming one is an owner decision.
+    denied = await _require_monitor_owner(request, "autonudge_start")
+    if denied is not None:
+        return denied
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
@@ -996,6 +1001,9 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
     its docstring for why those live in the transport-agnostic module and not
     here.
     """
+    denied = await _require_monitor_owner(request, "autonudge_update")
+    if denied is not None:
+        return denied
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
@@ -1114,6 +1122,10 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         if error is not None:
             return _monitor_error(error, "monitor_stop_denied", status=status)
         return web.json_response({"ok": True})
+    # The structured branch above gates itself; this is the legacy row's gate.
+    denied = await _require_monitor_owner(request, "autonudge_delete")
+    if denied is not None:
+        return denied
     await svc.remove(loop_id)
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
@@ -1198,6 +1210,9 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
     structural rather than a habit: a guard added later cannot silently skip the
     record, because there is no un-audited way out.
     """
+    denied = await _require_monitor_owner(request, "autonudge_fire")
+    if denied is not None:
+        return denied
     # Read before the service check so the audit helpers can name the subject
     # even on the disabled path. Pure ``match_info`` read; no service needed.
     loop_id = request.match_info["loop_id"]

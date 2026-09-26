@@ -153,6 +153,61 @@ def _empty_health_payload() -> dict[str, Any]:
     }
 
 
+async def refresh_session_health(state: Any) -> dict[str, Any]:
+    """Recompute the cached session-health verdict, and signal a change.
+
+    The one owner of both the cache and :data:`session_health.SESSION_HEALTH_EVENT`.
+    ``GET /api/sessions/health`` calls it to serve a request; the WS driver
+    (``dashboard/ws.py``) calls it on a timer so a verdict that moves with the
+    CLOCK -- a turn crossing the stall threshold, a queue draining -- is noticed
+    while nobody is polling. Both share the ``_HEALTH_REFRESH_SECS`` gate and the
+    single-flight lock, so N callers still cost at most one computation per
+    interval.
+
+    Returns the cached payload. Never raises: a failed computation logs, marks the
+    attempt so it is not retried per request, and leaves the previous value (or
+    the empty shape) in place.
+
+    Must be awaited ON the loop: the state snapshot walks live slot objects and
+    the signal touches WebSocket clients.
+    """
+    global _health_cache, _health_cache_ts
+    now = time.monotonic()
+    if now - _health_cache_ts > _HEALTH_REFRESH_SECS:
+        async with _health_lock:
+            # Re-check after acquiring lock (another request may have refreshed)
+            if time.monotonic() - _health_cache_ts > _HEALTH_REFRESH_SECS:
+                try:
+                    from kiro_crew.dashboard import session_health
+
+                    # ``state`` is a MagicMock in much of the suite: a missing
+                    # ``state`` yields an empty snapshot, and a store that is not
+                    # a real TaskStore fails its first read inside the
+                    # computation and reads as "unavailable" -- never an error.
+                    taskq = getattr(getattr(state, "subagents", None), "_taskq", None)
+                    snapshot = session_health.snapshot_state(state)
+                    computed = await asyncio.to_thread(
+                        session_health.compute_session_health,
+                        None,
+                        taskq=taskq,
+                        monitor=None,
+                        snapshot=snapshot,
+                    )
+                    _health_cache = computed
+                    _health_cache_ts = time.monotonic()
+                    # Back on the loop: publish only when the VERDICT moved, so a
+                    # subscriber that cannot read this endpoint still learns when
+                    # to refresh what it can read. Signal only -- no session data.
+                    session_health.publish_health_change(state, computed)
+                except Exception:
+                    logger.warning("session_health computation failed", exc_info=True)
+                    _health_cache_ts = time.monotonic()
+    payload = _empty_health_payload()
+    if isinstance(_health_cache, dict):
+        payload.update(_health_cache)
+    return payload
+
+
 async def api_sessions_health(request: web.Request) -> web.Response:
     """GET /api/sessions/health — structured session health.
 
@@ -165,39 +220,11 @@ async def api_sessions_health(request: web.Request) -> web.Response:
     The slot snapshot is taken ON the loop (it walks live slot objects), the
     classification, store read and log tail run off it. Cached for
     ``_HEALTH_REFRESH_SECS`` so a busy dashboard cannot turn this into a
-    per-request SQLite + file scan.
+    per-request SQLite + file scan. The computation itself lives in
+    :func:`refresh_session_health`, shared with the WS refresh driver.
     """
-    global _health_cache, _health_cache_ts
-    now = time.monotonic()
-    if now - _health_cache_ts > _HEALTH_REFRESH_SECS:
-        async with _health_lock:
-            # Re-check after acquiring lock (another request may have refreshed)
-            if time.monotonic() - _health_cache_ts > _HEALTH_REFRESH_SECS:
-                try:
-                    from kiro_crew.dashboard import session_health
-
-                    # ``request.app`` is a MagicMock in much of the suite: a
-                    # missing ``state`` yields an empty snapshot, and a store that
-                    # is not a real TaskStore fails its first read inside the
-                    # computation and reads as "unavailable" -- never an error.
-                    state = request.app.get("state") if hasattr(request.app, "get") else None
-                    taskq = getattr(getattr(state, "subagents", None), "_taskq", None)
-                    snapshot = session_health.snapshot_state(state)
-                    _health_cache = await asyncio.to_thread(
-                        session_health.compute_session_health,
-                        None,
-                        taskq=taskq,
-                        monitor=None,
-                        snapshot=snapshot,
-                    )
-                    _health_cache_ts = time.monotonic()
-                except Exception:
-                    logger.warning("session_health computation failed", exc_info=True)
-                    _health_cache_ts = time.monotonic()
-    payload = _empty_health_payload()
-    if isinstance(_health_cache, dict):
-        payload.update(_health_cache)
-    return web.json_response(payload)
+    state = request.app.get("state") if hasattr(request.app, "get") else None
+    return web.json_response(await refresh_session_health(state))
 
 
 _usage_cache: dict[str, object] = {}

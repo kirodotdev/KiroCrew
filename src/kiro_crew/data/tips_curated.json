@@ -9,7 +9,7 @@
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Split View setting", "route": "/settings/chat?highlight=chat.split-view-session-grid" }
+      "action": { "kind": "route", "label": "Open Split View setting", "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid" }
     },
     {
       "id": "command-palette",
@@ -170,7 +170,7 @@
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Background Model setting", "route": "/settings/chat?highlight=chat.background-model" }
+      "action": { "kind": "route", "label": "Open Background Model setting", "route": "/settings/chat/models?highlight=chat.background-model" }
     },
     {
       "id": "agent-browsing",

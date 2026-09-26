@@ -133,6 +133,12 @@ class CleanupState:
     # The (timeout_secs, watchdog_rss_max_mb) pair the policy was last derived
     # from, as configured; transitions are logged only when it moves.
     idle_policy_source: tuple[int, int] | None = None
+    # When the work probe last failed loudly. A probe that raises keeps every
+    # candidate it is asked about, on the idle sweep and the RSS recycle alike,
+    # so a probe raising system-wide holds every reap; that is visible at WARNING
+    # at most once per ``PROBE_FAILURE_WARN_INTERVAL_SECS`` across all keys,
+    # never once per candidate per tick.
+    probe_failure_warned_at: float | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
@@ -214,6 +220,11 @@ class SessionCleanup:
     # Upper bound on one sleep of the cleanup loop, so a lowered idle timeout
     # is adopted within this many seconds regardless of the previous interval.
     POLICY_REFRESH_SECS = 60.0
+    # Floor between two WARNING lines about a work probe that cannot answer.
+    # Fail-closed means a broken probe silently holds every idle, orphan and
+    # RSS reap, so it must surface above debug -- but one line per candidate
+    # per tick is the noise this bound exists to prevent.
+    PROBE_FAILURE_WARN_INTERVAL_SECS = 3600.0
 
     # Ceiling on the tick interval itself.
     #
@@ -551,8 +562,20 @@ class SessionCleanup:
         That read happens BEFORE the probe below suspends, so it cannot see an
         injection that starts inside the await. It is therefore not sufficient on
         its own: a caller that resets after awaiting this wrapper re-asks
-        ``_injection_pending`` immediately before the act. Both such callers do
-        -- the idle sweep's orphan branch and the RSS recycle.
+        ``_injection_pending`` immediately before the act. Every such caller does
+        -- the idle sweep on both its axes and the RSS recycle.
+
+        Fail-closed has a cost: a probe that RAISES system-wide keeps EVERY
+        candidate on every path, so the idle sweep, the orphan axis and the RSS
+        recycle all stop reaping until it recovers. That must be visible above
+        debug, but not once per candidate per tick, so the warning is bounded
+        to one per ``PROBE_FAILURE_WARN_INTERVAL_SECS`` across all keys and each
+        failure keeps its traceback at debug. The warning covers only an
+        exception that escapes the probe: an unreadable task store does not
+        raise here, because ``subagents_attached_async`` absorbs it one layer
+        down and answers "attached" (``taskq_bridge.UNKNOWN_PENDING``), so that
+        cause reaches the sweep as an ordinary attached verdict and its
+        per-key "still has sub-agent work" line, not as this warning.
         """
         try:
             if self._injection_pending(key):
@@ -562,12 +585,28 @@ class SessionCleanup:
                 answer = await answer
             return bool(answer)
         except Exception:
-            self._deps.logger.debug(
-                "Work probe failed for session %s; keeping it",
-                key,
-                exc_info=True,
-            )
+            self._note_probe_failure(key)
             return True
+
+    def _note_probe_failure(self, key: str) -> None:
+        """Log a work-probe failure: the traceback at debug, the fact at a bounded WARNING."""
+        self._deps.logger.debug(
+            "Work probe failed for session %s; keeping it",
+            key,
+            exc_info=True,
+        )
+        now = self._deps.monotonic()
+        last = self.state.probe_failure_warned_at
+        if last is not None and now - last < self.PROBE_FAILURE_WARN_INTERVAL_SECS:
+            return
+        self.state.probe_failure_warned_at = now
+        self._deps.logger.warning(
+            "Sub-agent work probe failed for session %s; every idle, orphan and "
+            "RSS reap is held until it answers again (details at debug; this "
+            "warning repeats at most once per %.0fs)",
+            key,
+            self.PROBE_FAILURE_WARN_INTERVAL_SECS,
+        )
 
     async def _stuck_turn_check(self) -> None:
         try:
@@ -1043,37 +1082,85 @@ class SessionCleanup:
             # session says nothing about that: the idle clock can elect a
             # never-tabbed ``cron:`` parent whose ``last_used`` went stale during
             # a long sub-agent run, exactly while that sub-agent's completion
-            # injection is suspended on its store read. Cheap, synchronous, and
-            # for the idle branch this is also the last read before its reset.
+            # injection is suspended on its store read. Cheap and synchronous.
             if self._injection_pending(key):
                 self._deps.logger.info(
                     "Idle sweep: %s has a completion injection in flight - left running",
                     key,
                 )
                 continue
+            # Also BOTH axes: a free semaphore only proves the parent's OWN turn
+            # is over. With session sharing on, sub-agents dispatched by that
+            # turn keep running on this session's runtime after it ends, so the
+            # semaphore cannot see them and the probe is the only witness. The
+            # idle clock reaches this point too, because a long sub-agent run is
+            # exactly what lets a parent's ``last_used`` go stale; expiring it
+            # here (and firing on_session_expire ahead of the reset) discards
+            # the children's work. Fail-closed: a probe that cannot answer keeps
+            # the session.
+            if await self._has_attached_subagents(key):
+                self._deps.logger.info(
+                    "Idle sweep: %s looks %s but still has sub-agent work - left running",
+                    key,
+                    "orphaned" if is_orphan else "idle",
+                )
+                continue
+            # Everything above was concluded BEFORE that await, and the probe
+            # reads the task store off-loop, so the loop ran while this sweep
+            # was suspended. Re-judge the candidate now, on BOTH axes, before
+            # any side effect. ``on_session_expire`` below consolidates the
+            # transcript, and a turn that began inside the await has already
+            # flushed its user row into it; ``reset`` declining on the busy
+            # semaphore afterwards does not undo a consolidation that has
+            # already run over an unanswered prompt. Everything from here to
+            # ``reset`` is synchronous, so these are the last reads before the
+            # act.
+            #
+            # The counter first: an injection that STARTS inside the await is
+            # invisible to the read above, which is the closed-tab case that
+            # guard exists for.
+            if self._injection_pending(key):
+                self._deps.logger.info(
+                    "Idle sweep: %s began an injection mid-sweep - left running",
+                    key,
+                )
+                continue
+            # Then the incarnation: a different session under the key is not
+            # the one this sweep judged, and its transcript is not the one to
+            # consolidate. ``reset`` would decline on the mismatch, but only
+            # after the callback had already run. When the key is still absent
+            # from the live set, its record described only the departed
+            # incarnation's slot claim and must go so the newcomer cannot
+            # inherit it. A live key was freshly republished by its reopened
+            # slot, so that current claim must survive the stale verdict.
+            if self._owner._sessions.get(key) is not scanned:
+                live = self.state.active_dashboard_slots
+                if is_orphan and (live is None or key not in live):
+                    self.state.slot_owned_keys.discard(key)
+                self._deps.logger.info(
+                    "Idle sweep: %s changed hands mid-sweep - left running",
+                    key,
+                )
+                continue
+            # Then the turn: the scan skipped a held semaphore, and a turn that
+            # took it during the await is exactly as live.
+            if scanned.semaphore.locked():
+                self._deps.logger.info(
+                    "Idle sweep: %s began a turn mid-sweep - left running",
+                    key,
+                )
+                continue
+            # Then the clock, on the idle axis only. A turn that started AND
+            # finished inside the await released the semaphore again but bumped
+            # ``last_used`` on its way in, so the session is not idle now.
+            # The orphan axis ignores the clock and re-asks the live set below.
+            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+                self._deps.logger.info(
+                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    key,
+                )
+                continue
             if is_orphan:
-                # A closed tab is not the same as finished work. With session
-                # sharing on, sub-agents run on the parent's runtime after the
-                # parent's own turn ends, so the busy semaphore cannot see them
-                # and the probe is the only witness. Fail-closed: a probe that
-                # cannot answer keeps the session.
-                if await self._has_attached_subagents(key):
-                    self._deps.logger.info(
-                        "Idle sweep: %s still has sub-agent work - left running",
-                        key,
-                    )
-                    continue
-                # Ask the injection counter AGAIN, here. The read above happened
-                # before the sub-agent probe suspended, and an injection that
-                # STARTS inside that await would be invisible to it -- which is
-                # the closed-tab case this guard exists for. Everything from here
-                # to ``reset`` is synchronous.
-                if self._injection_pending(key):
-                    self._deps.logger.info(
-                        "Idle sweep: %s began an injection mid-sweep - left running",
-                        key,
-                    )
-                    continue
                 # Re-ask against the CURRENT live set, not the one the scan
                 # read. Two awaits stand between them: the scan drops the lock,
                 # and the probe above reads the task store off-loop. A slot can
@@ -1150,35 +1237,32 @@ class SessionCleanup:
             if is_orphan:
                 self.state.slot_owned_keys.discard(key)
 
-            # Pin the reset to the incarnation this sweep actually judged, on the
-            # orphan path. Every test above -- idle or orphaned, the probe, the
-            # live-set re-assert -- was asked about ``scanned``, and two awaits
-            # separate the first of them from here, so the key may by now hold a
-            # DIFFERENT session: a fire under the same cron key, or a tab
-            # reopened and a turn taken. ``reset`` revalidates identity under its
-            # own lock and declines on a mismatch, so a fresh incarnation keeps
-            # its runtime instead of inheriting a verdict about its predecessor.
+            # Pin the reset to the incarnation this sweep actually judged, on
+            # BOTH paths. Every test above -- idle or orphaned, the probe, the
+            # live-set re-assert -- was asked about ``scanned``, and the probe
+            # suspends on each axis, so the key may by now hold a DIFFERENT
+            # session: a fire under the same cron key, or a tab reopened and a
+            # turn taken. ``reset`` revalidates identity under its own lock and
+            # declines on a mismatch, so a fresh incarnation keeps its runtime
+            # instead of inheriting a verdict about its predecessor. A key-only
+            # idle reset would shut down exactly that replacement runtime.
             #
-            # The idle path is spelled separately rather than passing
-            # ``expect_session=None``, so it keeps asking nothing about identity:
-            # that axis is not what this change touches. Both paths DO pass
-            # ``skip_if_injecting``, because both reach ``reset`` and ``reset``
-            # suspends on the registry lock, so on either one an injection can
-            # begin after this sweep's own read and before the pop.
-            if is_orphan:
-                reset_done = await self._owner.reset(
-                    key,
-                    expect_session=scanned,
-                    skip_if_busy=True,
-                    skip_if_injecting=True,
-                )
-            else:
-                # Expiry recycles a PROCESS; the conversation survives on disk and
-                # resumes through ``session/load``. So this is not a parent end, and the
-                # session's in-flight sub-agent runs are left alone -- they have a
-                # conversation to deliver into, and their own run timeout bounds them.
-                # That is why neither call here passes ``ends_conversation``.
-                reset_done = await self._owner.reset(key, skip_if_busy=True, skip_if_injecting=True)
+            # Both paths also pass ``skip_if_injecting``, because both reach
+            # ``reset`` and ``reset`` suspends on the registry lock, so on either
+            # one an injection can begin after this sweep's own read and before
+            # the pop.
+            #
+            # Expiry recycles a PROCESS; the conversation survives on disk and
+            # resumes through ``session/load``. So this is not a parent end, and
+            # the session's in-flight sub-agent runs are left alone -- they have
+            # a conversation to deliver into, and their own run timeout bounds
+            # them. That is why the call does not pass ``ends_conversation``.
+            reset_done = await self._owner.reset(
+                key,
+                expect_session=scanned,
+                skip_if_busy=True,
+                skip_if_injecting=True,
+            )
             if not reset_done:
                 # The release above ran BEFORE the reset, so a reset that
                 # DECLINED leaves the record stripped from a session that is

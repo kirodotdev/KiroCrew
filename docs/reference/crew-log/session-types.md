@@ -1328,7 +1328,17 @@ is derived from the entry's own `time` and is not repeated in `data`.
 **Reader hint** — Read the fold for the member's own DM slot, then select the record
 under the asking crew's `crew_key`; an empty `template` is the fold's way of saying
 this crew has published nothing. Do not key on the slug alone — on a collided slug
-that serves whichever crew published last to both of them.
+that serves whichever crew published last to both of them. Finding NO record under
+your own `crew_key` is the case to handle, because eviction deletes the owner's entry
+rather than emptying it. Absence is all there is to read, and it is the same absence
+whether the crew was evicted or never published here, so the per-owner shape does not
+answer which happened. No field on it can, because the entry that would have carried
+one is the entry eviction removed. What the fold does answer is on its top-level
+record: `owners_omitted` counts this slot's evictions, so `0` says this fold evicted
+nobody and a non-zero value says it truncated without naming whom. "Did this crew
+publish" is answered by the durable `crew-panels/<slug>.json`, not here: the append is
+best-effort, so a publish whose entry never landed leaves the fold with no record while
+the file still serves that crew's panel.
 
 **Since** — the change that gave the member panel a crew-log record beside its file.
 

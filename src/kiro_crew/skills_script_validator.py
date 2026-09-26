@@ -247,6 +247,24 @@ def _ast_findings(content: str) -> List[str]:
         ):
             findings.append(f"dangerous builtin rebound: {node.id}")
 
+    # ``case C(system=f)`` makes CPython run ``getattr(subject, "system")``, but
+    # the name is a plain str in ``MatchClass.kwd_attrs``, so none of the
+    # Attribute checks below see it. The subject is not resolvable here, so fail
+    # closed on the attribute name alone, as the ``.run()`` call check does.
+    _match_denied = (
+        _BANNED_ATTR_CALLS
+        | _BANNED_CALL_NAMES
+        | _NAMESPACE_LOOKUP_NAMES
+        | _NAMESPACE_ATTRS
+        | _DESCRIPTOR_METHODS
+        | {"__globals__"}
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.MatchClass):
+            for attr in node.kwd_attrs:
+                if attr in _match_denied:
+                    findings.append(f"attribute read in a match pattern: {attr}=")
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func

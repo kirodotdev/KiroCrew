@@ -495,14 +495,42 @@ class TestProcessHelpers:
         ppid = pc.get_ppid(os.getpid())
         assert isinstance(ppid, int)
 
-    def test_kill_pid_nonexistent_is_safe(self):
-        # Both platforms raise on non-existent pid — same exception shape so
+    def test_kill_pid_nonexistent_is_safe(self, monkeypatch):
+        # Both platforms raise ProcessLookupError on a non-existent pid, so
         # callers' ``except (ProcessLookupError, OSError)`` handlers fire
-        # uniformly. POSIX: os.kill raises ProcessLookupError. Windows:
-        # taskkill returns rc=128 which _raise_taskkill_error re-badges as
-        # ProcessLookupError.
+        # uniformly. POSIX: os.kill raises it. Windows: taskkill's rc=128 is
+        # re-badged to it by _raise_taskkill_error.
+        #
+        # On POSIX this is a REAL SIGKILL, so "nonexistent" has to hold by
+        # construction, not by luck: any number inside the kernel's pid range
+        # can be handed to an unrelated process between the premise and the
+        # signal. Linux caps pids at PID_MAX_LIMIT (4194304) and macOS at
+        # PID_MAX (99998), so a probe pid above both is refused by the range
+        # check itself and never resolves to a process. Pinned against the
+        # running host where the ceiling is readable, so a kernel that raised
+        # it would fail here rather than turn this test into a kill at whatever
+        # holds that number.
+        #
+        # Windows exposes no readable pid ceiling, so no pid can be proven
+        # unused there and a real ``taskkill /F`` at this number could stop an
+        # unrelated process. The Windows arm therefore runs the same call with
+        # ``taskkill`` stubbed to the rc=128 it returns for a missing pid, so the
+        # contract stays asserted on the Windows shard without the real kill.
+        nonexistent = 2_000_000_000
+        if pc.IS_WINDOWS:
+            recorded: list[list[str]] = []
+
+            def _taskkill_not_found(argv, *_a, **_kw):
+                recorded.append(list(argv))
+                return types.SimpleNamespace(returncode=128, stdout=b"", stderr=b"not found")
+
+            monkeypatch.setattr(pc.subprocess, "run", _taskkill_not_found)
+        elif pc.IS_LINUX:
+            assert nonexistent > int(Path("/proc/sys/kernel/pid_max").read_text())
         with pytest.raises(ProcessLookupError):
-            pc.kill_pid(2_000_000_000, pc.SIGKILL)
+            pc.kill_pid(nonexistent, pc.SIGKILL)
+        if pc.IS_WINDOWS:
+            assert len(recorded) == 1 and str(nonexistent) in recorded[0], recorded
 
     def test_process_matches_false_for_unused_pid(self):
         assert pc.process_matches(2_000_000_000, ("kiro-cli", "claude")) is False

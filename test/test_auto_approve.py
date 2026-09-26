@@ -475,6 +475,7 @@ class TestAutoApproveProvenanceGating:
             payload=BodyStreamPayload(json.dumps(start_body).encode()),
         )
         req["app"] = request_app  # set by token_auth_middleware; "" == dashboard itself
+        req["user"] = "local-app"  # owner subject: no owner_id configured
         # Kept alive: ``api_taskrunner_start`` reads uncapped (``max_bytes=None``)
         # and consumes ``request.json()``.
         req.json = AsyncMock(return_value=start_body)
@@ -511,6 +512,7 @@ class TestAutoApproveProvenanceGating:
             payload=BodyStreamPayload(raw),
         )
         req["app"] = request_app
+        req["user"] = "local-app"  # owner subject: no owner_id configured
         await api_taskrunner_execute_plan(req)
         return runner.execute_plan.call_args.kwargs["auto_approve"]
 
@@ -545,6 +547,7 @@ class TestAutoApproveProvenanceGating:
             payload=BodyStreamPayload(raw),
         )
         req["app"] = ""  # dashboard context → requested trust is honored, so the gate audits
+        req["user"] = "local-app"  # owner subject: no owner_id configured
 
         boom = MagicMock()
         boom.log_tool_invocation.side_effect = RuntimeError("sel backend down: SECRET-INTERNAL-DETAIL")
@@ -594,6 +597,7 @@ class TestInlineSpecCleanup:
             payload=BodyStreamPayload(json.dumps(body).encode()),
         )
         req["app"] = ""
+        req["user"] = "local-app"  # owner subject: no owner_id configured
         # Kept alive: ``api_taskrunner_start`` reads uncapped (``max_bytes=None``)
         # and consumes ``request.json()``.
         req.json = AsyncMock(return_value=body)

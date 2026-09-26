@@ -4191,10 +4191,19 @@ async def _handle_connection(
         # stub, which is why it is unconditional. Fully suppressed: this runs in
         # ``finally``, where raising would skip the writer-task cancel below and
         # mask whatever ended the connection.
+        #
+        # Scheduled through the pool's tracked reap, NOT awaited here. This
+        # ``finally`` also runs when the daemon's own teardown cancels the bridge
+        # connections, and an inline ``await orphan.shutdown()`` was cancelled
+        # with them: ``release_exclusive`` had already dropped the backend from
+        # the exclusive map, so ``shutdown_all`` never saw it either, and the
+        # child was left to exit on its own -- with the SIGKILL escalation never
+        # reached if it did not. ``shutdown_all`` joins the tracked task, so the
+        # daemon now returns only once the backend is reaped.
         try:
             orphan = await pool.release_exclusive(stub_uuid)
             if orphan is not None:
-                await orphan.shutdown(timeout=2.0)
+                pool.spawn_shutdown(orphan)
         except Exception:
             logger.warning("releasing private backend for stub %s failed", stub_uuid, exc_info=True)
         if writer_task is not None:

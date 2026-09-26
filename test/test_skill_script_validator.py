@@ -583,3 +583,29 @@ def test_ordinary_dunder_dict_access_still_passes():
     ):
         ok, findings = validate_skill_script("run.py", src)
         assert ok is True, (src, findings)
+
+
+def test_rejects_a_banned_attribute_read_through_a_match_pattern():
+    """``case C(system=f)`` reads the attribute with getattr at run time."""
+    for src in (
+        "import os\nmatch os:\n    case object(system=f):\n        f('id')\n",
+        "match f:\n    case object(__globals__=g):\n        pass\n",
+        "import os\nmatch os:\n    case object(__dict__=d):\n        pass\n",
+        "match __builtins__:\n    case object(eval=e):\n        e('1')\n",
+        "match __builtins__:\n    case object(getattr=g):\n        pass\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+        assert any("match pattern" in f for f in findings), (src, findings)
+
+
+def test_sequence_match_pattern_still_passes():
+    src = "def f(p):\n    match p:\n        case [a, b]:\n            return a + b\n"
+    ok, findings = validate_skill_script("run.py", src)
+    assert ok is True, findings
+
+
+def test_benign_match_pattern_still_passes():
+    src = "def f(p):\n    match p:\n        case complex(real=r, imag=i):\n            return r + i\n"
+    ok, findings = validate_skill_script("run.py", src)
+    assert ok is True, findings

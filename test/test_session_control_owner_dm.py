@@ -8,8 +8,10 @@ on three different facts — the live ``linked_session_key``, the key prefix, th
 mirror store — and refused every channel-born session alike, which made a Discord
 or Telegram DM whose only human is the configured owner unusable as a conductor.
 
-The suite pins the one predicate all three now consult (``audience_is_owner``),
-its fail-closed edges, and that the gates cannot disagree about a slot.
+The suite pins the one predicate all three now consult (``owner_dm_refusal``, the
+clause walk that answers ``""`` for an admitted owner DM and otherwise names the
+first fact that failed), its fail-closed edges, and that the gates cannot disagree
+about a slot.
 """
 
 from __future__ import annotations
@@ -27,8 +29,10 @@ from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import work_ledger as ledger_routes
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import ChannelLink, parse_session_key, release_conversation_location
 from kiro_crew.messaging.transport import ConfiguredChannelTarget
+from kiro_crew.session import _opt_out_key
+from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG, SessionMap
 
 OWNER = "123456789012345678"
 GUEST = "111111111111111111"
@@ -41,6 +45,11 @@ TELEGRAM_FORUM = "telegram:kirocrew:forum:-1001:77:gen1"
 
 DISCORD_DM_CONVERSATION = ChannelLink("discord", channel_id="dm-channel-4242")
 TELEGRAM_DM_CONVERSATION = ChannelLink("telegram", channel_id=OWNER)
+
+#: The predicate's own words for the two clauses several tests pin.
+NOT_THE_SOLE_OWNER = "the channel's roster does not name this conversation's peer as its sole owner"
+MIRROR_ELSEWHERE = "the outbound mirror points somewhere other than this conversation"
+SLACK_THREAD_BESIDE = "the session also mirrors to a Slack thread"
 
 
 @pytest.fixture(autouse=True)
@@ -91,18 +100,75 @@ def _state(tmp_path, monkeypatch):
     state.sessions.set_origin_link = MagicMock(side_effect=origins.__setitem__)
     state.sessions.get_origin_link = MagicMock(side_effect=origins.get)
     state.push_slots_update = MagicMock()
+    _with_real_mirror_store(state, tmp_path, monkeypatch)
     return state
 
 
-def _channel_slot(state, session_key: str, *, origin: ChannelLink | None, mirror=...):
-    """A channel-born slot the way ``surface_channel_session`` builds one.
+def _with_real_mirror_store(state, tmp_path, monkeypatch) -> SessionMap:
+    """Back the mirror rows with a real ``SessionMap`` rather than the helper's dict.
 
-    *origin* is what the channel dispatcher recorded as the conversation the
-    session lives in; *mirror* is the outbound mirror binding, which the origin
-    bind makes equal to the origin unless a test retargets it.
+    The shared double keeps mirrors in a plain dict, so an unlink there leaves
+    nothing behind. The real map is what the predicate reads in production, and
+    its shape is the point: a channel session's first turn writes the namespaced
+    bucket into the legacy ``slack_channel_id`` field, ``clear_mirror_link`` pops
+    only ``mirror``, and ``get_mirror_link`` must read that threadless row as no
+    mirror at the source -- the row every unlinked channel session carries. The two
+    ``SessionManager`` one-liners the dispatchers and the in-channel unlink call
+    are re-spelled on the double the way the manager spells them.
+    """
+    monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+    store = SessionMap()
+    sessions = state.sessions
+    for name in (
+        "set_slack_link",
+        "get_slack_link",
+        "clear_slack_link",
+        "set_mirror_link",
+        "get_mirror_link",
+        "clear_mirror_link",
+        "clear_mirror_links_at",
+        "find_mirror_sessions",
+        "mirror_accepts_inbound",
+        "batched_save",
+    ):
+        setattr(sessions, name, getattr(store, name))
+
+    async def _set_channel(key: str, channel_id: str) -> None:
+        _set_channel_bucket(store, key, channel_id)
+
+    sessions.set_channel = _set_channel
+    sessions.set_mirror_opt_out = lambda key, opted_out: store.set_flag(
+        _opt_out_key(key), MIRROR_OPT_OUT_FLAG, opted_out
+    )
+    sessions.mirror_opt_out = lambda key: store.get_flag(_opt_out_key(key), MIRROR_OPT_OUT_FLAG)
+    state.sessions._store = store
+    return store
+
+
+def _set_channel_bucket(store: SessionMap, key: str, channel_id: str) -> None:
+    """``SessionManager.set_channel``, as the manager spells it: the bucket lands in
+    the legacy ``slack_channel_id`` field beside whatever thread the row already
+    names (none, for a channel session)."""
+    thread_ts, _ = store.get_slack_link(key)
+    store.set_slack_link(key, thread_ts or "", channel_id)
+
+
+def _channel_slot(state, session_key: str, *, origin: ChannelLink | None, mirror=...):
+    """A channel-born slot the way ``surface_channel_session`` builds one, after the
+    dispatcher's first inbound turn.
+
+    That turn stamps the conversation's namespaced bucket on the session
+    (``set_channel``), records *origin* -- the conversation the session lives in --
+    and binds it as the outbound mirror; *mirror* is that binding, equal to the
+    origin unless a test retargets it.
     """
     name = session_key.replace(":", "_")
     slot = state.get_or_create_slot(name, linked_session_key=session_key, channel_origin=True)
+    parsed = parse_session_key(session_key)
+    peer = parsed.scope[0] if parsed is not None and parsed.scope else session_key
+    _set_channel_bucket(
+        state.sessions._store, session_key, f"{session_key.split(':', 1)[0]}:{peer}"
+    )
     if origin is not None:
         state.sessions.set_origin_link(session_key, origin)
     if mirror is ...:
@@ -158,7 +224,7 @@ def test_a_discord_thread_session_is_refused_by_all_three_gates(
     thread = _channel_slot(state, DISCORD_THREAD, origin=ChannelLink("discord", channel_id=THREAD))
     state.get_or_create_slot("chat-peer")
 
-    assert sc.audience_is_owner(state, thread) is False
+    assert sc.owner_dm_refusal(state, thread) == "the conversation is not a 1:1 direct message"
     with pytest.raises(sc.SessionControlError) as exc:
         asyncio.run(sc.create_session(state, caller_session_key=_key(thread)))
     assert exc.value.code == "linked_session_caller"
@@ -184,7 +250,7 @@ def test_a_telegram_forum_topic_is_refused_by_all_three_gates(
     )
     state.get_or_create_slot("chat-peer")
 
-    assert sc.audience_is_owner(state, topic) is False
+    assert sc.owner_dm_refusal(state, topic) == "the conversation is not a 1:1 direct message"
     with pytest.raises(sc.SessionControlError) as exc:
         asyncio.run(sc.create_session(state, caller_session_key=_key(topic)))
     assert exc.value.code == "linked_session_caller"
@@ -219,7 +285,7 @@ def test_an_owner_dm_session_conducts(
     register(state)
     dm = _channel_slot(state, session_key, origin=conversation)
 
-    assert sc.audience_is_owner(state, dm) is True
+    assert sc.owner_dm_refusal(state, dm) == ""
     created = asyncio.run(sc.create_session(state, caller_session_key=_key(dm)))
     worker_key = created["target"]
     assert state.get_slot(worker_key)._created_by == dm.key
@@ -262,7 +328,7 @@ def test_a_paused_origin_mirror_still_counts_as_the_owners_dm(tmp_path, monkeypa
     _owner_discord(state)
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
     state.sessions.is_mirror_paused = MagicMock(return_value=True)
-    assert sc.audience_is_owner(state, dm) is True
+    assert sc.owner_dm_refusal(state, dm) == ""
 
 
 # ── the predicate fails CLOSED on every edge it cannot answer ──
@@ -275,7 +341,7 @@ def test_a_second_allow_listed_identity_removes_the_owner(tmp_path, monkeypatch)
     state = _state(tmp_path, monkeypatch)
     state.register_channel_transport(_Transport("discord", users=[OWNER, GUEST]))
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, dm) is False
+    assert sc.owner_dm_refusal(state, dm) == NOT_THE_SOLE_OWNER
     with pytest.raises(sc.SessionControlError) as exc:
         asyncio.run(sc.create_session(state, caller_session_key=_key(dm)))
     assert exc.value.code == "linked_session_caller"
@@ -286,15 +352,15 @@ def test_a_dm_with_someone_other_than_the_sole_owner_is_refused(tmp_path, monkey
     state = _state(tmp_path, monkeypatch)
     state.register_channel_transport(_Transport("discord", users=[GUEST]))
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, dm) is False
+    assert sc.owner_dm_refusal(state, dm) == NOT_THE_SOLE_OWNER
 
 
 def test_an_unavailable_or_absent_transport_names_no_owner(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, dm) is False, "no transport registered"
+    assert sc.owner_dm_refusal(state, dm) == "the discord channel is not running"
     state.register_channel_transport(_Transport("discord", users=[OWNER], available=False))
-    assert sc.audience_is_owner(state, dm) is False, "the only target is unavailable"
+    assert sc.owner_dm_refusal(state, dm) == NOT_THE_SOLE_OWNER, "the only target is unavailable"
 
 
 def test_a_retargeted_mirror_widens_the_audience_and_refuses(tmp_path, monkeypatch):
@@ -309,20 +375,24 @@ def test_a_retargeted_mirror_widens_the_audience_and_refuses(tmp_path, monkeypat
         origin=DISCORD_DM_CONVERSATION,
         mirror=ChannelLink("discord", channel_id=THREAD),
     )
-    assert sc.audience_is_owner(state, to_thread) is False
+    assert sc.owner_dm_refusal(state, to_thread) == MIRROR_ELSEWHERE
     with pytest.raises(sc.SessionControlError) as exc:
         asyncio.run(sc.create_session(state, caller_session_key=_key(to_thread)))
     assert exc.value.code == "linked_session_caller"
 
     state.sessions.set_mirror_link(DISCORD_DM, ChannelLink("telegram", channel_id="7"))
-    assert sc.audience_is_owner(state, to_thread) is False
+    assert sc.owner_dm_refusal(state, to_thread) == MIRROR_ELSEWHERE
 
     # Back to its own conversation: the same audience again.
     state.sessions.set_mirror_link(DISCORD_DM, DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, to_thread) is True
-    # And with no mirror at all the only audience is the DM itself.
+    assert sc.owner_dm_refusal(state, to_thread) == ""
+    # And with the binding cleared the only audience is the DM itself -- the first
+    # turn's threadless bucket row is still on the entry, and the store reads it as
+    # no mirror.
     state.sessions.clear_mirror_link(DISCORD_DM)
-    assert sc.audience_is_owner(state, to_thread) is True
+    assert state.sessions.get_slack_link(DISCORD_DM) == ("", f"discord:{OWNER}")
+    assert state.sessions.get_mirror_link(DISCORD_DM) is None
+    assert sc.owner_dm_refusal(state, to_thread) == ""
 
 
 def test_an_unknown_origin_conversation_fails_closed(tmp_path, monkeypatch):
@@ -331,7 +401,7 @@ def test_an_unknown_origin_conversation_fails_closed(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     _owner_discord(state)
     dm = _channel_slot(state, DISCORD_DM, origin=None, mirror=DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, dm) is False
+    assert sc.owner_dm_refusal(state, dm) == sc.ORIGIN_NOT_ON_RECORD
 
 
 def test_a_restart_cold_owner_dm_is_told_to_send_a_message(tmp_path, monkeypatch, open_ledger_gate):
@@ -365,7 +435,7 @@ def test_a_restart_cold_owner_dm_is_told_to_send_a_message(tmp_path, monkeypatch
 
     # The next inbound turn records it again, and the DM conducts.
     state.sessions.set_origin_link(DISCORD_DM, DISCORD_DM_CONVERSATION)
-    assert sc.audience_is_owner(state, cold) is True
+    assert sc.owner_dm_refusal(state, cold) == ""
 
 
 def test_a_group_key_naming_the_owner_is_refused_on_its_chat_type(tmp_path, monkeypatch):
@@ -382,7 +452,7 @@ def test_a_group_key_naming_the_owner_is_refused_on_its_chat_type(tmp_path, monk
     group_of_one = f"discord:kirocrew-conductor:group:{OWNER}:gen1"
     slot = _channel_slot(state, group_of_one, origin=DISCORD_DM_CONVERSATION)
     assert sc.owner_dm_refusal(state, slot) == "the conversation is not a 1:1 direct message"
-    assert sc.audience_is_owner(state, slot) is False
+    assert sc.owner_dm_refusal(state, slot) != ""
 
 
 def test_an_unreadable_mirror_store_fails_closed(tmp_path, monkeypatch):
@@ -390,7 +460,7 @@ def test_an_unreadable_mirror_store_fails_closed(tmp_path, monkeypatch):
     _owner_discord(state)
     dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
     state.sessions.get_mirror_link = MagicMock(side_effect=RuntimeError("store unreadable"))
-    assert sc.audience_is_owner(state, dm) is False
+    assert sc.owner_dm_refusal(state, dm) == "the session store is unreadable"
 
 
 @pytest.mark.parametrize(
@@ -411,7 +481,7 @@ def test_keys_the_predicate_cannot_read_as_an_owner_dm(tmp_path, monkeypatch, li
     state.register_channel_transport(_Transport("webex", users=["someone@example.com"]))
     slot = state.get_or_create_slot("chat-any")
     slot.linked_session_key = linked
-    assert sc.audience_is_owner(state, slot) is False
+    assert sc.owner_dm_refusal(state, slot) != ""
 
 
 def test_a_dashboard_born_mirrored_caller_is_still_refused(tmp_path, monkeypatch):
@@ -461,8 +531,9 @@ def test_the_ledger_gate_and_session_control_agree_on_the_same_slot(
     slot = _channel_slot(state, session_key, origin=origin, mirror=mirror)
     state.get_or_create_slot("chat-peer")
 
-    verdict = sc.audience_is_owner(state, slot)
-    assert sc.session_audience_is_owner(state, session_key) is verdict
+    why = sc.owner_dm_refusal(state, slot)
+    assert sc.session_owner_dm_refusal(state, session_key) == why
+    verdict = why == ""
 
     creator_allowed = True
     try:
@@ -490,8 +561,7 @@ def test_the_ledger_post_read_recheck_uses_the_same_predicate(tmp_path, monkeypa
     assert ledger_routes._contained_channel_caller(request, DISCORD_DM) == ""
     state.sessions.set_mirror_link(DISCORD_DM, ChannelLink("discord", channel_id=THREAD))
     assert (
-        ledger_routes._contained_channel_caller(request, DISCORD_DM)
-        == "the outbound mirror points somewhere other than this conversation"
+        ledger_routes._contained_channel_caller(request, DISCORD_DM) == MIRROR_ELSEWHERE
     ), "the reason is the predicate's own, so the ledger tells the caller what session control would"
 
 
@@ -525,13 +595,284 @@ def test_a_channel_conductor_owns_the_worker_it_created_at_bind(tmp_path, monkey
 # ── (d) mirror-unlink still only clears the mirror ──
 
 
+def test_an_owner_dm_stays_admitted_after_it_unlinks_its_own_mirror(
+    tmp_path, monkeypatch, open_ledger_gate
+):
+    """``!unlink`` / ``/unlink`` in the DM: the opt-out is persisted and the mirror
+    binding released, exactly as the dispatchers do it. The row the store is left
+    with is NOT empty -- the first turn's ``set_channel`` left the namespaced bucket
+    in the legacy ``slack_channel_id`` field with no thread -- and ``get_mirror_link``
+    reads it as no mirror at the source: bookkeeping nobody can deliver through is
+    no audience, so the DM must still conduct through all three gates."""
+    state = _state(tmp_path, monkeypatch)
+    _owner_discord(state)
+    dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
+    state.get_or_create_slot("chat-peer")
+    assert sc.owner_dm_refusal(state, dm) == ""
+
+    with state.sessions.batched_save():
+        state.sessions.set_mirror_opt_out(DISCORD_DM, True)
+        reply, _swept = release_conversation_location(
+            state.sessions, key=DISCORD_DM, location=DISCORD_DM_CONVERSATION, channel="discord"
+        )
+    assert reply == "✅ Unlinked."
+    # The bucket row is still there -- ``clear_mirror_link`` popped only ``mirror``
+    # -- and the store reads it as no mirror, filtering the threadless Slack row
+    # at the source rather than handing every reader a link nobody chose.
+    assert state.sessions.get_slack_link(DISCORD_DM) == ("", f"discord:{OWNER}")
+    assert state.sessions.get_mirror_link(DISCORD_DM) is None
+    assert state.sessions.mirror_opt_out(DISCORD_DM) is True, "the next turn will not rebind"
+
+    assert sc.owner_dm_refusal(state, dm) == ""
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(dm)))
+    worker_key = created["target"]
+    for op in ("send", "read", "stop"):
+        target = sc.authorize_target(
+            state, caller_session_key=_key(dm), target=worker_key, operation=op
+        )
+        assert target.key == worker_key, op
+    key, refusal = _ledger_gate(state, DISCORD_DM)
+    assert refusal is None
+    assert key == DISCORD_DM
+    # A REAL Slack mirror -- one that names a thread -- is a second audience and
+    # refuses, by the clause that reads the thread itself (the same row read through
+    # ``get_mirror_link`` would also fail the mirror clause; the thread clause runs
+    # first because it is the one that still sees the thread when a ``mirror`` row
+    # sits beside it, see the next test).
+    state.sessions.set_slack_link(DISCORD_DM, "1786300000.000200", "C0THREADED")
+    assert sc.owner_dm_refusal(state, dm) == SLACK_THREAD_BESIDE
+
+
+def test_a_slack_thread_bound_beside_the_origin_mirror_is_a_second_audience(
+    tmp_path, monkeypatch, open_ledger_gate
+):
+    """The dashboard's slack-link on a channel-born slot writes the thread onto the
+    slot's EFFECTIVE key -- the channel session itself (``DashboardState.link_slack``)
+    -- while the origin mirror row stays. ``get_mirror_link`` then still answers the
+    origin, because the explicit ``mirror`` row wins over Slack fields it never
+    reads, so the mirror clause alone keeps admitting a DM whose every dashboard
+    turn the runner also posts into that thread. The thread is read on its own and
+    refuses all three gates; unlinking it restores the DM, since the mirror row was
+    never the problem."""
+    state = _state(tmp_path, monkeypatch)
+    _owner_discord(state)
+    dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
+    state.get_or_create_slot("chat-peer")
+    assert sc.owner_dm_refusal(state, dm) == ""
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(dm)))
+    worker_key = created["target"]
+
+    state.link_slack(dm.key, "1786300000.000300", "C0OPSROOM")
+    # The shadowing this test exists for: the mirror read is unchanged by the link.
+    assert state.sessions.get_mirror_link(DISCORD_DM) == DISCORD_DM_CONVERSATION
+    assert state.sessions.get_slack_link(DISCORD_DM) == ("1786300000.000300", "C0OPSROOM")
+
+    assert sc.owner_dm_refusal(state, dm) == SLACK_THREAD_BESIDE
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(dm)))
+    assert exc.value.code == "linked_session_caller"
+    for op in ("send", "read", "stop"):
+        with pytest.raises(sc.SessionControlError) as exc:
+            sc.authorize_target(state, caller_session_key=_key(dm), target=worker_key, operation=op)
+        assert exc.value.code == "linked_session_caller", op
+    key, refusal = _ledger_gate(state, DISCORD_DM)
+    assert key is None and refusal is not None
+    assert refusal.status == 403
+    assert SLACK_THREAD_BESIDE in refusal.text
+
+    assert state.sessions.clear_slack_link(DISCORD_DM) is True
+    assert sc.owner_dm_refusal(state, dm) == ""
+    assert (
+        sc.authorize_target(
+            state, caller_session_key=_key(dm), target=worker_key, operation="read"
+        ).key
+        == worker_key
+    )
+
+
+def test_a_slack_thread_bound_while_an_entry_waited_is_a_retarget_at_the_drain(
+    tmp_path, monkeypatch
+):
+    """The queue drain compares the audience an entry was admitted under with the
+    audience holding at delivery (``containment_snapshot`` / ``newly_held_constraints``).
+    That comparison reads the same store the predicate reads, and the same
+    shadowing applies: ``get_mirror_link`` answers the origin mirror alone, so a Slack
+    thread the dashboard binds onto the channel session while an entry waits would
+    leave the identity unchanged and the drain would post the reply into a room the
+    admission never saw. The probe composes its identity from both accessors."""
+    state = _state(tmp_path, monkeypatch)
+    _owner_discord(state)
+    dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
+    admitted = sc.containment_meta(state, dm)
+    before = sc.containment_snapshot(state, dm, on_probe_failure=True)
+    assert before["mirrored"] is True and before["mirror_identity"] == "discord:dm-channel-4242:"
+    assert sc.newly_held_constraints(before, admitted) == []
+
+    state.link_slack(dm.key, "1786300000.000400", "C0OPSROOM")
+    assert state.sessions.get_mirror_link(DISCORD_DM) == DISCORD_DM_CONVERSATION
+    now = sc.containment_snapshot(state, dm, on_probe_failure=True)
+    assert now["mirror_identity"] == "discord:dm-channel-4242:|slack:C0OPSROOM:1786300000.000400"
+    assert sc.newly_held_constraints(now, admitted) == ["mirror_retarget"]
+
+    # Unbinding the thread restores the admitted audience exactly.
+    state.sessions.clear_slack_link(DISCORD_DM)
+    after = sc.containment_snapshot(state, dm, on_probe_failure=True)
+    assert sc.newly_held_constraints(after, admitted) == []
+
+
+def test_a_slack_thread_unlinked_while_an_entry_waited_narrows_the_audience_and_drains(
+    tmp_path, monkeypatch
+):
+    """The converse of the test above. An entry admitted while the DM mirrored to
+    its origin AND to a Slack thread reaches, after the thread is unlinked, only a
+    room its admission already saw -- a dropped mirror is a narrowing, not a
+    retarget, and the drain must not fire ``mirror_retarget`` on it. Compared as one
+    string, the shrunken identity is simply "different" and the entry is dropped.
+    A rebind to a DIFFERENT thread is a room the admission never saw and still
+    drops."""
+    state = _state(tmp_path, monkeypatch)
+    _owner_discord(state)
+    dm = _channel_slot(state, DISCORD_DM, origin=DISCORD_DM_CONVERSATION)
+    state.link_slack(dm.key, "1786300000.000400", "C0OPSROOM")
+    admitted = sc.containment_meta(state, dm)
+    assert admitted[sc.QUEUED_CONTAINMENT_META_KEY]["mirror_identity"] == (
+        "discord:dm-channel-4242:|slack:C0OPSROOM:1786300000.000400"
+    )
+
+    assert state.sessions.clear_slack_link(DISCORD_DM) is True
+    narrowed = sc.containment_snapshot(state, dm, on_probe_failure=True)
+    assert narrowed["mirrored"] is True
+    assert narrowed["mirror_identity"] == "discord:dm-channel-4242:"
+    assert sc.newly_held_constraints(narrowed, admitted) == []
+
+    state.link_slack(dm.key, "1786300000.000900", "C0OPSROOM")
+    rebound = sc.containment_snapshot(state, dm, on_probe_failure=True)
+    assert (
+        rebound["mirror_identity"] == "discord:dm-channel-4242:|slack:C0OPSROOM:1786300000.000900"
+    )
+    assert sc.newly_held_constraints(rebound, admitted) == ["mirror_retarget"]
+
+
+def test_the_drain_compares_mirror_rooms_as_a_set():
+    """The comparison rule on its own inputs: a room the admission never saw fires
+    ``mirror_retarget`` (retarget or widening); a subset, an unchanged set or a
+    reordering does not; an empty drain-time identity is the boolean's business."""
+    admitted = {sc.QUEUED_CONTAINMENT_META_KEY: {"mirrored": True, "mirror_identity": "a|b"}}
+
+    def held(identity: str) -> list[str]:
+        return sc.newly_held_constraints({"mirrored": True, "mirror_identity": identity}, admitted)
+
+    assert held("a|b") == []
+    assert held("b|a") == []
+    assert held("a") == []
+    assert held("b") == []
+    assert held("") == []
+    assert held("a|c") == ["mirror_retarget"]
+    assert held("c") == ["mirror_retarget"]
+    assert held("a|b|c") == ["mirror_retarget"]
+    assert sc.mirror_audience("a|b") == frozenset({"a", "b"})
+    assert sc.mirror_audience("") == frozenset()
+    assert sc.mirror_audience(None) == frozenset()
+    assert sc.mirror_audience("teams:19:x@thread.v2:") == frozenset({"teams:19:x@thread.v2:"})
+
+
+def test_the_probe_reads_a_store_without_a_thread_accessor_as_no_thread():
+    """The probe's second read must not turn a store that lacks ``get_slack_link``,
+    or answers it in another shape (the shared ``MagicMock`` session double), into an
+    unverifiable probe -- that would make every queued entry on every such store a
+    fail-closed drop. Only a raising store fails the probe, as a raising mirror read
+    always did."""
+    slot = SimpleNamespace(key="chat-1", linked_session_key="")
+    mirror = ChannelLink("discord", channel_id="c1")
+
+    without = SimpleNamespace(get_mirror_link=lambda key: mirror)
+    assert sc._probe_channel_mirror(SimpleNamespace(sessions=without), slot) == "discord:c1:"
+
+    odd_shape = SimpleNamespace(get_mirror_link=lambda key: mirror, get_slack_link=MagicMock())
+    assert sc._probe_channel_mirror(SimpleNamespace(sessions=odd_shape), slot) == "discord:c1:"
+
+    threadless = SimpleNamespace(
+        get_mirror_link=lambda key: mirror, get_slack_link=lambda key: ("", "discord:u1")
+    )
+    assert sc._probe_channel_mirror(SimpleNamespace(sessions=threadless), slot) == "discord:c1:"
+
+    def _raise(key):
+        raise RuntimeError("store down")
+
+    raising = SimpleNamespace(get_mirror_link=lambda key: mirror, get_slack_link=_raise)
+    assert sc._probe_channel_mirror(SimpleNamespace(sessions=raising), slot) is None
+
+
+def test_the_predicate_reads_every_audience_accessor_the_reply_delivery_legs_read():
+    """The dashboard delivers a session's reply to its outbound audiences through two
+    legs, and each reads the audience off the store itself: the non-Slack mirror
+    through ``_resolve_mirror_target`` (``get_mirror_link``) and the Slack thread
+    through ``_deliver_linked_slack_message`` (``get_slack_link``). The predicate
+    must consult every accessor those legs consult -- a row the store hands to one
+    reader and not the other is an audience the gate cannot see, which is exactly
+    the Slack-thread gap this suite pins. Read off the source, so a delivery leg
+    that starts reading a new accessor reds this test rather than the operator."""
+    import inspect
+    import re
+
+    from kiro_crew.dashboard import chat_runner
+
+    accessor = re.compile(r"\b(get_\w+_link)\b")
+    delivery_reads: set[str] = set()
+    for leg in (
+        chat_runner._resolve_mirror_target,
+        chat_runner._deliver_cross_surface_reply,
+        chat_runner._deliver_linked_slack_message,
+    ):
+        delivery_reads |= set(accessor.findall(inspect.getsource(leg)))
+    predicate_reads = set(accessor.findall(inspect.getsource(sc.owner_dm_refusal)))
+    probe_reads = set(accessor.findall(inspect.getsource(sc._probe_channel_mirror)))
+    assert {"get_mirror_link", "get_slack_link"} <= delivery_reads, sorted(delivery_reads)
+    assert delivery_reads <= predicate_reads, sorted(delivery_reads - predicate_reads)
+    # The drain-side probe (``containment_snapshot``) judges the same audience after
+    # the fact, so it reads the same accessors -- or a thread bound while an entry
+    # waited would pass the drain the predicate refuses.
+    assert delivery_reads <= probe_reads, sorted(delivery_reads - probe_reads)
+
+
+def test_every_owner_dm_surface_opens_the_crew_log_from_its_dispatcher():
+    """A surface joins ``OWNER_DM_CONDUCTOR_SURFACES`` by verifying the facts the
+    predicate rests on -- and by opening its own sessions' crew logs, because the
+    work ledger an admitted DM holds appends to that log and rolls back a write with
+    nowhere to land. The dashboard runner opens logs for its own turns only; a
+    channel dispatcher runs its own turn loop and must call the shared opener, with
+    the predecessor read that keeps a recycled conversation's history on the
+    succession chain, and the workspace read off the slot the dashboard surfaces
+    the conversation under -- the source a tab on it states the same fact from, so
+    the two writers of one log never take turns recording a move. Pinned off the
+    dispatcher's source, so the next surface admitted as a conductor cannot re-open
+    the gaps this suite's opener tests closed."""
+    import importlib
+    import inspect
+
+    for surface in sorted(sc.OWNER_DM_CONDUCTOR_SURFACES):
+        dispatcher = importlib.import_module(f"kiro_crew.{surface}.transport_dispatch")
+        source = inspect.getsource(dispatcher)
+        assert "open_turn_crew_log(" in source, f"{surface}: dispatcher opens no crew log"
+        assert "predecessor_sid(" in source, f"{surface}: opener would cite no predecessor"
+        assert "workspace=slot_workspace(" in source, f"{surface}: opener states no workspace"
+
+
 @pytest.mark.asyncio
 async def test_mirror_unlink_clears_the_mirror_and_nothing_else(tmp_path, monkeypatch):
     """The dashboard's unlink clears the OUTBOUND mirror binding only. The slot
     stays channel-born (``linked_session_key`` untouched), so it neither detaches
     the session from its channel nor changes what the gates decide about it: a
     thread session is refused before and after, an owner DM is admitted before
-    and after."""
+    and after.
+
+    "Cleared" is the store's word, not an empty row: the first turn's
+    ``set_channel`` left the namespaced bucket in the legacy ``slack_channel_id``
+    field, and ``get_mirror_link`` filters that threadless Slack row at the source,
+    so every reader -- the gates, ``bind_origin_mirror``, the link projection --
+    sees no mirror, and the unlink that "changes nothing" cannot refuse the owner's
+    own DM.
+    """
     from kiro_crew.dashboard.chat_mirror import api_chat_slot_mirror_unlink
 
     state = _state(tmp_path, monkeypatch)
@@ -546,9 +887,10 @@ async def test_mirror_unlink_clears_the_mirror_and_nothing_else(tmp_path, monkey
         resp = await client.post(f"/api/chat/slots/{thread.key}/mirror-unlink")
         assert resp.status == 200
         assert (await resp.json())["was_linked"] is True
+        assert state.sessions.get_slack_link(DISCORD_THREAD) == ("", f"discord:{THREAD}")
         assert state.sessions.get_mirror_link(DISCORD_THREAD) is None
         assert thread.linked_session_key == DISCORD_THREAD
-        assert sc.audience_is_owner(state, thread) is False
+        assert sc.owner_dm_refusal(state, thread) == "the conversation is not a 1:1 direct message"
         with pytest.raises(sc.SessionControlError) as exc:
             await sc.create_session(state, caller_session_key=_key(thread))
         assert exc.value.code == "linked_session_caller"
@@ -556,9 +898,18 @@ async def test_mirror_unlink_clears_the_mirror_and_nothing_else(tmp_path, monkey
         resp = await client.post(f"/api/chat/slots/{dm.key}/mirror-unlink")
         assert resp.status == 200
         assert (await resp.json())["was_linked"] is True
+        assert state.sessions.get_slack_link(DISCORD_DM) == ("", f"discord:{OWNER}")
         assert state.sessions.get_mirror_link(DISCORD_DM) is None
         assert dm.linked_session_key == DISCORD_DM
-        assert sc.audience_is_owner(state, dm) is True
+        assert sc.owner_dm_refusal(state, dm) == ""
+        # A second unlink reaches the bucket row itself (``clear_mirror_link`` falls
+        # through to ``clear_slack_link`` once no ``mirror`` is left); the read was
+        # None before and after, and the DM is admitted the same either way.
+        resp = await client.post(f"/api/chat/slots/{dm.key}/mirror-unlink")
+        assert (await resp.json())["was_linked"] is True
+        assert state.sessions.get_slack_link(DISCORD_DM) == (None, None)
+        assert state.sessions.get_mirror_link(DISCORD_DM) is None
+        assert sc.owner_dm_refusal(state, dm) == ""
 
 
 # ── the surfaces the predicate is verified for are a closed, documented set ──

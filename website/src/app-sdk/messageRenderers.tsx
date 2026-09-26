@@ -430,6 +430,7 @@ export function renderAssistantBubble(
       turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
+      fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       suppressSteerAck={
         opts.policyBlockTranscript
           ? turnHadPolicyBlock(opts.policyBlockTranscript.messages, opts.policyBlockTranscript.index)

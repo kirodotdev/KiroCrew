@@ -22,6 +22,7 @@
 // are real role="option" nodes.
 vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-ui/react-select'))
 
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -70,9 +71,9 @@ import { Provider } from 'react-redux'
 // not the app singleton: a shared store would carry `activeSlot` across suites.
 import { createTestStore } from './helpers'
 
-function wrap(ui: React.ReactElement) {
+function wrap(ui: React.ReactElement, sub = 'transcript') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
+  return render(<MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}><Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider></MemoryRouter>)
 }
 
 /** The agent block the config mock serves. Reassigned mid-test to stand in for
@@ -135,7 +136,7 @@ beforeEach(() => {
 describe('ChatPanel — optimistic default model', () => {
   it('shows the picked model before the PATCH resolves', async () => {
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
 
@@ -155,7 +156,7 @@ describe('ChatPanel — optimistic default model', () => {
 
   it('reconciles to the server value when the refetch reports a different one', async () => {
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
@@ -169,7 +170,7 @@ describe('ChatPanel — optimistic default model', () => {
 
   it('rolls back to the persisted model when the PATCH rejects', async () => {
     const { reject } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
@@ -184,7 +185,7 @@ describe('ChatPanel — optimistic default model', () => {
     // reasoning-capable model unlocks the effort row while the PATCH is
     // still in flight — the panel stays self-consistent with its triggers.
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const effortTrigger = await screen.findByRole('combobox', { name: 'Default Reasoning Effort' })
     await waitFor(() => expect(effortTrigger).toHaveAttribute('data-disabled'))
@@ -201,7 +202,7 @@ describe('ChatPanel — optimistic role effort (the empty-string value)', () => 
     // test would drop the pending pick and keep showing 'High'.
     seed({ role_models: { background: 'claude-opus-4.8' }, role_efforts: { background: 'high' } })
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Background Effort', 'Model default')
 
@@ -218,7 +219,7 @@ describe('ChatPanel — optimistic role effort (the empty-string value)', () => 
   it('rolls back to the persisted effort when the PATCH rejects', async () => {
     seed({ role_models: { background: 'claude-opus-4.8' }, role_efforts: { background: '' } })
     const { reject } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Background Effort', 'Max')
     await waitFor(() => expect(trigger).toHaveTextContent('Max'))
@@ -233,7 +234,7 @@ describe('ChatPanel — optimistic fallback model', () => {
   it('shows the picked model before the PATCH resolves and keeps the refetched value', async () => {
     seed({ fallback_model: 'auto' })
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Fallback model', 'claude-opus-4.8')
 
@@ -253,7 +254,7 @@ describe('ChatPanel — optimistic fallback model', () => {
     // persisted choice beside the existing error copy on failure.
     seed({ fallback_model: 'auto' })
     const { reject } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Fallback model', 'Disabled')
     await waitFor(() => expect(trigger).toHaveTextContent('Disabled'))
@@ -269,7 +270,7 @@ describe('ChatPanel — optimistic refusal fallback model', () => {
   it('shows the picked model before the PATCH resolves and keeps the refetched value', async () => {
     seed({ refusal_fallback_model: '' })
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Content-filter fallback model', 'claude-opus-4.8')
 
@@ -289,7 +290,7 @@ describe('ChatPanel — optimistic refusal fallback model', () => {
     // refusal picker's own, not shared with the throttle picker.
     seed({ refusal_fallback_model: '' })
     const { reject } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Content-filter fallback model', 'Auto (model named in the refusal)')
     await waitFor(() => expect(trigger).toHaveTextContent('Auto (model named in the refusal)'))
@@ -309,7 +310,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // Y's display). Per-path pending entries make both directions impossible.
     seed({ model: 'auto', reasoning_effort: '', fallback_model: 'auto' })
     const ds = deferPatches(2)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const fallbackTrigger = await pick('Fallback model', 'claude-haiku-4.5')
     const modelTrigger = await pick('Default Model', 'claude-opus-4.8')
@@ -338,7 +339,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // THIRD pick owns. The server still reports the stale value here, so a
     // wrongful clear is visible as the trigger falling back to it.
     const ds = deferPatches(3)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
@@ -365,7 +366,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // A failed save leaves the banner up; the next attempt must not show a
     // fresh optimistic value under last attempt's error in the same frame.
     patchConfigMock.mockImplementationOnce(() => Promise.reject(new Error('boom')) as never)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
@@ -384,7 +385,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // unresolved auto-compact error would leave the user believing that
     // setting persisted.
     patchConfigMock.mockImplementationOnce(() => Promise.reject(new Error('boom')) as never)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'advanced')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     // Fail a non-picker save (Auto-Compact Threshold PATCHes via .then/.catch,
     // not a picker mutation) to raise its banner.
@@ -396,6 +397,8 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // asserting the pre-settle overlay against an already-settled mutation
     // would race the microtask cascade.
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '' }
+    // The banner sits above the rail, so it stays visible on the Model page.
+    fireEvent.click(screen.getByRole('option', { name: 'Model' }))
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
     expect(screen.getByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
@@ -407,7 +410,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // says nothing about whether the fallback persisted.
     seed({ model: 'auto', reasoning_effort: '', fallback_model: 'auto' })
     patchConfigMock.mockImplementationOnce(() => Promise.reject(new Error('boom')) as never)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await pick('Fallback model', 'claude-haiku-4.5')
     expect(await screen.findByText(/Failed to save fallback model/)).toBeInTheDocument()
@@ -431,7 +434,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // now — A's late failure must not install a stale "failed to save" beside
     // the value B is about to persist.
     const ds = deferPatches(2)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
@@ -449,7 +452,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // overlay either way. The success-path cache write of the ACCEPTED value
     // is what keeps the display truthful when the refetch transiently fails.
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
@@ -467,7 +470,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // makes a wrongful write visible — the display would fall back to A
     // while the server holds B.
     const ds = deferPatches(2)
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
@@ -491,7 +494,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // A PATCH can fail after persisting (5xx after apply). The error path
     // must still refetch: only the server can say which value survived.
     const { reject } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
@@ -510,7 +513,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // or the user could not change back to it.
     seed({ model: 'claude-opus-4.7-retired', reasoning_effort: '' })
     const { resolve } = deferPatch()
-    wrap(<ChatPanel />)
+    wrap(<ChatPanel />, 'models')
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))

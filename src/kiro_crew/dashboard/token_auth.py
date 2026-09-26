@@ -819,6 +819,17 @@ def _sign(payload: bytes) -> str:
     return _b64url_encode(hmac.new(_get_secret(), payload, hashlib.sha256).digest())
 
 
+def _ct_eq(a: str, b: str) -> bool:
+    """Constant-time str equality that answers False, never raises, for non-ASCII.
+
+    ``hmac.compare_digest`` raises ``TypeError`` on a str with a non-ASCII
+    character, which turned a forged credential into a 500 instead of a denial.
+    """
+    return hmac.compare_digest(
+        a.encode("utf-8", "surrogatepass"), b.encode("utf-8", "surrogatepass")
+    )
+
+
 def generate_token(
     user_id: str,
     ttl_seconds: int = 3600,
@@ -940,7 +951,7 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
     except Exception:
         return False, "", "invalid encoding"
     expected = _sign(payload_bytes)
-    if not hmac.compare_digest(sig, expected):
+    if not _ct_eq(sig, expected):
         return False, "", "invalid signature"
     try:
         data = json.loads(payload_bytes)
@@ -1230,7 +1241,7 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
         return False
     if not stored or not provided_secret:
         return False
-    return hmac.compare_digest(stored, provided_secret)
+    return _ct_eq(stored, provided_secret)
 
 
 def write_app_secret(app_name: str, secret: str) -> None:
@@ -2603,7 +2614,7 @@ def token_auth_middleware(
                     )
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
-                if hmac.compare_digest(internal_secret, _provided_secret):
+                if _ct_eq(internal_secret, _provided_secret):
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -2746,7 +2757,7 @@ def token_auth_middleware(
                 # If X-Internal-Secret header is present, validate it first
                 # (defense-in-depth: wrong secret = deny, even with valid cookie)
                 if "X-Internal-Secret" in request.headers:
-                    if not internal_secret or not hmac.compare_digest(
+                    if not internal_secret or not _ct_eq(
                         internal_secret, request.headers["X-Internal-Secret"]
                     ):
                         # Same fingerprint detail and code as the loopback arm
@@ -3378,7 +3389,8 @@ def _credential_fingerprint(value: str) -> str:
     """
     if not value:
         return "absent"
-    return f"{hashlib.sha256(value.encode()).hexdigest()[:8]}/len={len(value)}"
+    digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return f"{digest}/len={len(value)}"
 
 
 def _credential_mismatch_detail(expected: str, provided: str) -> str:

@@ -3895,8 +3895,9 @@ class TestNameGrantPlatformScopeRow:
 class TestDoctorSkillViewCensus:
     """The Agents Directory section counts the ``kirocrew-skill-view-*`` aliases.
 
-    Every spawn projects one alias per authored agent into the shared kiro
-    agents directory, and kiro-cli reads every file there on startup. Before
+    The projection publishes one alias per distinct agent view into the shared
+    kiro agents directory -- spawns of the same agent share one file -- and
+    kiro-cli reads every file there on startup. Before
     the lease-based reclaim the directory grew without bound (28k files / 580 MB
     on one host; ``EMFILE`` on another), and the only way to see it was ``ls``.
     Doctor reports the census read-only: how many aliases exist, how many a

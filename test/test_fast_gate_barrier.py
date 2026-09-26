@@ -57,6 +57,7 @@ _GATE_JOBS = (
     "builtin-skill-scope",
     "loop-bound-locks",
     "testpaths-coverage",
+    "cwd-relative-repo-reads",
     "harness-parity",
     "docs-lint",
 )

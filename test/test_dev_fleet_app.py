@@ -5994,8 +5994,17 @@ def test_trusted_bin_dirs_cover_homebrew_prefixes():
 def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_path):
     """Homebrew's `bin/gh` is a user-writable symlink into `Cellar/`. Caching the
     LINK would let it be repointed between validation and execution, so the
-    vetted real path is what gets cached and spawned."""
+    vetted real path is what gets cached and spawned.
+
+    ``_trusted_bin`` refuses any resolved target under ``Path.home()``. Whether
+    ``tmp_path`` is inside HOME is a property of the HOST (a ``TMPDIR`` under
+    ``~`` puts it there; CI and macOS keep it outside), so the home root is
+    pinned to a sibling directory that is NOT an ancestor of the fake Cellar.
+    """
     mod._TRUSTED_BIN_CACHE.clear()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     cellar = tmp_path / "Cellar" / "gh" / "1.0" / "bin"
     cellar.mkdir(parents=True)
     target = cellar / "gh"
@@ -6007,6 +6016,30 @@ def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_p
     monkeypatch.setattr(runtime_mod, "_TRUSTED_BIN_DIRS", (str(bin_dir),))
 
     assert mod._trusted_bin("gh") == str(target.resolve())
+    mod._TRUSTED_BIN_CACHE.clear()
+
+
+def test_trusted_bin_refuses_target_under_home(monkeypatch, tmp_path):
+    """The HOME refusal is the guard the test above pins around: an otherwise
+    system-shaped target (0o555, not writable by us) whose resolved path lies
+    under ``Path.home()`` is never selected, because anything under the user's
+    home is the agent's to replace. Every platform: the refusal is decided on
+    the resolved path before any POSIX mode check, so the candidate is placed
+    directly in the trusted dir (no symlink) and the test runs on Windows too.
+    """
+    mod._TRUSTED_BIN_CACHE.clear()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    bin_dir = home / "Cellar" / "gh" / "1.0" / "bin"
+    bin_dir.mkdir(parents=True)
+    exe = "gh.exe" if platform_compat.IS_WINDOWS else "gh"
+    target = bin_dir / exe
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o555)
+    monkeypatch.setattr(runtime_mod, "_TRUSTED_BIN_DIRS", (str(bin_dir),))
+
+    assert mod._trusted_bin("gh") is None
     mod._TRUSTED_BIN_CACHE.clear()
 
 

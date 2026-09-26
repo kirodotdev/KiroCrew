@@ -300,8 +300,17 @@ async function report(page: Page, name: string, data: Record<string, unknown>): 
   })
 }
 
-// Polls the scroller until three consecutive reads agree, so a post-return
-// re-placement that lands over two commits is read once it has landed.
+// Polls the scroller until the geometry holds for a full quiet window, so a
+// post-return re-placement that lands over two commits is read once it has
+// landed. The window is deliberately longer than the hook's own settle
+// (ANCHOR_RESTORE_SETTLE_MS, 600ms): after a reader release the rows above the
+// fold finish measuring in ~500ms steps for a few seconds, each compensated by
+// an integer scrollTop write that walks the top row by a fraction of a pixel,
+// and a window shorter than one step (three reads at 200ms) fits between two
+// steps and reads a baseline that is still converging, so the tail of that
+// convergence shows up as ~2px of "return" drift.
+const SETTLED_QUIET_READS = 6 // ~1.2s of identical reads at 200ms
+
 async function settled(page: Page): Promise<Geom> {
   let last: Geom | null = null
   let stableReads = 0
@@ -315,8 +324,8 @@ async function settled(page: Page): Promise<Geom> {
         last.mounted.last === g.mounted.last
       stableReads = same ? stableReads + 1 : 0
       last = g
-      return stableReads >= 2
-    }, { timeout: 8_000, intervals: [200] })
+      return stableReads >= SETTLED_QUIET_READS
+    }, { timeout: 12_000, intervals: [200] })
     .toBe(true)
   return last!
 }
@@ -347,7 +356,13 @@ test.describe('Chat transcript re-placement on a mobile tab return (WebKit)', { 
     })
     expect(whileHidden.hidden).toBe(true)
     expect(after.hidden).toBe(false)
-    expect(after.scrollTop).toBe(before.scrollTop)
+    // No re-placement happened: a follower's position is the live end, so the
+    // only scrollTop movement an undisturbed return may show is the pin
+    // tracking rows that finish measuring after the return, and that is
+    // bounded by the transcript's growth. The at-bottom check below is the
+    // position assertion.
+    const growth = Math.max(0, after.scrollHeight - before.scrollHeight)
+    expect(Math.abs(after.scrollTop - before.scrollTop)).toBeLessThanOrEqual(PX_TOLERANCE + growth)
     expect(distanceFromBottom(after)).toBeLessThanOrEqual(PX_TOLERANCE)
   })
 

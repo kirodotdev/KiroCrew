@@ -21,7 +21,7 @@
  * workers, so a test can kill one and drive the real lifecycle into recovery.
  *
  * jsdom lays nothing out, so `scrollHeight` is 0 for every element and
- * `ResizeObserver` never fires — which would leave `PatchPaintHold` holding its
+ * `ResizeObserver` never fires — which would leave `WarmSwap` holding its
  * plain fallback forever and make every assertion below vacuously true (the
  * fallback carries a control of its own). Both are stubbed with the geometry a
  * browser reports, additively (a plain-text body has height; Pierre's rows are

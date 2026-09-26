@@ -2407,13 +2407,19 @@ export function useVirtualChat<T>(
       }
       restoreLastCountRef.current = -1
       if (snap.stick) {
-        // Following at hide: the live end is the position. Pin it before the
-        // first visible frame when the box is already back; the re-armed
-        // slot-entry effect repeats the pin against the post-return commit.
+        // Following at hide: the live end is the position. Remount the TAIL
+        // window first (the mounted window may still be mid-history from the
+        // hidden-interval release), so the pin lands the live turn rather than
+        // the bottom spacer with rows still to mount -- the same order the
+        // bulk-hydration pin uses. Then pin before the first visible frame when
+        // the box is already back; the re-armed slot-entry effect repeats the
+        // pin against the post-return commit.
         pendingRestoreRef.current = null
         returnRestoreRef.current = false
         restoreDeadlineRef.current = 0
         stickRef.current = followOutput
+        const count = itemsRef.current.length
+        setWindowRange({ start: Math.max(0, count - (overscan + 1)), end: count })
         if (!scrollerCollapsed(el)) forcePin()
       } else {
         // Released at hide: the hide-time row is the position. The persisted
@@ -2439,7 +2445,7 @@ export function useVirtualChat<T>(
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [sessionId, followOutput, bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin])
+  }, [sessionId, followOutput, bottomThreshold, overscan, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin])
 
   // ---- Passive scroll listener: isAtBottom + user-scroll stick update ----
   const scrollRafScheduledRef = useRef(false)

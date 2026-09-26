@@ -18,6 +18,7 @@ import pytest
 from conftest import host_abs
 from kiro_crew import mcp_cleanup, platform_compat
 from kiro_crew.mcp_discovery import (
+    MCP_CLIENT_PROTOCOL_VERSION,
     MCP_REDACTED_HEADER_VALUE,
     SCOPE_CC_GLOBAL,
     SCOPE_KIRO_GLOBAL,
@@ -33,6 +34,7 @@ from kiro_crew.mcp_discovery import (
     _read_stdio_jsonrpc_response,
     _scope_priority,
     discover_servers_to_sync,
+    downgrade_protocol_version,
     list_servers,
     probe_metadata,
     probe_server,
@@ -6318,3 +6320,85 @@ class TestQuarantinedServersAreNotSpawned:
             await self._pass(monkeypatch, spawned)
 
         assert spawned == ["wedged"] * (self.LIMIT + 2)
+
+
+def _refusal(supported: list[str]) -> dict:
+    """The -32602 reply a server gives an initialize offering a version it dropped."""
+    data = {"supported": supported, "requested": MCP_CLIENT_PROTOCOL_VERSION}
+    error = {"code": -32602, "message": "Unsupported protocol version", "data": data}
+    return {"jsonrpc": "2.0", "id": 1, "error": error}
+
+
+def _http_reply(status: int, payload: dict | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status = status
+    resp.content_type = "application/json"
+    resp.headers = {}
+    resp.json = AsyncMock(return_value=payload)
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+    return resp
+
+
+class TestProtocolVersionNegotiation:
+    """Offer the newest revision; step down once when a server refuses it."""
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    def teardown_method(self) -> None:
+        _probe_cache.clear()
+
+    def test_downgrade_picks_the_newest_supported_version(self) -> None:
+        reply = _refusal(["2024-11-05", "2025-03-26"])
+        assert downgrade_protocol_version(reply, MCP_CLIENT_PROTOCOL_VERSION) == "2025-03-26"
+
+    def test_downgrade_only_steps_down_from_the_first_offer(self) -> None:
+        assert downgrade_protocol_version(_refusal(["2024-11-05"]), "2025-03-26") is None
+
+    def test_other_errors_do_not_downgrade(self) -> None:
+        unknown = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}}
+        no_list = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "bad"}}
+        only_ours = _refusal([MCP_CLIENT_PROTOCOL_VERSION])
+        only_newer = _refusal(["2099-01-01", "draft", "1.0"])
+        success = {"jsonrpc": "2.0", "id": 1, "result": {}}
+        replies = (unknown, no_list, only_ours, only_newer, success)
+        for reply in replies:
+            assert downgrade_protocol_version(reply, MCP_CLIENT_PROTOCOL_VERSION) is None
+
+    def _session(self, replies: list[MagicMock]) -> MagicMock:
+        session = MagicMock()
+        session.post = MagicMock(side_effect=replies)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_http_probe_retries_once_with_the_supported_version(self) -> None:
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+        ok = {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}
+        tools = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "search"}]}}
+        replies = [_http_reply(200, _refusal(["2025-03-26", "2024-11-05"])), _http_reply(200, ok)]
+        session = self._session([*replies, _http_reply(202), _http_reply(200, tools)])
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=session):
+            result = await _probe_remote(server)
+
+        assert result.status == "ok"
+        calls = session.post.call_args_list
+        offered = [c.kwargs["json"]["params"]["protocolVersion"] for c in calls[:2]]
+        assert offered == [MCP_CLIENT_PROTOCOL_VERSION, "2025-03-26"]
+        assert all("MCP-Protocol-Version" not in c.kwargs["headers"] for c in calls[:2])
+        assert all(c.kwargs["headers"]["MCP-Protocol-Version"] == "2025-03-26" for c in calls[2:])
+
+    @pytest.mark.asyncio
+    async def test_http_probe_does_not_retry_an_unknown_error(self) -> None:
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+        boom = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}}
+        session = self._session([_http_reply(200, boom)])
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=session):
+            result = await _probe_remote(server)
+
+        assert (result.status, result.error) == ("error", "boom")
+        assert session.post.call_count == 1

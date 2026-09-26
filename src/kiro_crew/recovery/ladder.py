@@ -218,9 +218,10 @@ _RECOVERABLE_INFRA_MARKERS: tuple[re.Pattern[str], ...] = (
 def _classify_error_object(err: Mapping[str, Any]) -> InfraError | None:
     code = err.get("code")
     data = err.get("data")
-    klass = data.get("class") if isinstance(data, Mapping) else None
+    klass: Any = None
     retry_after: float | None = None
     if isinstance(data, Mapping):
+        klass = data.get("class")
         raw = data.get("retry_after_secs")
         if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
             retry_after = float(raw)
@@ -259,11 +260,7 @@ def classify_infra_error(payload: Any) -> InfraError | None:
         if isinstance(inner, Mapping):
             return _classify_error_object(inner)
         return _classify_error_object(payload)
-    if isinstance(payload, BaseException):
-        text = str(payload)
-    else:
-        text = str(payload)
-    text = text.strip()
+    text = str(payload).strip()
     if not text or len(text) > _INFRA_TEXT_MAX_CHARS:
         return None
     # A serialised error object first: it is the shape the stub actually sends.

@@ -38,9 +38,12 @@ import aiohttp
 from kiro_crew.connections.registry import Provider, get_all_registry_providers
 from kiro_crew.connections.tool_aliases import normalized_endpoint
 from kiro_crew.mcp_discovery import (
+    MCP_CLIENT_PROTOCOL_VERSION,
     McpServerInfo,
     _needs_authorization,
+    downgrade_protocol_version,
     list_servers,
+    negotiated_protocol_version,
     redact_mcp_error,
 )
 from kiro_crew.mcp_grant import grant_presence as grant_present
@@ -59,7 +62,6 @@ __all__ = [
 DEFAULT_CONCURRENCY = 4
 DEFAULT_TIMEOUT_SECONDS = 20.0
 _REPORT_SCHEMA_VERSION = 1
-_MCP_PROTOCOL_VERSION = "2024-11-05"
 _CLIENT_INFO = {"name": "kirocrew-l1-smoke", "version": "1"}
 _MAX_ERROR_CHARS = 200
 # A JSON-RPC control reply is kilobytes; past this a provider is streaming, not answering.
@@ -237,25 +239,20 @@ async def _connect(
         **server.headers,
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
-        "MCP-Protocol-Version": _MCP_PROTOCOL_VERSION,
     }
-    data, session_id = await _post(
-        session,
-        server.url,
-        headers,
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": _MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": _CLIENT_INFO,
-            },
-        },
-        timeout_seconds=timeout_seconds,
-    )
+
+    async def initialize(version: str) -> tuple[dict[str, Any], str | None]:
+        params = {"protocolVersion": version, "capabilities": {}, "clientInfo": _CLIENT_INFO}
+        body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
+        return await _post(session, server.url, headers, body, timeout_seconds=timeout_seconds)
+
+    version = MCP_CLIENT_PROTOCOL_VERSION
+    data, session_id = await initialize(version)
+    if fallback := downgrade_protocol_version(data, version):
+        version = fallback
+        data, session_id = await initialize(version)
     _result_payload(data)
+    headers["MCP-Protocol-Version"] = negotiated_protocol_version(data, version)
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     await _post(

@@ -220,5 +220,6 @@
   "hooks.useNativeNotification.new_notifications",
   "pages.contextBreakdown.scope_turns",
   "pages.contextBreakdown.earlier_hidden",
-  "pages.contextBreakdown.scope_all_turns"
+  "pages.contextBreakdown.scope_all_turns",
+  "components.fileChangeChips.omitted_files_notice"
 ]

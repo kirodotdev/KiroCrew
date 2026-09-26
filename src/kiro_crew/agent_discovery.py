@@ -31,6 +31,7 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
+    is_native_skill_alias_name,
     iter_agent_spec_files,
     parse_agent_spec_bytes,
     shadowed_markdown_specs,
@@ -1367,16 +1368,25 @@ def agent_welcome_message(
 def _iter_spec_entries(d: Path) -> Iterator[os.DirEntry[str]]:
     """The one ``scandir`` walk behind the stat-only fingerprints of an agents dir.
 
-    Yields every entry with a recognised spec suffix and nothing else; the
-    caller decides what to ``stat`` and how. Case-insensitive: a
-    case-insensitive filesystem serves ``Foo.JSON`` to ``glob("*.json")``
-    consumers, so a case-sensitive suffix here would omit from a fingerprint a
-    file the scans include -- its edits would never invalidate. A directory that
+    Yields every entry with a recognised spec suffix that is not a managed
+    skill-view alias, and nothing else; the caller decides what to ``stat`` and
+    how. Both rules are the roster's own (:func:`iter_agent_spec_files`); the one
+    entry a fingerprint built here keeps and the roster drops is a Markdown spec
+    shadowed by its JSON twin, so the fingerprint is a superset of the roster,
+    never less.
+    Case-insensitive on the suffix: a case-insensitive filesystem serves
+    ``Foo.JSON`` to ``glob("*.json")`` consumers, so a case-sensitive suffix here
+    would omit from a fingerprint a file the scans include -- its edits would
+    never invalidate. Alias-free by name, before any ``stat``: the roster drops
+    the aliases, so a fingerprint that counted them would move on writes the
+    roster cannot see -- invalidating every cache it guards on each alias write
+    -- and would cost one ``stat`` per alias per call on the event loop, which
+    with thousands of aliases is the walk that stalls the loop. A directory that
     cannot be listed raises the ``OSError``; each caller decides what that means.
     """
     with os.scandir(d) as it:
         for entry in it:
-            if is_agent_spec_name(entry.name):
+            if is_agent_spec_name(entry.name) and not is_native_skill_alias_name(entry.name):
                 yield entry
 
 
@@ -1386,7 +1396,9 @@ def _dir_signature(d: Path) -> _ListAgentsSig:
     Captures each spec entry's name and mtime (both forms; a markdown edit
     that went unfingerprinted would serve a stale roster forever) — enough to detect adds,
     removals, renames, and any edit that changes a file's mtime, without
-    reading or parsing any file. An edit landing inside the same mtime tick
+    reading or parsing any file. A skill-view alias is not a spec entry here
+    (:func:`_iter_spec_entries`), so an alias write leaves the signature, and
+    the caches it guards, untouched. An edit landing inside the same mtime tick
     is invisible here; :func:`clear_list_agents_cache` is the escape hatch
     the write paths use for exactly that case. Naming the files matters: a
     rename changes neither the file count nor any file's mtime, but does
@@ -1450,15 +1462,17 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     not happen. A directory past :data:`_AGENTS_DIR_REVISION_MAX_ENTRIES` gives
     ``None`` and logs one warning per directory.
 
-    Only entries with a recognised spec suffix (``is_agent_spec_name``) are
-    fingerprinted; that is a superset of what the spec scans parse (a Markdown
-    spec shadowed by its JSON twin is still fingerprinted), so the revision can
-    only be more sensitive than the scan, never less. Adding or removing a stray
-    file still invalidates through the directory mtime, but the stray file itself
-    is omitted from the entry tuples. A ``stat`` that fails records zeros: the
-    entry is still named, so its appearance and disappearance are revisions. An
-    entry whose kind cannot be determined gives ``None``, and so does a
-    directory that cannot be listed: an unlistable directory is not an empty one.
+    Only the entries :func:`_iter_spec_entries` yields -- a recognised spec
+    suffix, not a skill-view alias -- are fingerprinted; that is a superset of
+    what the spec scans parse (a Markdown spec shadowed by its JSON twin is still
+    fingerprinted; an alias is left out by scan and fingerprint alike), so the
+    revision can only be more sensitive than the scan, never less. Adding or
+    removing a stray file -- an alias included -- still invalidates through the
+    directory mtime, but the stray file itself is omitted from the entry tuples
+    and from the entry cap. A ``stat`` that fails records zeros: the entry is
+    still named, so its appearance and disappearance are revisions. An entry
+    whose kind cannot be determined gives ``None``, and so does a directory that
+    cannot be listed: an unlistable directory is not an empty one.
     """
     if not AGENTS_DIR_MEMO_ENABLED:
         return None

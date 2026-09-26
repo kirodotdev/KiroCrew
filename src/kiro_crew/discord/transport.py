@@ -147,6 +147,11 @@ class DiscordTransport(MessagingTransport):
         self._on_thread_created = on_thread_created
         self._dispatch = dispatch
         self.capabilities = DISCORD_CAPABILITIES
+        # The rosters live here, and the REST ladder's waits live in the client, so
+        # the client is handed the predicate rather than a copy of the rosters.
+        # Installed here and not in the gateway so a transport built anywhere -- a
+        # unit harness included -- carries the same mid-send contract.
+        client.still_permitted = self._still_may_send_to
 
     @property
     def client(self) -> DiscordClient:
@@ -380,6 +385,57 @@ class DiscordTransport(MessagingTransport):
             return True
         return bool(principal) and principal in self._allowed
 
+    def _still_may_send_to(self, channel_id: str) -> bool:
+        """May a channel the REST ladder already started sending to still be
+        written to? Fails closed. Installed on the client as
+        ``still_permitted``.
+
+        The ladder asks this after each of its own waits, holding a channel id and
+        nothing else, so this answers strictly what a channel id can settle and
+        refuses when even that much is missing. Three arms decide everything a
+        channel id can decide:
+
+        * an id on the thread roster, or on the shared-channel roster, passes --
+          the same sets ``receive`` gates inbound on and :meth:`may_send_to`
+          consults, so a destination an operator withdraws stops being written to
+          mid-send. Both CURRENT rosters are read first, so moving an id between
+          ``allowed_thread_ids`` and ``allowed_channel_ids`` reads as the
+          reclassification it is rather than as a withdrawal;
+        * an id paired with a DM peer is decided on THAT peer, so the roster is
+          asked about the one user the message would actually reach. Every writer of
+          that pairing is DM-gated, which is what makes the pairing's presence a
+          reliable statement that the id is a DM channel and not a guild one;
+        * anything left is REFUSED. An id on no roster is either withdrawn or never
+          admitted, and a DM channel whose peer is not derivable here -- the DM
+          roster is keyed by the peer's user id while a DM link persists the channel
+          id ``create_dm_channel`` returned, and the pairing is not re-derivable
+          synchronously -- cannot be told from a withdrawn one. At a network egress
+          boundary "cannot tell" reads as no. Asking instead whether the roster
+          admits ANYBODY would let one remaining peer authorize a different, revoked
+          one.
+
+        A refusing final arm is what keeps this short: an id no roster and no pairing
+        can place is refused by it, so a separate record of what was once admitted
+        would answer after the same refusal and change nothing.
+
+        The cost of that last arm is an unattended proactive DM whose destination was
+        read back from a link written before a restart, and which served one of the
+        ladder's waits: it is refused rather than delivered. The alternative is
+        delivering to a peer whose authorization may already be gone, which is the
+        thing this exists to stop. A caller that needs the send to survive can re-open
+        the DM through ``create_dm_channel``, which establishes the pairing.
+        """
+        if not channel_id:
+            return False
+        if channel_id in self._allowed_threads:
+            return True
+        if channel_id in self._allowed_channels:
+            return True
+        peer = self._client.cached_dm_recipient(channel_id)
+        if peer is not None:
+            return peer in self._allowed
+        return False
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()
@@ -519,6 +575,13 @@ class DiscordTransport(MessagingTransport):
         )
         if not self.authorize(msg):
             return
+        if not inbound.guild_id:
+            # An authorized DM names its peer, and the reply goes to this same
+            # channel without ever opening it, so this is the one point the
+            # pairing can be learned for the inbound direction. Guild channels
+            # are excluded: their ids are decided by the channel rosters, not by
+            # a peer.
+            self._client.remember_dm_recipient(inbound.channel_id, inbound.user_id)
         if thread_id and not await self._client.is_thread_channel(thread_id):
             sel().log_api_access(
                 caller=inbound.user_id,

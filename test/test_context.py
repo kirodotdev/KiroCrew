@@ -17,11 +17,18 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import memory_store_name_defect
 from kiro_crew.skills import SkillsLoader
 
-# One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
+# One xdist worker for the whole module. The ``build_message`` call-site ratchet below
+# walks the package through the shared ``source_corpus`` (one memoised file list per
+# process, texts streamed and parsed only for the files that can match), so its cost is
+# now a second rather than the ~30s full-tree ``ast.parse`` this group was first added
+# for; the group stays so the file-list cache is paid once per run, not once per worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_context")
+
+
+@pytest.fixture(autouse=True)
+def _close_skills_loaders(close_skills_loaders):
+    """Every test here builds a ``ContextBuilder``: close its ``SkillsLoader`` (rootdir conftest)."""
+
 
 # ---------------------------------------------------------------------------
 # Strategies
@@ -1782,10 +1789,11 @@ class TestAsyncCallSitesUseToThread:
 
     def test_no_inline_build_message_in_async_functions(self):
         import ast
-        from pathlib import Path
+
+        from source_corpus import parsed_candidates, src_root
 
         nested_scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-        src_root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+        root = src_root()
         offenders: list[str] = []
 
         def _iter_frame_calls(fn: ast.AsyncFunctionDef):
@@ -1799,12 +1807,16 @@ class TestAsyncCallSitesUseToThread:
                     yield node
                 stack.extend(ast.iter_child_nodes(node))
 
-        for py in src_root.rglob("*.py"):
-            try:
-                text = py.read_text(encoding="utf-8")
-                tree = ast.parse(text)
-            except SyntaxError:
-                continue
+        # A finding is an ``ast.Attribute`` whose ``attr`` is ``build_message``, so
+        # that identifier cannot be absent from an offending file's text: the shared
+        # corpus parses only the files that carry it (a few dozen, not the whole
+        # package), one tree at a time, which is what took this gate from an
+        # 11-second full-tree parse to well under a second. ONLY that needle: the
+        # coroutine itself is found by the AST (``ast.AsyncFunctionDef``), never by
+        # a text needle -- ``async  def`` with two spaces is a valid coroutine that a
+        # literal ``"async def"`` filter would skip, and a filter that can skip a
+        # valid offender is a gate that fails open.
+        for py, text, tree in parsed_candidates(require_all=("build_message",)):
             lines = text.splitlines()
             for fn in ast.walk(tree):
                 if not isinstance(fn, ast.AsyncFunctionDef):
@@ -1820,7 +1832,7 @@ class TestAsyncCallSitesUseToThread:
                     src_line = lines[call.lineno - 1] if call.lineno <= len(lines) else ""
                     if "# loop-ok" in src_line:
                         continue
-                    offenders.append(f"{py.relative_to(src_root)}:{call.lineno} in async {fn.name}")
+                    offenders.append(f"{py.relative_to(root)}:{call.lineno} in async {fn.name}")
 
         assert not offenders, (
             "build_message called inline from async coroutine(s) — the episodic "

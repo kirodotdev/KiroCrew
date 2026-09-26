@@ -216,6 +216,16 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     const contained = userRef.current && containedSelectionRange(range, userRef.current)
     if (!contained) return
     const frag = contained.cloneContents()
+    // A chip carries its full path as visually-hidden `sr-only` text, so a
+    // screen reader reads the path rather than the short visible label. That
+    // text is a real node in the clone, and the `textContent` serialization
+    // below does not consult CSS — so `user-select: none`, which does keep the
+    // path out of the browser's OWN copy, cannot keep it out of this one, and
+    // the path would land in the clipboard glued to the label beside it. Drop
+    // every visually-hidden node from the clone first, so what is written is
+    // what the bubble shows. Done here rather than per chip shape: any
+    // visually-hidden text inside a bubble belongs to a reader, not a paste.
+    frag.querySelectorAll('.sr-only').forEach(n => n.remove())
     const chips = frag.querySelectorAll('[data-paste-seq]')
     if (!chips.length) return
     const bySeq = new Map(pastes.map(p => [p.seq, p]))

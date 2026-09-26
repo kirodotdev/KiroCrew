@@ -173,6 +173,10 @@ def register(app: web.Application) -> None:
         "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
     )
     app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
+    # Credential-redaction switch. Owner-gated in the handler, like the consent
+    # routes above: its only legitimate caller is the owner's browser.
+    app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
+    app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 

@@ -141,7 +141,7 @@ export default function CrewNotesTab({ slug, member, header, visible }: CrewNote
                     <span>{t(hidden)}</span>
                   </p>
                 )}
-                <div className="msg-content text-[13px] leading-relaxed" data-testid="member-notes-body">
+                <div className="msg-content crew-notes text-[13px] leading-relaxed" data-testid="member-notes-body">
                   <MarkdownRenderer content={data.text} />
                 </div>
               </>

@@ -53,7 +53,7 @@ function buildTabs() {
   return [
     { key: 'overview', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
     { key: 'imports', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
-    { key: 'chat', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description') },
+    { key: 'chat', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description'), hostsSubNav: true },
     { key: 'display', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description') },
     { key: 'voice', label: i18nT('settings.tabs.voice.label'), icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.voice.description') },
     { key: 'notifications', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description') },
@@ -231,7 +231,7 @@ export default function SettingsPage() {
       {tab => <>
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'imports' && <ImportPanel />}
-        {tab === 'chat' && <ChatPanel />}
+        {tab === 'chat' && <ChatPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'display' && <DisplayPanel />}
         {tab === 'voice' && <VoicePanel />}
         {tab === 'notifications' && <NotificationsPanel />}

@@ -26,7 +26,7 @@ Both live on the **Developer** page (sidebar → **Developer**):
 Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 
 Optionally, to render apps in the right side panel instead of inline, turn on
-**Settings → Chat → Messages → "MCP Apps in Side Panel."** No restart or refresh
+**Settings → Chat → Side panel → "MCP Apps in Side Panel."** No restart or refresh
 needed.
 
 ### The same thing in config

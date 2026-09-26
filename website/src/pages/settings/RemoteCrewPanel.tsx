@@ -874,10 +874,9 @@ function CrewRow({
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
-  // Connecting an unsigned crew opens a remote dashboard whose every chat fails
-  // with "not logged in" and whose fix ("run kiro-cli login in a terminal") is
-  // unreachable from there. Hold Connect back until the sign-in lands; the row
-  // shows the code and the way to get a fresh one instead.
+  // An unsigned crew still connects: the user can sign in on the crew itself once
+  // connected. The badge and the sign-in controls stay so the missing sign-in is
+  // visible, but they never hold Connect back.
   //
   // NOT gated on `!connected`: auto-connect is default-on, so an unsigned crew is
   // routinely connected already — and that is precisely when the badge and the
@@ -970,14 +969,6 @@ function CrewRow({
         {transient ? null : connected ? (
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
-          </Btn>
-        ) : awaitingSignin ? (
-          <Btn
-            disabled
-            title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}
-            aria-label={i18nT('pages.settings.remoteCrewPanel.connect_after_sign_in')}
-          >
-            <Plug className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.connect_after_sign_in')}
           </Btn>
         ) : (
           <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
@@ -1299,8 +1290,8 @@ function LaunchProgressCard({
           <li key={step.key} className="flex items-start gap-2.5">
             <span className="mt-0.5 shrink-0">
               {/* The connect step of an unsigned launch DID run — the crew is
-                  registered — but a green check beside "finish the Kiro sign-in
-                  before connecting" reads as done and not-done at the same time.
+                  registered — but a green check beside "sign in to Kiro on the
+                  crew" reads as done and not-done at the same time.
                   Mark it as the waiting state its own detail describes.
 
                   The sign-in step of that same crew is the SAME waiting state. An

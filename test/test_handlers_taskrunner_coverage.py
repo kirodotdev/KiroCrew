@@ -147,6 +147,11 @@ def _request(
         payload=BodyStreamPayload(raw),
     )
     req["app"] = request_app
+    if request_app == "":
+        # The dashboard-user class carries a subject; the mutating routes are
+        # owner-gated, and with no ``owner_id`` configured the signed local
+        # bootstrap subject is the owner.
+        req["user"] = "local-app"
     # Kept alive: the uncapped handlers (``max_bytes=None`` -- start, plan,
     # update_plan, update_task, from_chat, refine) consume ``request.json()``;
     # the capped ones drain the payload stream instead.

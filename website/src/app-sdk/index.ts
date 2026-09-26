@@ -125,6 +125,9 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   notifications_clear: 'notification',
   notification_channel_settings: 'notification',
   sessions_restarting: 'sessions',
+  // Bare {ts} refresh signal: the session-health verdict moved. Carries no slot,
+  // session key or counts, so it rides the same `sessions` declaration.
+  session_health_changed: 'sessions',
   yolo_expired: 'yolo',
   artifact_update: 'artifacts',
   'skills.pending_changed': 'skills',

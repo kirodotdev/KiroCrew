@@ -29,6 +29,8 @@ from kiro_crew.taskq.reconcile import reconcile_on_boot
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.taskq.waits import WaitLedger, WaitRecord
 
+_RUNNER_LOGGER = "kiro_crew.taskq.adapters.runner"
+
 
 class _Sleeps:
     """Records requested sleeps; advances the fake clock instead of waiting."""
@@ -863,7 +865,7 @@ def test_a_refused_container_start_reports_the_state_the_requeue_read_back(
         adm, _ = _admission(store, clock)
         rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r")
         assert rec is not None
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.taskq.adapters.runner"):
+        with caplog.at_level(logging.WARNING, logger=_RUNNER_LOGGER):
             assert adm.claim_only(rec.id) is None
         assert any(
             "taskrunner:r took no container handle; the row is queued" in message
@@ -1379,7 +1381,21 @@ def _claimed_unstarted(store: TaskStore, task_id: str = "taskrunner:r:task1") ->
 
 
 def _one_warning(caplog: pytest.LogCaptureFixture) -> str:
-    said = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    """The single WARNING the runner adapter emitted -- and only the adapter's.
+
+    ``caplog`` captures the ROOT logger, so a WARNING from any other module that
+    happens to fire during this test lands in ``caplog.records`` too: a
+    maintenance sweep an earlier test's ``SessionManager`` handed to the shared
+    executor thread finishes minutes later, in whichever test is running then.
+    Counting unfiltered records made this helper assert on that thread's timing.
+    The callers already scope ``caplog.at_level(..., logger=_RUNNER_LOGGER)``; the
+    count is scoped to the same logger.
+    """
+    said = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == _RUNNER_LOGGER and rec.levelno >= logging.WARNING
+    ]
     assert len(said) == 1, said
     return said[0]
 
@@ -1413,7 +1429,7 @@ def test_a_locked_read_after_the_requeue_is_the_stores_typed_error(
 
         store.transition = _commit_then_let_the_rival_in  # type: ignore[method-assign]
         try:
-            with caplog.at_level(logging.WARNING, logger="kiro_crew.taskq.adapters.runner"):
+            with caplog.at_level(logging.WARNING, logger=_RUNNER_LOGGER):
                 assert r.RunnerAdmission._requeue_unstarted(store, task_id, generation) is None
         finally:
             store.transition = committing  # type: ignore[method-assign]
@@ -1441,7 +1457,7 @@ def test_a_locked_requeue_answers_the_same_none_over_a_row_that_stayed_admitted(
         rival.execute("BEGIN EXCLUSIVE")
         rival.execute("UPDATE tasks SET updated_at=1 WHERE id=?", (task_id,))
         try:
-            with caplog.at_level(logging.WARNING, logger="kiro_crew.taskq.adapters.runner"):
+            with caplog.at_level(logging.WARNING, logger=_RUNNER_LOGGER):
                 assert r.RunnerAdmission._requeue_unstarted(store, task_id, generation) is None
         finally:
             rival.execute("ROLLBACK")

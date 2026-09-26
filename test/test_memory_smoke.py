@@ -22,13 +22,13 @@ from kiro_crew.skills import SkillsLoader
 from kiro_crew.vector_memory import VectorMemoryStore
 
 
-def _builder(tmp_path: Path, **kw: object) -> ContextBuilder:
+def _builder(tmp_path: Path, *, opened, **kw: object) -> ContextBuilder:
     """Create a ContextBuilder with minimal fixtures."""
     ws = tmp_path / "ws"
     store = kw.get("memory") or MemoryStore(workspace=ws)
     return ContextBuilder(
         memory=store,  # type: ignore[arg-type]
-        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        skills=opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)),
         hooks=kw.get("hooks") or HookManager(),  # type: ignore[arg-type]
         lessons=kw.get("lessons") or LessonStore(base_dir=tmp_path),  # type: ignore[arg-type]
     )
@@ -38,8 +38,8 @@ def _builder(tmp_path: Path, **kw: object) -> ContextBuilder:
 
 
 class TestSemanticContextJsonFormat:
-    def test_dict_value_renders_as_json(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_dict_value_renders_as_json(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.set_semantic(
             "project.team.info",
@@ -52,15 +52,15 @@ class TestSemanticContextJsonFormat:
         assert '"alias"' in ctx
         assert "{'alias'" not in ctx
 
-    def test_list_value_renders_as_json(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_list_value_renders_as_json(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.set_semantic("project.services", ["ServiceA", "ServiceB"], 1.0, "user_explicit")
         ctx = store.get_semantic_context()
         assert '["ServiceA"' in ctx
 
-    def test_string_value_renders_plain(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_string_value_renders_plain(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.set_semantic("pref.color", "red", 1.0, "user_explicit")
         ctx = store.get_semantic_context()
@@ -71,24 +71,24 @@ class TestSemanticContextJsonFormat:
 
 
 class TestEpisodicTextHashDedup:
-    def test_exact_prefix_duplicate_rejected(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_exact_prefix_duplicate_rejected(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         text = "User decided to use Python for the backend service and deploy to us-west-2"
         assert store.write_episodic(text)
         assert not store.write_episodic(text)
         assert len(store.get_episodic_list()) == 1
 
-    def test_same_prefix_different_suffix_rejected(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_same_prefix_different_suffix_rejected(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         base = "Rebuilt PV Law Review spreadsheet from 20 to 193 rows after discovering original"
         assert store.write_episodic(base + " logic was wrong")
         assert not store.write_episodic(base + " approach was flawed")
         assert len(store.get_episodic_list()) == 1
 
-    def test_different_text_accepted(self, tmp_path: Path) -> None:
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    def test_different_text_accepted(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         assert store.write_episodic("User decided to use Python for the backend service")
         assert store.write_episodic("Team agreed on PostgreSQL for the database layer")
@@ -109,25 +109,27 @@ class TestMemoryInjectionAllAgents:
     # fixture for the advisory it pins off.
     pytestmark = pytest.mark.usefixtures("ample_host_resources")
 
-    def test_kirocrew_agent_gets_everything(self, tmp_path: Path) -> None:
+    def test_kirocrew_agent_gets_everything(self, tmp_path: Path, opened) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
         store.write("# Memory\n\nUser likes Python.")
-        builder = _builder(tmp_path, memory=store)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         ctx = builder.build_session_context(agent="kirocrew")
         assert "Python" in ctx
         assert "[CRITICAL RULES" in ctx
 
-    def test_custom_agent_gets_memory(self, tmp_path: Path) -> None:
+    def test_custom_agent_gets_memory(self, tmp_path: Path, opened) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
         store.write("# Memory\n\nUser prefers dark mode.")
-        builder = _builder(tmp_path, memory=store)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "dark mode" in ctx
         assert "[Memory" in ctx
 
-    def test_plain_custom_agent_includes_critical_rules(self, tmp_path: Path, monkeypatch) -> None:
+    def test_plain_custom_agent_includes_critical_rules(
+        self, tmp_path: Path, monkeypatch, opened
+    ) -> None:
         # OPT-OUT default: a plain custom agent with no ``includeCrewContext``
         # flag (here, no materialized spec at all) STILL gets the dashboard
         # critical-rules block — reproducing the pre-opt-out behavior. Only an
@@ -136,11 +138,13 @@ class TestMemoryInjectionAllAgents:
         agents_dir.mkdir()
         monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
         monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
-        builder = _builder(tmp_path)
+        builder = _builder(tmp_path, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "[CRITICAL RULES" in ctx
 
-    def test_opted_out_custom_agent_omits_critical_rules(self, tmp_path: Path, monkeypatch) -> None:
+    def test_opted_out_custom_agent_omits_critical_rules(
+        self, tmp_path: Path, monkeypatch, opened
+    ) -> None:
         # A custom app agent that declares ``includeCrewContext: false`` ships its
         # own output contract, so the kirocrew assistant's critical-rules block
         # (diff blocks, [OPTIONS:] footer, absolute-path rule) must NOT be injected
@@ -153,12 +157,14 @@ class TestMemoryInjectionAllAgents:
         )
         monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
         monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
-        builder = _builder(tmp_path)
+        builder = _builder(tmp_path, opened=opened)
         ctx = builder.build_session_context(agent="opted-out-agent")
         assert "[CRITICAL RULES" not in ctx
         # The built-in agent still gets it (see test_kirocrew_agent_gets_everything).
 
-    def test_plain_custom_agent_keeps_dashboard_nudges(self, tmp_path: Path, monkeypatch) -> None:
+    def test_plain_custom_agent_keeps_dashboard_nudges(
+        self, tmp_path: Path, monkeypatch, opened
+    ) -> None:
         # No ``includeCrewContext`` flag ⇒ the dashboard tool nudges
         # (ask_question / suggest_followup) are still injected on a dashboard slot.
         agents_dir = tmp_path / "agents"
@@ -166,7 +172,7 @@ class TestMemoryInjectionAllAgents:
         monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
         monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
         monkeypatch.setattr("kiro_crew.context.has_dashboard_surface", lambda key: True)
-        builder = _builder(tmp_path)
+        builder = _builder(tmp_path, opened=opened)
         msg, _ = builder.build_message(
             "hello",
             is_new_session=False,
@@ -178,7 +184,7 @@ class TestMemoryInjectionAllAgents:
         assert "suggest_followup" in msg
 
     def test_opted_out_custom_agent_omits_dashboard_nudges(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, opened
     ) -> None:
         # ``includeCrewContext: false`` also suppresses the dashboard tool nudges,
         # but NOT the provider-agnostic [OPTIONS:] reminder (that only tells the
@@ -192,7 +198,7 @@ class TestMemoryInjectionAllAgents:
         monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
         monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
         monkeypatch.setattr("kiro_crew.context.has_dashboard_surface", lambda key: True)
-        builder = _builder(tmp_path)
+        builder = _builder(tmp_path, opened=opened)
         msg, _ = builder.build_message(
             "hello",
             is_new_session=False,
@@ -235,7 +241,7 @@ class TestMemoryInjectionAllAgents:
             loader._MATERIALIZED_AGENTS = saved
             loader._MATERIALIZED_AGENTS_READY = saved_ready
 
-    def test_custom_agent_skips_skills(self, tmp_path: Path) -> None:
+    def test_custom_agent_skips_skills(self, tmp_path: Path, opened) -> None:
         skills_dir = tmp_path / "skills" / "test"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(
@@ -243,17 +249,17 @@ class TestMemoryInjectionAllAgents:
         )
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
-            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            skills=opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)),
         )
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "Do stuff." not in ctx
 
-    def test_custom_agent_skips_workspace_identity(self, tmp_path: Path) -> None:
-        builder = _builder(tmp_path)
+    def test_custom_agent_skips_workspace_identity(self, tmp_path: Path, opened) -> None:
+        builder = _builder(tmp_path, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "WORKSPACE IDENTITY" not in ctx
 
-    def test_custom_agent_gets_lessons(self, tmp_path: Path) -> None:
+    def test_custom_agent_gets_lessons(self, tmp_path: Path, opened) -> None:
         from kiro_crew.learn import Lesson
 
         lessons = LessonStore(base_dir=tmp_path)
@@ -264,28 +270,28 @@ class TestMemoryInjectionAllAgents:
                 category="tool",
             )
         )
-        builder = _builder(tmp_path, lessons=lessons)
+        builder = _builder(tmp_path, lessons=lessons, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "pytest-asyncio" in ctx
 
-    def test_custom_agent_gets_hooks(self, tmp_path: Path) -> None:
+    def test_custom_agent_gets_hooks(self, tmp_path: Path, opened) -> None:
         hooks_cfg = HooksConfig(
             context_rules=[ContextRule(triggers=["pipeline"], context="Use pipeline tool.")]
         )
-        builder = _builder(tmp_path, hooks=HookManager(hooks_cfg))
+        builder = _builder(tmp_path, hooks=HookManager(hooks_cfg), opened=opened)
         msg, hook = builder.build_message("check pipeline", is_new_session=False, agent="custom")
         assert "pipeline tool" in msg
 
-    def test_custom_agent_gets_options_reminder(self, tmp_path: Path) -> None:
-        builder = _builder(tmp_path)
+    def test_custom_agent_gets_options_reminder(self, tmp_path: Path, opened) -> None:
+        builder = _builder(tmp_path, opened=opened)
         msg, _ = builder.build_message(
             "hello", is_new_session=False, agent="custom", interactive=True
         )
         assert "OPTIONS" in msg
 
-    def test_custom_agent_gets_hook_transform(self, tmp_path: Path) -> None:
+    def test_custom_agent_gets_hook_transform(self, tmp_path: Path, opened) -> None:
         hooks_cfg = HooksConfig(transforms=[TransformHook(pattern="deploy", prefix="[DEPLOY]")])
-        builder = _builder(tmp_path, hooks=HookManager(hooks_cfg))
+        builder = _builder(tmp_path, hooks=HookManager(hooks_cfg), opened=opened)
         msg, _ = builder.build_message("deploy app", is_new_session=False, agent="custom")
         assert msg.startswith("[DEPLOY]")
 
@@ -298,17 +304,19 @@ class TestEpisodicInjectionAllAgents:
     exactly once; recall still returns it for later turns."""
 
     @staticmethod
-    def _seeded(tmp_path: Path) -> tuple[MemoryStore, VectorMemoryStore]:
+    def _seeded(tmp_path: Path, *, opened) -> tuple[MemoryStore, VectorMemoryStore]:
         store = MemoryStore(workspace=tmp_path / "ws")
-        vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         vs.init()
         vs.write_episodic("User decided to use PostgreSQL for the database layer")
         store._vector_store = vs
         return store, vs
 
-    def test_custom_agent_carries_episodic_once_on_new_session(self, tmp_path: Path) -> None:
-        store, vs = self._seeded(tmp_path)
-        builder = _builder(tmp_path, memory=store)
+    def test_custom_agent_carries_episodic_once_on_new_session(
+        self, tmp_path: Path, opened
+    ) -> None:
+        store, vs = self._seeded(tmp_path, opened=opened)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=True,
@@ -318,9 +326,11 @@ class TestEpisodicInjectionAllAgents:
         assert "memory_recall" in msg
         assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 
-    def test_kirocrew_agent_carries_episodic_once_on_new_session(self, tmp_path: Path) -> None:
-        store, vs = self._seeded(tmp_path)
-        builder = _builder(tmp_path, memory=store)
+    def test_kirocrew_agent_carries_episodic_once_on_new_session(
+        self, tmp_path: Path, opened
+    ) -> None:
+        store, vs = self._seeded(tmp_path, opened=opened)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=True,
@@ -330,15 +340,15 @@ class TestEpisodicInjectionAllAgents:
         assert "memory_recall" in msg
         assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 
-    def test_episodic_skipped_on_followup(self, tmp_path: Path) -> None:
+    def test_episodic_skipped_on_followup(self, tmp_path: Path, opened) -> None:
         """Episodic memory not injected on follow-up messages (trust ACP)."""
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
-        vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         vs.init()
         vs.write_episodic("User decided to use PostgreSQL for the database layer")
         store._vector_store = vs
-        builder = _builder(tmp_path, memory=store)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         msg, _ = builder.build_message(
             "what database should I use?",
             is_new_session=False,
@@ -350,25 +360,25 @@ class TestEpisodicInjectionAllAgents:
 
 
 class TestSemanticMemoryInSessionContext:
-    def test_semantic_memory_in_custom_agent_session(self, tmp_path: Path) -> None:
+    def test_semantic_memory_in_custom_agent_session(self, tmp_path: Path, opened) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
-        vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         vs.init()
         vs.set_semantic("pref.language", "Python", 1.0, "user_explicit")
         store._vector_store = vs
-        builder = _builder(tmp_path, memory=store)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "pref.language: Python" in ctx
 
-    def test_lessons_in_vector_store_for_custom_agent(self, tmp_path: Path) -> None:
+    def test_lessons_in_vector_store_for_custom_agent(self, tmp_path: Path, opened) -> None:
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)
-        vs = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         vs.init()
         vs.write_lesson("always run tests before committing", "tool")
         store._vector_store = vs
-        builder = _builder(tmp_path, memory=store)
+        builder = _builder(tmp_path, memory=store, opened=opened)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "always run tests" in ctx
 
@@ -379,40 +389,40 @@ class TestSemanticMemoryInSessionContext:
 class TestCrossSessionMemory:
     """Memory written in one session is available in the next."""
 
-    def test_semantic_persists_across_store_instances(self, tmp_path: Path) -> None:
+    def test_semantic_persists_across_store_instances(self, tmp_path: Path, opened) -> None:
         db = tmp_path / "mem.db"
         s1 = VectorMemoryStore(db_path=db)
         s1.init()
         s1.set_semantic("user.name", "Bolin", 1.0, "user_explicit")
         s1.close()
 
-        s2 = VectorMemoryStore(db_path=db)
+        s2 = opened(VectorMemoryStore(db_path=db))
         s2.init()
         entry = s2.get_semantic("user.name")
         assert entry is not None
         assert json.loads(entry["value_json"]) == "Bolin"
 
-    def test_episodic_persists_across_store_instances(self, tmp_path: Path) -> None:
+    def test_episodic_persists_across_store_instances(self, tmp_path: Path, opened) -> None:
         db = tmp_path / "mem.db"
         s1 = VectorMemoryStore(db_path=db)
         s1.init()
         s1.write_episodic("Discussed migration strategy for the database layer")
         s1.close()
 
-        s2 = VectorMemoryStore(db_path=db)
+        s2 = opened(VectorMemoryStore(db_path=db))
         s2.init()
         entries = s2.get_episodic_list()
         assert len(entries) == 1
         assert "migration" in entries[0]["text"]
 
-    def test_lessons_persist_across_store_instances(self, tmp_path: Path) -> None:
+    def test_lessons_persist_across_store_instances(self, tmp_path: Path, opened) -> None:
         db = tmp_path / "mem.db"
         s1 = VectorMemoryStore(db_path=db)
         s1.init()
         s1.write_lesson("always use type hints", "preference")
         s1.close()
 
-        s2 = VectorMemoryStore(db_path=db)
+        s2 = opened(VectorMemoryStore(db_path=db))
         s2.init()
         lessons = s2.get_lessons()
         assert len(lessons) == 1
@@ -465,9 +475,9 @@ class TestMMRReranking:
         result = _mmr_rerank(candidates, limit=4)
         assert len(result) == 4
 
-    def test_episodic_search_uses_mmr(self, tmp_path: Path) -> None:
+    def test_episodic_search_uses_mmr(self, tmp_path: Path, opened) -> None:
         """Episodic search applies MMR by default (keyword fallback path)."""
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         # Write several topically similar entries
         store.write_episodic("deployed the app to production successfully")
@@ -477,9 +487,9 @@ class TestMMRReranking:
         # Should return results (keyword fallback)
         assert len(results) >= 1
 
-    def test_episodic_search_mmr_disabled(self, tmp_path: Path) -> None:
+    def test_episodic_search_mmr_disabled(self, tmp_path: Path, opened) -> None:
         """Can disable MMR for raw relevance ordering."""
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.write_episodic("deployed the app to production successfully")
         store.write_episodic("database migration completed for PostgreSQL")
@@ -493,16 +503,16 @@ class TestMMRReranking:
 class TestHybridSemanticRetrieval:
     """Semantic context uses hybrid vector+keyword scoring when embeddings available."""
 
-    def test_keyword_only_without_embeddings(self, tmp_path: Path) -> None:
+    def test_keyword_only_without_embeddings(self, tmp_path: Path, opened) -> None:
         """Without embed_fn, falls back to keyword-only scoring."""
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.set_semantic("pref.language", "Python", 1.0, "user_explicit")
         store.set_semantic("project.name", "KiroCrew", 1.0, "user_explicit")
         ctx = store.get_semantic_context(query_text="Python language")
         assert "pref.language: Python" in ctx
 
-    def test_hybrid_with_mock_embeddings(self, tmp_path: Path) -> None:
+    def test_hybrid_with_mock_embeddings(self, tmp_path: Path, opened) -> None:
         """With embed_fn, uses hybrid scoring (vector + keyword)."""
         call_count = 0
 
@@ -513,7 +523,7 @@ class TestHybridSemanticRetrieval:
             h = hash(text) % 1000
             return [float(h % (i + 1)) / (i + 1) for i in range(8)]
 
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.embed_fn = mock_embed
         store.set_semantic("pref.language", "Python", 1.0, "user_explicit")
@@ -525,9 +535,9 @@ class TestHybridSemanticRetrieval:
         # embed_fn was called (query + entries)
         assert call_count > 0
 
-    def test_no_query_returns_recent(self, tmp_path: Path) -> None:
+    def test_no_query_returns_recent(self, tmp_path: Path, opened) -> None:
         """Without query, returns most recent entries regardless of embeddings."""
-        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         store.set_semantic("pref.color", "blue", 1.0, "user_explicit")
         ctx = store.get_semantic_context(query_text="")
@@ -582,12 +592,12 @@ class TestLessonEmbeddingStorage:
         s2.init()  # should not raise
         s2.close()
 
-    def test_write_lesson_stores_embedding(self, tmp_path: Path) -> None:
+    def test_write_lesson_stores_embedding(self, tmp_path: Path, opened) -> None:
         """New lesson gets embedding blob persisted in DB."""
         import struct
 
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
         # Mock embed_fn to return a known vector
         s.embed_fn = lambda text: [0.1, 0.2, 0.3]
@@ -602,10 +612,10 @@ class TestLessonEmbeddingStorage:
         assert len(emb) == 3
         assert abs(emb[0] - 0.1) < 1e-6
 
-    def test_write_lesson_no_embed_fn_still_works(self, tmp_path: Path) -> None:
+    def test_write_lesson_no_embed_fn_still_works(self, tmp_path: Path, opened) -> None:
         """Without embed_fn, lesson is saved but no embedding stored."""
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
         assert s.write_lesson("no embedding available", "knowledge")
 
@@ -615,11 +625,11 @@ class TestLessonEmbeddingStorage:
         assert row is not None
         assert row["embedding"] is None
 
-    def test_dedup_uses_stored_embedding(self, tmp_path: Path) -> None:
+    def test_dedup_uses_stored_embedding(self, tmp_path: Path, opened) -> None:
         """Semantic dedup reads stored embedding, does not call embed_fn for existing lessons."""
 
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
         # Write first lesson with embedding
@@ -644,11 +654,11 @@ class TestLessonEmbeddingStorage:
         # Both lessons survive (different text, sim=1.0 but second is longer → first deleted, second saved)
         assert len(s.get_lessons()) == 1
 
-    def test_lazy_backfill_legacy_lesson(self, tmp_path: Path) -> None:
+    def test_lazy_backfill_legacy_lesson(self, tmp_path: Path, opened) -> None:
         """Legacy lesson without embedding gets backfilled on next write_lesson."""
 
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
         # Write first lesson WITHOUT embed_fn (simulates legacy)
@@ -669,10 +679,10 @@ class TestLessonEmbeddingStorage:
         for row in rows:
             assert row["embedding"] is not None, f"{row['key']} missing embedding after backfill"
 
-    def test_semantic_dedup_with_stored_embedding(self, tmp_path: Path) -> None:
+    def test_semantic_dedup_with_stored_embedding(self, tmp_path: Path, opened) -> None:
         """Stored embedding triggers cosine similarity dedup (sim > 0.85)."""
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
         # embed_fn returns near-identical vectors for any text
@@ -693,13 +703,13 @@ class TestLessonEmbeddingStorage:
         assert len(lessons) == 1
         assert "composing objects" in str(lessons[0]["value_json"])
 
-    def test_backfill_cap(self, tmp_path: Path) -> None:
+    def test_backfill_cap(self, tmp_path: Path, opened) -> None:
         """Lazy backfill stops after _MAX_BACKFILLS_PER_CALL legacy lessons."""
 
         from kiro_crew.vector_memory import _MAX_BACKFILLS_PER_CALL
 
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
         # Write 7 legacy lessons without embed_fn (unique keywords to avoid topic dedup)
@@ -745,10 +755,10 @@ class TestLessonEmbeddingStorage:
         # 5 legacy backfilled + 1 new = 6 with embeddings, 2 legacy without
         assert backfilled == _MAX_BACKFILLS_PER_CALL + 1
 
-    def test_stale_backfill_purged_on_delete(self, tmp_path: Path) -> None:
+    def test_stale_backfill_purged_on_delete(self, tmp_path: Path, opened) -> None:
         """Pending backfill is purged when lesson is deleted via semantic dedup."""
         db = tmp_path / "mem.db"
-        s = VectorMemoryStore(db_path=db)
+        s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
         # Write a legacy lesson without embedding

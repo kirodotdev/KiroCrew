@@ -942,6 +942,52 @@ async def test_a_pending_rewrite_fork_without_a_concurrent_rewind_still_succeeds
 
 
 @pytest.mark.asyncio
+async def test_the_pending_rewrite_flush_pins_its_slot_identity(tmp_path, monkeypatch):
+    """The flush is a truncating rewrite, so both axes must decide its commit.
+
+    It is dispatched off the loop and awaited, which frees the loop until the
+    worker commits. ``expected_history_key`` refuses a RENAMED replacement; a
+    same-name close-and-recreate resumes the same transcript and keeps that key
+    identical, so ``expected_slot_name`` is what refuses it -- re-read inside
+    the transcript lock with no await before the write. This caller is the one
+    that then republishes the file it wrote, so an unrefused commit here is
+    copied under a fresh key.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+
+    slot = state.get_or_create_slot("pendpin")
+    for i in range(8):
+        slot.append("user" if i % 2 == 0 else "assistant", f"p{i}", "msg")
+    slot.drain()
+    from kiro_crew.dashboard.chat import _save_slot_to_history
+
+    _save_slot_to_history(state, slot)
+    slot._pending_rewrite = True
+    slot._dirty = True
+
+    seen: list[dict] = []
+    from kiro_crew.dashboard import chat_fork as chat_fork_mod
+
+    real_save = chat_fork_mod.save_slot_off_loop
+
+    async def _record(*args, **kwargs):
+        seen.append(kwargs)
+        return await real_save(*args, **kwargs)
+
+    monkeypatch.setattr(chat_fork_mod, "save_slot_off_loop", _record)
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/pendpin/fork", json={})
+        assert resp.status == 200, await resp.text()
+
+    flushes = [kw for kw in seen if kw.get("rewrite")]
+    assert len(flushes) == 1, f"expected exactly one pending-rewrite flush, saw {seen}"
+    assert flushes[0]["expected_history_key"]
+    assert flushes[0]["expected_slot_name"] == "pendpin"
+
+
+@pytest.mark.asyncio
 async def test_a_fork_with_no_pending_rewrite_is_untouched(tmp_path, monkeypatch):
     """DIRECTION NOT BROKEN: the ordinary non-pending path must be unaffected.
 

@@ -1,26 +1,39 @@
-"""One cached read of the ``kiro_crew`` source tree, shared by every AST ratchet.
+"""One streamed read of the ``kiro_crew`` source tree, shared by every AST ratchet.
 
 Several gates in this suite pin a structural property of the whole package by
 walking ``src/kiro_crew/**/*.py`` and ``ast.parse``-ing each file. Independently
 they each paid the same costs, and the suite paid them once per gate:
 
-* the ``rglob`` walk and the read of ~41 MB of source (0.32 s), and
-* a full ``ast.parse`` of all 1254 modules (2.8 s), even though a violation of
+* the ``rglob`` walk and the read of ~62 MB of source (0.2 s), and
+* a full ``ast.parse`` of all ~1700 modules (~6 s), even though a violation of
   any one gate can only exist in a file whose TEXT already contains the token
   that gate matches on.
 
-So the corpus is read once here and cached, and each gate declares the literals
-its pattern requires. :func:`parsed_candidates` parses only the files that can
-possibly match, which is 10-22 files for the narrow gates and about a third of
-the tree for the broad ones.
+So each gate declares the literals its pattern requires, and
+:func:`parsed_candidates` parses only the files that can possibly match, which
+is 10-22 files for the narrow gates and about a third of the tree for the broad
+ones. The tree is STREAMED: one file's text is resident at a time, matched,
+handed to the caller and dropped before the next is read.
 
-Two things this module deliberately does NOT do.
+Three things this module deliberately does NOT do.
 
-It does not cache parsed trees. Retaining all 1254 modules' ASTs measures at
-~900 MB RSS and 3.2 M live nodes, which is per xdist worker, and it makes the
-parse itself 4x slower (11.1 s vs 2.3 s) because every later generational
-collection then traverses that live set -- a tax the whole rest of the session
-pays. Trees are therefore yielded and dropped.
+It does not cache parsed trees. Retaining all modules' ASTs measures at ~900 MB
+RSS and 3.2 M live nodes, which is per xdist worker, and it makes the parse
+itself 4x slower (11.1 s vs 2.3 s) because every later generational collection
+then traverses that live set -- a tax the whole rest of the session pays. Trees
+are therefore yielded and dropped.
+
+It does not cache the TEXT either. An earlier revision memoised every file's
+``str`` plus an NFKC-normalised copy for the calling module's lifetime, on the
+arithmetic that 41 MB of source is 41 MB of ``str``. It is not: 1,262 of the
+files hold at least one non-BMP character (an emoji in a docstring), CPython
+stores such a ``str`` at four bytes per code point, and the two copies measured
+at +212 MiB of resident memory before a single file was parsed. Every ratchet
+that touched the corpus -- including ones that parse a dozen files in a second
+-- therefore carried a +200 MiB high-water mark that was the cache, not the
+gate. The read itself is 0.1 s and the NFKC pass 0.5 s, so both are repeated
+per call instead; the only thing memoised is the sorted file list (a megabyte),
+dropped by :func:`_clear_caches` at module teardown.
 
 And it never narrows a gate. A literal is only accepted as a filter when the
 gate's AST pattern cannot match without that literal appearing in the source
@@ -63,77 +76,111 @@ def src_root() -> Path:
 
 
 @functools.lru_cache(maxsize=1)
-def _read_tree() -> tuple[tuple[tuple[Path, str], ...], tuple[Path, ...]]:
-    """``((path, text), ...), (unreadable, ...)`` for the whole package, once."""
-    readable: list[tuple[Path, str]] = []
-    unreadable: list[Path] = []
-    for path in sorted(src_root().rglob("*.py")):
-        try:
-            readable.append((path, path.read_text(encoding="utf-8")))
-        except (OSError, UnicodeDecodeError):
-            # Recorded rather than swallowed: a file no gate can read is a file
-            # no gate can see, and `test_source_corpus.py` fails on a non-empty
-            # list so going blind cannot look like a green run.
-            unreadable.append(path)
-    return tuple(readable), tuple(unreadable)
+def _paths() -> tuple[Path, ...]:
+    """Every ``*.py`` under the package, sorted -- the one walk worth keeping.
+
+    ~1,700 ``Path`` objects, about a megabyte; the TEXT behind them is read per
+    call by :func:`iter_source_texts`, never memoised (see the module docstring).
+    """
+    return tuple(sorted(src_root().rglob("*.py")))
+
+
+def _read(path: Path) -> str | None:
+    """*path*'s text, or ``None`` for a file no gate can read.
+
+    Recorded rather than swallowed: a file no gate can read is a file no gate can
+    see, and ``test_source_corpus.py`` fails on a non-empty :func:`unreadable_files`
+    so going blind cannot look like a green run.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def iter_source_texts() -> Iterator[tuple[Path, str]]:
+    """Stream every readable ``*.py`` under the package as ``(path, text)``.
+
+    One file's text is live at a time. This is the form every whole-tree
+    consumer should iterate; :func:`source_texts` materialises the same
+    sequence and costs ~130 MB of ``str`` while the tuple is alive.
+    """
+    for path in _paths():
+        text = _read(path)
+        if text is not None:
+            yield path, text
 
 
 def source_texts() -> tuple[tuple[Path, str], ...]:
-    """Every readable ``*.py`` under the package, as ``(path, text)`` pairs."""
-    return _read_tree()[0]
+    """Every readable ``*.py`` under the package, as ``(path, text)`` pairs, at once."""
+    return tuple(iter_source_texts())
 
 
 def unreadable_files() -> tuple[Path, ...]:
     """Files the corpus could not decode. Expected empty; pinned by a test."""
-    return _read_tree()[1]
+    return tuple(path for path in _paths() if _read(path) is None)
 
 
 def _nfkc(text: str) -> str:
-    """NFKC-normalise, matching how CPython folds identifiers at parse time."""
-    return unicodedata.normalize("NFKC", text)
-
-
-@functools.lru_cache(maxsize=1)
-def _normalized_texts() -> tuple[str, ...]:
-    """NFKC-normalised copy of every file's text, in ``source_texts`` order.
+    """NFKC-normalise, matching how CPython folds identifiers at parse time.
 
     A gate matches on a bare identifier, and CPython NFKC-folds identifiers at
     parse time -- so a call written with a Unicode compatibility homoglyph of a
     guarded name (``delete_items_b\uff41tch``) is that ASCII name in the AST but
     NOT in the raw bytes. Filtering on raw text would skip the file and let the
-    offender through green. Normalising the haystack (here) and the needle (in
-    ``candidate_sources``) the same way closes that hole while keeping the
+    offender through green. Normalising the haystack and the needle the same way
+    (both in :func:`iter_candidate_sources`) closes that hole while keeping the
     narrowing: NFKC is a fixpoint on ASCII, so every raw ASCII match is
-    preserved and only homoglyph spellings are newly caught. Computed once over
-    the whole tree (~0.3s) and cached, like the read itself. ``source_texts``
-    still returns the RAW text, which gates that scan comments or string
-    literals (a ``# render-ok`` marker, an import alias) depend on.
+    preserved and only homoglyph spellings are newly caught.
+
+    Computed per file per pass and never cached. A cached copy is not small: 351
+    files change under NFKC (an ``…`` in a docstring becomes ``...``), and they
+    are the largest files in the tree, so their normalised forms alone measured
+    at +92 MiB. The whole pass is ~0.5 s, paid once per gate call. ``isascii``
+    is O(1) (CPython records the widest code point in the header) and NFKC is
+    the identity on ASCII, so a quarter of the files skip the normalisation.
     """
-    return tuple(_nfkc(text) for _path, text in source_texts())
+    if text.isascii():
+        return text
+    return unicodedata.normalize("NFKC", text)
+
+
+def iter_candidate_sources(
+    require_all: Sequence[str] = (),
+    require_any: Sequence[str] = (),
+) -> Iterator[tuple[Path, str]]:
+    """Stream the files whose text holds every ``require_all`` and one of ``require_any``.
+
+    An empty ``require_any`` imposes no alternation, so passing neither argument
+    streams the whole corpus. One file is resident at a time; a gate over the
+    whole tree therefore costs one read and no lasting heap.
+    """
+    # Match on the NFKC-normalised text with NFKC-normalised needles, so a call
+    # whose identifier is a Unicode compatibility homoglyph of a literal (which
+    # CPython folds to that literal at parse time, making it a real AST match) is
+    # not skipped by a raw-byte pre-filter. The yielded ``text`` stays RAW, which
+    # gates that scan comments or string literals (a ``# render-ok`` marker, an
+    # import alias) depend on.
+    all_n = tuple(_nfkc(lit) for lit in require_all)
+    any_n = tuple(_nfkc(lit) for lit in require_any)
+    for path, text in iter_source_texts():
+        ntext = _nfkc(text)
+        if all(lit in ntext for lit in all_n) and (not any_n or any(lit in ntext for lit in any_n)):
+            yield path, text
 
 
 def candidate_sources(
     require_all: Sequence[str] = (),
     require_any: Sequence[str] = (),
 ) -> tuple[tuple[Path, str], ...]:
-    """Files whose text holds every ``require_all`` and one of ``require_any``.
+    """:func:`iter_candidate_sources`, materialised.
 
-    An empty ``require_any`` imposes no alternation, so passing neither argument
-    returns the whole corpus.
+    Every candidate's text is alive at once for as long as the caller holds the
+    tuple, so this is for the NARROW gates (a few dozen files) and for callers
+    that need a sequence; a gate over a third of the tree or more should iterate
+    :func:`iter_candidate_sources` or :func:`parsed_candidates` instead.
     """
-    # Match on the NFKC-normalised text with NFKC-normalised needles, so a call
-    # whose identifier is a Unicode compatibility homoglyph of a literal (which
-    # CPython folds to that literal at parse time, making it a real AST match) is
-    # not skipped by a raw-byte pre-filter. The yielded ``text`` stays RAW.
-    all_n = tuple(_nfkc(lit) for lit in require_all)
-    any_n = tuple(_nfkc(lit) for lit in require_any)
-    texts = source_texts()
-    norm = _normalized_texts()
-    return tuple(
-        (path, text)
-        for (path, text), ntext in zip(texts, norm)
-        if all(lit in ntext for lit in all_n) and (not any_n or any(lit in ntext for lit in any_n))
-    )
+    return tuple(iter_candidate_sources(require_all, require_any))
 
 
 def parsed_candidates(
@@ -144,12 +191,13 @@ def parsed_candidates(
 ) -> Iterator[tuple[Path, str, ast.Module]]:
     """Yield ``(path, text, tree)`` for each candidate file, one tree at a time.
 
-    Trees are not retained between iterations, so a gate over a third of the
-    tree costs one parse and no lasting heap. With ``skip_syntax_errors`` false
-    the ``SyntaxError`` propagates, for a gate that treats an unparseable module
-    as a hole in its own coverage rather than as the compiler's problem.
+    Neither trees nor texts are retained between iterations, so a gate over a
+    third of the tree costs one parse and no lasting heap. With
+    ``skip_syntax_errors`` false the ``SyntaxError`` propagates, for a gate that
+    treats an unparseable module as a hole in its own coverage rather than as
+    the compiler's problem.
     """
-    for path, text in candidate_sources(require_all, require_any):
+    for path, text in iter_candidate_sources(require_all, require_any):
         try:
             tree = ast.parse(text, filename=str(path))
         except SyntaxError:
@@ -330,17 +378,13 @@ def repo_files_named(*suffixes: str) -> tuple[Path, ...]:
 
 
 def _clear_caches() -> None:
-    """Drop the cached raw and NFKC-normalised corpus text.
+    """Drop the cached file list.
 
-    ``_read_tree`` and ``_normalized_texts`` are each an ``lru_cache(maxsize=1)``
-    over the whole ``src/`` tree (~80 MB raw text + ~80 MB of its NFKC copy), and
-    once any gate in a worker calls either one, that ~160 MB sits on the heap for
-    the rest of that worker's life -- it is never large enough to trigger a GC
-    that would reclaim it, so it is pure retained RSS on every later test the
-    worker runs. A caller that is done with the corpus for now (a module-scoped
-    fixture at teardown) can drop it here; the next gate that needs it just pays
-    the read again, which is the same one-time cost every gate already paid
-    before this module existed to share it.
+    It is small (a megabyte of ``Path`` objects), but it is an ``lru_cache``
+    global and would otherwise live for the rest of the xdist worker.
+    ``test/conftest.py``'s module-scoped ``_release_source_corpus_after_module``
+    calls this at every module's teardown; the next gate that needs the corpus
+    re-walks the tree (~50 ms). The text itself is never cached, so there is
+    nothing larger to release -- see the module docstring for why.
     """
-    _read_tree.cache_clear()
-    _normalized_texts.cache_clear()
+    _paths.cache_clear()

@@ -6,6 +6,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 
 const { dashboardConfigMock, modelsMock, updateDashboardConfigMock } = vi.hoisted(() => ({
   dashboardConfigMock: vi.fn(),
@@ -78,12 +79,14 @@ function applyDashboardConfigPatch(config: DashboardConfigMock, patch: Record<st
   return next
 }
 
-function mount() {
+function mount(sub = 'models') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return Object.assign(render(
+    <MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}>
     <Provider store={createTestStore()}>
       <QueryClientProvider client={client}><ChatPanel /></QueryClientProvider>
-    </Provider>,
+    </Provider>
+    </MemoryRouter>,
   ), { client })
 }
 
@@ -189,7 +192,7 @@ describe('Settings selectable models', () => {
   })
 
   it('omits model visibility and acknowledgement from unrelated dashboard saves', async () => {
-    mount()
+    mount('composer')
     const quickSend = await screen.findByRole('switch', { name: 'Quick Send' })
     await waitFor(() => expect(quickSend).not.toBeDisabled())
     fireEvent.click(quickSend)

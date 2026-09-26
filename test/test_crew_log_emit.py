@@ -5720,3 +5720,184 @@ def test_a_store_whose_front_retention_removed_reports_no_edge():
     folded = crew_log_projection.read_projection(SUCCESSOR, "status").value
     assert folded["previous"] is None
     assert folded["lifecycle"] == "unknown", "and the fold says it could not read an opener"
+
+
+# --- the failure warning budget -------------------------------------------
+
+
+def _warnings(caplog) -> list[str]:
+    """The messages a DEFAULT-level operator actually sees."""
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _age_budget(seconds: float) -> None:
+    """Move every held budget *seconds* into the past.
+
+    Drives the re-arm without a sleep and without patching the clock: the window
+    is state, so the test states it.
+    """
+    with emit._lock:
+        for key, (warned_at, swallowed) in list(emit._warn_budget.items()):
+            emit._warn_budget[key] = (warned_at - seconds, swallowed)
+
+
+def test_a_second_kind_of_failure_is_named_even_after_an_earlier_one(caplog):
+    """A spent slot must not hide a DIFFERENT failure.
+
+    The budget exists so a failing store cannot flood the log, and that intent is
+    sound; the granularity is what has to distinguish "the same failure repeating"
+    from "a different failure happening once". A disk refusing an append for
+    ENOSPC, the same disk then failing for EIO, and a lost write lease are three
+    different facts about the host, and an operator who is told only the first
+    learns nothing about the two that follow.
+    """
+    full = OSError(28, "No space left on device")
+    broken = OSError(5, "Input/output error")
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        emit._report("growth listener", RuntimeError("listener blew up"), op="growth-listener")
+        emit._report("appending an entry", full, op="crew-append")
+        emit._report("appending an entry", broken, op="crew-append")
+        emit._report("opening the crew log", RuntimeError("lease lost"), op="crew-log-open")
+    seen = _warnings(caplog)
+    assert len(seen) == 4, f"four distinct failures, {len(seen)} named: {seen}"
+    # Each one names its own operation, so the lines are told apart by a reader.
+    assert any("growth listener" in m for m in seen)
+    assert any("No space left" in m for m in seen)
+    assert any("Input/output error" in m for m in seen)
+    assert any("lease lost" in m for m in seen)
+
+
+def test_one_kind_repeating_is_named_once_not_once_per_failure(caplog):
+    """The reverse direction: the flood the budget exists to prevent.
+
+    Without this, an implementation that simply deleted the budget would satisfy
+    the test above and log a line per failed append -- which is the behaviour the
+    suppression was written for in the first place.
+    """
+    full = OSError(28, "No space left on device")
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        for _ in range(25):
+            emit._report("appending an entry", full, op="crew-append")
+    seen = _warnings(caplog)
+    assert len(seen) == 1, f"25 failures of one kind named {len(seen)} times: {seen}"
+
+
+def test_many_units_failing_at_once_are_named_once_not_once_per_unit(caplog):
+    """The other flood: one cause reaching many stores is still one cause.
+
+    A disk that fills up fails every store on it. The key holds the operation and
+    the error, never the unit, so a full disk is one warning rather than one per
+    crew log -- the unit is in the message for the reader, not in the budget.
+    """
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        for n in range(40):
+            emit._report(
+                f"appending crew_report for crew 'store-{n}'",
+                OSError(28, "No space left on device"),
+                op="crew-report-append",
+            )
+    seen = _warnings(caplog)
+    assert len(seen) == 1, f"one cause across 40 stores named {len(seen)} times: {seen}"
+
+
+def test_a_spent_budget_says_how_many_failures_it_swallowed(caplog):
+    """A budget that ran out has to say so.
+
+    A slot that is spent and then never speaks again is the original defect scoped
+    down: an ongoing failure stays invisible at default level. So the swallowed
+    failures are counted, and the count rides on the next warning for that kind
+    once the window has passed.
+    """
+    full = OSError(28, "No space left on device")
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        for _ in range(7):
+            emit._report("appending an entry", full, op="crew-append")
+        assert len(_warnings(caplog)) == 1, "the window had not passed yet"
+        _age_budget(emit._WARN_REARM_SECONDS + 1.0)
+        emit._report("appending an entry", full, op="crew-append")
+    seen = _warnings(caplog)
+    assert len(seen) == 2, f"the re-armed window did not report: {seen}"
+    assert (
+        "6 more went unreported" in seen[1]
+    ), f"the spent budget did not say how many it swallowed: {seen[1]}"
+
+
+def test_the_first_warning_scopes_its_own_promise_to_this_kind(caplog):
+    """The disclosure has to match what actually happens next.
+
+    The line is the only thing telling an operator what the log will and will not
+    carry from here, so it may not promise silence for failures that are in fact
+    still reported.
+    """
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        emit._report("appending an entry", OSError(28, "full"), op="crew-append")
+    (line,) = _warnings(caplog)
+    assert "of this kind" in line, f"the promise is not scoped to the kind: {line}"
+
+
+def test_the_budget_map_is_bounded(caplog):
+    """Keys are program constants, and the map is capped even so."""
+    with caplog.at_level(logging.WARNING, logger=emit.logger.name):
+        for n in range(emit._MAX_WARN_KINDS * 3):
+            emit._report("appending an entry", OSError(n, f"errno {n}"), op="crew-append")
+    assert (
+        len(emit._warn_budget) <= emit._MAX_WARN_KINDS
+    ), f"budget map grew to {len(emit._warn_budget)}, cap is {emit._MAX_WARN_KINDS}"
+
+
+def test_every_report_call_site_names_a_literal_operation():
+    """Enumerated from the source, so a new call site is covered by existing.
+
+    ``op`` is the only part of a call that reaches the budget key, which is what
+    keeps the map bounded and keeps one cause across many stores to one warning. A
+    site passing an f-string or a variable there would put a store name, a session
+    id or an entry type into the key and hand every unit its own warning. The
+    population is read out of the module rather than listed here, because a listed
+    set of sites goes stale the moment someone adds one.
+    """
+    import ast
+
+    tree = ast.parse(Path(emit.__file__).read_text(encoding="utf-8"))
+    sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_report"
+    ]
+    assert sites, "no _report call sites found -- the check would pass vacuously"
+    offenders = []
+    for node in sites:
+        passed = {kw.arg: kw.value for kw in node.keywords}
+        op = passed.get("op")
+        if not isinstance(op, ast.Constant) or not isinstance(op.value, str) or not op.value:
+            offenders.append((node.lineno, ast.unparse(node)[:90]))
+    assert (
+        not offenders
+    ), f"{len(offenders)} of {len(sites)} _report sites do not name a literal op: {offenders}"
+
+
+def test_the_budget_is_keyed_and_not_a_single_process_flag():
+    """The structural pin: no one module-level boolean governs the reports.
+
+    A budget that is one flag cannot tell which failure it already named, so it
+    downgrades every later one whatever it was about. Reverting any part of the key
+    to a process-wide flag has to fail here as well as behaviourally.
+    """
+    assert isinstance(
+        emit._warn_budget, dict
+    ), f"the budget is not a keyed map but a {type(emit._warn_budget).__name__}"
+    assert not isinstance(emit._warn_budget, bool)
+    key = emit._failure_kind("crew-append", OSError(28, "full"))
+    other = emit._failure_kind("crew-log-open", OSError(28, "full"))
+    same = emit._failure_kind("crew-append", OSError(28, "full"))
+    assert key != other, "the operation does not reach the key"
+    assert key == same, "the key is not stable for one kind"
+    assert (
+        emit._failure_kind("crew-append", OSError(5, "io")) != key
+    ), "the error code does not reach the key"
+    assert emit._failure_kind("crew-append", RuntimeError("x")) != emit._failure_kind(
+        "crew-append", ValueError("x")
+    ), "the exception class does not reach the key"
+    # And the unit is deliberately absent: it lives in `what`, never in the key.
+    assert "store-1" not in "".join(map(str, key)), key

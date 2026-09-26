@@ -424,6 +424,9 @@ _ENV_SPLIT_PROGRAMS = frozenset({"env"})
 # entry is a silent BYPASS.  Enumerating data consumers instead means a forgotten
 # entry is a false positive: annoying, visible, and safe.  So the default for an
 # unrecognised program is "this could execute the name".
+# When adding a member, also decide whether its options or operands can run a
+# helper; if so, add it to
+# ``perm_verb_mention._PERM_VERB_MENTION_EXCLUDED_PROGRAMS``.
 _DATA_CONSUMER_PROGRAMS = frozenset(
     {
         # filesystem inspectors: every argument is a path to DESCRIBE, so a glob

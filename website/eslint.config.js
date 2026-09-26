@@ -215,6 +215,9 @@ export default [
           // @source graph): the bubble scope, the chip/text size classes, and the
           // marker MarkdownRenderer's link chips carry.
           'mc-message-font-*', 'mc-md-ref-chip',
+          // styles/crew-notes.css (imported in main.tsx, outside index.css's
+          // @source graph): the crewmate Notes-panel readability scope.
+          'crew-notes',
         ],
       }],
       'shadcn/require-static-classes': 'error',

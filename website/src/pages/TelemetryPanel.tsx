@@ -12,6 +12,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
+import { usePersistedBool } from '../hooks/usePersistedBool'
 import { usePersistedString } from '../hooks/usePersistedString'
 import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -650,21 +651,44 @@ function RangeBar({
  * which is exactly what a distribution needs — unlike the sortable bucket table
  * this replaces, where sorting by count destroyed the bound order that IS the
  * shape.
+ *
+ * `label` is a node so a caller can style or link it; the widths either side of
+ * the bar are the caller's because they set how much track is left, and a track
+ * squeezed to nothing is a row that has stopped saying anything.
+ *
+ * `barDecorative` hides the bar from assistive technology, for a caller whose
+ * label and figure already carry the row's facts as text — reading the bar too
+ * announces the row twice. It is opt-in because muting a bar is a change to what
+ * a reader is told, and that belongs to the caller that wants it rather than to
+ * every caller of this function.
  */
-function Histogram({ rows }: { rows: { label: string; count: number }[] }) {
+function Histogram({
+  rows,
+  labelClass = 'w-20 text-right font-mono text-muted',
+  valueClass = 'w-12',
+  barDecorative = false,
+}: {
+  rows: { key: string; label: React.ReactNode; count: number; title?: string }[]
+  labelClass?: string
+  valueClass?: string
+  barDecorative?: boolean
+}) {
   const peak = Math.max(1, ...rows.map(r => r.count))
   return (
     <div className="flex flex-col gap-1">
       {rows.map(r => (
-        <div key={r.label} className="flex items-center gap-2.5 text-[11px]">
-          <span className="w-20 shrink-0 text-right font-mono text-muted">{r.label}</span>
-          <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-sm bg-[var(--bg)]">
+        <div key={r.key} className="flex items-center gap-2.5 text-[11px]" title={r.title}>
+          <span className={`${labelClass} shrink-0 min-w-0`}>{r.label}</span>
+          <div
+            aria-hidden={barDecorative || undefined}
+            className="h-2 min-w-0 flex-1 overflow-hidden rounded-sm bg-[var(--bg)]"
+          >
             <span
               className="block h-full rounded-sm"
               style={{ width: `${(r.count / peak) * 100}%`, background: 'var(--muted-strong)' }}
             />
           </div>
-          <span className="w-12 shrink-0 text-right font-mono tabular-nums">{fmtNumber(r.count)}</span>
+          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{fmtNumber(r.count)}</span>
         </div>
       ))}
     </div>
@@ -999,13 +1023,162 @@ function shareCols(first: string, total: number, firstTip?: string): Col<CostRow
 
 const SPEND_GROUPS = ['session', 'category', 'model'] as const
 
+/**
+ * How many rows a spend block plots before the remainder folds into one row.
+ *
+ * Five keeps the two grouping blocks the same height beside each other. The
+ * session list gets eight because it is the block a reader scans for a name,
+ * and five names is too few to find one in.
+ */
+const SPEND_GROUP_ROWS = 5
+const SPEND_SESSION_ROWS = 8
+
+type SpendBar = { label: React.ReactNode; credits: number; title?: string }
+
+/**
+ * A titled bar block: heading, its own empty state, and an optional footnote.
+ *
+ * Credits render as bars on one shared scale, longest first, so the block answers
+ * "how much of the window landed here" by shape rather than by reading five
+ * numbers and dividing. The figure stays beside the bar because a bar cannot be
+ * quoted. The scale is per block: session totals and grouping totals are
+ * different populations — one session against every session's origin — so a
+ * shared axis would flatten whichever block holds the smaller numbers.
+ *
+ * The heading is a flex row because `InfoTip` renders a `display: flex` button.
+ * In a normal-flow block that button is a block-level box, so it drops onto a
+ * line of its own and the bare "?" reads as a stray control.
+ *
+ * `note` describes the rows, so it renders only when there are rows; under an
+ * empty state it is a caption for nothing.
+ */
+function SpendBlock({
+  title,
+  tip,
+  rows,
+  labelClass,
+  note,
+}: {
+  title: string
+  tip?: string
+  rows: SpendBar[]
+  labelClass: string
+  note?: string
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1 text-[10px] text-muted uppercase tracking-wide mb-1.5">
+        {title}
+        {tip && <InfoTip text={tip} />}
+      </div>
+      {rows.length > 0 ? (
+        <>
+          <Histogram
+            rows={rows.map((r, i) => ({ key: String(i), label: r.label, count: r.credits, title: r.title }))}
+            labelClass={labelClass}
+            valueClass="w-14"
+            barDecorative
+          />
+          {note && <div className="text-[10px] text-muted mt-1.5">{note}</div>}
+        </>
+      ) : (
+        <EmptyState
+          icon={<Coins className="lucide-inline" />}
+          title={i18nT('pages.telemetryPanel.no_spend_recorded')}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * One grouping's rows as bars, with everything past `limit` summed into a single
+ * trailing row.
+ *
+ * A grouping carries as many names as the window saw, most of them a bar a pixel
+ * wide. Folding the tail keeps the block scannable while every credit stays on
+ * screen, so the block and the table below it account for the same total.
+ */
+function groupBars(rows: CostRow[], limit: number): SpendBar[] {
+  const sorted = [...rows].sort((a, b) => b.credits - a.credits)
+  const bars: SpendBar[] = sorted.slice(0, limit).map(r => ({
+    credits: r.credits,
+    // Monospace for the same reason the table's cells use it: a model id and a
+    // session-origin enum are tokens to compare character by character. The
+    // title reveals the raw value behind a translated label.
+    label: (
+      <span className="block truncate font-mono text-muted" title={r.name}>
+        {categoryLabel(r.name)}
+      </span>
+    ),
+  }))
+  const rest = sorted.slice(limit)
+  if (rest.length > 0) {
+    bars.push({
+      credits: rest.reduce((sum, r) => sum + r.credits, 0),
+      // The folded names themselves, so the row says WHAT it folded. The row is
+      // inert, and a fold that names nothing reads as something to click.
+      title: rest.map(r => categoryLabel(r.name)).join(', '),
+      label: (
+        <span className="block truncate text-muted">
+          {i18nT('pages.telemetryPanel.other_group', { n: fmtNumber(rest.length) })}
+        </span>
+      ),
+    })
+  }
+  return bars
+}
+
+/**
+ * The biggest-spending sessions as bars.
+ *
+ * Named and linked through `sessionLabel` and `linksToConversation`, the same two
+ * rules the table's own session column uses, so the block and the table cannot
+ * disagree about what a row is called or whether it can be opened.
+ */
+function sessionBars(convos: CostConvo[], navigable: string, limit: number): SpendBar[] {
+  return [...convos]
+    .sort((a, b) => b.credits - a.credits)
+    .slice(0, limit)
+    .map(v => ({
+      credits: v.credits,
+      label: linksToConversation(v, navigable) ? (
+        <Link
+          to={`/chat?sid=${encodeURIComponent(v.slot)}`}
+          className="block truncate text-[var(--accent)] hover:underline"
+          title={v.title}
+        >
+          {v.title}
+        </Link>
+      ) : (
+        // The title attribute holds the slot, which this block has no column to
+        // show: an inert row still has to be identifiable.
+        <span className="block truncate text-muted" title={v.slot}>
+          {sessionLabel(v, v.slot)}
+        </span>
+      ),
+    }))
+}
+
 function SpendTab({ c }: { c: Cost }) {
   const [group, setGroup] = usePersistedChoice<SpendGroup>(
     'telemetry:spend-group',
     SPEND_GROUPS,
     'session',
   )
+  // Closed on first paint. The table answers "which row exactly", which is a
+  // second question: the blocks above it already say where the credits went, and
+  // opening on 45 rows puts the answer below the fold.
+  const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
   const bands = c.context_bands
+  // Shown as "8 / 252" when the payload clamps the list. With the count alone, a
+  // reader who looks for a conversation outside the slice reads "no rows match"
+  // as "it spent nothing"; the ratio states the truncation. The pair is equal on
+  // a full payload, where the plain count is the honest form.
+  const sessionsValue =
+    c.conversations.length === c.conversation_count
+      ? fmtNumber(c.conversation_count)
+      : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`
   return (
     <Card className="mb-4">
       <CardTitle>
@@ -1023,64 +1196,36 @@ function SpendTab({ c }: { c: Cost }) {
       <div className="text-[10px] text-muted -mt-2 mb-2.5">
         {i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })}
       </div>
-      <div className="flex flex-wrap items-center gap-2 mb-2">
-        <span className="text-[10px] text-muted uppercase tracking-wide">
-          {i18nT('pages.telemetryPanel.group_by')}
-        </span>
-        <SegmentedControl<SpendGroup>
-          collapse={false}
-          value={group}
-          onChange={setGroup}
-          segments={[
-            { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
-            { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
-            { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
-          ]}
-        />
-      </div>
-      {group === 'session' ? (
-        <DataTable<CostConvo>
-          rows={c.conversations}
-          key="telemetry-spend-conversation"
-          tableId="telemetry-spend-conversation"
-          cols={convoCols(c.navigable_category)}
-          rowKey={v => v.slot}
-          defaultSort="credits"
-          emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
-          renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} />}
-        />
-      ) : (
-        <DataTable<CostRow>
-          rows={group === 'model' ? c.by_model : c.by_category}
-          key="telemetry-spend-share"
-          tableId="telemetry-spend-share"
-          cols={shareCols(
-            group === 'model'
-              ? i18nT('pages.telemetryPanel.model_col')
-              : i18nT('pages.telemetryPanel.category_col'),
-            c.credits,
-            group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
-          )}
-          rowKey={r => r.name}
-          defaultSort="credits"
-          emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
-        />
-      )}
       <Sums
         items={[
           {
             label: i18nT('pages.telemetryPanel.credits_col'),
             value: fmtNumber(c.credits),
             color: 'var(--accent)',
-            sub: i18nT('pages.telemetryPanel.turns_measured', { count: c.turns, n: fmtNumber(c.turns) }),
-          },
-          {
-            label: i18nT('pages.telemetryPanel.vs_previous_period'),
-            value: fmtDelta(c.delta_pct),
-            sub: i18nT('pages.telemetryPanel.prior_credits_turns', {
-              credits: fmtNumber(c.prior_credits),
-              turns: fmtNumber(c.prior_turns),
-            }),
+            // The change rides on the total it describes. A percentage standing
+            // on its own cannot say whether it moved 12 credits or 1,200, and
+            // the label comes first so the "no prior spend" case reads as a
+            // sentence rather than as a number's unit.
+            //
+            // Both lines live in `note`, in this order, so "vs previous period"
+            // introduces the pair below it. This tile's label is "Credits", which
+            // lends the prior pair no period sense of its own: sitting directly
+            // under the current total, an unqualified "credits 9,400" reads as a
+            // component of it rather than as the window before.
+            note: (
+              <>
+                <div className="text-[10px] text-muted mt-0.5">
+                  {c.delta_pct != null && <>{i18nT('pages.telemetryPanel.vs_previous_period')} </>}
+                  <span className="text-text tabular-nums">{fmtDelta(c.delta_pct)}</span>
+                </div>
+                <div className="text-[10px] text-muted">
+                  {i18nT('pages.telemetryPanel.prior_credits_turns', {
+                    credits: fmtNumber(c.prior_credits),
+                    turns: fmtNumber(c.prior_turns),
+                  })}
+                </div>
+              </>
+            ),
           },
           {
             label: i18nT('pages.telemetryPanel.per_turn_col'),
@@ -1088,26 +1233,118 @@ function SpendTab({ c }: { c: Cost }) {
             sub: i18nT('pages.telemetryPanel.was_value', { value: fmtNumber(c.prior_per_turn) }),
           },
           {
-            label: i18nT('pages.telemetryPanel.priciest_turn'),
-            value: fmtNumber(c.priciest.credits),
+            label: i18nT('pages.telemetryPanel.turns_col'),
+            value: fmtNumber(c.turns),
           },
           {
-            // Shown as "8 / 252", not a bare 252: the table carries only the top
-            // spenders, and with the count alone a reader who filtered for a
-            // conversation outside that slice got "no rows match" and could
-            // reasonably conclude it had spent nothing. The ratio states the
-            // truncation without inventing new copy for it.
-            label: i18nT('pages.telemetryPanel.sessions_col'),
-            // The list is no longer truncated, so the pair is now equal on every
-            // real payload and "45 / 45" spends a stat slot saying nothing. The
-            // ratio still appears if the payload backstop ever does clamp.
-            value: c.conversations.length === c.conversation_count
-              ? fmtNumber(c.conversation_count)
-              : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`,
-            sub: i18nT('pages.telemetryPanel.top_spenders_link_to_chat'),
+            label: i18nT('pages.telemetryPanel.priciest_turn'),
+            value: fmtNumber(c.priciest.credits),
+            // The unit, because a bare number under "Priciest turn" reads as a
+            // turn's ordinal just as readily as its cost.
+            sub: i18nT('pages.telemetryPanel.credits_col'),
           },
         ]}
       />
+      {/* Both groupings at once. As a group-by over one table they were mutually
+          exclusive: seeing which origin spent the credits meant giving up the
+          model split, so no single screen answered where the window went.
+
+          Side by side only from `xl`. Each row spends a fixed label column plus a
+          fixed figure column, and in a half-width column below that the bar track
+          is what absorbs the shortfall — it reaches nearly zero, which removes the
+          compare-by-shape these blocks exist for. Below `xl` they stack, so both
+          still answer without a click and both keep their bars. */}
+      <div className="grid gap-x-8 gap-y-4 mt-4 xl:grid-cols-2">
+        <SpendBlock
+          title={i18nT('pages.telemetryPanel.credits_by_origin')}
+          tip={i18nT('pages.telemetryPanel.category_col_tip')}
+          rows={groupBars(c.by_category, SPEND_GROUP_ROWS)}
+          labelClass="w-32"
+        />
+        <SpendBlock
+          title={i18nT('pages.telemetryPanel.credits_by_model')}
+          rows={groupBars(c.by_model, SPEND_GROUP_ROWS)}
+          labelClass="w-32"
+        />
+      </div>
+      <div className="mt-4">
+        <SpendBlock
+          title={i18nT('pages.telemetryPanel.top_sessions')}
+          rows={sessionBars(c.conversations, c.navigable_category, SPEND_SESSION_ROWS)}
+          labelClass="w-[46%]"
+          note={i18nT('pages.telemetryPanel.top_spenders_link_to_chat')}
+        />
+      </div>
+      <div className="border-t border-border mt-4 pt-3">
+        <Btn
+          type="button"
+          className="flex items-center gap-2 px-1 py-0.5 border-none text-muted hover:text-text rounded"
+          aria-expanded={tableOpen}
+          onClick={() => setTableOpen(!tableOpen)}
+        >
+          {tableOpen ? (
+            <ChevronDown className="lucide-inline" size={14} />
+          ) : (
+            <ChevronRight className="lucide-inline" size={14} />
+          )}
+          <span className="text-[10px] uppercase tracking-wide">
+            {i18nT('pages.telemetryPanel.full_table')}
+          </span>
+          {/* The row count belongs on the closed header: it is what tells a
+              reader whether opening the table is worth it. */}
+          <span className="text-[10px] uppercase tracking-wide">
+            {i18nT('pages.telemetryPanel.sessions_col')}{' '}
+            <span className="font-mono tabular-nums text-text normal-case">{sessionsValue}</span>
+          </span>
+        </Btn>
+        {tableOpen && (
+          <div className="mt-2.5">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-[10px] text-muted uppercase tracking-wide">
+                {i18nT('pages.telemetryPanel.group_by')}
+              </span>
+              <SegmentedControl<SpendGroup>
+                collapse={false}
+                value={group}
+                onChange={setGroup}
+                segments={[
+                  { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
+                  { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
+                  { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
+                ]}
+              />
+            </div>
+            {group === 'session' ? (
+              <DataTable<CostConvo>
+                rows={c.conversations}
+                key="telemetry-spend-conversation"
+                tableId="telemetry-spend-conversation"
+                cols={convoCols(c.navigable_category)}
+                rowKey={v => v.slot}
+                defaultSort="credits"
+                emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
+                renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} />}
+              />
+            ) : (
+              <DataTable<CostRow>
+                rows={group === 'model' ? c.by_model : c.by_category}
+                key="telemetry-spend-share"
+                tableId="telemetry-spend-share"
+                cols={shareCols(
+                  group === 'model'
+                    ? i18nT('pages.telemetryPanel.model_col')
+                    : i18nT('pages.telemetryPanel.category_col'),
+                  c.credits,
+                  group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
+                )}
+                rowKey={r => r.name}
+                defaultSort="credits"
+                emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
+              />
+            )}
+          </div>
+        )}
+      </div>
       {bands.length > 0 && (
         // The former "cost by context size" section, which was five rows of bar
         // to carry five numbers. Occupancy is already a column on the rows
@@ -1673,7 +1910,7 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
             title={i18nT('pages.telemetryPanel.no_startups_recorded')}
           />
         ) : (
-          <Histogram rows={buckets} />
+          <Histogram rows={buckets.map(b => ({ key: String(b.idx), label: b.label, count: b.count }))} />
         )
       ) : (
         <DataTable<Stat & { name: string }>

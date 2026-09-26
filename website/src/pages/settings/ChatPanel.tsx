@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
+import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
+import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Btn, Input } from '../../components/ui'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { configPatternRefused, configUrlTemplateOk } from '../../utils/autolinkRules'
 
 /** One `dashboard.link_patterns` rule as it travels the config wire; the
@@ -188,7 +189,17 @@ function FieldHint({ message }: { message: string }) {
   return <div className="text-[12px] text-warn mt-0.5" role="status">{message}</div>
 }
 
-export function LinkPatternsEditor({ label, description, configKey, rules, onSave, disabled }: {
+export interface LinkPatternsDraft {
+  rows: LinkPatternRule[]
+  // Live refs, not snapshots: a save that settles after the editor unmounts
+  // must still move the remounted editor's watermarks and in-flight count.
+  adoptedKeyRef: { current: string }
+  pendingKeyRef: { current: string | null }
+  savesInFlightRef: { current: number }
+  saveChainRef: { current: Promise<unknown> }
+}
+
+export function LinkPatternsEditor({ label, description, configKey, rules, onSave, disabled, draft }: {
   label: string
   description?: string
   configKey?: string
@@ -202,8 +213,12 @@ export function LinkPatternsEditor({ label, description, configKey, rules, onSav
    */
   onSave: (next: LinkPatternRule[]) => void | Promise<unknown>
   disabled?: boolean
+  /** Holder owned by the host that outlives this editor. A settings rail
+   *  unmounts the editor on a page switch; without this, a half-typed row the
+   *  commit gate refused to save would be gone on return. */
+  draft?: { current: LinkPatternsDraft | null }
 }) {
-  const [rows, setRows] = useState<LinkPatternRule[]>(() => rules.map(r => ({ ...r })))
+  const [rows, setRows] = useState<LinkPatternRule[]>(() => draft?.current?.rows ?? rules.map(r => ({ ...r })))
   // A commit swallowed by the half-edited gate, so the editor can say so at
   // the commit point instead of relying on the offending row's own hint
   // (which may be scrolled out of view when a DIFFERENT row was edited).
@@ -217,12 +232,26 @@ export function LinkPatternsEditor({ label, description, configKey, rules, onSav
   // then the confirmed write). Neither may overwrite rows: the rollback
   // arriving as a "change" is how a rejected save (e.g. 400 on a duplicate
   // pattern) would silently erase everything typed since the last save.
-  const adoptedKeyRef = useRef(serverKey)
+  // A restored draft keeps the baseline its rows were built from, so a server
+  // change made while the editor was unmounted still merges through the
+  // adopt effect below instead of being masked by the old rows.
+  const [restored] = useState(() => draft?.current ?? null)
+  const ownAdoptedKeyRef = useRef(serverKey)
   // Save serialization state: how many PUTs are unsettled, and the tail of
   // the chain a new save must launch behind while any are in flight.
-  const savesInFlightRef = useRef(0)
-  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
-  const pendingKeyRef = useRef<string | null>(null)
+  const ownSavesInFlightRef = useRef(0)
+  const ownSaveChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  const ownPendingKeyRef = useRef<string | null>(null)
+  const adoptedKeyRef = restored?.adoptedKeyRef ?? ownAdoptedKeyRef
+  const savesInFlightRef = restored?.savesInFlightRef ?? ownSavesInFlightRef
+  const saveChainRef = restored?.saveChainRef ?? ownSaveChainRef
+  const pendingKeyRef = restored?.pendingKeyRef ?? ownPendingKeyRef
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  useEffect(() => () => {
+    if (draft) draft.current = { rows: rowsRef.current, adoptedKeyRef, pendingKeyRef, savesInFlightRef, saveChainRef }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stash once, on unmount
+  }, [])
   // Adopt an external change (another tab, `kirocrew config set`) whenever
   // the server VALUE moves somewhere new; identity-only refetches leave
   // local drafts alone because the key is the serialized value.
@@ -423,7 +452,7 @@ type HiddenModelsUpdate = {
   remove?: string[]
 }
 
-export function ChatPanel() {
+export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
   const [saveError, rawSetSaveError] = useState('')
@@ -434,6 +463,8 @@ export function ChatPanel() {
   // user believing that setting persisted. The ref records which config path
   // produced the current banner; null = not a picker failure.
   const saveErrorPathRef = useRef<string | null>(null)
+  // Outlives the Transcript page, which the rail unmounts on a switch.
+  const linkPatternsDraft = useRef<LinkPatternsDraft | null>(null)
   const setSaveError = (msg: string) => {
     saveErrorPathRef.current = null
     rawSetSaveError(msg)
@@ -991,7 +1022,30 @@ export function ChatPanel() {
 
   const dashDisabled = !dashQ.isSuccess
 
-  return (
+  // Second-level rail groups. Order = rail order; the first item (Transcript)
+  // is what the pane shows by default. Every setting the old single scroll held
+  // still lives here — the 21-control Messages card is split across Transcript /
+  // Side panel / Discovery, and the three one-control sections (Power, Context,
+  // Subagents) fold into Advanced so the rail never lists a header per switch.
+  const railItems: SubNavItem[] = [
+    { key: 'transcript', label: i18nT('pages.settings.chatPanel.transcript'), icon: <MessageSquare size={16} /> },
+    { key: 'composer', label: i18nT('pages.settings.chatPanel.composer'), icon: <PenLine size={16} /> },
+    { key: 'sessions', label: i18nT('pages.settings.chatPanel.sessions'), icon: <Layers size={16} /> },
+    { key: 'sidepanel', label: i18nT('pages.settings.chatPanel.side_panel'), icon: <PanelRight size={16} /> },
+    { key: 'models', label: i18nT('pages.settings.chatPanel.model'), icon: <Bot size={16} /> },
+    { key: 'aboutyou', label: i18nT('pages.settings.chatPanel.about_you'), icon: <UserRound size={16} /> },
+    // An admin-disabled tip toggle with no video row leaves nothing to change, so
+    // the rail drops the page rather than lead to one locked row.
+    ...(tipsConfigOff && fvQ.isSuccess && !featureVideoLine ? [] : [
+      { key: 'discovery', label: i18nT('pages.settings.chatPanel.discovery'), icon: <Sparkles size={16} /> },
+    ]),
+    { key: 'advanced', label: i18nT('pages.settings.chatPanel.advanced'), icon: <SlidersHorizontal size={16} /> },
+  ]
+
+  // Cross-cutting notices (a save failure, a config-load failure) render in the
+  // SubNav banner slot so they stay visible in EVERY group — not only whichever
+  // one happened to host them when the page was one scroll.
+  const banner = (
     <>
       {/* No hand-off: `localRoleOther`, `localBudget` and `localKeepChars` are
           this panel's live drafts. A hand-off click blurs the field, which STARTS
@@ -1031,14 +1085,31 @@ export function ChatPanel() {
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
+    </>
+  )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.model')}>
+  return (
+    <SettingsSubNav
+      items={railItems}
+      basePath={basePath}
+      railWidth={220}
+      listLabel={i18nT('pages.settings.chatPanel.rail_label')}
+      backLabel={i18nT('settings.tabs.chat.label')}
+      banner={banner}
+    >
+      {active => {
+        switch (active) {
+
+        case 'models':
+          return (
+      <>
         {/* Grouped by role so each block reads as "which model + how hard it
             thinks" for one kind of work, rather than six stacked selects.
             Chat is the interactive default; Background and Sub-agents inherit it
-            when left on Auto. */}
-        <SettingsCard>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_chat')}</div>
+            when left on Auto. Borderless like the other single-purpose pages;
+            each role heading marks its own group instead of a box. */}
+        <div className="mb-8">
+        <SettingsCard plain>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_model')}
             description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}
@@ -1093,10 +1164,12 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess || !effortSupported}
           />
         </SettingsCard>
+        </div>
 
-        <SettingsCard index={1}>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</div>
-          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+        <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</h4>
+        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+        <SettingsCard plain index={1}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.background_model')}
             hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
@@ -1116,10 +1189,12 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess || !bgEffortSupported}
           />
         </SettingsCard>
+        </div>
 
-        <SettingsCard index={2}>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</div>
-          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
+        <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</h4>
+        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
+        <SettingsCard plain index={2}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.subagent_model')}
             hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
@@ -1139,10 +1214,12 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess || !subEffortSupported}
           />
         </SettingsCard>
+        </div>
 
-        <SettingsCard>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</div>
-          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')}</div>
+        <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</h4>
+        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')}</div>
+        <SettingsCard plain index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.fallback_model')}
             hint={i18nT('pages.settings.chatPanel.fallback_auto_hint')}
@@ -1154,10 +1231,12 @@ export function ChatPanel() {
             configKey="agent.fallback_model"
           />
         </SettingsCard>
+        </div>
 
-        <SettingsCard>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</div>
-          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
+        <div>
+        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h4>
+        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
+        <SettingsCard plain index={4}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.refusal_fallback_model')}
             hint={i18nT('pages.settings.chatPanel.refusal_fallback_auto_hint')}
@@ -1169,10 +1248,13 @@ export function ChatPanel() {
             configKey="agent.refusal_fallback_model"
           />
         </SettingsCard>
-      </SettingsSection>
+        </div>
+      </>
+          )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.about_you')}>
-        <SettingsCard index={3}>
+        case 'aboutyou':
+          return (
+        <SettingsCard plain>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.your_role')}
             description={i18nT('pages.settings.chatPanel.kiro_matches_vocabulary_and_examples_to_your_pro')}
@@ -1201,10 +1283,15 @@ export function ChatPanel() {
             onChange={v => profileMut.mutate({ path: 'dashboard.user_technical_level', value: v })}
           />
         </SettingsCard>
-      </SettingsSection>
+          )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.power')}>
-        <SettingsCard index={4}>
+        case 'advanced':
+          return (
+      <>
+      {/* Same treatment as Model: headings and spacing mark the groups, no boxes. */}
+      <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.power')}</h4>
+        <SettingsCard plain>
           <SettingsToggle
             label={i18nT('pages.settings.chatPanel.prevent_sleep_while_running')}
             description={i18nT('pages.settings.chatPanel.keep_your_computer_awake_while_a_task_is_running')}
@@ -1214,10 +1301,74 @@ export function ChatPanel() {
             configKey="dashboard.prevent_sleep"
           />
         </SettingsCard>
-      </SettingsSection>
+      </div>
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.composer')}>
-        <SettingsCard index={5}>
+      <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <SettingsCard plain index={1}>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
+            description={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
+            value={String(mcCfg?.session?.autocompact_pct ?? 70)}
+            options={COMPACT_OPTIONS}
+            optionLabels={compactLabels()}
+            onChange={v =>
+              api.patchConfig('session.autocompact_pct', Number(v))
+                .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))
+                .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
+            }
+            disabled={!mcQ.isSuccess}
+            configKey="session.autocompact_pct"
+          />
+        </SettingsCard>
+      </div>
+
+      <div>
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.subagents')}</h4>
+        <SettingsCard plain index={2}>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
+            description={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}
+            value={mcCfg?.agent?.completion_keep ?? 'head'}
+            options={COMPLETION_KEEP_OPTIONS}
+            optionLabels={completionKeepLabels()}
+            onChange={v => keepModeMut.mutate(v as CompletionKeepMode)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.completion_event_characters')}
+            aria-label={i18nT('pages.settings.chatPanel.completion_event_characters_2')}
+            hint={i18nT('pages.settings.chatPanel.maximum_characters_retained_in_the_completion_ev', { n: COMPLETION_KEEP_CHARS_DEFAULT })}
+            type="number"
+            value={localKeepChars}
+            min={COMPLETION_KEEP_CHARS_MIN}
+            max={COMPLETION_KEEP_CHARS_MAX}
+            step={500}
+            onChange={setLocalKeepChars}
+            onBlur={() => {
+              const n = parseInt(localKeepChars, 10)
+              if (
+                isNaN(n) ||
+                n < COMPLETION_KEEP_CHARS_MIN ||
+                n > COMPLETION_KEEP_CHARS_MAX
+              ) {
+                setLocalKeepChars(
+                  String(mcCfg?.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT)
+                )
+                return
+              }
+              keepCharsMut.mutate(n)
+            }}
+            disabled={!mcQ.isSuccess}
+          />
+        </SettingsCard>
+      </div>
+      </>
+          )
+
+        case 'composer':
+          return (
+        <SettingsCard plain>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.send_shortcut')}
             description={chatCfg.sendOnEnter === 'enter' ? i18nT('pages.settings.chatPanel.shift_enter_for_newline') : chatCfg.sendOnEnter === 'ctrl-enter' ? i18nT('pages.settings.chatPanel.enter_for_newline') : i18nT('pages.settings.chatPanel.mod_enter_for_newline', { mod: isMac ? '⌘' : 'Ctrl' })}
@@ -1264,10 +1415,11 @@ export function ChatPanel() {
             disabled={!mcQ.isSuccess}
           />
         </SettingsCard>
-      </SettingsSection>
+          )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.messages')}>
-        <SettingsCard index={6}>
+        case 'transcript':
+          return (
+        <SettingsCard plain>
           <SettingsButtonGroup
             label={i18nT('pages.settings.chatPanel.text_streaming_style')}
             description={i18nT('pages.settings.chatPanel.immediate_mode_shows_raw_chunks_as_they_arrive_s')}
@@ -1284,6 +1436,7 @@ export function ChatPanel() {
             onIncrement={() => setChat('messageFontSize', Math.min(MAX_MESSAGE_FONT_SIZE, chatCfg.messageFontSize + 1))}
             onDecrement={() => setChat('messageFontSize', Math.max(MIN_MESSAGE_FONT_SIZE, chatCfg.messageFontSize - 1))}
           />
+          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} description={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} description={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} description={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} description={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
@@ -1310,14 +1463,25 @@ export function ChatPanel() {
             onChange={setDiffSplit}
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
-          <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} description={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} />
+          <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} description={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} description={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} description={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} description={i18nT('pages.settings.chatPanel.how_terse_the_agent_s_prose_is_ultra_concise_cap')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.ultra_concise_3_sentences'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} description={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} description={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
+        </SettingsCard>
+          )
+
+        case 'sidepanel':
+          return (
+        <SettingsCard plain>
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} description={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
+        </SettingsCard>
+          )
+
+        case 'discovery':
+          return (
+        <SettingsCard plain>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !shownOptedOut} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           {/* A failed status read used to only grey the toggle out, which is
               indistinguishable from the instance-config gate above. Say why.
@@ -1380,18 +1544,12 @@ export function ChatPanel() {
               : null
             }
           />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
-      </SettingsSection>
+          )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.minimap')}>
-        <SettingsCard>
-          <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} description={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title={i18nT('pages.settings.chatPanel.sessions')}>
-        <SettingsCard index={7}>
+        case 'sessions':
+          return (
+        <SettingsCard plain>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.split_view_session_grid')} description={i18nT('pages.settings.chatPanel.opt_in_split_the_chat_into_resizable_session_pan', { mod: isMac ? '⌘' : 'Ctrl' })} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} description={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} description={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
@@ -1413,68 +1571,15 @@ export function ChatPanel() {
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} description={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
-      </SettingsSection>
+          )
 
-      <SettingsSection title={i18nT('pages.settings.chatPanel.context')}>
-        <SettingsCard index={8}>
-          <SettingsSelect
-            label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
-            description={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
-            value={String(mcCfg?.session?.autocompact_pct ?? 70)}
-            options={COMPACT_OPTIONS}
-            optionLabels={compactLabels()}
-            onChange={v =>
-              api.patchConfig('session.autocompact_pct', Number(v))
-                .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))
-                .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
-            }
-            disabled={!mcQ.isSuccess}
-            configKey="session.autocompact_pct"
-          />
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title={i18nT('pages.settings.chatPanel.subagents')}>
-        <SettingsCard index={10}>
-          <SettingsSelect
-            label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
-            description={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}
-            value={mcCfg?.agent?.completion_keep ?? 'head'}
-            options={COMPLETION_KEEP_OPTIONS}
-            optionLabels={completionKeepLabels()}
-            onChange={v => keepModeMut.mutate(v as CompletionKeepMode)}
-            disabled={!mcQ.isSuccess}
-          />
-          <SettingsInput
-            label={i18nT('pages.settings.chatPanel.completion_event_characters')}
-            aria-label={i18nT('pages.settings.chatPanel.completion_event_characters_2')}
-            hint={i18nT('pages.settings.chatPanel.maximum_characters_retained_in_the_completion_ev', { n: COMPLETION_KEEP_CHARS_DEFAULT })}
-            type="number"
-            value={localKeepChars}
-            min={COMPLETION_KEEP_CHARS_MIN}
-            max={COMPLETION_KEEP_CHARS_MAX}
-            step={500}
-            onChange={setLocalKeepChars}
-            onBlur={() => {
-              const n = parseInt(localKeepChars, 10)
-              if (
-                isNaN(n) ||
-                n < COMPLETION_KEEP_CHARS_MIN ||
-                n > COMPLETION_KEEP_CHARS_MAX
-              ) {
-                setLocalKeepChars(
-                  String(mcCfg?.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT)
-                )
-                return
-              }
-              keepCharsMut.mutate(n)
-            }}
-            disabled={!mcQ.isSuccess}
-          />
-        </SettingsCard>
-      </SettingsSection>
-
-    </>
+        default:
+          return null
+        }
+      }}
+    </SettingsSubNav>
   )
 }

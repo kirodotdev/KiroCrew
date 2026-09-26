@@ -307,8 +307,12 @@ class _FairnessMixin(ManagerComponent):
         # start and resumes waiting for a slot. A parent that merely waits
         # while its children run reserves nothing -- unrelated work fills the
         # cap (RFC §14.3: siblings and other sessions keep going).
+        # An approval-released start (``_startup_release``) is resident too but
+        # already holds its slot: it waits on the in-startup bound, not on a
+        # slot, so it does not arm the reserve.
         reserve_active = settings.child_reserve > 0 and (
-            any(p.get("_resume_id") for p in self._manager._queue) or self.pending_children() > 0
+            any(p.get("_resume_id") and not p.get("_startup_release") for p in self._manager._queue)
+            or self.pending_children() > 0
         )
         return CapacityView(
             cap_total=cap,
@@ -344,15 +348,21 @@ class _FairnessMixin(ManagerComponent):
         if not view.any_slot:
             return None
         for idx, params in enumerate(queue):
-            if params.get("_resume_id") and not self._manager._boundary_cancellation_pending(
-                params
+            if (
+                params.get("_resume_id")
+                and not params.get("_startup_release")
+                and not self._manager._boundary_cancellation_pending(params)
             ):
                 return idx
         roots_ok = view.root_slot
 
         def eligible(params: Mapping[str, Any]) -> bool:
-            return not self._manager._boundary_cancellation_pending(params) and (
-                roots_ok or self.entry_is_child(params)
+            # A released start is never picked here: the pump's own phase
+            # (``_release_admitted_start_impl``) meters it, ahead of this pick.
+            return (
+                not params.get("_startup_release")
+                and not self._manager._boundary_cancellation_pending(params)
+                and (roots_ok or self.entry_is_child(params))
             )
 
         def lane_of(params: Mapping[str, Any]) -> str:

@@ -629,8 +629,10 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     // invisible icon carries no affordance, so what this guards is unchanged —
     // a real glyph must never reach a chip the backend did not confirm.
     expect(code.querySelector('svg:not([class*="opacity-0"])')).toBeNull()
-    // Non-path chips now have cursor-pointer for click-to-copy, but no file glyph.
-    expect(code.className).toContain('cursor-pointer')
+    // A non-path chip copies, so it wears the copy cursor — not the pointer hand
+    // and glyph that mark a chip whose click opens something.
+    expect(code.className).toContain('cursor-copy')
+    expect(code.className).not.toContain('cursor-pointer')
   })
 
   it('renders a confirmed directory as a folder chip, not a broken file link', async () => {
@@ -650,8 +652,8 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     const { container } = render(<MarkdownRenderer content={'`/home/user/ghost.md`'} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
     const code = container.querySelector('code')!
-    // Non-path chips now have cursor-pointer for click-to-copy.
-    expect(code.className).toContain('cursor-pointer')
+    // Not a path, so it is the copy chip: copy cursor, no path data.
+    expect(code.className).toContain('cursor-copy')
     expect(code.dataset.pathKind).toBeUndefined()
   })
 

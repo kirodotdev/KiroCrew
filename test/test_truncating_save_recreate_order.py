@@ -801,6 +801,67 @@ def test_every_truncating_save_is_a_guarded_write() -> None:
     assert unguarded == [], f"a truncating save carries no authorized key: {unguarded}"
 
 
+def test_every_truncating_rewrite_pins_slot_identity_at_the_commit_boundary() -> None:
+    """The population that needs the in-lock identity recheck, enumerated.
+
+    A truncating rewrite passes an explicit messages snapshot or ``rewrite=True``.
+    It is dispatched off the event loop, so the loop is free from the dispatch
+    until the worker commits, and a same-name close-and-recreate is not
+    serialized against the slot's own lock. Such a replacement resumes the SAME
+    transcript, so ``expected_history_key`` stays satisfied and the routing pin
+    waves it through; ``expected_slot_name`` re-reads ``state._slots`` inside the
+    transcript lock, with no await before the write, and refuses.
+
+    No loop-side check substitutes for it: a guard evaluated before an await
+    decides the moment of evaluation, not the moment of commit. So EVERY
+    truncating rewrite carries the pin, and the scan covers both dispatch
+    shapes -- a direct call, and a saver handed to ``asyncio.to_thread`` -- or a
+    site using the second shape would read as absent rather than as unpinned.
+    """
+    savers = {"save_slot_off_loop", "save_slot_to_history", "_save_slot_to_history"}
+    root = Path(chat_persistence.__file__).parent
+
+    def _called(node: ast.expr) -> str:
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return getattr(node, "id", "")
+
+    sites: list[tuple[str, int, bool]] = []
+    for module_path in sorted(root.rglob("*.py")):
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = _called(node.func)
+            args = node.args
+            if name == "to_thread" and args and _called(args[0]) in savers:
+                name, args = _called(args[0]), args[1:]
+            elif name not in savers:
+                continue
+            keywords = {kw.arg for kw in node.keywords if kw.arg}
+            snapshot = len(args) >= 3 or "messages" in keywords
+            rewrite = any(
+                kw.arg == "rewrite" and isinstance(kw.value, ast.Constant) and kw.value.value
+                for kw in node.keywords
+            )
+            if not (snapshot or rewrite):
+                continue
+            sites.append((module_path.name, node.lineno, "expected_slot_name" in keywords))
+
+    assert sites, "the scan found no truncating rewrites, so it is measuring nothing"
+    # The shapes the scan must see, so a scan that silently stops matching one of
+    # them cannot read as a clean board.
+    modules = {name for name, _, _ in sites}
+    assert {
+        "chat_regenerate.py",
+        "chat_rewind.py",
+        "chat_fork.py",
+    } <= modules, f"the scan lost sight of a known truncating rewrite: {sorted(modules)}"
+
+    unpinned = [(name, line) for name, line, pinned in sites if not pinned]
+    assert unpinned == [], f"a truncating rewrite does not pin slot identity: {unpinned}"
+
+
 def test_the_periodic_flush_stays_off_a_slot_being_retracted(tmp_path) -> None:
     """The refusal arms this writer, so this writer must respect the same fence.
 

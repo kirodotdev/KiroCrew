@@ -39,8 +39,8 @@ _COUNTER_KEYS = {
 }
 
 
-def _store(tmp_path: Path, *, semantic: int = 0) -> VectorMemoryStore:
-    store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+def _store(tmp_path: Path, *, semantic: int = 0, opened) -> VectorMemoryStore:
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
     store.init()
     for i in range(semantic):
         store.set_semantic(f"pref.item{i}", f"value {i} tea", 0.9, "user_explicit")
@@ -48,13 +48,13 @@ def _store(tmp_path: Path, *, semantic: int = 0) -> VectorMemoryStore:
 
 
 class TestCounterContract:
-    def test_a_fresh_store_exposes_every_counter_at_zero(self, tmp_path: Path) -> None:
+    def test_a_fresh_store_exposes_every_counter_at_zero(self, tmp_path: Path, opened) -> None:
         """The counter-absent assertion: no ``read_counters`` at all fails here."""
-        store = _store(tmp_path)
+        store = _store(tmp_path, opened=opened)
         assert store.read_counters() == dict.fromkeys(_COUNTER_KEYS, 0)
 
-    def test_counters_are_monotonic_and_per_instance(self, tmp_path: Path) -> None:
-        store = _store(tmp_path, semantic=2)
+    def test_counters_are_monotonic_and_per_instance(self, tmp_path: Path, opened) -> None:
+        store = _store(tmp_path, semantic=2, opened=opened)
         store.get_semantic_context(query_text="tea")
         first = store.read_counters()
         assert first["semantic_full_scans"] == 1
@@ -62,21 +62,23 @@ class TestCounterContract:
         assert store.read_counters()["semantic_full_scans"] == 2
         # A second store over the SAME file counts only its own reads, which is
         # what makes a two-process comparison meaningful rather than shared.
-        other = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        other = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         other.init()
         assert other.read_counters()["semantic_full_scans"] == 0
         assert store.read_counters()["semantic_full_scans"] == 2
 
-    def test_a_snapshot_does_not_alias_the_live_counters(self, tmp_path: Path) -> None:
-        store = _store(tmp_path, semantic=1)
+    def test_a_snapshot_does_not_alias_the_live_counters(self, tmp_path: Path, opened) -> None:
+        store = _store(tmp_path, semantic=1, opened=opened)
         snapshot = store.read_counters()
         store.get_semantic_context(query_text="tea")
         assert snapshot["semantic_full_scans"] == 0
 
 
 class TestSemanticSurface:
-    def test_the_full_read_branch_credits_every_row_it_materializes(self, tmp_path: Path) -> None:
-        store = _store(tmp_path, semantic=4)
+    def test_the_full_read_branch_credits_every_row_it_materializes(
+        self, tmp_path: Path, opened
+    ) -> None:
+        store = _store(tmp_path, semantic=4, opened=opened)
         before = store.read_counters()
         store.get_semantic_context(query_text="tea")
         after = store.read_counters()
@@ -85,7 +87,7 @@ class TestSemanticSurface:
         assert after["rows_read"] - before["rows_read"] >= 4
 
     def test_a_second_identical_semantic_search_scans_the_population_again(
-        self, tmp_path: Path
+        self, tmp_path: Path, opened
     ) -> None:
         """The read-volume assertion, in the form a live pod can make.
 
@@ -95,7 +97,7 @@ class TestSemanticSurface:
         stops scanning and these numbers stay flat — so this test is the ratchet
         that has to be updated by the fix, not silently satisfied by it.
         """
-        store = _store(tmp_path, semantic=4)
+        store = _store(tmp_path, semantic=4, opened=opened)
         store.get_semantic_context(query_text="tea")
         one = store.read_counters()
         store.get_semantic_context(query_text="tea")
@@ -103,9 +105,11 @@ class TestSemanticSurface:
         assert two["semantic_full_scans"] - one["semantic_full_scans"] == 1
         assert two["semantic_rows_read"] - one["semantic_rows_read"] == 4
 
-    def test_the_recency_branch_is_not_counted_as_a_population_scan(self, tmp_path: Path) -> None:
+    def test_the_recency_branch_is_not_counted_as_a_population_scan(
+        self, tmp_path: Path, opened
+    ) -> None:
         """No query means a bounded ``LIMIT`` read, which is a different shape."""
-        store = _store(tmp_path, semantic=4)
+        store = _store(tmp_path, semantic=4, opened=opened)
         before = store.read_counters()
         store.get_semantic_context()
         after = store.read_counters()
@@ -114,10 +118,10 @@ class TestSemanticSurface:
         assert after["rows_read"] > before["rows_read"]
 
     def test_unbounded_get_lessons_is_a_population_scan_but_a_limited_one_is_not(
-        self, tmp_path: Path
+        self, tmp_path: Path, opened
     ) -> None:
         """The other half: the ``_stored_similarity_scorer`` callers."""
-        store = _store(tmp_path)
+        store = _store(tmp_path, opened=opened)
         store.write_lesson("always run the build before pushing")
         before = store.read_counters()
         store.get_lessons()
@@ -130,7 +134,9 @@ class TestSemanticSurface:
 
 
 class TestEpisodicSurface:
-    def test_an_episodic_search_credits_the_population_it_scans(self, tmp_path: Path) -> None:
+    def test_an_episodic_search_credits_the_population_it_scans(
+        self, tmp_path: Path, opened
+    ) -> None:
         """Either episodic rung — resident build or per-call read — is credited.
 
         The resident set pays the population read once per invalidation
@@ -139,7 +145,7 @@ class TestEpisodicSurface:
         and a stock one, and the DIFFERENCE between them is exactly what the
         cross-call comparison shows.
         """
-        store = _store(tmp_path)
+        store = _store(tmp_path, opened=opened)
         for i in range(3):
             store.write_episodic(f"a conversation fragment number {i} about tea")
         # Stored embeddings need an embedder; without one the rows carry no
@@ -153,9 +159,9 @@ class TestEpisodicSurface:
 
 class TestAllTablesTotals:
     def test_a_keyed_read_counts_a_statement_without_any_population_scan(
-        self, tmp_path: Path
+        self, tmp_path: Path, opened
     ) -> None:
-        store = _store(tmp_path, semantic=1)
+        store = _store(tmp_path, semantic=1, opened=opened)
         before = store.read_counters()
         store.get_semantic("pref.item0")
         after = store.read_counters()
@@ -163,8 +169,8 @@ class TestAllTablesTotals:
         assert after["semantic_full_scans"] == before["semantic_full_scans"]
         assert after["episodic_full_scans"] == before["episodic_full_scans"]
 
-    def test_a_miss_counts_the_statement_but_no_rows(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
+    def test_a_miss_counts_the_statement_but_no_rows(self, tmp_path: Path, opened) -> None:
+        store = _store(tmp_path, opened=opened)
         before = store.read_counters()
         assert store.get_semantic("pref.absent") is None
         after = store.read_counters()
@@ -198,21 +204,23 @@ def _request(store: VectorMemoryStore, *, query: dict[str, str]) -> Any:
 
 class TestObservabilityEndpoint:
     @pytest.mark.asyncio
-    async def test_the_response_carries_a_reads_object(self, tmp_path: Path) -> None:
-        store = _store(tmp_path, semantic=4)
+    async def test_the_response_carries_a_reads_object(self, tmp_path: Path, opened) -> None:
+        store = _store(tmp_path, semantic=4, opened=opened)
         body = json.loads(
             (await mem_mod.api_memory_observability(_request(store, query={"q": "tea"}))).text or ""
         )
         assert set(body["reads"]) == _COUNTER_KEYS
 
     @pytest.mark.asyncio
-    async def test_a_queried_request_reports_its_own_semantic_scan(self, tmp_path: Path) -> None:
+    async def test_a_queried_request_reports_its_own_semantic_scan(
+        self, tmp_path: Path, opened
+    ) -> None:
         """The counters are read LAST, so the request's own scan is included.
 
         That ordering is what makes the endpoint usable as the read-volume probe: an
         agent calls it twice with the same ``q`` and compares the two objects.
         """
-        store = _store(tmp_path, semantic=4)
+        store = _store(tmp_path, semantic=4, opened=opened)
         first = json.loads(
             (await mem_mod.api_memory_observability(_request(store, query={"q": "tea"}))).text or ""
         )["reads"]

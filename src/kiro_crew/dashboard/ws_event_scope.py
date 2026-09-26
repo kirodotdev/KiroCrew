@@ -55,7 +55,10 @@ notification_channel_settings IS attributable -- its channel is `<app>.<id>` or
 `system.<kind>` -- so own-channel settings ride `notification`, system channels
 ride `notification:system`, and foreign channels need `notification:all`.
 notification:all        All notifications regardless of source (broad).
-sessions                sessions_restarting
+sessions                sessions_restarting, session_health_changed
+                        (``session_health_changed`` is a bare ``{"ts": ...}``
+                        refresh signal -- it reports THAT the health verdict
+                        moved, never what it says)
 yolo                    yolo_expired
 artifacts               artifact_update ({slug, version, deleted}; metadata only)
 workflow_run_event      Declared by its own literal name -- already the correct
@@ -363,6 +366,14 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # the notification events themselves, so it rides the same declaration.
     "notification_channel_settings": "notification",
     "sessions_restarting": "sessions",
+    # A bare {"ts": ...} refresh signal -- no slot, no session key, no counts.
+    # It says the session-health verdict moved and nothing about what it says, so
+    # it rides the declaration that already governs the session domain rather
+    # than inventing a scope. `events` and `api` are independent manifest fields,
+    # so a holder of `sessions` is NOT thereby a reader of
+    # `GET /api/sessions/health`; the frame discloses nothing that endpoint
+    # would, and a holder of nothing still gets neither.
+    "session_health_changed": "sessions",
     "yolo_expired": "yolo",
     # Artifact metadata only ({slug, version, deleted}) -- no content, no slot.
     "artifact_update": "artifacts",
@@ -403,6 +414,29 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
 #: SDK reads it, so it is withheld from app tokens outright instead of growing
 #: the grant surface for a field with no consumer.
 _YOLO_SCOPE = _GLOBAL_EVENT_DECLARATIONS["yolo_expired"]
+
+
+def global_event_declared(event_type: str, allowed_events: frozenset[str]) -> bool:
+    """Does *allowed_events* carry the declaration that governs *event_type*?
+
+    A work-avoidance predicate, NOT the security gate: it lets a caller skip
+    producing an event no connection can receive. The gate stays
+    :func:`ws_event_allowed`, which every broadcast still passes through, so a
+    True here never admits a frame on its own -- and it deliberately does not
+    audit, because answering "would this connection ever want the event" is not a
+    grant and recording it as one would bury the real decisions.
+
+    Reads the same table and accepts the same ``<decl>`` / ``<decl>:all`` spelling
+    as the global-declaration branch of :func:`_decide_ws_event`, so the two
+    cannot drift. An unknown event is False, matching that branch's
+    deny-by-default. A dashboard user is also False: its socket carries no
+    declaration set at all (it is not gated by declarations), so a caller that
+    means "someone asked for this" must not read an empty set as consent.
+    """
+    required_decl = _GLOBAL_EVENT_DECLARATIONS.get(event_type)
+    if required_decl is None:
+        return False
+    return required_decl in allowed_events or f"{required_decl}:all" in allowed_events
 
 
 def slots_envelope_extras(

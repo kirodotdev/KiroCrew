@@ -344,14 +344,15 @@ async def test_a_port_nothing_is_bound_to_is_reported_as_an_expired_approval(mon
     unbound proves the approval is spent. Answering with the delivery-failure
     message sends the user back to re-paste an address that cannot ever work.
     """
-    listener = await asyncio.start_server(lambda _r, _w: None, "127.0.0.1", 0)
-    port = int(listener.sockets[0].getsockname()[1])
-    listener.close()
-    await listener.wait_closed()
+
+    async def refuse_connection(_host: str, _port: int):
+        raise ConnectionRefusedError("test callback listener is absent")
+
     audit = MagicMock()
     monkeypatch.setattr(connections, "sel", lambda: audit)
+    monkeypatch.setattr(connections, "_open_loopback_connection", refuse_connection)
 
-    status, body = await _post_relay(port)
+    status, body = await _post_relay(43123)
 
     assert status == 409
     assert body["code"] == "approval_superseded"

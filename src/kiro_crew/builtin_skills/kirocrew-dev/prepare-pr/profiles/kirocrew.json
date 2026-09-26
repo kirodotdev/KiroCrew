@@ -36,6 +36,8 @@
     "python3 scripts/check_builtin_skill_scope.py",
     "python3 scripts/check_testpaths_coverage.py --test",
     "python3 scripts/check_testpaths_coverage.py",
+    "python3 scripts/check_cwd_relative_repo_reads.py --test",
+    "python3 scripts/check_cwd_relative_repo_reads.py",
     "python3 scripts/check_changelog_history.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && CHANGELOG_BASE_REF=\"$BASE\" python3 scripts/check_changelog_history.py",
     "python3 scripts/check_decisions_history.py --test",

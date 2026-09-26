@@ -32,6 +32,7 @@ from kiro_crew.hooks import (
     get_global_hook_store,
     hook_gate_kwargs,
 )
+from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
@@ -1483,7 +1484,12 @@ async def run_bg_oneliner(
             raise RuntimeError(
                 "run_bg_oneliner(strict_model=True) requires a session with set_model()"
             )
-        async for event in session.prompt(prompt):
+        # A one-liner's prompt is text ABOUT a session (a summary, a title, a
+        # label), so any image path in it is quoted history, not an attachment.
+        # Left in, the prompt builder re-inlines every still-readable file as an
+        # image block: a session summary carried one per pasted screenshot, and
+        # a text-only background model rejected the whole request on each pass.
+        async for event in session.prompt(strip_image_refs(prompt)):
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:

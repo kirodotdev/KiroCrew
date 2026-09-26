@@ -79,13 +79,19 @@ async function mount(turns: Record<string, unknown>[]) {
     turns,
   } as never);
   render(<TelemetryPanel />, { wrapper: Wrapper });
-  await screen.findByRole("link", { name: "Costly one" });
+  // Exactly two links carry this title: the session bar block and the table row
+  // it also appears in. Pinned rather than merely awaited — a third would mean a
+  // surface rendered the conversation twice.
+  expect(await screen.findAllByRole("link", { name: "Costly one" })).toHaveLength(2);
 }
 
 describe("TelemetryPanel — per-turn drill-down", () => {
   beforeEach(() => {
     qc.clear();
     vi.clearAllMocks();
+    // The row expanders live in the spend table, which ships inside a
+    // collapsible that is closed on first paint.
+    localStorage.setItem("telemetry:spend-table-open", "1");
   });
 
   it("opens a session row into its per-turn rows, querying that slot", async () => {
@@ -132,7 +138,7 @@ describe("TelemetryPanel — per-turn drill-down", () => {
     );
     vi.mocked(api.usageTurns).mockRejectedValue(new Error("boom"));
     render(<TelemetryPanel />, { wrapper: Wrapper });
-    await screen.findByRole("link", { name: "Costly one" });
+    expect(await screen.findAllByRole("link", { name: "Costly one" })).toHaveLength(2);
     fireEvent.click(
       screen.getAllByRole("button", { name: "Show per-turn detail" })[0],
     );

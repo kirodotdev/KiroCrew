@@ -20,7 +20,7 @@ const branding = vi.mocked(getThemeBranding)
 
 type Suggestions = Awaited<ReturnType<typeof api.suggestions>>
 
-const payload = (list: string[]): Suggestions => ({
+const payload = (list: Suggestions['suggestions']): Suggestions => ({
   suggestions: list,
   generated_at: 1,
   stale: false,
@@ -61,6 +61,23 @@ describe('WelcomeView', () => {
     expect(setInput).toHaveBeenCalledWith('zzq alpha')
     // mousedown is suppressed so the pill never takes focus
     expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'zzq beta' }))).toBe(false)
+  })
+
+  it('renders {text, kind} items with their kind and legacy strings as general', async () => {
+    suggestions.mockResolvedValue(payload([
+      { text: 'zzq code', kind: 'code' },
+      'zzq legacy',
+      { text: 'zzq weird', kind: 'nope' },
+    ]))
+    const setInput = vi.fn()
+    renderWithProviders(<WelcomeView setInput={setInput} />)
+
+    const code = await screen.findByRole('button', { name: 'zzq code' })
+    expect(code).toHaveAttribute('data-kind', 'code')
+    expect(screen.getByRole('button', { name: 'zzq legacy' })).toHaveAttribute('data-kind', 'general')
+    expect(screen.getByRole('button', { name: 'zzq weird' })).toHaveAttribute('data-kind', 'general')
+    fireEvent.click(code)
+    expect(setInput).toHaveBeenCalledWith('zzq code')
   })
 
   it('the refresh button forces a regeneration and swaps the pills', async () => {

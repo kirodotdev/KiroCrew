@@ -172,6 +172,9 @@ FORBIDDEN_ATTRS = frozenset(
         "func_globals",
         "func_code",
         "func_builtins",
+        # class hierarchy walk: ``dict.mro()[1]`` is ``object``, the root every
+        # subclass-enumeration escape starts from
+        "mro",
     }
 )
 
@@ -521,6 +524,16 @@ class _Validator(ast.NodeVisitor):
         reason = _attr_reason(node.attr)
         if reason is not None:
             self.errors.append(f"line {node.lineno}: {reason}")
+        self.generic_visit(node)
+
+    def visit_MatchClass(self, node: ast.MatchClass) -> None:  # noqa: N802 (ast.NodeVisitor API)
+        # ``case C(__class__=c)`` makes CPython run ``getattr(subject, "__class__")``,
+        # but the name is a plain str in ``kwd_attrs``, never an Attribute node, so
+        # visit_Attribute cannot see it. Apply the same predicate here.
+        for attr in node.kwd_attrs:
+            reason = _attr_reason(attr)
+            if reason is not None:
+                self.errors.append(f"line {node.lineno}: {reason} (in a match pattern)")
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802 (ast.NodeVisitor API)

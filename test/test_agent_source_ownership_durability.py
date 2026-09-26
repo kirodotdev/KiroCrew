@@ -40,7 +40,7 @@ def _one_chunk(text, **kw):
 def kstore(tmp_path):
     s = KnowledgeStore(str(tmp_path / "knowledge.db"))
     yield s
-    s.close()
+    s._close_all_for_tests()
 
 
 @pytest.fixture()

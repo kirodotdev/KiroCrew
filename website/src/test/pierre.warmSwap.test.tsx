@@ -118,9 +118,9 @@ describe('WarmSwap', () => {
       })
     try {
       render(<PierrePatch patch={PATCH} />)
-      // Impl chunk resolves; box height is still 0 -> fallback stays.
+      // Impl chunk resolves; the impl's own height is still 0 -> fallback stays.
       expect(await screen.findByTestId('impl')).toBeTruthy()
-      const box = screen.getByTestId('impl').parentElement as HTMLElement
+      const box = screen.getByTestId('impl').closest('[aria-hidden="true"]') as HTMLElement
       expect(box.className).toContain('invisible')
       // The impl paints: RO fires with real height -> swap releases the box.
       height = 120
@@ -142,12 +142,14 @@ describe('WarmSwap', () => {
     vi.useFakeTimers()
     const spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(0)
     try {
-      render(<PierrePatch patch={PATCH} />)
+      const view = render(<PierrePatch patch={PATCH} />)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2600)
       })
       const impl = screen.getByTestId('impl')
-      expect((impl.parentElement as HTMLElement).className).not.toContain('invisible')
+      // Released: no hidden box is left between the impl and the wrapper.
+      expect(impl.closest('[aria-hidden="true"]')).toBeNull()
+      expect(view.container.querySelector('.invisible')).toBeNull()
     } finally {
       spy.mockRestore()
     }
@@ -169,7 +171,7 @@ describe('WarmSwap', () => {
       spy.mockReturnValue(0)
       render(<PierrePatch patch={PATCH} />)
       const impl = await screen.findByTestId('impl')
-      const outer = (impl.parentElement as HTMLElement).parentElement as HTMLElement
+      const outer = (impl.closest('[aria-hidden="true"]') as HTMLElement).parentElement as HTMLElement
       expect(outer.style.height).toBe('140px')
       expect(outer.style.overflow).toBe('hidden')
     } finally {

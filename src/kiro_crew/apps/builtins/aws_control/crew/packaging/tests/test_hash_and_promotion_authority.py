@@ -13,6 +13,7 @@ the link points; the descriptor-relative rename refuses a component swapped sinc
 
 from __future__ import annotations
 
+import errno
 import os
 import pathlib
 import shutil
@@ -638,6 +639,186 @@ def test_a_clean_rebuild_verifies_promotes_and_leaves_no_scratch(tmp_path: pathl
         or q.name.startswith(".smc-purge-")
     )
     assert leftovers == [], f"a clean rebuild left scratch behind: {leftovers}"
+
+
+# ---------------------------------------------------------------------------
+# The purge sweep IS the deletion (the no-op settle leaves the captured tree in
+# the private aside for _rmtree_pinned to remove). If that sweep does not
+# complete, the tree is still there, undeleted -- so _purge_staging_best_effort
+# must return False (residue left), not True. A sweep failure swallowed as a
+# no-op would report a successful purge over a tree that still exists.
+# ---------------------------------------------------------------------------
+@_posix_only
+def test_a_failed_private_aside_sweep_reports_residue_not_success(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private-aside sweep that fails makes ``_purge_staging_best_effort`` return False.
+
+    The staging tree is captured into the private aside and verified as build-written, then the
+    ``_rmtree_pinned`` sweep that would delete it is forced to fail. Because the no-op purge
+    settle left the tree in the aside, that sweep is the disposal itself: it did not complete, so
+    the tree is STILL present. The helper must report ``False`` (residue deliberately left), not
+    ``True``. On the pre-fix head the sweep failure was swallowed as a bare ``pass`` and the
+    helper returned ``True`` over an undeleted tree, so this asserts the honest outcome.
+    """
+    mod = load_build()
+    parent = tmp_path / "work"
+    parent.mkdir()
+    staging = parent / "bundle.staging"
+    staging.mkdir()
+    (staging / "agent.json").write_text("{}\n", encoding="utf-8")
+    resolved_parent = parent.resolve()
+
+    real_rmtree_pinned = mod._rmtree_pinned
+
+    def _sweep_fails(parent_fd: int, name: str) -> None:
+        # Only the private-aside sweep names a ``.smc-purge-*`` directory; fail exactly that so
+        # the capture + verify still run and the sweep is the only step that does not complete.
+        if name.startswith(".smc-purge-"):
+            raise OSError(errno.EBUSY, "sweep forced to fail")
+        real_rmtree_pinned(parent_fd, name)
+
+    monkeypatch.setattr(mod, "_rmtree_pinned", _sweep_fails)
+
+    result = mod._purge_staging_best_effort(staging, resolved_parent)
+
+    assert result is False, (
+        "a private-aside sweep that did not complete left the captured staging tree undeleted, "
+        "so the purge must report False (residue), not True"
+    )
+    # The tree the sweep failed to delete is retained in the aside rather than silently lost;
+    # it must still exist on disk somewhere under the parent (either back at staging or under a
+    # leftover .smc-purge-* directory), never reported gone.
+    survivors = [q for q in parent.rglob("agent.json") if q.read_text(encoding="utf-8") == "{}\n"]
+    assert survivors, (
+        "the captured tree was reported swept but no copy survives under the parent -- a failed "
+        "sweep must leave residue, not lose the tree"
+    )
+
+
+@_posix_only
+def test_a_staging_tree_moved_away_before_capture_is_not_reported_as_purged(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staging tree that vanished before the capture rename was never purged by this call.
+
+    ``_purge_staging_best_effort`` may report ``True`` only when it captured the tree, verified
+    its identity, and swept it. Here another process moves ``staging`` elsewhere in the window
+    before the capture rename, so the rename raises ``FileNotFoundError``: nothing was
+    captured, nothing was verified, and the tree still exists at its new location. On the
+    pre-fix head the disposal's early ``return`` read as success and the helper returned
+    ``True``, which the pre-transaction refusal turns into "the staging tree was released".
+    """
+    mod = load_build()
+    parent = tmp_path / "work"
+    parent.mkdir()
+    staging = parent / "bundle.staging"
+    staging.mkdir()
+    (staging / "agent.json").write_text("{}\n", encoding="utf-8")
+    elsewhere = tmp_path / "moved-by-another-process"
+    resolved_parent = parent.resolve()
+
+    real_rename = os.rename
+    moved = {"n": 0}
+
+    def _concurrent_move_then_rename(src, dst, *args, **kwargs):
+        if src == staging.name and str(dst).startswith(".smc-purge-") and not moved["n"]:
+            moved["n"] += 1
+            real_rename(staging, elsewhere)  # the concurrent actor wins the race
+        return real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(mod.os, "rename", _concurrent_move_then_rename)
+
+    result = mod._purge_staging_best_effort(staging, resolved_parent)
+
+    assert moved["n"] == 1, "the capture rename was never reached; fixture is inert"
+    assert result is False, (
+        "the capture found nothing to move, so nothing was captured, verified or swept; the "
+        "purge must not report the staging tree as released"
+    )
+    assert (elsewhere / "agent.json").is_file(), "the moved tree must be left untouched"
+    leftovers = [p.name for p in parent.iterdir() if p.name.startswith(".smc-purge-")]
+    assert leftovers == [], "the empty private aside should still be swept"
+
+
+@_posix_only
+def test_MUTATION_swallowing_the_sweep_failure_reports_a_false_success(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore the pre-fix swallow and the purge reports True over an undeleted tree.
+
+    The mutation makes ``_dispose_via_private_aside`` return ``True`` regardless of the sweep,
+    reproducing the pre-fix shape where a failed sweep was a bare ``pass``. With the sweep
+    failing, the captured tree stays in the aside yet ``_purge_staging_best_effort`` returns
+    ``True`` -- proving the sweep status carried in the return is what makes it honest.
+    """
+    mod = load_build(mutate=("    return not sweep_failed\n", "    return True\n"))
+    parent = tmp_path / "work"
+    parent.mkdir()
+    staging = parent / "bundle.staging"
+    staging.mkdir()
+    (staging / "agent.json").write_text("{}\n", encoding="utf-8")
+    resolved_parent = parent.resolve()
+
+    real_rmtree_pinned = mod._rmtree_pinned
+
+    def _sweep_fails(parent_fd: int, name: str) -> None:
+        if name.startswith(".smc-purge-"):
+            raise OSError(errno.EBUSY, "sweep forced to fail")
+        real_rmtree_pinned(parent_fd, name)
+
+    monkeypatch.setattr(mod, "_rmtree_pinned", _sweep_fails)
+
+    result = mod._purge_staging_best_effort(staging, resolved_parent)
+
+    assert result is True, (
+        "with the sweep status dropped from the return the purge swallowed the failed sweep and "
+        "reported success, proving the return value is what makes the honest False"
+    )
+
+
+@_posix_only
+def test_a_failed_sweep_never_raises_so_post_promotion_sites_do_not_refuse(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_purge_via_private_aside`` reports a failed sweep as ``False``; it never raises.
+
+    The transaction-path staging purge and the post-promotion ``<out>.previous`` purge call
+    ``_purge_via_private_aside`` and ignore its return, so a failed sweep must not surface as an
+    exception there, or a bundle that already landed would be turned into an ``ExportRefused``
+    by leftover scratch. This forces the sweep to fail and asserts the call returns ``False``
+    without raising, leaving the captured tree as residue.
+    """
+    mod = load_build()
+    parent = tmp_path / "work"
+    parent.mkdir()
+    previous = parent / "bundle.previous"
+    previous.mkdir()
+    (previous / "agent.json").write_text("{}\n", encoding="utf-8")
+    resolved_parent = parent.resolve()
+
+    real_rmtree_pinned = mod._rmtree_pinned
+
+    def _sweep_fails(parent_fd: int, name: str) -> None:
+        if name.startswith(".smc-purge-"):
+            raise OSError(errno.EBUSY, "sweep forced to fail")
+        real_rmtree_pinned(parent_fd, name)
+
+    monkeypatch.setattr(mod, "_rmtree_pinned", _sweep_fails)
+
+    result = mod._purge_via_private_aside(
+        previous,
+        lambda parent_fd, moved_rel: None,  # accept the captured tree as build-written
+        resolved_parent=resolved_parent,
+    )
+
+    assert result is False, "a sweep that did not complete must not be reported as a delete"
+
+    survivors = [q for q in parent.rglob("agent.json") if q.read_text(encoding="utf-8") == "{}\n"]
+    assert survivors, (
+        "the purge reported the sweep failure but lost the tree; a failed sweep must leave "
+        "residue, not delete on a guess"
+    )
 
 
 # ---------------------------------------------------------------------------

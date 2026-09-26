@@ -30,37 +30,37 @@ def _skill(root: Path, key: str) -> str:
     return str(path)
 
 
-def _loader(tmp_path: Path) -> SkillsLoader:
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def _loader(tmp_path: Path, *, opened) -> SkillsLoader:
+    return opened(SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False))
 
 
 class TestLazyLoadDefault:
     def test_bounded_index_is_the_default(self):
         assert KiroCrewConfig().skills.lazy_load is True
 
-    def test_default_entry_is_the_ranked_index_with_paths(self, tmp_path):
+    def test_default_entry_is_the_ranked_index_with_paths(self, tmp_path, opened):
         skills_dir = tmp_path / "skills"
         for n in range(3):
             _skill(skills_dir, f"web-{n}")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=4000)
         assert "## Available Skills" in text
         assert "## Skill discovery" not in text
         assert str(skills_dir / "web-0" / "SKILL.md") in text
 
-    def test_short_entry_still_reachable_when_the_flag_is_false(self, tmp_path):
+    def test_short_entry_still_reachable_when_the_flag_is_false(self, tmp_path, opened):
         """`discovery_only` is what the false setting selects; it must still work."""
         skills_dir = tmp_path / "skills"
         for n in range(3):
             _skill(skills_dir, f"web-{n}")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=4000, discovery_only=True)
         assert "## Skill discovery" in text
         assert "## Available Skills" not in text
 
 
 class TestFamiliesInTheIndex:
-    def test_truncated_index_names_the_families_it_drops(self, tmp_path):
+    def test_truncated_index_names_the_families_it_drops(self, tmp_path, opened):
         """A count says how much is missing; a family says what it is about.
 
         Every label's number is that family's HIDDEN members, and a family with
@@ -72,7 +72,7 @@ class TestFamiliesInTheIndex:
             _skill(skills_dir, f"alpha-{n}")
         for n in range(6):
             _skill(skills_dir, f"beta-{n}")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=1500)
 
         assert "more skill(s) not shown here" in text
@@ -90,12 +90,12 @@ class TestFamiliesInTheIndex:
             else:
                 assert f"{label}*" not in families[0]
 
-    def test_complete_index_names_no_families(self, tmp_path):
+    def test_complete_index_names_no_families(self, tmp_path, opened):
         """Nothing is hidden, so a family line would only repeat the rows."""
         skills_dir = tmp_path / "skills"
         for n in range(3):
             _skill(skills_dir, f"web-{n}")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=4000)
         assert "Families not shown" not in text
         assert "more skill(s) not shown here" not in text
@@ -191,7 +191,7 @@ class TestTheFamiliesLineNamesTheRowsActuallyOmitted:
     would name skills the reader can already see while hiding ones it cannot.
     """
 
-    def test_an_oversized_early_row_does_not_shift_the_families_line(self, tmp_path):
+    def test_an_oversized_early_row_does_not_shift_the_families_line(self, tmp_path, opened):
         skills_dir = tmp_path / "skills"
         # A row carries the skill's PATH, so a deeply nested key makes a row too
         # long to admit while shorter later rows still fit. Nested rather than one
@@ -208,7 +208,7 @@ class TestTheFamiliesLineNamesTheRowsActuallyOmitted:
             )
         for n in range(12):
             _skill(skills_dir, f"zzz-{n:02d}")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         text = loader.get_context(budget=900)
 
         named = {
@@ -235,7 +235,7 @@ class TestTheFamiliesLineNamesTheRowsActuallyOmitted:
 
 class TestScopedDiscovery:
     def test_ancestor_mapping_prunes_untrusted_project_tree_before_descent(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, opened
     ):
         import os
         from contextlib import contextmanager
@@ -244,7 +244,7 @@ class TestScopedDiscovery:
         project_skills = project / ".kiro" / "skills"
         _skill(project_skills, "hidden")
         _skill(project / ".kiro" / "external", "allowed")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(loader, "_trusted_project_key", lambda project: None)
         scanned = []
         original = os.scandir
@@ -282,10 +282,12 @@ class TestScopedDiscovery:
                 rows[0]["key"], project_dir=project, only=only
             )
 
-    def test_ancestor_mapping_cannot_readmit_filtered_global_rows(self, tmp_path, monkeypatch):
+    def test_ancestor_mapping_cannot_readmit_filtered_global_rows(
+        self, tmp_path, monkeypatch, opened
+    ):
         _skill(tmp_path / "skills", "hidden")
         _skill(tmp_path / "external", "allowed")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(loader, "_get_disabled_app_names", lambda: frozenset({"disabled"}))
         monkeypatch.setattr(loader, "_owning_app", lambda *args: "disabled")
         rows = loader.scoped_skills(only=[str(tmp_path / "**" / "SKILL.md")])
@@ -293,7 +295,7 @@ class TestScopedDiscovery:
 
     @pytest.mark.asyncio
     async def test_gateway_list_and_exact_read_share_the_session_mapping(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, opened
     ):
         import json
         from types import SimpleNamespace
@@ -307,7 +309,7 @@ class TestScopedDiscovery:
         root = tmp_path / "skills"
         paths = [_skill(root, f"team/s{n}") for n in range(3)]
         _skill(root, "outside")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         state = SimpleNamespace(sessions=None)
         monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
         monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
@@ -338,13 +340,13 @@ class TestScopedDiscovery:
         assert (await call(action="search", q="outside"))["matches"] == []
         assert (await call(action="read", key="outside"))["matches"] == []
 
-    def test_mapping_bounds_every_surface_and_keeps_the_tail_loadable(self, tmp_path):
+    def test_mapping_bounds_every_surface_and_keeps_the_tail_loadable(self, tmp_path, opened):
         root = tmp_path / "skills"
         for n in range(80):
             _skill(root, f"team/skill-{n:03}")
         _skill(root, "other/hidden")
         only = [str(root / "team" / "*" / "SKILL.md")]
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         startup = loader.get_context(budget=1500, only=only)
         assert len(startup) <= 1500
         assert _BODY_MARKER not in startup
@@ -360,17 +362,17 @@ class TestScopedDiscovery:
         assert loader.read_scoped_skill("other/hidden", only=only) is None
         assert loader.resolve_dollar_skills("$other/hidden", only=only) == []
 
-    def test_namespace_is_exact_and_ambiguous_leaf_does_not_pick_a_winner(self, tmp_path):
+    def test_namespace_is_exact_and_ambiguous_leaf_does_not_pick_a_winner(self, tmp_path, opened):
         for key in ("team-a/review", "team-b/review"):
             _skill(tmp_path / "skills", key)
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         assert loader.resolve_dollar_skills("$team-b/review")[0][1] == "team-b/review"
         assert loader.resolve_dollar_skills("$review") == []
         assert loader.resolve_dollar_skills("$missing/review") == []
         only = [str(tmp_path / "skills" / "team-b" / "review" / "SKILL.md")]
         assert loader.resolve_dollar_skills("$review", only=only)[0][1] == "team-b/review"
 
-    def test_external_literal_mappings_do_not_rescan_siblings(self, tmp_path, monkeypatch):
+    def test_external_literal_mappings_do_not_rescan_siblings(self, tmp_path, monkeypatch, opened):
         import kiro_crew.skills as module
 
         paths = [_skill(tmp_path / "external", f"skill-{n:03}") for n in range(40)]
@@ -383,26 +385,29 @@ class TestScopedDiscovery:
                 yield entry
 
         monkeypatch.setattr(module, "_iter_skill_files", counting_walk)
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         rows = loader.scoped_skills(only=paths)
         assert len(rows) == len(paths)
         assert len(visited) == len(paths)
         assert {str(path) for path in visited} == set(paths)
         assert _BODY_MARKER in loader.read_scoped_skill(rows[-1]["key"], only=paths)
 
-    def test_external_mapping_uses_a_stable_loadable_full_key(self, tmp_path):
+    def test_external_mapping_uses_a_stable_loadable_full_key(self, tmp_path, opened):
         mapped = _skill(tmp_path / "external", "team/review")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         rows = loader.search_skills("", only=[mapped], browse=True)
         assert len(rows) == 1
         key = rows[0]["key"]
         assert key.startswith("mapped/")
         assert _BODY_MARKER in loader.read_scoped_skill(key, only=[mapped])
-        assert _loader(tmp_path).search_skills("", only=[mapped], browse=True)[0]["key"] == key
+        assert (
+            _loader(tmp_path, opened=opened).search_skills("", only=[mapped], browse=True)[0]["key"]
+            == key
+        )
         assert loader.read_scoped_skill(key, only=[]) is None
 
     def test_pinned_capacity_refuses_instead_of_truncating_required_instructions(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, opened
     ):
         import kiro_crew.skills as module
 
@@ -413,11 +418,11 @@ class TestScopedDiscovery:
                 "---\nname: required\nalways: true\n---\n" + str(n) * 900, encoding="utf-8"
             )
         with pytest.raises(SkillContextCapacityError, match="startup instruction capacity"):
-            _loader(tmp_path).get_context(budget=1000)
+            _loader(tmp_path, opened=opened).get_context(budget=1000)
 
-    def test_deleted_mapping_never_inherits_global_catalog(self, tmp_path):
+    def test_deleted_mapping_never_inherits_global_catalog(self, tmp_path, opened):
         _skill(tmp_path / "skills", "other")
-        loader = _loader(tmp_path)
+        loader = _loader(tmp_path, opened=opened)
         only = [str(tmp_path / "skills" / "gone" / "SKILL.md")]
         assert loader.get_context(budget=4000, only=only) == ""
         assert loader.search_skills("", only=only, browse=True) == []
@@ -427,7 +432,7 @@ class TestScopedDiscovery:
 @pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.parametrize("swap_root", [False, True])
 def test_external_mapping_retains_admitted_root_after_swap(
-    tmp_path, monkeypatch, indexed, swap_root
+    tmp_path, monkeypatch, indexed, swap_root, opened
 ):
     """Swap after enumeration; metadata, index/fallback, exact and $ stay confined."""
     root = tmp_path / "external"
@@ -437,7 +442,7 @@ def test_external_mapping_retains_admitted_root_after_swap(
     escaped.write_text(
         "---\nname: stolen\ndescription: zirconium\n---\nzirconium secret", encoding="utf-8"
     )
-    loader = _loader(tmp_path)
+    loader = _loader(tmp_path, opened=opened)
     try:
         only = [str(root / "**" / "SKILL.md")]
         entries = loader._scoped_entries(None, only)
@@ -462,7 +467,7 @@ def test_external_mapping_retains_admitted_root_after_swap(
 
 
 @pytest.mark.asyncio
-async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, monkeypatch):
+async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, monkeypatch, opened):
     """Exercise real HTTP JSON parsing beyond the default request-line ceiling."""
     from types import SimpleNamespace
 
@@ -476,7 +481,7 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
     from kiro_crew.dashboard.token_auth import token_auth_middleware
     from kiro_crew.validation import MAX_SKILL_KEY_CHARS
 
-    loader = _loader(tmp_path)
+    loader = _loader(tmp_path, opened=opened)
     seen = []
     scope = ["admitted/SKILL.md"]
     monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
@@ -556,7 +561,9 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
         loader.close()
 
 
-def test_external_provider_target_keeps_global_budget_and_admitted_root(tmp_path, monkeypatch):
+def test_external_provider_target_keeps_global_budget_and_admitted_root(
+    tmp_path, monkeypatch, opened
+):
     import os
 
     from conftest import make_dir_link
@@ -573,7 +580,7 @@ def test_external_provider_target_keeps_global_budget_and_admitted_root(tmp_path
         skills_module, "_trusted_skill_roots", lambda: (os.path.realpath(provider),)
     )
     only = [str(external / "*" / "SKILL.md")]
-    loader = _loader(tmp_path)
+    loader = _loader(tmp_path, opened=opened)
     try:
         rows = loader.scoped_skills(only=only)
         assert len(rows) == 1
@@ -597,7 +604,9 @@ def test_external_provider_target_keeps_global_budget_and_admitted_root(tmp_path
 
 
 @pytest.mark.parametrize("key", ["mapped/foo", "mapped/0123456789abcdef/foo"])
-def test_catalog_name_does_not_change_admitted_project_provenance(tmp_path, monkeypatch, key):
+def test_catalog_name_does_not_change_admitted_project_provenance(
+    tmp_path, monkeypatch, key, opened
+):
     """Start at the admitted enumeration seam, preserving real descriptor reads."""
     from kiro_crew import skill_trust
     from kiro_crew.skills import PROJECT_SKILL_BODY_CAP
@@ -608,7 +617,7 @@ def test_catalog_name_does_not_change_admitted_project_provenance(tmp_path, monk
         "---\nname: scoped\ndescription: zirconium\n---\n" + "x" * PROJECT_SKILL_BODY_CAP,
         encoding="utf-8",
     )
-    loader = _loader(tmp_path)
+    loader = _loader(tmp_path, opened=opened)
     # Windows cannot admit projects via the pinned walk. Isolate that earlier
     # gate while exercising all downstream readers with real project bytes.
     if skill_trust.project_skill_traversal_supported():
@@ -628,12 +637,12 @@ def test_catalog_name_does_not_change_admitted_project_provenance(tmp_path, monk
         loader.close()
 
 
-def test_regular_global_mapped_namespace_keeps_normal_reader(tmp_path, monkeypatch):
+def test_regular_global_mapped_namespace_keeps_normal_reader(tmp_path, monkeypatch, opened):
     from unittest.mock import Mock
 
     key = "mapped/foo"
     _skill(tmp_path / "skills", key)
-    loader = _loader(tmp_path)
+    loader = _loader(tmp_path, opened=opened)
     reader = Mock(wraps=loader.load_skill)
     monkeypatch.setattr(loader, "load_skill", reader)
     try:

@@ -6426,14 +6426,39 @@ class AutoNudgeService:
                     loop.id,
                     _MAX_QUIET_STREAK,
                 )
-                # Persisted AFTER the reset, not before it. Today the earlier
-                # call would have captured this anyway, because the write is a
-                # detached task that cannot run until this block yields -- but
-                # that is an accident of the persist being deferred, and a
-                # restart reading a streak that was never reset would deliver one
-                # extra turn and under-count the floor. Ordering it explicitly
-                # costs nothing and does not depend on that.
-                self._persist_soon()
+                # Persisted AFTER the reset, not before it: a restart reading a
+                # streak that was never reset would deliver one extra turn and
+                # under-count the floor.
+                if judged is True:
+                    # This branch FIRES, so a judge row from this tick claiming to have
+                    # withheld the turn is wrong: left standing it takes a ``missed``
+                    # label from the next delivery for a tick that actually spent its
+                    # turn, which is a wrong row in the calibration log. Withdrawing
+                    # returns the row to the undecided state the fire path stamps, the
+                    # same correction the judge's own persist-failure path makes. The
+                    # two streaks are independent fields, which is what makes this
+                    # reachable: a gated loop whose judge arms mid-life climbs to the
+                    # probe's floor with the judge's own streak still below its floor.
+                    #
+                    # AWAITED rather than scheduled, and paired with the withdrawal
+                    # here for that reason: the withdrawal is a memory edit and this
+                    # tick is about to dispatch. A deferred write that has not landed
+                    # when the process stops leaves a restart reading the row as
+                    # suppressed, and the next delivery then records exactly the false
+                    # ``missed`` this exists to prevent -- the stale row is never
+                    # revisited, because the tick after a restart withdraws its own new
+                    # row instead. The result is deliberately unchecked: that check
+                    # belongs to a caller deciding whether to suppress, and this one is
+                    # already firing.
+                    self._withdraw_judge_suppression(loop)
+                    await self._persist_judge_state(loop)
+                else:
+                    # Nothing was asked on this tick, so there is no claim of its own
+                    # to withdraw: the newest row belongs to an earlier tick, and
+                    # clearing it would take back a suppression that is TRUE and hand
+                    # that verdict the actions of whatever turn this fire produces.
+                    # Only the streak reset has to reach the store.
+                    self._persist_soon()
                 return False
             self._persist_soon()
             logger.debug("AutoNudge: loop %s quiet tick (%s)", loop.id, verdict.body)

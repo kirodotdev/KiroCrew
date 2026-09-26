@@ -26,7 +26,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 def store(tmp_path):
     s = KnowledgeStore(str(tmp_path / "spend.db"))
     yield s
-    s.close()
+    s._close_all_for_tests()
 
 
 def _file_state(store, source_id: str, file_path: str, status: str,

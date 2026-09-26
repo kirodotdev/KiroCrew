@@ -588,19 +588,20 @@ class TestTheRealTree:
         `scan_path` results over the same `src/kiro_crew` tree; walking and
         re-parsing every file twice per test is what made this class slow.
 
-        Narrowed through ``source_corpus.candidate_sources`` rather than a bare
+        Narrowed through ``source_corpus.iter_candidate_sources`` rather than a bare
         `rglob` + re-read + re-parse of every module: `_lockdown_target` can only
         report a violation from a call to one of the lockdown primitives
         (`restrict_to_owner` / `chmod_safe` / `chmod` / `fchmod_safe` / `fchmod`),
         so a file whose text contains none of those names cannot possibly match
-        and is never a false negative to skip. `candidate_sources` shares the
-        one-time corpus read (and its NFKC-normalised copy) with every other
-        ratchet in the suite instead of re-reading `src/` from disk here.
+        and is never a false negative to skip. Streamed, because the ~145
+        candidates are the largest files in the tree (~13 M characters, stored at
+        four bytes each once a file holds an emoji) and a tuple of their texts
+        was ~50 MiB live for nothing.
         """
-        from source_corpus import candidate_sources  # noqa: PLC0415
+        from source_corpus import iter_candidate_sources  # noqa: PLC0415
 
         found: list[tuple[str, int, str, str]] = []
-        for path, text in candidate_sources(
+        for path, text in iter_candidate_sources(
             require_any=("restrict_to_owner", "chmod_safe", "chmod", "fchmod_safe", "fchmod")
         ):
             # Same relative-to convention as `scan_path` (relative to REPO_ROOT,

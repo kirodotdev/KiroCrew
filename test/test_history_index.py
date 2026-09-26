@@ -35,8 +35,8 @@ CJK_CAT_SENTENCE = "\u732b\u5728\u684c\u5b50\u4e0a"
 CJK_DOG_SENTENCE = "\u72d7\u5728\u9662\u5b50\u91cc"
 
 
-def _index(tmp_path) -> SessionSearchIndex:
-    return SessionSearchIndex(tmp_path / "session_index.db")
+def _index(tmp_path, *, opened) -> SessionSearchIndex:
+    return opened(SessionSearchIndex(tmp_path / "session_index.db"))
 
 
 def _synthetic_stat(*, dev: int, ino: int) -> SimpleNamespace:
@@ -76,48 +76,48 @@ def _candidates(index: SessionSearchIndex, query: str) -> set[str] | None:
     return out if out else set()
 
 
-def test_substring_needle_narrows_to_the_matching_session(tmp_path):
-    index = _index(tmp_path)
+def test_substring_needle_narrows_to_the_matching_session(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "we discussed ack contention at length")
     _sync(index, tmp_path, "b", "unrelated notes about deployment")
     assert _candidates(index, "contention") == {"a"}
 
 
-def test_substring_not_prefix(tmp_path):
+def test_substring_not_prefix(tmp_path, opened):
     """``cont`` must find ``contention`` — the scan path matches substrings."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "ack contention")
     assert _candidates(index, "cont") == {"a"}
 
 
-def test_multi_word_query_intersects_needles(tmp_path):
-    index = _index(tmp_path)
+def test_multi_word_query_intersects_needles(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "both", "contention appears here and hypotheses too")
     _sync(index, tmp_path, "one", "contention appears here alone")
     assert _candidates(index, "contention hypotheses") == {"both"}
 
 
-def test_short_needle_does_not_filter(tmp_path):
+def test_short_needle_does_not_filter(tmp_path, opened):
     """A 2-character term has no trigram entry, so it must not exclude anything.
 
     Returning ``None`` (or a superset) is required; returning an empty set would
     silently lose every hit for a short query.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "memory leak")
     assert _candidates(index, "me") is None
 
 
-def test_short_needle_alongside_long_one_still_supersets(tmp_path):
-    index = _index(tmp_path)
+def test_short_needle_alongside_long_one_still_supersets(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "memory leak in the runtime")
     _sync(index, tmp_path, "b", "runtime only")
     got = _candidates(index, "me runtime")
     assert got is not None and "a" in got
 
 
-def test_cjk_query_gates_on_every_character(tmp_path):
-    index = _index(tmp_path)
+def test_cjk_query_gates_on_every_character(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "hit", CJK_LEAK_SENTENCE)
     _sync(index, tmp_path, "partial", CJK_USAGE_NORMAL)
     # The 3rd and 4th characters of the query are absent from "partial", so it
@@ -125,41 +125,41 @@ def test_cjk_query_gates_on_every_character(tmp_path):
     assert _candidates(index, CJK_LEAK_QUERY) == {"hit"}
 
 
-def test_cjk_scatter_is_a_candidate_but_the_caller_still_gates(tmp_path):
+def test_cjk_scatter_is_a_candidate_but_the_caller_still_gates(tmp_path, opened):
     """Character presence is all the index can prove; adjacency stays the scorer's job.
 
     The index must NOT try to enforce the adjacency floor: it would have to drop
     rows the gate might still accept, and a candidate filter may only over-return.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "scatter", CJK_LEAK_SCATTERED)
     assert _candidates(index, CJK_LEAK_QUERY) == {"scatter"}
 
 
-def test_single_cjk_character_query(tmp_path):
-    index = _index(tmp_path)
+def test_single_cjk_character_query(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", CJK_CAT_SENTENCE)
     _sync(index, tmp_path, "b", CJK_DOG_SENTENCE)
     assert _candidates(index, CJK_CAT) == {"a"}
 
 
-def test_forge_reference_matches_any_spelling(tmp_path):
+def test_forge_reference_matches_any_spelling(tmp_path, opened):
     """A forge reference must find the session that wrote a different spelling."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "url", "see https://github.com/o/r/pull/4411 for the fix")
     _sync(index, tmp_path, "other", "nothing relevant here")
     got = _candidates(index, "#4411")
     assert got is not None and "url" in got
 
 
-def test_no_usable_needle_returns_none(tmp_path):
-    index = _index(tmp_path)
+def test_no_usable_needle_returns_none(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "anything")
     assert _candidates(index, "ab") is None
 
 
-def test_fresh_keys_returns_the_rowid_for_an_unchanged_file(tmp_path):
-    index = _index(tmp_path)
+def test_fresh_keys_returns_the_rowid_for_an_unchanged_file(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "hello world")
     fresh = index.fresh_keys({"a": st})
     assert set(fresh) == {"a"}
@@ -174,9 +174,9 @@ def test_fresh_keys_returns_the_rowid_for_an_unchanged_file(tmp_path):
         ((1 << 64) - 1, (1 << 128) - 1),
     ],
 )
-def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino):
+def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino, opened):
     """Windows device IDs are unsigned-64 and Python 3.12 inodes can be 128-bit."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     index.sync(
         "wide",
         mtime_ns=11,
@@ -212,9 +212,9 @@ def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino):
         assert index.raw_texts("wide", changed) is None
 
 
-def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path):
+def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path, opened):
     """Opening an existing version-2 row must not require a schema migration."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     index.sync(
         "legacy",
         mtime_ns=11,
@@ -231,7 +231,7 @@ def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path):
     assert storage_classes == ("integer", "integer")
     index.close()
 
-    reopened = _index(tmp_path)
+    reopened = _index(tmp_path, opened=opened)
     try:
         st = _synthetic_stat(dev=23, ino=29)
         assert set(reopened.fresh_keys({"legacy": st})) == {"legacy"}
@@ -241,13 +241,13 @@ def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path):
         reopened.close()
 
 
-def test_stale_row_is_not_vouched_for(tmp_path):
+def test_stale_row_is_not_vouched_for(tmp_path, opened):
     """A rewrite that PRESERVES mtime must still un-vouch the row.
 
     This is the case a timestamp alone cannot see, and the reason ``size`` is
     part of the freshness key.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     path = tmp_path / "a.jsonl"
     st = _sync(index, tmp_path, "a", "the original text")
     path.write_text("replaced with something longer", encoding="utf-8")
@@ -257,8 +257,8 @@ def test_stale_row_is_not_vouched_for(tmp_path):
     assert index.fresh_keys({"a": after}) == {}
 
 
-def test_document_returns_the_indexed_text(tmp_path):
-    index = _index(tmp_path)
+def test_document_returns_the_indexed_text(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "Ack Contention")
     rowid = index.fresh_keys({"a": st})["a"]
     doc_chars, folded = index.document(rowid, "a")
@@ -266,15 +266,15 @@ def test_document_returns_the_indexed_text(tmp_path):
     assert doc_chars == len("Ack Contention")
 
 
-def test_raw_texts_returns_the_original_unfolded_text(tmp_path):
-    index = _index(tmp_path)
+def test_raw_texts_returns_the_original_unfolded_text(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "Ack Contention")
     assert index.raw_texts("a", st) == ["Ack Contention"]
 
 
-def test_raw_texts_refuses_a_stale_row(tmp_path):
+def test_raw_texts_refuses_a_stale_row(tmp_path, opened):
     """A snippet must come only from the revision the file currently holds."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     path = tmp_path / "a.jsonl"
     st = _sync(index, tmp_path, "a", "the original text")
     path.write_text("replaced with something longer", encoding="utf-8")
@@ -282,19 +282,19 @@ def test_raw_texts_refuses_a_stale_row(tmp_path):
     assert index.raw_texts("a", path.stat()) is None
 
 
-def test_raw_texts_is_none_for_an_unknown_key(tmp_path):
-    index = _index(tmp_path)
+def test_raw_texts_is_none_for_an_unknown_key(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "text")
     assert index.raw_texts("nope", st) is None
 
 
-def test_shortlist_answers_both_questions_from_one_snapshot(tmp_path):
+def test_shortlist_answers_both_questions_from_one_snapshot(tmp_path, opened):
     """Freshness and candidates must describe the same index state.
 
     Read separately, a row dropped between them leaves its session vouched for
     AND out of every candidate set, which loses a hit the scan path returns.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     st_a = _sync(index, tmp_path, "a", "ack contention here")
     st_b = _sync(index, tmp_path, "b", "unrelated notes")
     needles, _phrase, _floor = parse_search_query("contention")
@@ -304,23 +304,23 @@ def test_shortlist_answers_both_questions_from_one_snapshot(tmp_path):
     assert list(per_needle.values()) == [{"a"}]
 
 
-def test_shortlist_reports_no_candidates_when_nothing_is_lookupable(tmp_path):
-    index = _index(tmp_path)
+def test_shortlist_reports_no_candidates_when_nothing_is_lookupable(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "memory leak")
     fresh, per_needle = index.shortlist({"a": st}, parse_search_query("me")[0])
     assert set(fresh) == {"a"}
     assert per_needle is None
 
 
-def test_shortlist_degrades_to_a_full_scan_when_unavailable(tmp_path):
-    index = _index(tmp_path)
+def test_shortlist_degrades_to_a_full_scan_when_unavailable(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     index.available = False
     assert index.shortlist({}, parse_search_query("contention")[0]) == ({}, None)
 
 
-def test_drop_reports_success_and_failure(tmp_path):
+def test_drop_reports_success_and_failure(tmp_path, opened):
     """A deletion funnel needs to know; a swallowed failure ships the copy."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "contention")
     assert index.drop(["a"]) is True
     assert index.drop(["never-indexed"]) is True
@@ -329,9 +329,9 @@ def test_drop_reports_success_and_failure(tmp_path):
     assert index.drop(["a"]) is False
 
 
-def test_drop_zeroes_the_removed_text_rather_than_unlinking_it(tmp_path):
+def test_drop_zeroes_the_removed_text_rather_than_unlinking_it(tmp_path, opened):
     """The deleted session's bytes must be gone from the files, not just unreferenced."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     marker = "zsecretzcontentionzmarkerz"
     _sync(index, tmp_path, "a", f"a session about {marker} and nothing else")
     db = tmp_path / "session_index.db"
@@ -343,7 +343,7 @@ def test_drop_zeroes_the_removed_text_rather_than_unlinking_it(tmp_path):
     assert not found, f"deleted text still readable in {found}"
 
 
-def test_concurrent_writers_do_not_collide(tmp_path):
+def test_concurrent_writers_do_not_collide(tmp_path, opened):
     """A drop must not fail because another thread is mid-sync.
 
     On one shared connection the second ``BEGIN IMMEDIATE`` raises "cannot start a
@@ -351,13 +351,15 @@ def test_concurrent_writers_do_not_collide(tmp_path):
     with — and the loser's rollback can tear the winner's write. With a connection
     per thread they contend normally instead.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     for i in range(12):
         _sync(index, tmp_path, f"k{i}", f"session {i} about contention and other things")
 
     errors: list[BaseException] = []
     drops: list[bool] = []
 
+    # Connections are per thread and ``close()`` releases only the caller's, so
+    # each writer closes its own before it returns.
     def syncer() -> None:
         try:
             for i in range(12):
@@ -372,6 +374,8 @@ def test_concurrent_writers_do_not_collide(tmp_path):
                 )
         except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
             errors.append(exc)
+        finally:
+            index.close()
 
     def dropper() -> None:
         try:
@@ -379,6 +383,8 @@ def test_concurrent_writers_do_not_collide(tmp_path):
                 drops.append(index.drop([f"k{i}"]))
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
+        finally:
+            index.close()
 
     threads = [threading.Thread(target=syncer), threading.Thread(target=dropper)]
     for t in threads:
@@ -390,26 +396,26 @@ def test_concurrent_writers_do_not_collide(tmp_path):
     assert all(drops), "a drop reported failure while another thread was writing"
 
 
-def test_a_busy_checkpoint_is_reported_as_failure(tmp_path, monkeypatch):
+def test_a_busy_checkpoint_is_reported_as_failure(tmp_path, monkeypatch, opened):
     """A WAL truncation that did not happen must not be reported as erasure.
 
     ``PRAGMA wal_checkpoint(TRUNCATE)`` returns ``(busy, ...)`` instead of raising,
     so ignoring the row claims the deleted bytes are gone when they are not.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "contention")
     monkeypatch.setattr(index, "_truncate_wal", lambda conn: False)
     assert index.drop(["a"]) is False
 
 
-def test_a_clear_checkpoint_is_reported_as_success(tmp_path):
-    index = _index(tmp_path)
+def test_a_clear_checkpoint_is_reported_as_success(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "contention")
     assert index.drop(["a"]) is True
 
 
-def test_store_exists_distinguishes_absent_from_unopenable(tmp_path):
-    index = _index(tmp_path)
+def test_store_exists_distinguishes_absent_from_unopenable(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     assert index.store_exists() is True
     missing = SessionSearchIndex(tmp_path / "gone" / "nope.db")
     missing.close()
@@ -417,14 +423,14 @@ def test_store_exists_distinguishes_absent_from_unopenable(tmp_path):
     assert missing.store_exists() is False
 
 
-def test_a_reused_rowid_does_not_hand_over_another_sessions_text(tmp_path):
+def test_a_reused_rowid_does_not_hand_over_another_sessions_text(tmp_path, opened):
     """A rowid is not an identity: SQLite reuses freed ones, and the backfill frees them.
 
     Without the key in the lookup, a caller holding a rowid from an earlier snapshot
     gets whichever session now owns that number, and scores its own session against
     that text -- the equivalence guarantee, broken silently.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     st_old = _sync(index, tmp_path, "old", "the old session mentions contention")
     rowid = index.fresh_keys({"old": st_old})["old"]
 
@@ -439,14 +445,14 @@ def test_a_reused_rowid_does_not_hand_over_another_sessions_text(tmp_path):
     assert index.document(rowid, "new") is not None
 
 
-def test_a_replaced_inode_is_not_vouched_for(tmp_path):
+def test_a_replaced_inode_is_not_vouched_for(tmp_path, opened):
     """Identity is part of the stamp, so an atomic rewrite cannot be trusted.
 
     ``atomic_write`` replaces the file through ``os.replace``, which gives a new
     inode. Size and mtime can both be preserved across such a rewrite, so they are
     not enough on their own; the inode changes every time.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     path = tmp_path / "a.jsonl"
     st = _sync(index, tmp_path, "a", "the original text")
     replacement = tmp_path / "a.new"
@@ -461,14 +467,14 @@ def test_a_replaced_inode_is_not_vouched_for(tmp_path):
     assert index.raw_texts("a", after) is None
 
 
-def test_optimize_reclaims_the_pages_a_delete_left(tmp_path):
+def test_optimize_reclaims_the_pages_a_delete_left(tmp_path, opened):
     """A dropped row's trigram postings must not stay readable in the file.
 
     ``secure_delete`` zeroes the content pages, but the tombstoned postings sit in
     segment pages that a plain delete does not free -- so 3-character fragments
     survive until the maintenance pass merges and rewrites the index.
     """
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     marker = "zqxjvbnm"
     for i in range(20):
         _sync(index, tmp_path, f"noise{i}", f"noise session {i} about deployment " * 20)
@@ -490,9 +496,9 @@ def test_optimize_reclaims_the_pages_a_delete_left(tmp_path):
     assert fragments() == 0, "the maintenance pass left deleted fragments readable"
 
 
-def test_a_store_failure_is_reported_once(tmp_path, monkeypatch, caplog):
+def test_a_store_failure_is_reported_once(tmp_path, monkeypatch, caplog, opened):
     """A broken index must not present only as slow search."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     monkeypatch.setattr(type(index), "_sync_failure_warned", False)
     monkeypatch.setattr(index, "_ensure_open", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     with caplog.at_level("WARNING"):
@@ -502,24 +508,24 @@ def test_a_store_failure_is_reported_once(tmp_path, monkeypatch, caplog):
     assert len(warnings) == 1
 
 
-def test_resync_replaces_rather_than_duplicates(tmp_path):
-    index = _index(tmp_path)
+def test_resync_replaces_rather_than_duplicates(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "first revision mentions contention")
     _sync(index, tmp_path, "a", "second revision mentions deployment")
     assert _candidates(index, "contention") == set()
     assert _candidates(index, "deployment") == {"a"}
 
 
-def test_drop_removes_the_row(tmp_path):
-    index = _index(tmp_path)
+def test_drop_removes_the_row(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     _sync(index, tmp_path, "a", "contention")
     index.drop(["a"])
     assert index.indexed_keys() == set()
     assert _candidates(index, "contention") == set()
 
 
-def test_drop_is_safe_for_unknown_key(tmp_path):
-    index = _index(tmp_path)
+def test_drop_is_safe_for_unknown_key(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     index.drop(["never-indexed"])
     assert index.indexed_keys() == set()
 
@@ -529,15 +535,15 @@ def test_cjk_inventory_is_distinct_characters_only(tmp_path):
     assert cjk_inventory(doubled) == " ".join(CJK_LEAK_QUERY)
 
 
-def test_optimize_is_safe_on_an_empty_index(tmp_path):
-    index = _index(tmp_path)
+def test_optimize_is_safe_on_an_empty_index(tmp_path, opened):
+    index = _index(tmp_path, opened=opened)
     index.optimize()
     assert index.available
 
 
-def test_unavailable_index_answers_none_not_empty(tmp_path):
+def test_unavailable_index_answers_none_not_empty(tmp_path, opened):
     """A broken index must fall back to the scan path, not to zero results."""
-    index = _index(tmp_path)
+    index = _index(tmp_path, opened=opened)
     index.available = False
     assert _candidates(index, "contention") is None
     assert index.fresh_keys({}) == {}

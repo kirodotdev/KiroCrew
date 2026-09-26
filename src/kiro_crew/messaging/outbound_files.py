@@ -88,6 +88,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.split import iter_fence_spans
+from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.security import (
     is_sensitive_path,
@@ -436,16 +437,37 @@ def local_destination(raw_dest: str) -> Path | None:
     return path
 
 
-def _payload_passes_redaction(data: bytes) -> bool:
-    """Whether the exact outbound bytes pass both mandatory egress scanners."""
+def _payload_is_flagged(data: bytes) -> bool:
+    """Whether the shared binary egress scan flags the exact outbound bytes.
+
+    Delegates the whole decision to ``platform.binary_content_is_flagged`` -- the
+    one binary-content scan every file-delivery gate shares -- so this leg and
+    those gates give one answer to one question. Two things follow from the
+    delegation rather than from anything written here: a credential at UTF-16 or
+    UTF-32 spacing is seen, because that scan ends in
+    ``platform.wide_content_is_flagged``, and a container's own standard symbol
+    table does not count as a credential, because that scan re-asks its positive
+    with those tables masked. Both are properties of the shared scan, which is
+    exactly why the decision belongs there and not here.
+
+    This function holds no detector and no decode. All it adds is the refusal
+    conversion this leg's contract needs: :func:`extract_local_refs` must never
+    raise, since a reply has to go out even when nothing about its attachments can
+    be decided, so a scan that cannot answer becomes a flagged verdict here rather
+    than an exception. Flagged is the fail-closed direction: the caller turns it
+    into a rejection and the bytes stay on the host. A composed host whose
+    credential policy fails to load therefore refuses the upload, which is the
+    same answer it gives the owner-facing gates by raising.
+
+    Synchronous, like the scan it calls: the module's async callers reach it
+    through :func:`extract_local_refs_off_loop`, which already runs this whole
+    path in a thread, so the CPU work stays off the event loop.
+    """
     try:
-        source = data.decode("latin-1")
-        checked, _ = redact_exfiltration_urls(source)
-        checked, _ = redact_credentials(checked)
+        return binary_content_is_flagged(data)
     except Exception:
         logger.warning("outbound file payload scan failed", exc_info=True)
-        return False
-    return checked == source
+        return True
 
 
 def _inspect(
@@ -527,7 +549,7 @@ def _inspect(
         mime = sniff_raster_mime(data[:SNIFF_BYTES])
         if mime is None:
             return Rejection(dest, REASON_NOT_RASTER, "not a PNG, JPEG, GIF, WebP or BMP image")
-        if not _payload_passes_redaction(data):
+        if _payload_is_flagged(data):
             return Rejection(
                 dest, REASON_SENSITIVE, "the file failed outbound content security checks"
             )

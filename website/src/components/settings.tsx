@@ -393,7 +393,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
  */
 export const SETTINGS_CARD_STAGGER_MS = 60
 
-export function SettingsCard({ index, children }: {
+export function SettingsCard({ index, plain, children }: {
   /**
    * Ordinal of this card within its panel (0-based). Maps onto the shared
    * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
@@ -406,14 +406,24 @@ export function SettingsCard({ index, children }: {
    * invisible for its whole delay).
    */
   index?: number
+  /**
+   * Borderless variant: no box, no fill — controls sit directly on the page,
+   * one per row, separated by spacing alone. Used only where a SubNav already
+   * puts one group per page (Chat's rail), so the box would be a container
+   * inside a container. The default (boxed) is unchanged for every panel that
+   * still stacks several groups on one scroll.
+   */
+  plain?: boolean
   children: React.ReactNode
 }) {
   return (
     <div
-      className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all"
+      className={plain
+        ? 'mb-2 animate-rise'
+        : 'card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all'}
       style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
     >
-      <div className="flex flex-col gap-1">
+      <div className={plain ? 'flex flex-col gap-2.5' : 'flex flex-col gap-1'}>
         {children}
       </div>
     </div>

@@ -149,6 +149,20 @@ def is_agent_spec_name(name: str) -> bool:
     return spec_suffix(name) is not None
 
 
+def is_native_skill_alias_name(name: str) -> bool:
+    """Whether a directory entry name is a managed skill-view alias.
+
+    The one predicate behind every walk that leaves the aliases out: the roster
+    (:func:`iter_agent_spec_files`) and the stat-only fingerprints the discovery
+    caches revalidate on (``agent_discovery._iter_spec_entries``). An alias is a
+    projection of a spec the roster already lists, so a fingerprint that counted
+    it would move on writes the roster cannot see and would cost one ``stat``
+    per alias per call. The prefix holds no dot, so the test on the full name is
+    the test on the stem.
+    """
+    return name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
+
 def is_markdown_spec(path: str | Path) -> bool:
     """Whether *path* is the markdown form."""
     return spec_suffix(path) == MARKDOWN_SUFFIX
@@ -201,7 +215,7 @@ def iter_agent_spec_files(directory: Path, *, ordered: bool = True) -> list[Path
     that scan on the event loop and stop at the first hit.
     """
     live, _shadowed = _split_spec_files(directory)
-    live = [path for path in live if not path.stem.startswith(NATIVE_SKILL_ALIAS_PREFIX)]
+    live = [path for path in live if not is_native_skill_alias_name(path.name)]
     return sorted(live) if ordered else live
 
 

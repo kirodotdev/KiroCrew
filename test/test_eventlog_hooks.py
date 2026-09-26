@@ -7,6 +7,8 @@ exactly the case emit() has to swallow.
 
 from __future__ import annotations
 
+import pytest
+
 import kiro_crew.eventlog.service as svc_mod
 from kiro_crew import eventlog_hooks
 from kiro_crew.members import member_slot_key, slug_for_name
@@ -885,10 +887,272 @@ class TestALiveReopenSurvivesTheStartupReconcile:
         assert wrote is not None
         assert wrote["type"] == types.SLOT_CLOSED
 
-    def test_the_predicate_reads_the_current_projection_not_the_callers(
+    def test_the_predicate_is_asked_after_a_foreign_commit_becomes_visible(
         self, tmp_path, monkeypatch
     ):
-        # The point of the recheck is that it sees state the caller could not. A
+        """The window between our fold and our write belongs to another process.
+
+        The per-slug lock orders this process's writers only. The member log has
+        more than one writer, so an entry another process commits after our fold
+        lands BEFORE ours, and a last-wins projection then takes our closer as the
+        newer word for a state that had already closed itself. The predicate is
+        therefore asked inside the store's ownership, where the file cannot move.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        foreign = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None and not foreign:
+                foreign.append(True)
+                # Another PROCESS closes the slot through its own handle, so this
+                # service's registry never learns of it. Committed AFTER our fold
+                # has already run, which is the window the tail bound exists for:
+                # our fold saw the slot open, so the predicate alone would say yes
+                # and only the store's tail read can still stop the write.
+                log_mod.MemberLog("ivy").append(
+                    types.SLOT_CLOSED, {"slot_key": "s1", "reason": "finished"}
+                )
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+
+        def _slot_is_still_open(values, _observed):
+            driving = values.get(types.PROJ_DRIVING, {}) or {}
+            return "s1" in (driving.get("open", []) or [])
+
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s1", "reason": "interrupted"},
+            still_applies=_slot_is_still_open,
+        )
+
+        assert foreign, "the foreign commit never landed; this test proved nothing"
+        assert wrote is None, (
+            "the closer was written against a projection that had already closed "
+            "itself in another process"
+        )
+        closers = [
+            e
+            for e in svc.history("ivy", before=None, limit=None)
+            if e.get("type") == types.SLOT_CLOSED
+        ]
+        assert (
+            len(closers) == 1
+        ), f"expected only the foreign close to be in the log, found {len(closers)}"
+        assert closers[0]["data"].get("reason") == "finished"
+
+    def test_the_folded_floor_reaches_the_file_tail_so_a_closer_can_land(
+        self, tmp_path, monkeypatch
+    ):
+        """The seq handed to the store must be the file's real tail after a fold.
+
+        The closer's bound is the seq the fold reached. If that ran behind the file
+        even with nothing else writing, every closer for this member would decline on
+        every attempt and the projection would stay stale for good -- so this pins
+        the two together rather than trusting them to agree.
+        """
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+
+        for index in range(4):
+            svc.append("ivy", types.SLOT_OPENED, {"slot_key": f"s{index}"})
+            log = svc._get_log("ivy")
+            svc._fold_gap_locked("ivy", log)
+            floor = svc._registry.observed_floor("ivy")
+            assert floor == svc.last_seq("ivy"), (
+                f"after {index + 1} append(s) the folded floor is {floor} while the file "
+                f"is at {svc.last_seq('ivy')}; every closer would decline forever"
+            )
+
+        # And a closer does land, which is the consequence that matters.
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s0", "reason": "interrupted"},
+            still_applies=lambda _values, _observed: True,
+        )
+        assert wrote is not None, "the bound refused a closer with no competing writer"
+
+    def test_losing_the_tail_on_every_attempt_is_reported_not_reported_as_declined(
+        self, tmp_path, monkeypatch
+    ):
+        """Exhaustion and "does not apply" must not share one answer.
+
+        A caller invoked repeatedly can treat both as nothing-to-do, because its next
+        run decides again. A caller that runs ONCE cannot: if a closer that never got
+        a window looks identical to one that does not apply, the state it was closing
+        stays open until the next restart.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        foreign = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None:
+                foreign.append(True)
+                log_mod.MemberLog("ivy").append(
+                    types.SLOT_OPENED, {"slot_key": f"other-{len(foreign)}"}
+                )
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+
+        with pytest.raises(svc_mod.CloserTailContention) as excinfo:
+            svc.append_closer_if_still_applies(
+                "ivy",
+                types.SLOT_CLOSED,
+                {"slot_key": "s1", "reason": "interrupted"},
+                still_applies=lambda _values, _observed: True,
+            )
+
+        assert excinfo.value.slug == "ivy"
+        assert excinfo.value.type == types.SLOT_CLOSED
+        assert (
+            len(foreign) == svc_mod._CLOSER_TAIL_ATTEMPTS
+        ), f"{len(foreign)} attempt(s) were made, not {svc_mod._CLOSER_TAIL_ATTEMPTS}"
+        assert not [
+            e
+            for e in svc.history("ivy", before=None, limit=None)
+            if e.get("type") == types.SLOT_CLOSED
+        ], "a closer landed despite never getting a clean window"
+
+    def test_every_tail_attempt_shares_one_contention_deadline(self, tmp_path, monkeypatch):
+        """The retries divide one contention budget; they do not each get their own.
+
+        Every attempt holds the per-slug lock while it waits out a busy lease, so a
+        budget started afresh per attempt multiplies the total wait by the number of
+        attempts and holds that lock for all of it. One absolute instant, decided
+        before the first attempt, is what keeps the whole retry loop inside the single
+        budget its caller is charged.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        real_append_if = log_mod.MemberLog.append_if
+        deadlines = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None:
+                log_mod.MemberLog("ivy").append(types.SLOT_OPENED, {"slot_key": "other"})
+
+        def _record_deadline(self, type, data, *, max_tail_seq, deadline=None):
+            deadlines.append(deadline)
+            return real_append_if(self, type, data, max_tail_seq=max_tail_seq, deadline=deadline)
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+        monkeypatch.setattr(log_mod.MemberLog, "append_if", _record_deadline)
+
+        with pytest.raises(svc_mod.CloserTailContention):
+            svc.append_closer_if_still_applies(
+                "ivy",
+                types.SLOT_CLOSED,
+                {"slot_key": "s1", "reason": "interrupted"},
+                still_applies=lambda _values, _observed: True,
+            )
+
+        assert (
+            len(deadlines) == svc_mod._CLOSER_TAIL_ATTEMPTS
+        ), f"{len(deadlines)} attempt(s) were made, not {svc_mod._CLOSER_TAIL_ATTEMPTS}"
+        assert None not in deadlines, (
+            "an attempt was given no deadline, so it started a contention budget of "
+            "its own while the per-slug lock stayed held"
+        )
+        assert len(set(deadlines)) == 1, (
+            f"the attempts were given {len(set(deadlines))} different deadlines, so the "
+            "total wait is that multiple of one budget"
+        )
+
+    def test_a_closer_survives_a_foreign_commit_it_does_not_care_about(self, tmp_path, monkeypatch):
+        """Losing the tail once must re-decide, not decline for good.
+
+        A design that simply refused whenever the tail moved would satisfy the
+        decline test above and quietly stop closing interrupted state on any member
+        another process also writes to.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        foreign = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None and not foreign:
+                foreign.append(True)
+                # Another process opens a DIFFERENT slot in the one window this
+                # design still has: after our fold, before the store's tail read.
+                # It moves the tail and has nothing to do with the slot closed here.
+                log_mod.MemberLog("ivy").append(types.SLOT_OPENED, {"slot_key": "other"})
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+
+        asked = []
+
+        def _slot_is_still_open(values, _observed):
+            driving = values.get(types.PROJ_DRIVING, {}) or {}
+            asked.append(sorted(driving.get("open", []) or []))
+            return "s1" in (driving.get("open", []) or [])
+
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s1", "reason": "interrupted"},
+            still_applies=_slot_is_still_open,
+        )
+
+        assert foreign, "the foreign commit never landed; this test proved nothing"
+        assert len(asked) == 2, f"the predicate was asked {len(asked)} time(s), not re-asked"
+        assert asked[-1] == [
+            "other",
+            "s1",
+        ], f"the retry decided on {asked[-1]}, so it did not fold the foreign commit"
+        assert wrote is not None, "a foreign commit it does not care about blocked the closer"
+        assert wrote["data"]["slot_key"] == "s1"
+
+    def test_the_predicate_reads_the_current_projection_not_the_callers(
+        self, tmp_path, monkeypatch
+    ):  # The point of the recheck is that it sees state the caller could not. A
         # predicate handed the caller's own snapshot would close nothing it should not
         # and also nothing it should -- it would just be the same stale answer again.
         from kiro_crew.eventlog import service as svc_mod

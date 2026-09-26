@@ -284,6 +284,44 @@ class TestLLMPoolWorkerReplacement:
         assert result == "recovered"
 
 
+class TestAcpWorkerFailureRetiresClient:
+    """A failed turn must not leave its kiro-cli child in the pool."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["timeout", "acp"])
+    async def test_failure_shuts_down_so_next_send_gets_fresh_worker(self, error):
+        from kiro_crew.acp.client import AcpError, AcpTimeoutError
+
+        exc = AcpTimeoutError() if error == "timeout" else AcpError("boom")
+        stuck = MagicMock()
+        stuck.is_ready = True
+        stuck.is_process_alive = lambda: True
+        stuck.send_message = AsyncMock(side_effect=exc)
+        stuck.shutdown = AsyncMock()
+        worker = AcpWorker()
+        worker._client = stuck
+        pool = LLMPool(pool_size=1)
+        pool._started = True
+        pool._provider_type = "test"
+        pool._workers.append(worker)
+        pool._available.put_nowait(0)
+
+        async def _mock_create_worker():
+            w = FakeWorker(responses=["fresh"])
+            w._started = True
+            return w
+
+        pool._create_worker = _mock_create_worker  # type: ignore[assignment]
+
+        with pytest.raises(type(exc)):
+            await pool.send("first", timeout=1.0)
+        stuck.shutdown.assert_awaited_once()
+        assert worker.is_alive() is False
+
+        assert await pool.send("second") == "fresh"
+        assert stuck.send_message.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Tests: send_batch error handling
 # ---------------------------------------------------------------------------

@@ -134,30 +134,7 @@ def _repair(home: Path) -> int:
 # Windows has no SIGKILL with these semantics and no fork-free equivalent that
 # leaves the file in the same state; the property is the same on every platform,
 # so it is asserted on the ones where the kill means what it says.
-#
-# macOS is skipped as a BISECT STEP, not because the property differs there. The
-# macOS backend shard that runs this file also runs the apps deps-provisioning
-# suite, and `test_concurrent_provisioning_is_serialized_by_the_deps_lock` began
-# failing on that shard with `ENOENT: .kirocrew-deps.lock` on the first head that
-# contained this file, and on every head since, while passing before it and passing
-# on other branches. That failure is a race in the provisioning code -- the lock is
-# opened through a pinned dir_fd, and ENOENT through a valid fd means the pinned
-# directory was unlinked -- and this suite spawns real processes that are killed, so
-# the interference is plausible even though the mechanism is not yet proven. Skipping
-# here isolates the two: if that shard goes green, the interference is real and both
-# the race and this interaction are followed up separately; if it still fails, this
-# file was never the cause and the skip is removed.
-#
-# The darwin half is SCOPED to kirodotdev/KiroCrew#10704, which owns removing it. A
-# real kill is asserted nowhere else, so an expiry-free skip would mean a macOS
-# regression in crash repair has no test that would catch it.
-pytestmark = pytest.mark.skipif(
-    sys.platform in ("win32", "darwin"),
-    reason=(
-        "win32: SIGKILL semantics differ; "
-        "darwin: bisecting shard interference, tracked in kirodotdev/KiroCrew#10704"
-    ),
-)
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="win32: SIGKILL semantics differ")
 
 
 def test_a_real_kill_leaves_an_open_turn_that_the_reader_closes(tmp_path):

@@ -42,6 +42,7 @@ a closed-set value.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -92,6 +93,18 @@ WAITING_CLASSIFICATIONS: frozenset[str] = frozenset(
         HEALTH_WAITING_INPUT,
     }
 )
+
+#: WS frame published when the session-health VERDICT changes.
+#:
+#: A REFRESH SIGNAL, not a data push. The payload is a bare wall-clock stamp and
+#: carries no slot key, no session key, no classification and no count -- so it
+#: tells a subscriber only THAT the verdict moved, never what it says. A client
+#: entitled to ``GET /api/sessions/health`` re-reads it; a frontend-only app that
+#: is NOT entitled (its manifest does not list that path) learns when to refresh
+#: the surfaces it can already read, instead of polling an endpoint that answers
+#: it with a denial. The signal therefore grants nothing: the reader still has to
+#: hold whatever permission each surface it re-reads requires.
+SESSION_HEALTH_EVENT = "session_health_changed"
 
 #: A running slot whose progress markers have not moved for this long, with no
 #: wait reason and no liveness verdict vouching for it, is stalled. Ten
@@ -511,6 +524,20 @@ class SessionHealthMonitor:
         self._progress: dict[str, tuple[tuple[Any, ...], float]] = {}
         self._cap_sources: dict[str, CapSource] = {}
         self._pressure_sources: list[PressureSource] = []
+        #: Digest of the verdict this monitor last PUBLISHED a signal for, or
+        #: ``None`` before the first computation. ``None`` is a distinct state,
+        #: not "empty verdict": the first computation establishes the baseline
+        #: silently, because :data:`SESSION_HEALTH_EVENT` means "changed" and
+        #: there is nothing yet for it to have changed from.
+        #:
+        #: Publishing once at startup to seed every subscriber was CONSIDERED and
+        #: rejected: the monitor is constructed per process, so it would fire a
+        #: refresh on every gateway restart for every subscriber, whether or not
+        #: the verdict differs from the one they already hold -- turning a restart
+        #: into a fan-out of pointless refetches. A subscriber that connects and
+        #: wants a starting value reads the surfaces it is entitled to; this
+        #: signal's only job is to say that a value it already read has moved.
+        self._published_verdict: str | None = None
         self._lock = threading.Lock()
 
     # ── sources the controller registers ──
@@ -533,6 +560,31 @@ class SessionHealthMonitor:
         with self._lock:
             self._cap_sources.clear()
             self._pressure_sources.clear()
+
+    # ── refresh-signal bookkeeping ──
+
+    def verdict_signal_due(self, digest: str) -> bool:
+        """True when *digest* differs from the verdict last signalled.
+
+        Read-only on purpose: the digest is committed by
+        :meth:`commit_verdict_signal` only once the frame actually went out, so a
+        broadcast that fails is retried on the next computation instead of being
+        swallowed. The first call after construction returns ``False`` -- it
+        establishes the baseline rather than announcing a change that has no
+        earlier verdict to be measured against, and rather than firing a spurious
+        refresh at every subscriber on every gateway restart (see
+        :attr:`_published_verdict`).
+        """
+        with self._lock:
+            if self._published_verdict is None:
+                self._published_verdict = digest
+                return False
+            return self._published_verdict != digest
+
+    def commit_verdict_signal(self, digest: str) -> None:
+        """Record *digest* as signalled, after the frame has been published."""
+        with self._lock:
+            self._published_verdict = digest
 
     # ── classification ──
 
@@ -857,8 +909,121 @@ def compute_session_health(
     return mon.compute(snap, taskq=taskq, log_path=log_path)
 
 
+def health_verdict_fingerprint(health: Mapping[str, Any] | None) -> str:
+    """A stable digest of the health VERDICT -- what a refresh must react to.
+
+    Deliberately excludes every age, timestamp and monotonic reading. Those move
+    on every sample, so folding them in would make each computation look like a
+    change and turn a periodic refresh into a periodic broadcast. Everything else
+    the payload says is folded in BY IDENTITY, never only by count: which
+    classification each slot holds, which slots are stalled, which slot and task
+    rows are waiting or recovering and in which state, the queue's per-state
+    tallies, the effective caps per lane, and the degrade reason. A count alone
+    is not enough -- one row leaving a state as another enters it keeps every
+    count still while the rows a subscriber holds are wrong.
+
+    The digest is process-internal. Only the bare signal is broadcast, so the slot
+    keys and task ids hashed here are compared and never published.
+    """
+    src = health if isinstance(health, Mapping) else {}
+    counts = src.get("counts")
+    counts_part = (
+        ";".join(f"{k}={counts[k]}" for k in sorted(counts, key=str))
+        if isinstance(counts, Mapping)
+        else ""
+    )
+    slots = src.get("slots")
+    slots_part = (
+        ",".join(
+            f"{k}={slots[k].get('classification')}"
+            for k in sorted(slots, key=str)
+            if isinstance(slots[k], Mapping)
+        )
+        if isinstance(slots, Mapping)
+        else ""
+    )
+    stalled = src.get("stalled")
+    stalled_part = ",".join(sorted(str(k) for k in stalled)) if isinstance(stalled, Mapping) else ""
+
+    def _rows_part(rows: Any) -> str:
+        # Slot rows carry key+reason, task rows id+state: the identity and the
+        # state of each row, never its age.
+        if not isinstance(rows, list):
+            return ""
+        idents = sorted(
+            f"{r.get('kind')}:{r.get('key', r.get('id'))}={r.get('reason', r.get('state'))}"
+            for r in rows
+            if isinstance(r, Mapping)
+        )
+        return ",".join(idents)
+
+    waiting_part = _rows_part(src.get("waiting"))
+    recovering_part = _rows_part(src.get("recovering"))
+    queued = src.get("queued")
+    by_state = queued.get("by_state") if isinstance(queued, Mapping) else None
+    queued_part = (
+        ";".join(f"{k}={by_state[k]}" for k in sorted(by_state, key=str))
+        if isinstance(by_state, Mapping)
+        else ""
+    )
+    caps = src.get("effective_caps")
+    caps_part = (
+        ";".join(
+            f"{lane}:" + ",".join(f"{k}={caps[lane][k]}" for k in sorted(caps[lane], key=str))
+            for lane in sorted(caps, key=str)
+            if isinstance(caps[lane], Mapping)
+        )
+        if isinstance(caps, Mapping)
+        else ""
+    )
+    degrade = src.get("degrade_reason")
+    degrade_part = "" if degrade is None else str(degrade)
+    canonical = (
+        f"counts[{counts_part}]|slots[{slots_part}]|stalled[{stalled_part}]"
+        f"|waiting[{waiting_part}]|recovering[{recovering_part}]|queued[{queued_part}]"
+        f"|caps[{caps_part}]|degrade[{degrade_part}]"
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def publish_health_change(
+    state: Any, health: Mapping[str, Any] | None, *, monitor: SessionHealthMonitor | None = None
+) -> bool:
+    """Broadcast :data:`SESSION_HEALTH_EVENT` when the verdict digest moved.
+
+    Returns True only when a frame was published. Idempotent for an unchanged
+    verdict, so every caller may invoke it on every computation without
+    coordinating. Call ON the event loop -- it touches WebSocket clients.
+
+    The frame carries ``{"ts": <wall clock>}`` and nothing else: no slot, no
+    session key, no counts. Delivery to an app token is still decided by the
+    normal WS scope gate (``ws_event_scope``), which requires the pre-existing
+    ``sessions`` declaration for this event. That declaration does not imply
+    ``api`` access to ``GET /api/sessions/health`` -- the two manifest fields are
+    independent -- which is exactly why the frame must stay data-free: it hands a
+    holder nothing that endpoint would, and widens no permission.
+    """
+    mon = monitor or _default_monitor
+    digest = health_verdict_fingerprint(health)
+    if not mon.verdict_signal_due(digest):
+        return False
+    broadcast = _getattr_soft(state, "broadcast_ws", None)
+    if not callable(broadcast):
+        # No transport: leave the digest UNCOMMITTED so the change is still
+        # pending for the next computation rather than silently consumed.
+        return False
+    try:
+        broadcast(SESSION_HEALTH_EVENT, {"ts": time.time()})
+    except Exception:
+        logger.debug("session health refresh signal broadcast failed", exc_info=True)
+        return False
+    mon.commit_verdict_signal(digest)
+    return True
+
+
 __all__ = [
     "CLASSIFICATIONS",
+    "SESSION_HEALTH_EVENT",
     "HEALTH_QUEUED",
     "HEALTH_RECOVERING",
     "HEALTH_RUNNING",
@@ -875,6 +1040,8 @@ __all__ = [
     "SlotSnapshot",
     "compute_session_health",
     "default_monitor",
+    "health_verdict_fingerprint",
+    "publish_health_change",
     "scan_log_for_stalls",
     "snapshot_slot",
     "snapshot_state",

@@ -147,6 +147,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    TERMINAL_TOOL_STATUSES,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_CURRENT_MODE,
@@ -873,9 +874,11 @@ class AcpSessionHandle:
         # submitting a second job, so a wedged walk cannot stack blocked workers
         # in the shared subprocess_executor().
         self._consult_future: asyncio.Future[tuple[str, str]] | None = None
-        # Snapshot of the most recent EVENT_TOOL_CALL (title/redacted input/
-        # dispatch time/shell flag) — the oracle's attribution key. Cleared on
-        # EVENT_TOOL_RESULT alongside _tool_dispatched.
+        # Parallel calls can finish in either order; retain each attribution
+        # until its terminal result so the oracle never inspects a finished call.
+        self._active_tool_calls: dict[
+            str, tuple[ToolCallState, InteractiveClassification | None]
+        ] = {}
         self._inflight_tool: ToolCallState | None = None
         # Pre-dispatch interactive classification of the in-flight SHELL tool
         # (``classify_interactive_command``); ``None`` when no shell tool is in
@@ -1320,6 +1323,7 @@ class AcpSessionHandle:
         # A new turn starts with no infrastructure verdict carried over.
         self.last_infra_error = None
         self._tool_dispatched = False
+        self._active_tool_calls.clear()
         self._inflight_tool = None
         self._inflight_interactive = None
         self._inflight_tool_call_id = ""
@@ -5260,7 +5264,7 @@ class AcpSessionHandle:
             filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
-                self._stale_eligible = True
+                self._stale_eligible = not self._active_tool_calls
                 self._prompt_or_tool_seen = True
             elif ev.kind == EVENT_TOOL_CALL:
                 self._stale_eligible = False
@@ -5316,16 +5320,32 @@ class AcpSessionHandle:
                     tool_name=ev.tool_name,
                     interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
                 )
+                self._active_tool_calls[self._inflight_tool_call_id] = (
+                    self._inflight_tool,
+                    interactive,
+                )
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 if not ev.tool_final and ev.tool_call_id:
                     # Streamed partial output: the command has acted, so any
                     # later non-interactive retry of it is not a safe replay.
                     self._tool_output_seen.add(ev.tool_call_id)
-                self._tool_dispatched = False
-                self._inflight_tool = None
-                self._inflight_interactive = None
-                self._inflight_tool_call_id = ""
+                if ev.tool_status in TERMINAL_TOOL_STATUSES:
+                    self._active_tool_calls.pop(ev.tool_call_id or "", None)
+                    self._tool_dispatched = bool(self._active_tool_calls)
+                    self._stale_eligible = not self._active_tool_calls
+                    if self._inflight_tool_call_id not in self._active_tool_calls:
+                        if self._active_tool_calls:
+                            self._inflight_tool_call_id = next(reversed(self._active_tool_calls))
+                            self._inflight_tool, self._inflight_interactive = (
+                                self._active_tool_calls[self._inflight_tool_call_id]
+                            )
+                        else:
+                            self._inflight_tool = None
+                            self._inflight_interactive = None
+                            self._inflight_tool_call_id = ""
+                        self._input_wait_emitted = False
+                        self._retire_liveness_state()
                 # L1 of the recovery ladder: classify the result text ONCE, at
                 # the layer that owns the protocol. A ``-32001 capacity``
                 # refusal from the MCP stub or a gateway ``recoverable_infra``

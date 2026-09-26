@@ -1,4 +1,43 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { purgeDocumentBodiesForRedactionChange } from './usePanelTabs'
+
+/** After a reconnect, re-read the owner's credential-redaction switch and purge
+ *  this document's file bodies when that could matter (the
+ *  `credential_redaction_changed` push has no replay):
+ *   - the document had read the switch and its position CHANGED while the
+ *     socket was down; or
+ *   - the document had NOT read the switch (never visited Settings) and it is
+ *     now ON -- a file opened raw while OFF may be on screen, and nothing else
+ *     would ever re-read it.
+ *  Unmoved, or unknown-and-still-OFF, costs nothing: a transient drop must not
+ *  close every diff tab and empty every clean file body. A non-owner's 403 is
+ *  swallowed: the card handles that; the socket has nothing to purge for. */
+let redactionSwitchUnreadable = false
+/** Test seam: forget a latched refusal. */
+export function __resetRedactionHealForTests(): void { redactionSwitchUnreadable = false }
+
+export async function healRedactionSwitchAfterReconnect(qc: QueryClient): Promise<void> {
+  // A document the owner gate refused once (a Slack allow-listed non-owner's
+  // `!dashboard`) is refused on every reconnect too, and each ask writes an
+  // audited refusal for a subject that took no action: ask once, then stop.
+  if (redactionSwitchUnreadable) return
+  const before = qc.getQueryData<{ enabled: boolean }>(['credential-redaction'])
+  let after: { enabled: boolean; changed_at?: string } | undefined
+  try {
+    after = await qc.fetchQuery({ queryKey: ['credential-redaction'], queryFn: () => api.credentialRedaction(), staleTime: 0 })
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 403 || e.status === 401)) redactionSwitchUnreadable = true
+    return
+  }
+  if (!after) return
+  const moved = before !== undefined && after.enabled !== before.enabled
+  // Unknown position and ON: purge only if the switch has EVER been flipped
+  // (`changed_at` set). In the shipped default -- ON, never flipped, Settings
+  // never opened -- no raw body can exist, and a transient drop must not close
+  // every diff tab and empty every clean file body for nothing.
+  const unknownAndNowOn = before === undefined && after.enabled && !!after.changed_at
+  if (moved || unknownAndNowOn) purgeDocumentBodiesForRedactionChange(qc)
+}
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
@@ -26,6 +65,10 @@ import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
+// From the leaf module, not `api/client`: the many tests that mock the client
+// do not export ApiError, and an `instanceof` against a missing mock export
+// throws inside the reconnect heal's own catch.
+import { ApiError } from '../api/apiError'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
@@ -1261,6 +1304,16 @@ export function useWebSocket() {
         // comes back with its folders missing.
         queryClient.invalidateQueries({ queryKey: ['artifacts'] })
         queryClient.invalidateQueries({ queryKey: ['artifact-folders'] })
+        // `credential_redaction_changed` is pushed to CONNECTED owner sockets
+        // with no replay, so a flip made from another window while this socket
+        // was down never reached this document. Re-read the switch and, ONLY if
+        // its position differs from the one this document last held, drop every
+        // file body (react-query and open tabs) exactly as the frame would have.
+        // Not unconditionally: a transient drop (sleep/wake, Wi-Fi change,
+        // gateway restart) must not close every diff tab and empty every clean
+        // file body when the switch never moved. A document that never read the
+        // switch has nothing to compare and nothing raw to drop.
+        void healRedactionSwitchAfterReconnect(queryClient).catch(() => { /* a heal that cannot run leaves the document as it was */ })
         // Same one-shot problem for a reply thread on a crewmate chat message:
         // the terminal `chat.thread_reply` frame of a reply that finished while
         // the socket was down was never delivered, so the live store would show
@@ -1537,6 +1590,25 @@ export function useWebSocket() {
                 queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
               }
             }
+            break
+          }
+          case 'credential_redaction_changed': {
+            // The owner flipped the credential-redaction switch, possibly in
+            // ANOTHER browser tab: this document must drop every file body it
+            // holds too (a file read while the switch was off is raw in the
+            // react-query caches and in open side-panel tabs) and re-read the
+            // switch, so no dashboard document keeps showing raw credentials
+            // after redaction is back on. Owner sockets only receive this frame.
+            // Seed the switch entry from the frame's own payload FIRST, so a
+            // document that never mounted the Settings card still knows the
+            // position it now runs under (the reconnect heal compares against
+            // it); the invalidate then re-reads the authoritative record.
+            const d = msg.data as { enabled?: unknown; changed_at?: unknown } | undefined
+            if (d && typeof d.enabled === 'boolean') {
+              queryClient.setQueryData(['credential-redaction'], { enabled: d.enabled, changed_at: typeof d.changed_at === 'string' ? d.changed_at : '' })
+            }
+            queryClient.invalidateQueries({ queryKey: ['credential-redaction'] })
+            purgeDocumentBodiesForRedactionChange(queryClient)
             break
           }
           case 'skills.pending_changed': {

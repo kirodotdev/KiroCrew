@@ -6,8 +6,8 @@
  * logged in" — fixable only from a terminal that dashboard does not have. Five
  * states, because the recovery is only legible if all five read correctly:
  *
- *  1. The unsigned crew in Your crews — the `Needs sign-in` badge, the held
- *     Connect, the row-level way to get a code, and the hint that says what that
+ *  1. The unsigned crew in Your crews — the `Needs sign-in` badge, a Connect
+ *     that stays usable, the row-level way to get a code, and the hint that says what that
  *     button produces. The state the old flow reported as done and green.
  *  2. A LIVE code — and deliberately no replace button, because restarting the
  *     login mid-approval retires the code the reader is typing into a browser.
@@ -74,7 +74,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done',
-    detail: 'Added to Your crews. Finish the Kiro sign-in before connecting.',
+    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 
@@ -273,12 +273,9 @@ for (const theme of ['dark', 'light']) {
 
   const rowText = await row.innerText()
   if (!/Needs sign-in/i.test(rowText)) fail(`${theme}: the unsigned crew must be badged: ${JSON.stringify(rowText)}`)
-  const held = row.getByRole('button', { name: /Connect after sign-in/i })
-  if (!(await held.isVisible())) fail(`${theme}: Connect must be held back on an unsigned crew`)
-  if (!(await held.isDisabled())) fail(`${theme}: the held Connect button must be disabled`)
-  if (await row.getByRole('button', { name: /^Connect$/ }).count()) {
-    fail(`${theme}: the ordinary Connect must not be offered on an unsigned crew`)
-  }
+  const connect = row.getByRole('button', { name: /^Connect$/ })
+  if (!(await connect.isVisible())) fail(`${theme}: an unsigned crew must still offer Connect`)
+  if (await connect.isDisabled()) fail(`${theme}: Connect must stay usable on an unsigned crew`)
   if (!(await row.getByRole('button', { name: /Start sign-in/i }).isVisible())) {
     fail(`${theme}: the crew row must offer the sign-in without going back to Set up`)
   }

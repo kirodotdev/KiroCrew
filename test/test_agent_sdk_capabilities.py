@@ -66,6 +66,7 @@ CAPABILITY_FIELDS = (
     "resolves_model_from_advertised_list",
     "effort_via_config_option",
     "compacts_inline",
+    "crew_fires_spec_hooks",
 )
 
 

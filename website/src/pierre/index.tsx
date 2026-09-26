@@ -40,75 +40,6 @@ interface PairIdentity {
   newFile: FileContents | null
 }
 
-/**
- * Paint-hold for the opted-in oversized pair. Same contract as `WarmSwap` —
- * keep the readable fallback on screen until the impl has real painted rows —
- * but with a measurement that cannot be satisfied by anything except the
- * impl's own content: the children mount inside an IN-FLOW `height:0;
- * overflow:hidden` box, whose `clientHeight` is 0, so `scrollHeight` reads the
- * content's height exactly. (`WarmSwap`'s box is `absolute inset-0`, which
- * floors `scrollHeight` at the wrapper height the fallback itself provides —
- * fine for the staged, off-viewport mounts it was built for, wrong for a swap
- * happening under the user's cursor.) The children stay in the same DOM node
- * across the flip, so nothing remounts or re-highlights on reveal.
- *
- * `header` is a row the caller wants ABOVE the revealed content — it renders
- * outside the measured box, and only once the hold has released. Inside the
- * box its own height would pass for painted content and release the hold
- * before a single row exists; before release the caller's fallback already
- * carries the same row, so showing it early would double it.
- */
-function PatchPaintHold({ fallback, header, children, onVisible }: {
-  fallback: React.ReactNode
-  header?: React.ReactNode
-  children: React.ReactNode
-  onVisible?: () => void
-}) {
-  const contentRef = useRef<HTMLDivElement | null>(null)
-  const [painted, setPainted] = useState(false)
-  const farm = useContext(PierreFarmHoldContext)
-  useEffect(() => {
-    if (painted) onVisible?.()
-  }, [onVisible, painted])
-  useEffect(() => {
-    if (farm || painted) return
-    const el = contentRef.current
-    if (!el || typeof ResizeObserver === 'undefined') {
-      setPainted(true)
-      return
-    }
-    if (el.scrollHeight > WARM_PAINT_MIN_PX) {
-      setPainted(true)
-      return
-    }
-    const ro = new ResizeObserver(() => {
-      if (el.scrollHeight > WARM_PAINT_MIN_PX) {
-        setPainted(true)
-        ro.disconnect()
-      }
-    })
-    ro.observe(el)
-    const deadline = setTimeout(() => setPainted(true), WARM_SWAP_DEADLINE_MS)
-    return () => {
-      ro.disconnect()
-      clearTimeout(deadline)
-    }
-  }, [painted, farm])
-  if (farm) return <>{fallback}</>
-  return (
-    <>
-      {painted && header}
-      <div
-        style={painted ? undefined : { height: 0, overflow: 'hidden', visibility: 'hidden' }}
-        aria-hidden={painted ? undefined : true}
-      >
-        <div ref={contentRef}>{children}</div>
-      </div>
-      {!painted && fallback}
-    </>
-  )
-}
-
 export type { EditorMarker, PierreEditorHandle }
 
 /** A one-shot line-reveal request: `nonce` distinguishes repeat clicks on the
@@ -213,14 +144,31 @@ function StagedSuspense({ fallback, children }: { fallback: React.ReactNode; chi
  * height, which is a scroll jump when the real height lands. The impl mounts
  * invisibly (absolute, zero footprint) so its chunk load, worker round-trip,
  * and paint all happen while the fallback holds the layout.
+ *
+ * The measurement is taken on an in-flow wrapper INSIDE that invisible box,
+ * never on the box itself. The box is pinned to the wrapper's four edges, so
+ * it is exactly as tall as the fallback beside it, and `scrollHeight` never
+ * reads below an element's own height: measured there, the fallback's own
+ * height would pass for a paint the moment the impl mounts, and the surface
+ * would collapse to Pierre's empty container until the highlight pool answers.
+ * The inner wrapper has no height but the impl's, so it reads 0 until Pierre
+ * has applied rows (or a failed pool has handed the surface plain text), and
+ * the deadline below is what releases a surface that never paints at all.
+ *
+ * `header` is a row the caller wants ABOVE the revealed content — it renders
+ * outside the measured wrapper, and only once the hold has released. Inside
+ * the wrapper its own height would pass for painted content and release the
+ * hold before a single row exists; before release the caller's fallback
+ * already carries the same row, so showing it early would double it.
  */
-function WarmSwap({ fallback, children, warmKey, onVisible }: {
+function WarmSwap({ fallback, header, children, warmKey, onVisible }: {
   fallback: React.ReactNode
+  header?: React.ReactNode
   children: React.ReactNode
   warmKey?: string
   onVisible?: () => void
 }) {
-  const boxRef = useRef<HTMLDivElement | null>(null)
+  const implRef = useRef<HTMLDivElement | null>(null)
   const [painted, setPainted] = useState(false)
   // Measure-farm render: the fallback IS the measured geometry -- mounting the
   // impl invisibly would burn main thread for a surface that is never shown.
@@ -231,9 +179,9 @@ function WarmSwap({ fallback, children, warmKey, onVisible }: {
     if (farm) return
     if (painted) {
       // Record the surface's real painted height for future remounts. The
-      // box is the impl's own wrapper, so scrollHeight is the impl height.
+      // wrapper is the impl's own, so scrollHeight is the impl height.
       if (warmKey !== undefined) {
-        const el = boxRef.current
+        const el = implRef.current
         const h = el ? el.scrollHeight : 0
         if (h > WARM_PAINT_MIN_PX) {
           if (warmSwapHeights.size >= WARM_SWAP_DONE_CAP && !warmSwapHeights.has(warmKey)) warmSwapHeights.clear()
@@ -242,7 +190,8 @@ function WarmSwap({ fallback, children, warmKey, onVisible }: {
       }
       return
     }
-    const el = boxRef.current
+    // The impl's own in-flow height (see the note above): 0 until it paints.
+    const el = implRef.current
     if (!el || typeof ResizeObserver === 'undefined') {
       setPainted(true)
       return
@@ -278,12 +227,17 @@ function WarmSwap({ fallback, children, warmKey, onVisible }: {
       // side-by-side toggle) still settles to the impl's own height.
       style={!painted && knownH !== undefined ? { height: knownH, overflow: 'hidden' } : undefined}
     >
+      {painted && header}
       <div
-        ref={boxRef}
         className={painted ? undefined : 'absolute inset-0 overflow-hidden invisible'}
         aria-hidden={painted ? undefined : true}
       >
-        <WarmSwapRevealedContext.Provider value={painted}>{children}</WarmSwapRevealedContext.Provider>
+        {/* The measured element: in flow, so it is as tall as the impl and
+            nothing else -- the pinned box around it is as tall as the
+            fallback, which is not a paint. */}
+        <div ref={implRef}>
+          <WarmSwapRevealedContext.Provider value={painted}>{children}</WarmSwapRevealedContext.Provider>
+        </div>
       </div>
       {!painted && fallback}
     </div>
@@ -522,20 +476,20 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
         </Suspense>
       )
     }
-    // The Suspense fallback INSIDE the hold must be null: the hold measures
-    // its content box, and a visible fallback there would defeat the
-    // measurement exactly the way it defeated WarmSwap's. With null the box
-    // stays at zero height through the chunk load and the pre-highlight
-    // mount, so the held plain view owns the layout until the diff truly
-    // paints. The header goes to the hold as `header`, NOT as a child, for
-    // the same reason: inside the box its own height would satisfy the paint
-    // measurement and release the hold before a single row exists.
+    // The Suspense fallback INSIDE the hold must be null: WarmSwap measures
+    // the impl's own wrapper, and a visible fallback there would pass for a
+    // paint. With null the wrapper stays at zero height through the chunk
+    // load and the pre-highlight mount, so the held plain view owns the
+    // layout until the diff truly paints. The header goes to the hold as
+    // `header`, NOT as a child, for the same reason: inside the wrapper its
+    // own height would satisfy the paint measurement and release the hold
+    // before a single row exists.
     return (
-      <PatchPaintHold fallback={holdFallback} header={header} onVisible={onVisible}>
+      <WarmSwap fallback={holdFallback} header={header} onVisible={onVisible}>
         <Suspense fallback={null}>
           <PairPatchImpl patch={active.patch} options={patchOptions} className={className} />
         </Suspense>
-      </PatchPaintHold>
+      </WarmSwap>
     )
   }
 

@@ -5925,6 +5925,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         on_gate_acquired: Callable[[float], None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
+        on_gate_queued: Callable[[], None] | None = None,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -5950,9 +5951,11 @@ class AcpRuntime:
         element. Empty — and unread — for a host with no mirror.
 
         ``session/new`` runs under the loop's :class:`SessionStartGate`
-        (``agent.session_start_concurrency``). ``on_gate_acquired(queue_wait_ms)``
-        fires at gate EXIT so the caller can start its own clocks there: the
-        queue wait is not start time. On a ``session/new`` timeout the request
+        (``agent.session_start_concurrency``). ``on_gate_queued()`` fires
+        immediately before the wait for a permit begins and
+        ``on_gate_acquired(queue_wait_ms)`` at gate EXIT, so the caller can
+        stop its own clocks for exactly the span spent queued and restart them
+        at acquisition: the queue wait is not start time. On a ``session/new`` timeout the request
         is NOT abandoned: a :class:`StartCollector` keeps it for
         ``agent.start_collect_timeout_secs`` and either hands the late session
         to ``late_adopter`` (which returns True to keep it) or tears it down;
@@ -6157,6 +6160,11 @@ class AcpRuntime:
             # gate protects), on a timeout by the collector that now owns the
             # request, on any other failure here.
             gate = await session_start_gate()
+            if on_gate_queued is not None:
+                try:
+                    on_gate_queued()
+                except Exception:
+                    logger.debug("on_gate_queued callback raised", exc_info=True)
             permit = await gate.acquire()
             if on_gate_acquired is not None:
                 try:

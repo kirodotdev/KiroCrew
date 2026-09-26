@@ -569,6 +569,8 @@ either, so both answer an empty list. `AcpSessionHandle` routes `executeHook` on
 while the handshake announces `hooks`, so a backend that sends it unasked is
 answered `-32601`.
 
+The agent spec's own `hooks` field takes the same turn-loop path. The `customAgents` wire schema has no slot for it, so for a backend in `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` (KAS only) `agent_sdk/spec_hooks.py` turns the field into script hooks that `_fire` passes to `ScriptHookStore.fire` beside the stored ones, never persisted. kiro-cli is not a member, because it runs the field itself. A spec that cannot be read blocks every PreToolUse, as an uninitialized store does. `toolsSettings` and `slashCommand` still reach no KAS session; a new session whose spec sets one gets one `notice` row saying so.
+
 If the flag is ever set, send the covenant's shape and no `v2` sub-flag: `v2` selects
 the agent's own disk loader, which spawns the command itself. Without `v2` the agent
 wires its ACP hook providers, so Kiro Crew becomes the only hook provider for that
