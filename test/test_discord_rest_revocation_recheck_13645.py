@@ -695,25 +695,6 @@ class TestRefusalNamesItsOwnGround:
         assert result.outcome == DISCORD_BLOCKED
         assert result.detail == _REVOKED_DETAIL
 
-    @pytest.mark.asyncio
-    async def test_a_predicate_answering_a_bare_bool_reports_a_withdrawal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A predicate that answers a plain `False` names no ground, so the ladder
-        reports the one it can defend: something that could place this destination
-        declined it."""
-        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
-
-        def _plain(channel_id: str) -> bool:
-            return False
-
-        harness.client.still_permitted = _plain
-
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
-
-        assert result.outcome == DISCORD_BLOCKED
-        assert result.detail == _REVOKED_DETAIL
-
     def test_the_transport_arms_answer_their_own_grounds(self) -> None:
         """The transport is the only place the two can be told apart, so each arm
         names its own. A paired peer the roster dropped is a withdrawal; an id no
@@ -747,7 +728,7 @@ class TestFailsClosed:
         not said yes."""
         harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
 
-        def _boom(channel_id: str) -> bool:
+        def _boom(channel_id: str) -> SendPermission:
             raise RuntimeError("roster unavailable")
 
         harness.client.still_permitted = _boom
@@ -1136,7 +1117,7 @@ class TestRefusalsAreAudited:
         monkeypatch.setattr(dc, "sel", lambda: recorder)
         harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
 
-        def _boom(channel_id: str) -> bool:
+        def _boom(channel_id: str) -> SendPermission:
             raise RuntimeError("roster unreadable")
 
         harness.client.still_permitted = _boom

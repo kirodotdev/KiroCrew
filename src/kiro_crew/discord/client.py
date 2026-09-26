@@ -700,10 +700,9 @@ class DiscordClient:
         #: A raise is read as a REFUSAL: this is a network egress boundary, and a
         #: predicate that cannot answer has not said yes.
         #:
-        #: Answering a :class:`SendPermission` reports WHY a destination is refused,
-        #: which only the rosters can tell. A bare ``bool`` is still accepted and
-        #: names no ground, so its refusal is reported as a withdrawal.
-        self.still_permitted: Callable[[str], bool | SendPermission] | None = None
+        #: It answers a :class:`SendPermission`, so a refusal reports WHY, which
+        #: only the rosters can tell.
+        self.still_permitted: Callable[[str], SendPermission] | None = None
 
     async def wait_ready(self, timeout: float = 15.0) -> bool:
         """Wait for the Gateway handshake to reach READY. Returns False on
@@ -1652,18 +1651,12 @@ class DiscordClient:
 
         The predicate's own answer carries the refusal's ground, because the rosters
         are the only thing that can tell a destination an operator withdrew from one
-        that nothing there can place. A predicate answering a bare ``bool`` names no
-        ground, so its refusal is reported as a withdrawal.
+        that nothing there can place.
         """
         if self.still_permitted is None:
             return SendPermission.allow()
         try:
-            answer = self.still_permitted(destination)
-            permission = (
-                answer
-                if isinstance(answer, SendPermission)
-                else (SendPermission.allow() if answer else SendPermission.revoked())
-            )
+            permission = self.still_permitted(destination)
             if permission.permitted:
                 self._audit_mid_send_decision(destination, "roster", "allowed")
                 return permission
