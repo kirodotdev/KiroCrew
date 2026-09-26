@@ -246,6 +246,53 @@ class TestTheContentBlockPathIsATarget:
         assert deny({"path": "/tmp/ok.md"}, "/tmp/ok.md") is None
 
 
+class TestPatchTextTargets:
+    """OpenCode apply_patch carries its targets in patchText, not a path key."""
+
+    @pytest.mark.asyncio
+    async def test_absolute_patch_target_is_approved(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: /tmp/proj/notes.md\n+notes\n*** End Patch"
+        event = _edit_event("/tmp/proj/notes.md", params={"patchText": patch})
+        approved, provider, rows = await _resolve(event)
+        assert approved is True, _error(rows)
+        assert provider.approved == ["r1"]
+
+    @pytest.mark.asyncio
+    async def test_every_target_including_move_destination_is_judged(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/proj/notes.md\n"
+            "*** Move to: /tmp/proj/renamed.md\n"
+            "@@\n-old\n+new\n"
+            "*** Add File: ~/.kiro/crew/config.json\n+x\n"
+            "*** End Patch"
+        )
+        approved, provider, rows = await _resolve(
+            _edit_event("/tmp/proj/notes.md", params={"patchText": patch})
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "config.json" in _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_relative_patch_target_is_unverifiable(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: notes.md\n+x\n*** End Patch"
+        approved, _provider, rows = await _resolve(
+            _edit_event("notes.md", params={"patchText": patch})
+        )
+        assert approved is False
+        assert "relative target path" in _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_malformed_patch_cannot_be_laundered_by_a_safe_path(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: /tmp/ok.md\n+x\n*** Unknown: ~/.kiro/crew/config.json\n*** End Patch"
+        approved, _provider, rows = await _resolve(
+            _edit_event("/tmp/ok.md", params={"path": "/tmp/ok.md", "patchText": patch})
+        )
+        assert approved is False
+        assert "verify" in _error(rows)
+
+
 class TestTheClientCarriesTheDiffPathOntoThePermissionEvent:
     """``_dispatch`` caches the diff block's path by scoped toolCallId and
     ``build_permission_event`` reads it, exactly like the sibling caches."""
