@@ -459,6 +459,170 @@ an archive-level comparison reports "changed" every night. Reading it from the p
 rather than by a second walk of the source also means it cannot disagree with what would
 actually be sent, and that a redaction switch changes the fingerprint.
 
+**Every read of the archive comes from ONE descriptor, and so does the upload.** The
+archive is staged under `storage.staging_root()` -- the `aws-control-staging` leaf the
+sandbox masks -- and NOT in the shared temp root, which excludes other USERS and not the
+same-UID agent this module's sandbox notes describe planting links in. Each step that
+re-resolved the archive's NAME was a step at which a substituted file could be measured
+or sent instead. `storage.pinned_staging` cuts its directory inside that masked root and
+holds it open, `backup._create_pinned_archive_fd` creates the archive relative
+to that descriptor with `O_EXCL | O_NOFOLLOW` (an entry already at the name fails the
+create rather than becoming what the tar writes through), and the entry-set digest, the
+recorded size, the body digest and `storage.put_file`'s body all come from that one
+descriptor.
+
+The location and the pin answer different threats, and neither covers the other. The pin
+fixes which inode a name reaches, so it defeats a rename, an unlink and a planted link;
+it cannot defeat a WRITE, because a sibling agent that rewrites the staged archive
+changes the very inode the descriptor holds. Every digest and the upload would then read
+the substituted bytes and agree with each other, and the run would record a successful
+backup of a file it never built -- with retention free to prune the valid predecessor,
+and no measurement left that could notice. The masked root removes the writer instead of
+detecting the write: inside another agent's namespace that leaf is an empty bound
+directory, so the archive has no name there to open. `storage.STAGING_DIR_LEAF` being a
+member of `sandbox._CREW_HIDDEN_LEAVES` is what makes that true, and it is pinned as such
+rather than assumed, because no in-process test can observe a mount namespace.
+
+**That argument is POSIX-only, and Windows needs its own.** There is no mount namespace
+and no mask there, so `staging_root` falls back to `restrict_dir_to_owner`, which
+excludes other USERS and not the same-UID agent process this module's threat model
+assumes. Windows is also the platform that takes the NAME arm of `storage.put_file`,
+because it has no `/dev/stdin` -- so the child re-resolves the name, and the held
+descriptor fixes only which inode it reaches. A same-UID process opening that inode and
+rewriting it in place would therefore be sent, and `_assert_same_file` would not notice:
+it compares `(st_dev, st_ino)` and `st_nlink`, all of which an in-place rewrite leaves
+alone. Widening it to a content digest would not fix that either, since any check there
+runs after the object is already in the bucket.
+
+So on Windows the writer is REFUSED rather than removed or detected, and the refusal
+starts when the body is CREATED rather than when it is sent. The span that matters runs
+from the file existing to the upload finishing, and for a backup archive it contains the
+tar write, the entry-set digest and two network round trips; a hold taken only at the
+transfer would leave all of that uncovered, and no later check could see a rewrite inside
+it because every one of them reads the same descriptor and so agrees with whatever it now
+holds. `backup._create_pinned_archive_fd` therefore creates the archive through
+`platform_compat.create_file_deny_write`, and `storage._verified_body_fd` opens a
+name-passed body the same way, which covers the label sidecar, the library push and the
+drive spool. Each drops `FILE_SHARE_WRITE` from the share mode: for as long as the
+descriptor lives Windows fails any other process's attempt to open the body for writing,
+while the child's read open still succeeds, which is what keeps the name usable at all.
+
+The SNAPSHOT path cannot be covered that way, and it refuses instead. Its payload is
+created and closed by name by `snapshot_main` and `snapshot.prepare_redacted_copy` before
+this module can open it, so the unguarded span is a whole snapshot build plus a redaction
+copy rather than an instant, and nothing available afterwards can see into it: a
+same-user replacement is a regular file with one name and the right owner, which is all
+`backup._open_pinned_archive_fd` can check, and the fingerprint and the upload then read
+that descriptor and agree with each other. So
+`backup._refuse_snapshot_without_a_producer_held_payload` stops the run BEFORE the build,
+gated on `storage.body_bytes_can_be_held_from_creation()` -- named for the property, not
+the platform, so a platform that gains an equivalent mask changes one line rather than
+every caller. Refusing is the conservative direction: an operator with no backup knows
+they have none, while one with a substituted backup believes they are covered and finds
+out at restore, off-host, with nothing to compare against.
+
+The refusal alone would be a poor answer, because it arrives INSIDE the run: the route
+would create a record, the worker would raise, and the owner would read a failed backup
+where the truthful answer is a feature this host does not offer. So the same condition is
+readable before any of that, through `backup.kind_unavailable_reason(KIND_SNAPSHOT)`,
+which the route already asks and turns into a 501 carrying the refusal's own words. Both
+kinds answer there, each for its own capability -- the sessions kind for descriptor-pinned
+traversal, the snapshot kind for holding its payload from creation -- so neither speaks for
+the other, and the snapshot refusal's prose makes no claim about whether the sessions kind
+runs here. It usually does not: a platform reaching this refusal has no mask, and the same
+platform typically lacks `openat`, so both kinds are refused for separate stated reasons.
+Restoring the snapshot capability is tracked as producer-owned deny-write handles for both
+snapshot producers.
+
+One case creation cannot cover is a descriptor a CALLER opened and handed to
+`storage.put_file`. A share mode is not readable back off a handle, so the contract cannot
+be asserted, and that branch takes its own hold instead. Because that hold is opened BY
+NAME while the caller's descriptor is already held, it is a second resolution of the same
+string, so `_assert_same_open_file` compares the two descriptors' inodes before it is
+trusted -- a guard on a substituted file would otherwise protect the wrong bytes. It is
+released in the same `finally` that closes the body, after the transfer rather than
+before. `deny_write` is honoured on Windows only and the asymmetry is deliberate: POSIX
+has no mandatory locking, so the request cannot be expressed there, and POSIX does not
+need it because the mask has already removed the writer.
+
+**Every upload body in this backend stages there, not just the archive.** The backup
+label sidecar (`backup._publish_label`), the library push (`library.py`) and the drive
+upload spool (`routes.py`) each used a bare `tempfile` call, which defaults to the
+shared temp root. For the library push that window straddles its credential and
+exfiltration scan -- the scan reads the in-memory string, so a rewrite of the file
+afterwards uploads bytes no scan saw -- and for the drive spool it is the longest of any
+body here, a 512 MB stream plus a wait behind the per-key lock. A per-site fix would
+leave the next site to be found by a reviewer, so the invariant is asserted over the
+whole backend instead, and asserted at the strength the threat needs. Naming the
+directory is not enough: where no descriptor can reach the child, `storage.put_file`
+hands the CLI a NAME, and a name is re-resolved at the child's open, so a caller holding
+only the relocated root is relocated and still replaceable. The root is therefore
+`storage`'s alone, one implementation of the two properties rather than a copy per
+module: `storage.pinned_staging` cuts a directory inside it and holds it open, and
+`storage.cut_pinned_staging` with `storage.drop_pinned_staging` are the same pair split
+in two for a caller that must take and release it on a worker thread rather than in a
+scope of its own. Both halves are parsed from the source rather than grepped, because
+these calls span lines, and the name is matched wherever it appears and not only where it
+is called -- `asyncio.to_thread` takes its function by REFERENCE, which is exactly how
+the drive spool reaches the helper.
+
+A held descriptor also has to survive CANCELLATION, and on the drive upload path that is
+not automatic. `asyncio.to_thread` cannot stop a thread that has started, so a cancelled
+`await` -- a gateway shutdown during a minutes-long 512 MB upload, which is ordinary
+operation -- returns to the unwinding `finally` that closes the spool descriptor while
+the worker is still writing through it. A closed descriptor number is immediately
+reusable, so the abandoned worker's next `os.write` can land in an unrelated file this
+process has since opened, and on the put path the same number is handed to the CLI child
+as the body to send. Either way bytes that were never this upload's are overwritten or
+shipped off-host, silently and with no recall.
+
+So every descriptor-using thread call on that path goes through `routes._drained_thread`,
+which shields the work from the cancellation, waits for the thread, and only then
+re-raises: when the `await` unwinds, the worker is done with the descriptor. The closing
+call is shielded for the mirror-image reason -- a cancellation delivered to it would leak
+the descriptor open for the process's life.
+
+Relocating staging moves where the BYTES sit, which is an operator-visible change and
+not only a security one. Every upload body -- a full sessions or snapshot archive, and
+the drive spool's 512 MB ceiling -- now occupies the data home's volume rather than the
+system temp volume. On a host where those are separate mounts, and the data home is the
+smaller or the fuller of the two, a backup can now fail with `ENOSPC` where it
+previously succeeded. That is a new failure mode, not a louder version of an old one.
+It is accepted rather than worked around: the shared temp root is writable by every
+same-UID process on the box, so keeping the bytes there to spare the data home would be
+keeping the defect. An operator whose data home is tight should size it for one archive
+plus one spool.
+
+The snapshot path takes the same hold through
+`backup._open_pinned_archive_fd`, which is an `O_NOFOLLOW` open plus an `fstat`
+requiring a singly-named regular file this process owns, because `snapshot_main` and
+`snapshot.prepare_redacted_copy` create their own files. `backup._read_at` is what
+lets two readers share the descriptor: `os.dup` would share the file OFFSET and leave
+the upload positioned at the end, so the archive is read by explicit offset instead --
+`os.pread` where the platform has it, and otherwise a seek that restores the caller's
+position in a `finally`, since Windows provides no `pread`.
+
+`storage.put_file` carries the other half. It takes `body_fd` from a caller that has
+already opened and checked its payload, and otherwise opens `local_path` itself
+(`storage._verified_body_fd`) -- which is what protects the callers with no fingerprint
+of their own, the label sidecar and the library push. The body reaches the AWS CLI as
+`--body /dev/stdin` with that descriptor passed as the child's stdin
+(`engine.run_aws`'s `stdin_fd`), so the child resolves no path at all. Three checks
+stand on the descriptor rather than on the name, each stopping a different
+substitution: `O_NOFOLLOW` a symlink, `st_nlink == 1` a hard link (which defeats the
+other two by construction, being a genuine regular file under the expected name), and
+`S_ISREG` a FIFO -- whose own open would otherwise BLOCK until a writer appeared and
+then upload whatever it sent. A HANDED-OVER descriptor is checked for its kind only:
+holding a descriptor is what fixes its inode, so a link count there would describe how
+many names the inode happens to carry now, which a same-UID process can change without
+touching a byte -- and refusing on it would let anyone who can write the staging
+directory cancel a scheduled backup by unlinking a name nothing reads any more.
+Windows has no `/dev/stdin`, so it passes the name and relies on the pinned directory
+handle, which blocks a rename or delete of the directory and of every directory above
+it; the file's identity is re-verified against the held descriptor afterwards, which
+DETECTS rather than prevents and exists so a substitution is not recorded as a
+successful upload of our bytes.
+
 Two normalizations are part of the digest's definition, each measured against the real
 engine rather than assumed. `_VOLATILE_MANIFEST_FIELDS` drops `created_at` from
 `MANIFEST.json`, the one field `snapshot.py` rewrites on a rebuild of an unchanged tree;

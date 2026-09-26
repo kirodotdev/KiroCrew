@@ -123,17 +123,39 @@ def test_sessions_is_reported_unavailable_when_the_traversal_cannot_be_pinned(mo
     assert "openat" in reason
 
 
-def test_snapshot_stays_available_on_every_platform(monkeypatch):
-    """The snapshot backup goes through the standard library's ``tarfile`` and
-    never needs a pinned descent, so the sessions refusal must not take it down
-    with it -- losing the nightly backup on Windows would be a real regression.
+def test_the_sessions_refusal_does_not_take_the_snapshot_kind_down_with_it(monkeypatch):
+    """The sessions refusal must be narrow: it answers for descriptor-pinned
+    traversal and for nothing else, so a host missing that capability still offers
+    the snapshot kind. Losing the nightly backup as a side effect of the other
+    kind's refusal would be a real regression.
+
+    The snapshot kind has a capability of its own -- holding its payload from
+    creation -- and it is held PRESENT here on purpose. Leaving it to the host would
+    make this test measure whichever condition the runner happens to fail, which is
+    how it came to assert that the snapshot kind is available everywhere.
     """
     monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", False)
+    monkeypatch.setattr(backup_mod.storage, "body_bytes_can_be_held_from_creation", lambda: True)
     assert backup_mod.kind_unavailable_reason(backup_mod.KIND_SNAPSHOT) is None
 
 
-def test_nothing_is_unavailable_where_the_traversal_can_be_pinned(monkeypatch):
+def test_the_snapshot_kind_answers_for_its_own_capability(monkeypatch):
+    """The other half of that independence, so neither kind speaks for the other.
+
+    Traversal is available here and the payload cannot be held, which is the shape
+    of a platform with no staging mask: the snapshot kind is refused, in its own
+    words, while the sessions kind is not.
+    """
     monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", True)
+    monkeypatch.setattr(backup_mod.storage, "body_bytes_can_be_held_from_creation", lambda: False)
+    reason = backup_mod.kind_unavailable_reason(backup_mod.KIND_SNAPSHOT)
+    assert reason and "snapshot payload is written by the snapshot builder" in reason
+    assert backup_mod.kind_unavailable_reason(backup_mod.KIND_SESSIONS) is None
+
+
+def test_nothing_is_unavailable_where_both_capabilities_are_present(monkeypatch):
+    monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", True)
+    monkeypatch.setattr(backup_mod.storage, "body_bytes_can_be_held_from_creation", lambda: True)
     for kind in backup_mod.JOB_KINDS:
         assert backup_mod.kind_unavailable_reason(kind) is None
 
@@ -224,8 +246,12 @@ async def test_starting_an_unsupported_kind_is_refused_before_any_job_is_started
 async def test_a_supported_kind_still_reaches_the_job_runtime(monkeypatch):
     """The guard must be narrow: snapshot has to pass straight through it, or the
     refusal has quietly become an outage.
+
+    Its own capability is held present, because this test's subject is the SESSIONS
+    guard's narrowness and not whichever capability the runner happens to lack.
     """
     monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", False)
+    monkeypatch.setattr(backup_mod.storage, "body_bytes_can_be_held_from_creation", lambda: True)
     reached: list[str] = []
 
     async def _drive(_request: Any) -> tuple[str, str, str, str]:

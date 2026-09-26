@@ -69,8 +69,6 @@ import datetime as dt
 import json
 import logging
 import os
-import shutil
-import tempfile
 import time
 import weakref
 from contextlib import asynccontextmanager
@@ -1347,6 +1345,79 @@ async def _handle_drive_search(request: web.Request) -> web.Response:
     )
 
 
+async def _drained_thread(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run ``fn`` on a worker thread and never leave it running past this ``await``.
+
+    ``asyncio.to_thread`` cannot stop a thread that has already started, so a
+    cancelled ``await`` returns control to an unwinding ``finally`` while the thread
+    is still using whatever it was given. Where that is a DESCRIPTOR the consequence
+    is not a wasted thread: the cleanup closes the number, the kernel is then free to
+    hand the same number to anything else in the process, and the still-running worker
+    writes its next chunk into that file -- or, on the upload path, hands it to the CLI
+    child as the body to send. Either way bytes of an unrelated local file are
+    overwritten or shipped off-host, silently and with no recall.
+
+    So the work is shielded from the cancellation and then DRAINED before it is
+    re-raised: when this returns or raises, the thread is done with the descriptor.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # The shield took the cancellation; the thread did not. Wait for it, and
+        # discard whatever it raises -- the caller is unwinding, and its own error
+        # is the one that matters.
+        try:
+            await asyncio.wait({task})
+        finally:
+            raise
+
+
+async def _drained_cut(cut: Callable[..., Any], release: Callable[[Any], None], *args: Any) -> Any:
+    """Acquire a resource on a worker thread, releasing it if this ``await`` is cancelled.
+
+    :func:`_drained_thread` protects work done THROUGH a descriptor. This protects
+    the step that hands one over, which fails a different way: the thread creates
+    the resource and returns it, but a cancellation delivered at this ``await``
+    means the assignment never binds, so the ``try``/``finally`` written to release
+    it is never entered. The directory pin and the deny-write spool descriptor then
+    stay open for the process's life, and the staging directory keeps whatever the
+    transfer had written -- up to the 512 MB cap -- with nothing in this package
+    sweeping it. A client disconnect mid-upload is ordinary, so this is a routine
+    window rather than an exotic one.
+
+    So the acquisition is shielded, drained, and then RELEASED through *release*
+    before the cancellation continues. *release* takes whatever *cut* returned, so
+    one helper serves an acquisition returning a pair and one returning a
+    descriptor alone. The release is itself shielded, for the reason the closing
+    half already is: a cancellation delivered to it would leak what it came to free.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(cut, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait({task})
+            if not task.cancelled() and task.exception() is None:
+                await asyncio.shield(
+                    asyncio.ensure_future(asyncio.to_thread(release, task.result()))
+                )
+        finally:
+            raise
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data`` to ``fd``.
+
+    ``os.write`` is not obliged to take the whole buffer, and a spool short by one
+    chunk would be uploaded and recorded as the complete file. Runs on a worker
+    thread, so it must not touch the event loop.
+    """
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
 async def _handle_drive_upload(request: web.Request) -> web.Response:
     ctx = await _require_drive(request)
     if isinstance(ctx, web.Response):
@@ -1362,69 +1433,118 @@ async def _handle_drive_upload(request: web.Request) -> web.Response:
     if request.content_length and request.content_length > _MAX_UPLOAD_BYTES:
         return _bad_request("file too large (512 MB cap)", "upload_too_large")
 
-    # NOT a `with TemporaryDirectory()`: its __exit__ runs shutil.rmtree
-    # SYNCHRONOUSLY on the event loop, and deleting a 512 MB spool is exactly
+    # The two halves of the pin rather than the `pinned_staging` scope: a context
+    # manager's __enter__ and __exit__ both run on whatever thread entered it, so
+    # here that is the event loop, and its exit removes a 512 MB spool -- exactly
     # the stall every other touch of this file is offloaded to avoid.
-    tmp = await asyncio.to_thread(tempfile.mkdtemp, prefix="kc-upload-")
+    #
+    # Under the masked staging root rather than the shared system temp root. The
+    # gap this spool lives across is the longest of any upload body here -- a
+    # 512 MB stream plus a wait behind the per-key lock, both minutes -- and the
+    # descriptor `put_file` opens fixes which inode it sends, not that inode's
+    # bytes, so a same-UID rewrite in that window would send bytes no check saw.
+    #
+    # `cut_pinned_staging` is called INSIDE the offloaded callable, not as an
+    # argument to it: an argument is evaluated by this coroutine before the thread
+    # is ever entered, and that function does lstat, mkdir, two resolves, is_dir,
+    # chmod and an open -- metadata syscalls that stall every other task on a slow
+    # or contended data home. Same shape as the `to_thread(open, ...)` below.
+    #
+    # PINNED and not merely relocated, because on a platform with no `/dev/stdin`
+    # `put_file` hands the CLI this spool's NAME and rests on its caller holding
+    # the directory open.
+    tmp, staging_fd = await _drained_cut(
+        storage_mod.cut_pinned_staging,
+        lambda got: storage_mod.drop_pinned_staging(*got),
+        "kc-upload-",
+    )
     try:
-        spool = Path(tmp) / "upload.bin"
         received = 0
         # Every touch of the spool file is offloaded: a 512 MB upload writing
         # synchronously from the handler would stall the gateway event loop
         # for the whole transfer (open/close included — close flushes).
-        sink = await asyncio.to_thread(open, spool, "wb")
+        #
+        # HELD from creation, not opened by name: this spool is written, then
+        # closed, then uploaded after two waits -- the stream itself and the
+        # per-key lock -- and a same-user process that rewrites it in between is
+        # invisible to every check `put_file` can make afterwards. The
+        # descriptor created here refuses that writer for its whole life and is
+        # handed to `put_file` as the body, so what is uploaded is what was
+        # received. `cut_held_body` rather than the scope, because entering a
+        # context manager would run these syscalls on the event loop.
+        spool, spool_fd = await _drained_cut(
+            storage_mod.cut_held_body,
+            lambda got: storage_mod.drop_held_body(got[1]),
+            Path(tmp),
+            "upload.bin",
+        )
         try:
             async for chunk in request.content.iter_chunked(1 << 20):
                 received += len(chunk)
                 if received > _MAX_UPLOAD_BYTES:
                     return _bad_request("file too large (512 MB cap)", "upload_too_large")
-                await asyncio.to_thread(sink.write, chunk)
+                await _drained_thread(_write_all, spool_fd, chunk)
+            if received == 0:
+                return _bad_request("empty upload", "empty_upload")
+            # A 512 MB stream can take minutes, and the per-key lock below can
+            # queue this request behind another minutes-long put: both waits sit
+            # between the checks _require_drive ran and the AWS call they
+            # authorized. The spool and the lock are the same post-wait gap the
+            # Library operations cross under their lock, so the SAME helper
+            # re-runs the full re-authorization INSIDE the lock: app gate, live
+            # identity re-probe, consent, and the drive bucket itself -- the piece
+            # an identity check cannot cover, because tag discovery can move the
+            # drive to a different bucket while the identity is unchanged, and a
+            # name held across the wait is exactly the staleness the module's
+            # no-cache rule forbids. A pass means the pre-wait ``bucket`` still
+            # names the account's current drive; anything else is refused with
+            # nothing written. No publish gate: an upload does not consult it on
+            # the way in, so the re-check does not add it.
+            try:
+                # Same per-key lock the move handler holds across its probe+copy:
+                # an upload put inside the lock either finishes before a move's
+                # destination probe (the probe then answers 409) or starts after
+                # the move released — it cannot land inside the move's
+                # probe-to-copy window and be silently overwritten. Only the
+                # re-authorization and the put are inside the lock; the spool
+                # transfer above must not hold it.
+                async with _locked_drive_write(bucket, section, key):
+                    denied = await _reauthorize_in_lock(
+                        request, "drive_upload", account, profile, region, bucket, publish=False
+                    )
+                    if denied:
+                        return denied
+                    await _drained_thread(
+                        partial(
+                            storage_mod.put_file,
+                            account=account,
+                            body_fd=spool_fd,
+                            body_fd_denies_write=True,
+                        ),
+                        profile,
+                        region,
+                        bucket,
+                        section,
+                        key,
+                        str(spool),
+                    )
+            except AWSError as exc:
+                return _aws_failed(exc)
         finally:
-            await asyncio.to_thread(sink.close)
-        if received == 0:
-            return _bad_request("empty upload", "empty_upload")
-        # A 512 MB stream can take minutes, and the per-key lock below can
-        # queue this request behind another minutes-long put: both waits sit
-        # between the checks _require_drive ran and the AWS call they
-        # authorized. The spool and the lock are the same post-wait gap the
-        # Library operations cross under their lock, so the SAME helper
-        # re-runs the full re-authorization INSIDE the lock: app gate, live
-        # identity re-probe, consent, and the drive bucket itself -- the piece
-        # an identity check cannot cover, because tag discovery can move the
-        # drive to a different bucket while the identity is unchanged, and a
-        # name held across the wait is exactly the staleness the module's
-        # no-cache rule forbids. A pass means the pre-wait ``bucket`` still
-        # names the account's current drive; anything else is refused with
-        # nothing written. No publish gate: an upload does not consult it on
-        # the way in, so the re-check does not add it.
-        try:
-            # Same per-key lock the move handler holds across its probe+copy:
-            # an upload put inside the lock either finishes before a move's
-            # destination probe (the probe then answers 409) or starts after
-            # the move released — it cannot land inside the move's
-            # probe-to-copy window and be silently overwritten. Only the
-            # re-authorization and the put are inside the lock; the spool
-            # transfer above must not hold it.
-            async with _locked_drive_write(bucket, section, key):
-                denied = await _reauthorize_in_lock(
-                    request, "drive_upload", account, profile, region, bucket, publish=False
-                )
-                if denied:
-                    return denied
-                await asyncio.to_thread(
-                    storage_mod.put_file,
-                    profile,
-                    region,
-                    bucket,
-                    section,
-                    key,
-                    str(spool),
-                    account=account,
-                )
-        except AWSError as exc:
-            return _aws_failed(exc)
+            # Shielded as well: this close is what ENDS the descriptor's life, and a
+            # cancellation delivered here would leak it open for the process's life.
+            await asyncio.shield(
+                asyncio.ensure_future(asyncio.to_thread(storage_mod.drop_held_body, spool_fd))
+            )
     finally:
-        await asyncio.to_thread(shutil.rmtree, tmp, True)
+        # Shielded for the same reason as the close above, and it frees more: this
+        # is what closes the directory pin AND removes the staging directory with
+        # whatever the transfer wrote into it.
+        await asyncio.shield(
+            asyncio.ensure_future(
+                asyncio.to_thread(storage_mod.drop_pinned_staging, tmp, staging_fd)
+            )
+        )
     return web.json_response({"uploaded": True, "key": key, "bytes": received})
 
 

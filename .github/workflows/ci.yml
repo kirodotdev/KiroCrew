@@ -1530,9 +1530,14 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q --timeout=180 --no-cov \
+          # `-rs` because this job exists to RUN the capability-guarded tests, so a
+          # test that skips here is the one outcome the job cannot report silently:
+          # a guard that turns out False on the runner leaves a green lane that
+          # measured nothing, and the skip reason is the only thing that says so.
+          pytest -q -rs --timeout=180 --no-cov \
             test/test_script_hooks.py \
             test/test_cron_script.py \
+            test/test_aws_control_storage.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \

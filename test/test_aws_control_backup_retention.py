@@ -792,6 +792,20 @@ class TestAudit:
 class TestOrdering:
     """Upload, record, label, and only then delete."""
 
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+
     def test_the_sweep_runs_after_the_push_and_the_run_record(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         monkeypatch.setattr(backup, "install_identity", lambda: {"id": INSTALL, "label": "box"})

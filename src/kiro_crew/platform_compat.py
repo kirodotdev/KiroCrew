@@ -7074,7 +7074,22 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
+#: ``FILE_SHARE_READ`` alone. Omitting ``FILE_SHARE_WRITE`` as well makes Windows
+#: refuse any OTHER process's attempt to open the object for writing while this
+#: descriptor lives, which is the one thing a descriptor cannot do on POSIX: there
+#: a held descriptor fixes WHICH inode a name reaches and says nothing about that
+#: inode's contents, so a same-UID process can still rewrite the bytes in place.
+#: Callers that hand a filename to a child and need the bytes to be the bytes they
+#: checked ask for this; a read by the child is still allowed, which is what makes
+#: it usable for exactly that case.
+_WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_EXISTING = 3
+#: ``GENERIC_WRITE`` and ``CREATE_NEW``, for creating a file we will write through
+#: while refusing every other process's write open. ``CREATE_NEW`` is the
+#: ``O_CREAT | O_EXCL`` of this API: it fails when the name is already taken, which
+#: is the refusal a planted entry must meet rather than something to retry.
+_WIN_GENERIC_WRITE = 0x40000000
+_WIN_CREATE_NEW = 1
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
@@ -7124,13 +7139,21 @@ def pin_directory(path: str | os.PathLike) -> int:
     return fd
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
+def _win_open_without_following(path: str | os.PathLike, *, deny_write: bool = False) -> int:
     """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
 
     Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
     not carry separate copies of the same security-critical flags. What each of
     them then asserts about the descriptor differs; how the object is reached must
     not.
+
+    *deny_write* drops ``FILE_SHARE_WRITE`` from the share mode as well, so no other
+    process may open the object for writing while this descriptor lives. A caller
+    that must hand a child process a FILENAME needs it: the child re-resolves the
+    name, and a descriptor alone fixes only which inode that name reaches, so
+    without this a same-UID process rewrites the bytes in place and the child sends
+    them. Reads by the child are still permitted. Not the default, because for a
+    DIRECTORY handle it would also refuse other processes' writes into it.
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
@@ -7167,7 +7190,7 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     handle = kernel32.CreateFileW(
         os.fspath(path),
         _WIN_GENERIC_READ,
-        _WIN_FILE_SHARE_READ_WRITE,
+        _WIN_FILE_SHARE_READ if deny_write else _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
         _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
@@ -7180,7 +7203,9 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     )
 
 
-def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) -> int:
+def open_file_no_reparse(
+    path: str | os.PathLike, *, nonblocking: bool = False, deny_write: bool = False
+) -> int:
     """Open a regular FILE for reading, refusing a reparse point at the final name.
 
     The leaf counterpart to :func:`pin_directory`. ``pin_directory`` freezes the
@@ -7205,6 +7230,14 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
     ``nonblocking`` adds ``O_NONBLOCK`` on POSIX so a caller can reject a FIFO
     with ``fstat`` before an open waits for a writer. Regular file reads are
     unaffected. Windows has no POSIX FIFO open; its handle checks stay the same.
+
+    ``deny_write`` asks that no other process be able to open the file for writing
+    while this descriptor lives. It is honoured on WINDOWS ONLY, and the asymmetry
+    is the point rather than an omission: POSIX has no mandatory locking, so the
+    request cannot be expressed there and is silently not made. A caller whose
+    safety depends on it must therefore not treat a POSIX descriptor as carrying
+    it -- on POSIX the equivalent protection comes from removing the writer, not
+    from refusing its open.
     """
     if IS_POSIX:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -7212,7 +7245,7 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
             flags |= getattr(os, "O_NONBLOCK", 0)
         return os.open(os.fspath(path), flags)
 
-    fd = _win_open_without_following(path)
+    fd = _win_open_without_following(path, deny_write=deny_write)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
         if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
@@ -7226,6 +7259,67 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
 
 
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004
+
+
+def create_file_deny_write(path: str | os.PathLike, mode: int = 0o600) -> int:
+    """Create *path* exclusively, and on Windows refuse other processes' writes to it.
+
+    The counterpart to :func:`open_file_no_reparse` with ``deny_write`` for a file
+    that does not exist yet. A caller that will later hand this file's NAME to a
+    child process needs the refusal to cover the file's whole life, not just the
+    moment of the hand-off: between creating a staged body and uploading it there is
+    usually a write, a digest and a network round trip or two, and a same-UID
+    process that rewrites the bytes anywhere in that span is not visible to any
+    later check -- every one of them reads this same descriptor and therefore agrees
+    with the substituted bytes.
+
+    Exclusive in both arms, which is the other half: ``O_EXCL`` and ``CREATE_NEW``
+    both fail when the name is already taken, so an entry a watcher planted first is
+    refused instead of becoming the file we write through.
+
+    On POSIX the deny-write cannot be expressed -- there is no mandatory locking --
+    so this is an ordinary exclusive create there, and callers whose safety depends
+    on excluding the writer rely on the platform's own means (for this app, the
+    sandbox mask over the staging leaf). Release with ``os.close``.
+    """
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    if IS_POSIX:
+        return os.open(os.fspath(path), flags, mode)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ | _WIN_GENERIC_WRITE,
+        _WIN_FILE_SHARE_READ,
+        None,
+        _WIN_CREATE_NEW,
+        _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    # ``O_BINARY`` for the reason :func:`_win_open_without_following` gives: a CRT
+    # descriptor in text mode translates CRLF and stops at the first 0x1A, and an
+    # archive is exactly the payload that would be silently mangled by it.
+    return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+        handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
+    )
 
 
 def open_log_file_for_tail(path: str | os.PathLike) -> int:
@@ -7551,6 +7645,30 @@ def local_user_id() -> int:
     if not sid:
         return 0
     return zlib.crc32(sid.encode("utf-8"))
+
+
+def stat_owned_by_current_user(st: os.stat_result) -> bool:
+    """Is the object *st* describes owned by the account this process runs as?
+
+    Answered from an ALREADY-STATTED object, so a caller holding an open
+    descriptor gets an answer about the bytes it has rather than about whatever
+    the name resolves to next. That is the point of asking it this way: the
+    callers are TOCTOU-sensitive paths that ``fstat`` a held descriptor.
+
+    Real AND effective, for the reason
+    :func:`stat_writable_by_current_user` gives: this answers "is this account
+    the owner", and a process holding a real id can regain it.
+
+    Windows has no uid -- ``st_uid`` is reported as ``0`` for every object -- so
+    there is nothing to compare and the answer is ``True``. That is not a claim
+    of ownership; it says this predicate carries no information there, and a
+    caller that needs a refusal on Windows must get it from something else (a
+    held handle, an owner-only DACL). Lives in this module because ``os.getuid``
+    does not exist on Windows at all.
+    """
+    if not IS_POSIX:
+        return True
+    return st.st_uid in (os.getuid(), os.geteuid())
 
 
 def stat_writable_by_current_user(st: os.stat_result) -> bool:

@@ -29,7 +29,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, Collection
 
@@ -348,29 +347,44 @@ def push_artifact(
         "tags": [_clean(t) for t in (artifact.tags or [])],
         "pushedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
     }
-    with tempfile.TemporaryDirectory(prefix="kc-library-") as tmp:
-        content_path = Path(tmp) / f"v{artifact.version}{ext}"
-        content_path.write_text(content, encoding="utf-8")
-        meta_path = Path(tmp) / "meta.json"
-        meta_path.write_text(json.dumps(meta, indent=1), encoding="utf-8")
-        storage.put_file(
-            profile,
-            region,
-            bucket,
-            "library",
-            f"{slug}/v{artifact.version}{ext}",
-            str(content_path),
-            account=account,
-        )
-        storage.put_file(
-            profile,
-            region,
-            bucket,
-            "library",
-            f"{slug}/meta.json",
-            str(meta_path),
-            account=account,
-        )
+    # Under the masked staging root, not the shared system temp root, and each body
+    # held from its creation. The credential and exfiltration scan above runs on the
+    # in-memory string, so a same-UID rewrite of the file AFTER that scan and before
+    # the upload would put unscanned bytes in the bucket -- and a descriptor
+    # `put_file` opens for itself fixes which inode it sends, not what that inode
+    # held while it was closed and unheld. The masked leaf removes the writer where
+    # a namespace is active; `held_body` refuses it everywhere else.
+    with storage.pinned_staging("kc-library-") as (tmp, _staging_fd):
+        with storage.held_body(tmp, f"v{artifact.version}{ext}", content.encode("utf-8")) as (
+            content_path,
+            content_fd,
+        ):
+            storage.put_file(
+                profile,
+                region,
+                bucket,
+                "library",
+                f"{slug}/v{artifact.version}{ext}",
+                str(content_path),
+                account=account,
+                body_fd=content_fd,
+                body_fd_denies_write=True,
+            )
+        with storage.held_body(tmp, "meta.json", json.dumps(meta, indent=1).encode("utf-8")) as (
+            meta_path,
+            meta_fd,
+        ):
+            storage.put_file(
+                profile,
+                region,
+                bucket,
+                "library",
+                f"{slug}/meta.json",
+                str(meta_path),
+                account=account,
+                body_fd=meta_fd,
+                body_fd_denies_write=True,
+            )
 
     # Through the single ledger writer: two concurrent pushes of different
     # slugs would otherwise each rewrite the whole ledger from a stale

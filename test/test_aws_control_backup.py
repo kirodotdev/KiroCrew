@@ -35,7 +35,7 @@ from unittest import mock
 import pytest
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.builtins.aws_control.backend import backup, costs
+from kiro_crew.apps.builtins.aws_control.backend import backup, costs, storage
 from kiro_crew.config import loader
 
 ACCOUNT = "111122223333"
@@ -142,6 +142,21 @@ class TestAuthorizeUpload:
 
 
 class TestRunSnapshotBackup:
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
@@ -354,7 +369,16 @@ class TestRunSessionsBackup:
         pushed: dict[str, str] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 # The label sidecar rides along on the same push path; it is not
@@ -502,7 +526,16 @@ class TestSessionsArchiveLayerBGate:
         captured: dict[str, Any] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
@@ -799,7 +832,16 @@ class TestSessionsArchiveLayerBGate:
         uploaded: dict[str, int] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return None
@@ -1665,7 +1707,16 @@ class TestSessionsArchiveLayerBGate:
         uploaded: list[str] = []
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             uploaded.append(key)
 
@@ -1824,7 +1875,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             # Keyed by which object is being written. The label is uploaded after
             # the lock is released, on purpose -- a caption must not hold the
@@ -1895,7 +1955,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             # Keyed the same way as the sibling: the label is uploaded after the
             # block, so reading "the last put" would pass with any lock at all.
@@ -1958,7 +2027,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             which = "label" if key.endswith(backup.LABEL_OBJECT_NAME) else "archive"
             seen[which] = _file_lock_is_free_to_another_thread()
@@ -2007,7 +2085,16 @@ class TestSessionsArchiveLayerBGate:
             return not thread.is_alive() and answer.get("done", False)
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
@@ -2074,7 +2161,16 @@ class TestSessionsArchiveLayerBGate:
                 parked.set()
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
@@ -5820,3 +5916,156 @@ class TestRememberedArchives:
             backup.KIND_SNAPSHOT: 0,
             backup.KIND_SESSIONS: 0,
         }
+
+
+class TestSnapshotBackupRefusesWhereItsPayloadCannotBeHeld:
+    """The snapshot path stops where it cannot prove the bytes it would upload.
+
+    The archive path creates its own file and holds it from birth, so the bytes
+    digested are the bytes sent on every platform. The snapshot path cannot: the
+    payload is written and closed BY NAME by ``snapshot_main`` and
+    ``snapshot.prepare_redacted_copy`` before this module can open it. On POSIX the
+    sandbox mask over the staging leaf removes the same-user writer, so that window
+    is empty. Where there is no mask the writer is present, every check available
+    afterwards passes for a same-user replacement, and the fingerprint and the upload
+    then read the substituted file and agree with each other.
+
+    So that platform refuses instead of uploading. These tests pin the refusal where
+    it matters -- that it happens BEFORE a payload exists, that it does not touch the
+    archive path, and that POSIX is unaffected -- by driving the capability predicate
+    rather than the platform, so the behaviour is measurable on any host.
+    """
+
+    @staticmethod
+    def _no_mask(monkeypatch):
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: False)
+
+    def test_no_snapshot_payload_is_produced(self, monkeypatch):
+        # The refusal has to precede the BUILD, not just the upload: a payload written
+        # and then abandoned would have spent the whole unguarded window on disk.
+        self._no_mask(monkeypatch)
+        built: list[Any] = []
+        monkeypatch.setattr(backup, "snapshot_main", lambda *a, **k: built.append(a) or 0)
+        with pytest.raises(RuntimeError, match="snapshot backups are unavailable"):
+            backup.run_snapshot_backup(
+                "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+            )
+        assert built == [], "the snapshot builder must not run when the payload cannot be held"
+
+    def test_nothing_is_uploaded(self, monkeypatch):
+        self._no_mask(monkeypatch)
+        monkeypatch.setattr(backup, "snapshot_main", lambda *a, **k: 0)
+        with mock.patch.object(backup.storage, "put_file") as put:
+            with pytest.raises(RuntimeError, match="snapshot backups are unavailable"):
+                backup.run_snapshot_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+                )
+        assert not put.called, "no object may be written when the snapshot path refuses"
+
+    def test_the_error_names_the_cause_and_not_the_other_kind(self, monkeypatch):
+        # An operator reading this has to learn that snapshots are off and why. What it
+        # must NOT do is speak for the sessions kind: this message said archive backups
+        # "still run here", and on the platform that reaches this refusal they do not --
+        # `_CAN_PIN_TRAVERSAL` is false there, so that kind is refused for its own
+        # reason. A reassurance that is false where it is read is worse than no
+        # reassurance, and each kind now answers through `kind_unavailable_reason`.
+        self._no_mask(monkeypatch)
+        with pytest.raises(RuntimeError) as caught:
+            backup.run_snapshot_backup(
+                "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+            )
+        message = str(caught.value)
+        assert "snapshot payload is written by the snapshot builder" in message
+        assert "same user could replace the file" in message
+        assert "Archive backups are unaffected and still run here" not in message
+
+    def test_the_refusal_is_recorded_for_an_auditor(self, monkeypatch):
+        # A denial that leaves no trace makes the audited denials look like the only
+        # ones, so this goes through _refuse_upload rather than a bare raise.
+        self._no_mask(monkeypatch)
+        with mock.patch.object(backup, "_refuse_upload", side_effect=RuntimeError("x")) as refused:
+            with pytest.raises(RuntimeError):
+                backup.run_snapshot_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_SCHEDULED
+                )
+        assert refused.called
+        # Attributed to the caller that was actually running, so an unattended refusal
+        # at 03:00 is not recorded against the dashboard owner.
+        assert refused.call_args.kwargs["caller"] == backup.CALLER_SCHEDULED
+
+    def test_the_capability_predicate_reports_the_real_platform(self):
+        # The tests above patch the predicate, so none of them would notice it being
+        # wired to a constant. This one reads it for real. A predicate stuck at False
+        # would disable snapshot backups on every platform while every other test here
+        # still passed, which is the failure a reader of this class would least expect
+        # to be possible.
+        assert storage.body_bytes_can_be_held_from_creation() is bool(
+            storage._STAGING_LEAF_IS_MASKED
+        )
+        # And the mask really is what POSIX has: the sandbox builds a mount namespace
+        # and binds an empty directory over the staging leaf there.
+        assert storage._STAGING_LEAF_IS_MASKED == platform_compat.IS_POSIX
+
+    def test_the_archive_path_is_not_refused(self, monkeypatch):
+        # The whole point of scoping this to snapshots: the archive path holds its own
+        # file from creation, so it is sound on every platform and must keep running.
+        #
+        # Asserted on the REFUSAL rather than on how far the archive path gets. How far
+        # it gets depends on the platform and on everything else stubbed here, so a
+        # progress assertion would fail for reasons unrelated to the gate -- which is
+        # exactly what it did on Windows. Whether the gate fires is the property.
+        self._no_mask(monkeypatch)
+        with mock.patch.object(
+            backup, "_refuse_snapshot_without_a_producer_held_payload"
+        ) as refusal:
+            with contextlib.suppress(Exception):
+                backup.run_sessions_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+                )
+        assert not refusal.called, "the snapshot refusal must not reach the archive path"
+
+    def test_a_masked_staging_leaf_is_not_refused(self, monkeypatch):
+        # The POSIX half, so the refusal is pinned as CONDITIONAL. Without this a
+        # predicate stuck at False would pass every test above and disable snapshots
+        # everywhere. Asserted by letting the real helper run and observing that it
+        # returns instead of raising, which is the behaviour rather than a stand-in.
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+        backup._refuse_snapshot_without_a_producer_held_payload(
+            "111122223333", caller=backup.CALLER_OWNER
+        )
+
+    def test_the_kind_is_offered_as_unavailable_before_a_run_starts(self, monkeypatch):
+        # The refusal alone is not enough. The route asks `kind_unavailable_reason`
+        # BEFORE creating a run record and answers 501 when it speaks; silent there,
+        # the run starts, the helper raises inside the worker, and the owner is handed
+        # a failed run record -- the outcome that function exists to prevent.
+        self._no_mask(monkeypatch)
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is not None
+
+    def test_the_answer_is_the_refusal_own_words(self, monkeypatch):
+        # One sentence, not two that drift: what an owner is told before pressing the
+        # button has to be what the refusal would have raised.
+        self._no_mask(monkeypatch)
+        reason = backup.kind_unavailable_reason(backup.KIND_SNAPSHOT)
+        with pytest.raises(RuntimeError) as raised:
+            backup._refuse_snapshot_without_a_producer_held_payload(
+                "111122223333", caller=backup.CALLER_OWNER
+            )
+        assert reason is not None and reason in str(raised.value)
+
+    def test_the_kind_is_offered_normally_where_the_payload_can_be_held(self, monkeypatch):
+        # The conditional half of the pre-check, for the same reason the refusal has
+        # one: an answer stuck at "unavailable" would withdraw snapshot backups from
+        # every platform while the tests above still passed.
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is None
+
+    def test_the_sessions_kind_answers_for_its_own_capability(self, monkeypatch):
+        # Each kind is unavailable for ITS OWN missing capability, so this refusal must
+        # not withdraw the other one. Pinned because the earlier refusal prose claimed
+        # archive backups "still run here", which is false on the platform that reaches
+        # it -- there the sessions kind is refused too, for the traversal reason.
+        self._no_mask(monkeypatch)
+        monkeypatch.setattr(backup, "_CAN_PIN_TRAVERSAL", True)
+        assert backup.kind_unavailable_reason(backup.KIND_SESSIONS) is None
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is not None

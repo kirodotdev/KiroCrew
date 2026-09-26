@@ -907,6 +907,21 @@ def _fake_snapshot(body: bytes):
 
 
 class TestRunSnapshotBackupSkip:
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
@@ -1264,6 +1279,20 @@ class TestRetentionComposition:
     delete the recorded key, and whether a run of skips can walk the keep window
     down to it.
     """
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
 
     @pytest.fixture(autouse=True)
     def _wiring(self, tmp_path, monkeypatch):

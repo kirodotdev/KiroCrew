@@ -548,6 +548,14 @@ def _authorized():
 
 
 class TestRouteStartsAJob:
+    @pytest.fixture(autouse=True)
+    def _payload_can_be_held(self, monkeypatch):
+        # These tests drive the ROUTE, so the platform-capability pre-check must not
+        # be what they measure. On a host that cannot hold a body from creation the
+        # snapshot kind is offered as unavailable and every start here answers 501 --
+        # a true answer about the platform, and a useless one about the route.
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+
     def test_run_returns_a_run_id_instead_of_a_terminal_record(self):
         # The whole point: the response is a HANDLE to work in flight, not the
         # outcome of work already done. A client that gets an id can re-find the
@@ -974,6 +982,21 @@ class TestStartupRegistration:
 
 
 class TestLedgerSurvives:
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "body_bytes_can_be_held_from_creation", lambda: True)
+
     def test_a_successful_run_still_writes_the_app_ledger(self, sdk):
         # The Job SDK records only that a run existed and how it ended. What the
         # backup PRODUCED -- key, size, when -- stays in the app's own state, and
