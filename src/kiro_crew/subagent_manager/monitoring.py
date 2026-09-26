@@ -949,7 +949,7 @@ class OrphanStallMonitor(ManagerComponent):
                         "(turn 0, no runtime launched; %d other agent(s) in startup), "
                         "force-killing",
                         agent_id,
-                        self._manager._startup_deadline,
+                        self._stamped_startup_deadline(info),
                         self._manager._startup_population(exclude=info),
                     )
                     try:
@@ -1031,8 +1031,17 @@ class OrphanStallMonitor(ManagerComponent):
             info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
-            and (clock_now - exec_started) > self._manager._startup_deadline
+            and (clock_now - exec_started) > self._stamped_startup_deadline(info)
         )
+
+    def _stamped_startup_deadline(self, info: SubagentInfo) -> int:
+        """*info*'s startup deadline, fixed per start clock so a config write
+        moves only the windows of starts that begin after it."""
+        stamp = info._startup_deadline_stamp
+        if stamp is None or stamp[0] != info._exec_started:
+            stamp = (info._exec_started or 0.0, self._manager._startup_deadline)
+            info._startup_deadline_stamp = stamp
+        return stamp[1]
 
     async def _stall_verdict_impl(self, info: SubagentInfo) -> tuple[str, str]:
         """Liveness verdict for an idle subagent: working, wedged, or unknown.

@@ -13,7 +13,7 @@ anything that survived a gateway crash. No single mechanism is a single point of
 |-----------|--------|-------|--------------------|-----------------------|---------------------------|
 | `asyncio.wait_for` on `_run_inner` | `subagent.py` | Subagent tasks | 3 h (`agent.subagent_timeout_secs`, `_TIMEOUT_SECS` fallback) | No (see reaper below) | Raises `TimeoutError`, marks subagent failed, resets session |
 | Periodic reaper loop | `subagent.py` | Subagent tasks | 60s sweep (`_REAPER_INTERVAL`), kills at the same deadline | Yes, runs independently of the spawning session | `_force_reap`: reset, SIGKILL fallback, mark done, SEL audit, announce |
-| Startup watchdog | `subagent.py` | Pre-first-turn subagents | 120s with no runtime (`_STARTUP_TIMEOUT_SECS`) | Yes | Reaps a subagent that never got a runtime |
+| Startup watchdog | `subagent.py` | Pre-first-turn subagents | Session-start budget plus the late-start collector wait plus a 30s margin, at least 120s, with no runtime (`SubagentManager._startup_deadline`) | Yes | Reaps a subagent that never got a runtime |
 | Reset timeout in `_run` finally | `subagent.py` | Subagent cleanup | 30s (`_RESET_TIMEOUT`) | No | SIGKILL fallback plus SEL audit if `reset()` hangs |
 | Turn limit | `subagent.py` | Subagent tool calls | 1000 turns (`_TURN_LIMIT`, configurable) | No | Stops execution, returns partial output |
 | Stall surfacing | `subagent.py` | Running subagents | 120s with no stream activity (`_STALL_IDLE_SECS`) | Yes | Surfaces the subagent as "stalled" in the UI |

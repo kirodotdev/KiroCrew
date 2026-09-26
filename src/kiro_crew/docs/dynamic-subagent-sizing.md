@@ -240,8 +240,12 @@ parent runtime's `create_session` directly, and the dedicated-process one
 (`model` / `reasoning_effort` spawns) threads them through `get_or_create` ->
 provider factory -> `AcpProvider` to its own process's `create_session`.
 
-The startup watchdog's deadline itself stays fixed (`120s`,
-`SubagentManager(startup_timeout=...)`) however many agents are in startup. It
+The startup watchdog's deadline does not change with how many agents are in
+startup. Its size comes from the start budgets: `agent.session_start_timeout_secs`
+plus the late-start collector's wait (`agent.start_collect_timeout_secs` plus
+5s) plus a 30s margin, never below 120s, read from the live config and fixed
+per start clock (`SubagentManager._startup_deadline`;
+`SubagentManager(startup_timeout=...)` pins it). It
 is deliberately not pressure-aware -- no term per other agent in startup --
 for two reasons. With queue time uncharged and the in-startup population
 bounded there is no evidence that a healthy start misses the base deadline, so

@@ -53,6 +53,7 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
+from kiro_crew.config.sections import SESSION_START_TIMEOUT_MIN, AgentConfig
 from kiro_crew.constants import (
     DEFAULT_SUBAGENT_MAX_TURNS,
     SUBAGENT_COMPLETION_PREFIX,
@@ -575,7 +576,12 @@ _BOUNDARY_CANCELLATION_SCOPE_CAP_REASON = "pending_scope_cap"
 # cannot hold cancel_all()'s untimed gather — bounded shutdown plus recoverable
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
-_STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
+# The startup watchdog's window (``SubagentManager._startup_deadline``) covers one
+# start clock: the ``session/new`` budget, then the late-start collector's wait
+# (timeout plus ``_await_late_start``'s grace), plus a launch margin; floor 120.
+_STARTUP_TIMEOUT_SECS = 120
+_STARTUP_COLLECT_GRACE_SECS = 5
+_STARTUP_LAUNCH_MARGIN_SECS = 30
 # Derived in-startup bound, in rounds of the session-start gate: one round
 # holding permits plus one round already admitted and waiting behind them. See
 # ``SubagentManager._startup_cap`` for why the bound is tied to the gate's
@@ -1869,6 +1875,8 @@ class SubagentInfo:
     # that is merely waiting for approval. None until execution starts.
     _exec_started: float | None = None
     _first_stream_started: float | None = None
+    # (start clock, deadline) the startup watchdog fixed for this start.
+    _startup_deadline_stamp: tuple[float, int] | None = None
     # Wall-clock moment this run began waiting for a ``SessionStartGate``
     # permit (``_gate_wait_mark``); None outside that wait. While set, the
     # startup watchdog reads the start clock as frozen at this moment: time
@@ -2517,7 +2525,7 @@ class SubagentManager:
         max_concurrent: int = _MAX_CONCURRENT,
         default_turn_limit: int = _TURN_LIMIT,
         default_timeout: int = _TIMEOUT_SECS,
-        startup_timeout: int = _STARTUP_TIMEOUT_SECS,
+        startup_timeout: int = 0,
         stall_idle_secs: int = _STALL_IDLE_SECS,
         on_tool_approval: ToolApprovalCallback | None = None,
         on_tool_approval_factory: (
@@ -2572,7 +2580,8 @@ class SubagentManager:
         self._cap_raise_listener: Callable[[], object] | None = None
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
-        self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
+        # A positive value pins the window; 0 derives it from the budget.
+        self._startup_timeout_override = startup_timeout if startup_timeout > 0 else None
         self._stall_idle_secs = stall_idle_secs if stall_idle_secs > 0 else _STALL_IDLE_SECS
         self._on_tool_approval = on_tool_approval  # fallback for non-auto sessions
         self._on_tool_approval_factory = on_tool_approval_factory
@@ -3203,6 +3212,18 @@ class SubagentManager:
 
     async def _reaper_loop(self) -> None:
         return await self._monitor._reaper_loop_impl()
+
+    @property
+    def _startup_deadline(self) -> int:
+        """Seconds a new start may run with no runtime, from the live config."""
+        if self._startup_timeout_override is not None:
+            return self._startup_timeout_override
+        snap = live.snapshot()
+        agent = snap.agent if snap is not None else AgentConfig()
+        budget = max(SESSION_START_TIMEOUT_MIN, agent.session_start_timeout_secs)
+        collect = agent.start_collect_timeout_secs + _STARTUP_COLLECT_GRACE_SECS
+        derived = int(budget + collect + _STARTUP_LAUNCH_MARGIN_SECS)
+        return max(_STARTUP_TIMEOUT_SECS, derived)
 
     def _is_startup_stalled(self, info: SubagentInfo, now: float) -> bool:
         return self._monitor._is_startup_stalled_impl(info, now)
