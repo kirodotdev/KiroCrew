@@ -1371,6 +1371,49 @@ class TestDirLinkShims:
         assert os.readlink(str(link)) == str(target)
 
 
+class TestWinOpenWithoutFollowing:
+    def test_crt_wrap_failure_closes_native_handle(self, monkeypatch, tmp_path):
+        class FakeCall:
+            argtypes = None
+            restype = None
+
+            def __init__(self, impl):
+                self._impl = impl
+
+            def __call__(self, *args):
+                return self._impl(*args)
+
+        handle = 4242
+        closed = []
+        kernel32 = types.SimpleNamespace(
+            CreateFileW=FakeCall(lambda *_args: handle),
+            CloseHandle=FakeCall(lambda native_handle: closed.append(native_handle) or True),
+        )
+        error = OSError(errno.EMFILE, "CRT fd table exhausted")
+
+        def refuse_wrap(*_args):
+            raise error
+
+        monkeypatch.setattr(
+            pc.ctypes,
+            "WinDLL",
+            lambda name, **_kwargs: kernel32,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            pc,
+            "msvcrt",
+            types.SimpleNamespace(open_osfhandle=refuse_wrap),
+            raising=False,
+        )
+
+        with pytest.raises(OSError, match="CRT fd table exhausted") as raised:
+            pc._win_open_without_following(tmp_path / "leaf")
+
+        assert raised.value is error
+        assert closed == [handle]
+
+
 class TestPinDirectory:
     """``pin_directory``: hold a directory so a child written by PATH stays put.
 
