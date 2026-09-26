@@ -7337,12 +7337,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Gerenciar nas configurações",
       "manage_visible_models": "Gerenciar modelos visíveis",
-      "default_for_agent": "Modelo padrão de <agent/>",
+      "default_for_agent": "Fixado no agente <agent/>",
       "filter_models": "Filtrar modelos",
       "model_list": "Lista de modelos",
       "models_failed": "Não foi possível carregar os modelos da instância.",
       "pin_model_unavailable": "<model/> não está sendo oferecido no momento",
-      "set_default_for_agent": "Definir <model/> como modelo padrão de <agent/>",
+      "set_default_for_agent": "Fixar <model/> no agente <agent/> (substitui o padrão global)",
       "set_default_for_new_sessions": "Padrão global para novas sessões…",
       "type_to_filter": "Digite para filtrar…"
     },
@@ -14458,6 +14458,8 @@
       },
       "chatPanel": {
         "advanced": "Avançado",
+        "agent_model_pin_overrides_default": "Novos chats no agente <agent/> usam o próprio modelo fixado <model/>, não esta configuração. Depois você pode fixar um modelo de novo no seletor de modelo do chat.",
+        "agent_template_pin_overrides_default": "Novos chats no agente <agent/> usam <model/>, que vem do template do agente ou do padrão do backend, não desta configuração. Este agente não fixa um modelo por si só, então não há nada para remover aqui. Para escolher um, abra o seletor de modelo do chat e fixe um modelo neste agente.",
         "discovery": "Descoberta",
         "rail_label": "Configurações do chat",
         "side_panel": "Painel lateral",
@@ -14681,7 +14683,10 @@
         "minimap_location": "Localização do minimapa",
         "minimap_location_desc": "Na borda direita, o minimapa substitui a barra de rolagem.",
         "message_font_size": "Tamanho da fonte das mensagens",
-        "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados."
+        "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados.",
+        "remove_the_agents_pin": "Remover a fixação",
+        "failed_to_clear_agent_model_pin": "Não foi possível remover o modelo fixado do agente ({{error}}). Tente novamente.",
+        "failed_to_clear_agent_model_pin_no_reason": "Não foi possível remover o modelo fixado do agente. Tente novamente."
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

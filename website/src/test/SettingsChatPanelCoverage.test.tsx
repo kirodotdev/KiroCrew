@@ -80,6 +80,8 @@ vi.mock('../api/client', () => ({
     dashboardConfig: dashboardConfigMock,
     updateDashboardConfig: updateDashboardConfigMock,
     kirocrewConfig: kirocrewConfigMock,
+    kirocrewAgents: () => Promise.resolve({ agents: [], default_agent: 'default' }),
+    agentResolvedModel: () => Promise.resolve({ model: '', pinned: false }),
     patchConfig: patchConfigMock,
     models: modelsMock,
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),

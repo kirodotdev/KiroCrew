@@ -151,12 +151,12 @@ describe('ModelEffortDropdown — per-agent default row', () => {
   // scope is being changed.
   it('is absent without a handler', () => {
     wrap(<ModelEffortDropdown {...baseProps} agentName="oncall" />)
-    expect(screen.queryByText(/default model for oncall/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /oncall/ })).toBeNull()
   })
 
   it('is absent without an agent in scope', () => {
     wrap(<ModelEffortDropdown {...baseProps} onPinToAgent={vi.fn()} />)
-    expect(screen.queryByRole('button', { name: /as default model for/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /overrides the global default/ })).toBeNull()
   })
 
   it('names the agent and fires the in-place write', () => {
@@ -167,7 +167,7 @@ describe('ModelEffortDropdown — per-agent default row', () => {
     // <span>, and getByText joins only an element's DIRECT text nodes — it
     // cannot see across that split. The accessible name is built from the whole
     // subtree, so it also asserts what a screen reader announces.
-    fireEvent.click(screen.getByRole('button', { name: 'Set as default model for oncall' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Pin to the oncall agent (overrides the global default)' }))
     expect(onPinToAgent).toHaveBeenCalledTimes(1)
   })
 
@@ -181,8 +181,8 @@ describe('ModelEffortDropdown — per-agent default row', () => {
         onPinToAgent={onPinToAgent}
       />
     )
-    const row = screen.getByRole('button', { name: 'Default model for oncall' })
-    expect(screen.queryByRole('button', { name: 'Set as default model for oncall' })).toBeNull()
+    const row = screen.getByRole('button', { name: 'Pinned to the oncall agent' })
+    expect(screen.queryByRole('button', { name: 'Pin to the oncall agent (overrides the global default)' })).toBeNull()
     fireEvent.click(row)
     expect(onPinToAgent).not.toHaveBeenCalled()
   })
@@ -196,7 +196,7 @@ describe('ModelEffortDropdown — per-agent default row', () => {
         onSetDefault={vi.fn()}
       />
     )
-    expect(screen.getByRole('button', { name: 'Set as default model for oncall' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pin to the oncall agent (overrides the global default)' })).toBeInTheDocument()
     expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
@@ -244,8 +244,8 @@ describe('SETTINGS_DEFAULT_MODEL_ID', () => {
  * The other half of the same classification: the pin row is a SENTENCE with two
  * interpolated identifiers. Prose follows the Font Family setting; the model id
  * and the agent name are verbatim identifiers and stay monospace — which is also
- * what disambiguates "Set claude-opus-5 as default model for default", where the
- * trailing word is an agent NAME and not the English adjective.
+ * what disambiguates "Pin claude-opus-5 to the default agent", where the agent is
+ * NAMED default and the word is not the English adjective.
  */
 describe('pin row monospaces only its two identifiers', () => {
   function pinRow(props: Record<string, unknown> = {}) {
@@ -256,7 +256,7 @@ describe('pin row monospaces only its two identifiers', () => {
       onPinToAgent={vi.fn()}
       {...props}
     />)
-    return screen.getByRole('button', { name: /default model for/i })
+    return screen.getByRole('button', { name: /oncall/ })
   }
 
   it('puts the model id and the agent name in mono, and nothing else', () => {
@@ -266,7 +266,7 @@ describe('pin row monospaces only its two identifiers', () => {
     // The sentence around them must NOT be mono, or the whole row would ignore
     // the Font Family setting again.
     expect(row.querySelector('span')?.className).not.toContain('font-mono')
-    expect(row.textContent).toBe('Set claude-opus-5 as default model for oncall')
+    expect(row.textContent).toBe('Pin claude-opus-5 to the oncall agent (overrides the global default)')
   })
 
   it('monospaces the agent name in the already-pinned state too', () => {

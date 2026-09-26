@@ -7337,12 +7337,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Gérer dans les paramètres",
       "manage_visible_models": "Gérer les modèles affichés",
-      "default_for_agent": "Modèle par défaut pour <agent/>",
+      "default_for_agent": "Épinglé à l’agent <agent/>",
       "filter_models": "Filtrer les modèles",
       "model_list": "Liste des modèles",
       "models_failed": "Impossible de charger les modèles de l'instance.",
       "pin_model_unavailable": "<model/> n’est pas proposé pour le moment",
-      "set_default_for_agent": "Définir <model/> comme modèle par défaut pour <agent/>",
+      "set_default_for_agent": "Épingler <model/> à l’agent <agent/> (remplace la valeur par défaut globale)",
       "set_default_for_new_sessions": "Valeur par défaut globale pour les nouvelles sessions…",
       "type_to_filter": "Saisir pour filtrer…"
     },
@@ -14458,6 +14458,8 @@
       },
       "chatPanel": {
         "advanced": "Avancé",
+        "agent_model_pin_overrides_default": "Les nouveaux chats sur l’agent <agent/> utilisent son propre modèle épinglé <model/>, pas ce réglage. Tu pourras réépingler un modèle plus tard depuis le sélecteur de modèle du chat.",
+        "agent_template_pin_overrides_default": "Les nouveaux chats sur l’agent <agent/> utilisent <model/>, qui vient de son modèle d’agent ou de la valeur par défaut du backend, pas de ce réglage. Cet agent n’épingle pas de modèle lui-même, il n’y a donc rien à retirer ici. Pour en choisir un, ouvre le sélecteur de modèle du chat et épingle un modèle à cet agent.",
         "discovery": "Découverte",
         "rail_label": "Paramètres du chat",
         "side_panel": "Panneau latéral",
@@ -14681,7 +14683,10 @@
         "minimap_location": "Emplacement de la minicarte",
         "minimap_location_desc": "Sur le bord droit, la minicarte remplace la barre de défilement.",
         "message_font_size": "Taille de police des messages",
-        "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés."
+        "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés.",
+        "remove_the_agents_pin": "Retirer son épingle",
+        "failed_to_clear_agent_model_pin": "Impossible de retirer le modèle épinglé de l’agent ({{error}}). Réessaie.",
+        "failed_to_clear_agent_model_pin_no_reason": "Impossible de retirer le modèle épinglé de l’agent. Réessaie."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

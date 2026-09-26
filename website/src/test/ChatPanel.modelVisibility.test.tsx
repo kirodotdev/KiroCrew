@@ -19,6 +19,8 @@ vi.mock('../api/client', () => ({
     dashboardConfig: dashboardConfigMock,
     updateDashboardConfig: updateDashboardConfigMock,
     kirocrewConfig: () => Promise.resolve({ agent: { model: 'auto', reasoning_effort: '' } }),
+    kirocrewAgents: () => Promise.resolve({ agents: [], default_agent: 'default' }),
+    agentResolvedModel: () => Promise.resolve({ model: '', pinned: false }),
     models: modelsMock,
     patchConfig: () => Promise.resolve({}),
     tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),
