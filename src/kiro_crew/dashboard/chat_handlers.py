@@ -55,8 +55,8 @@ from kiro_crew.dashboard.chat_delivery import (
     steer_into_running_turn,
 )
 from kiro_crew.dashboard.chat_folders import (
-    _resolve_folder_project_dir,
     _unhide_folder,
+    resolve_folder_project_dir_off_loop,
 )
 from kiro_crew.dashboard.chat_orchestrator import (
     _cancel_stage_subagents,
@@ -3125,8 +3125,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in folders]
         )
-        folder_project, folder_project_error = await asyncio.to_thread(
-            _resolve_folder_project_dir, folder_snapshot, folder_id
+        # The chain walk runs on the loop; only a declared project's ``stat``
+        # hops to a worker thread (see `resolve_folder_project_dir_off_loop`).
+        folder_project, folder_project_error = await resolve_folder_project_dir_off_loop(
+            folder_snapshot, folder_id
         )
         if folder_project_error:
             return web.json_response(
@@ -7955,10 +7957,10 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                             folder_snapshot = await state.read_folders(
                                 lambda folders: [dict(folder) for folder in folders]
                             )
-                            folder_project, folder_error = await asyncio.to_thread(
-                                _resolve_folder_project_dir,
-                                folder_snapshot,
-                                folder_id_at_read,
+                            folder_project, folder_error = (
+                                await resolve_folder_project_dir_off_loop(
+                                    folder_snapshot, folder_id_at_read
+                                )
                             )
                             if slot.folder_id == folder_id_at_read:
                                 break

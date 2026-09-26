@@ -812,3 +812,142 @@ class TestDurableWriteOrdering:
             "the pinned title never reached disk — a restart rehydrates the old "
             "title with a refreshable 'auto' origin"
         )
+
+
+class TestFreshFolderCreateStaysOffTheExecutor:
+    """A brand-new session filed into a project-less folder skips the project probe.
+
+    The sidebar's "New chat" inside a folder sends ``folder_id`` and no ``name``.
+    Validating a folder's project ``stat``s the directory, so it belongs on a
+    worker thread; but most folders declare no project, and a thread hop that
+    resolves to ``""`` queues on the gateway's shared default executor inside the
+    process-wide ``suspend_slots_push``, before the response. The chain walk runs
+    on the loop and only a declared project's ``stat`` is sent to a thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fresh_folder_create_makes_no_project_probe(self, tmp_path):
+        from kiro_crew.dashboard import chat_folders
+
+        state = _make_state(tmp_path)
+        real_validate = chat_folders._validate_project_dir
+        with patch.object(
+            chat_folders, "_validate_project_dir", MagicMock(side_effect=real_validate)
+        ) as validate:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots", json={"folder_id": FOLDER_ID})
+                assert resp.status == 200
+                assert (await resp.json())["folder_id"] == FOLDER_ID
+        assert validate.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_folder_with_a_project_still_validates_it(self, tmp_path):
+        """The shortcut only skips folders that declare no project anywhere up the chain."""
+        from kiro_crew.dashboard.chat_folders import _folder_declared_project
+
+        folders = [
+            {"id": "root", "name": "Root", "project_dir": str(tmp_path)},
+            {"id": "child", "name": "Child", "parent_id": "root"},
+            {"id": "plain", "name": "Plain"},
+            {"id": "typed", "name": "Typed", "project_dir": 7},
+            {"id": "loop-a", "name": "A", "parent_id": "loop-b"},
+            {"id": "loop-b", "name": "B", "parent_id": "loop-a"},
+        ]
+        assert _folder_declared_project(folders, "child") == (str(tmp_path), None)
+        assert _folder_declared_project(folders, "root") == (str(tmp_path), None)
+        assert _folder_declared_project(folders, "plain") == (None, None)
+        assert _folder_declared_project(folders, "missing") == (None, None)
+        assert _folder_declared_project(folders, "typed") == ("", "project_dir must be a string")
+        # A parent cycle terminates rather than spinning.
+        assert _folder_declared_project(folders, "loop-a") == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_project_validation_runs_off_the_loop_only_when_declared(self, tmp_path):
+        """One chain walk on the loop; the ``stat`` hops to a thread, and only when there is one."""
+        import threading
+
+        from kiro_crew.dashboard import chat_folders as cf
+
+        target = tmp_path / "repo"
+        target.mkdir()
+        folders = [
+            {"id": "root", "name": "Root", "project_dir": str(target)},
+            {"id": "child", "name": "Child", "parent_id": "root"},
+            {"id": "plain", "name": "Plain"},
+        ]
+        real_validate = cf._validate_project_dir
+        ran_on: list[int] = []
+
+        def spy(raw: str) -> tuple[str, str | None]:
+            ran_on.append(threading.get_ident())
+            return real_validate(raw)
+
+        with patch.object(cf, "_validate_project_dir", spy):
+            assert await cf.resolve_folder_project_dir_off_loop(folders, "plain") == ("", None)
+            assert ran_on == [], "a project-less chain must not validate anything"
+            resolved, error = await cf.resolve_folder_project_dir_off_loop(folders, "child")
+        assert (resolved, error) == (str(target.resolve()), None)
+        assert len(ran_on) == 1
+        assert ran_on[0] != threading.get_ident(), "the stat must not run on the loop thread"
+
+
+class TestOwnerFolderCreatePersistsTheFiling:
+    """A fresh owner-dashboard create in a folder has a durable writer for its filing.
+
+    On the owner path the member assignment publishes the newborn's execution
+    context through ``bind_session_execution``, whose ``update_metadata_if``
+    UPSERTS the session's metadata line. From then on the forced birth save has
+    a line to merge into, and it is the only writer of ``folder_id`` (and the
+    inherited tags, pinned title, project and colour) before the first message:
+    ``slot._dirty`` stays False, so no periodic flush would write them later. A
+    restart before the first message must rehydrate the tab filed, not at root.
+    """
+
+    @pytest.mark.asyncio
+    async def test_owner_folder_create_writes_folder_id_to_the_metadata_line(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+        from kiro_crew.history import _sessions_dir
+        from kiro_crew.memory_stores import provision_member_memory
+
+        config = KiroCrewConfig()
+        config.agents["local-only-crew"] = KiroCrewAgentConfig(kiro_agent="local-only-crew")
+        config.default_agent = "local-only-crew"
+        provision_member_memory(config, "local-only-crew")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load",
+            staticmethod(lambda: config),
+        )
+        state = _make_state(tmp_path)
+        # A newborn has no live or resumable kiro-cli session; a bare MagicMock
+        # would answer "yes" to both and read as V1 history the member cannot take.
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.resumable_sid = MagicMock(return_value=None)
+        # `bind_session_execution` publishes through ``ConversationLog()`` at the
+        # default sessions dir, so the state's log must be that same log for the
+        # birth save to see the line the assignment created.
+        state.conversation_log = ConversationLog(base_dir=_sessions_dir())
+
+        async def owner_handler(request: web.Request) -> web.Response:
+            request["app"] = ""
+            request["user"] = "local-app"
+            return await api_chat_slot_create(request)
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots", owner_handler)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots", json={"folder_id": FOLDER_ID})
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert body["folder_id"] == FOLDER_ID
+        slot = state._slots[body["key"]]
+        assert not slot.messages
+        meta = state.conversation_log._read_metadata(slot_history_key(slot)) or {}
+        assert meta.get("memory_store"), f"the owner assignment must have published a line: {meta}"
+        assert meta.get("folder_id") == FOLDER_ID, (
+            "the folder filing never reached the metadata line -- a restart before "
+            "the first message rehydrates the tab unfiled"
+        )

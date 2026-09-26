@@ -1112,9 +1112,13 @@ class TestBindingAuthorization:
 
         state = _make_state(tmp_path)
         state._folders.append({"id": "f1", "name": "Folder"})
+
+        async def invalid_project(folders, folder_id):
+            return "", "no such directory"
+
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._resolve_folder_project_dir",
-            lambda folders, folder_id: ("", "no such directory"),
+            "kiro_crew.dashboard.chat_handlers.resolve_folder_project_dir_off_loop",
+            invalid_project,
         )
         async with TestClient(TestServer(_create_app(state))) as client:
             resp = await client.post(

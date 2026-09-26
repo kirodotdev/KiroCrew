@@ -524,10 +524,17 @@ def _folder_project_overlap_denied(resolved: str) -> str | None:
     return conflict
 
 
-def _resolve_folder_project_dir(
+def _folder_declared_project(
     folders: list[dict[str, Any]], folder_id: str
-) -> tuple[str, str | None]:
-    """Return the nearest validated project directory inherited by a folder."""
+) -> tuple[str | None, str | None]:
+    """Walk *folder_id*'s ancestor chain for the nearest declared ``project_dir``.
+
+    A dict walk with no filesystem access, so it is safe on the event loop.
+    Returns ``(raw_project, None)`` for the nearest folder that declares one
+    (stripped, not yet validated), ``("", error)`` when that declaration is not
+    a string, and ``(None, None)`` when no folder in the chain declares a
+    project: a missing id and a parent cycle both end the walk there.
+    """
     by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
     seen: set[str] = set()
     current_id = folder_id
@@ -540,9 +547,37 @@ def _resolve_folder_project_dir(
         if raw_project:
             if not isinstance(raw_project, str):
                 return "", "project_dir must be a string"
-            return _validate_project_dir(raw_project.strip())
+            return raw_project.strip(), None
         current_id = str(folder.get("parent_id") or "")
-    return "", None
+    return None, None
+
+
+def _resolve_folder_project_dir(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[str, str | None]:
+    """Return the nearest validated project directory inherited by a folder."""
+    raw_project, error = _folder_declared_project(folders, folder_id)
+    if raw_project is None or error:
+        return "", error
+    return _validate_project_dir(raw_project)
+
+
+async def resolve_folder_project_dir_off_loop(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[str, str | None]:
+    """:func:`_resolve_folder_project_dir` for callers on the event loop.
+
+    The chain walk is a dict lookup and runs here; only the validation, which
+    ``stat``s the directory, hops to a worker thread, and only when a folder in
+    the chain declares a project. Most folders declare none, and for those a
+    thread hop resolves to ``""`` after queueing on the shared default executor,
+    which on a busy gateway makes a folder create (or an agent switch inside a
+    folder) slower than the same request on an unfiled chat.
+    """
+    raw_project, error = _folder_declared_project(folders, folder_id)
+    if raw_project is None or error:
+        return "", error
+    return await asyncio.to_thread(_validate_project_dir, raw_project)
 
 
 #: Ceiling on the extra steering directories one folder may declare. Small on
