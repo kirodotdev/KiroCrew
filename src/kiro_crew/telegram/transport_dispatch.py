@@ -139,6 +139,7 @@ from kiro_crew.telegram.renderer import TelegramApprovalDecider
 from kiro_crew.telegram.renderer import TelegramApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.telegram.renderer import (
     TelegramRenderer,
+    _display_safe,
     md_to_telegram_html_safe,
 )
 from kiro_crew.telegram.session_resume import TelegramSessionResume
@@ -3369,10 +3370,15 @@ class TelegramDispatcher:
                 ],
             ]
         }
-        # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string,
-        # already credential/exfil-redacted in admission.py before it reaches
-        # here; escape it for the HTML body it lands in.
-        detail = " ".join((description or "spawn_run").split())
+        # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string.
+        # The upstream credential pass scans the literal text, so a secret split by
+        # zero-width format characters survives it (and ``html.escape``) and
+        # Telegram reassembles it on display: clear the preview in display form
+        # through the renderer's own ``_display_safe``, the pass every other
+        # Telegram sink runs and the Discord twin applies. It is synchronous, so
+        # it adds no suspension point before the destination check below. Then
+        # escape it for the HTML body it lands in.
+        detail = _display_safe(" ".join((description or "spawn_run").split()))
         body = f"🔐 Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
         if not self._spawn_prompt_destination_permitted(chat_id, thread_id):
             # Authorization for this destination was withdrawn between the turn that
