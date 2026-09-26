@@ -636,6 +636,14 @@ which is the private target the shared-home write guard exempts. A test that
 edits the agents directory waits for the managed `kirocrew.json` first (the
 spec rebuild runs after the dashboard is serving).
 
+A chat turn is the real thing too: `gw.post("/api/chat", {"message", "slot"})`
+returns the SSE response, and the test reads `resp.content` line by line
+(`data: {...}` events, `data: [DONE]` last). The fake model's `[[SLOW]]`
+prompt streams thirty chunks half a second apart, which is what a timing
+contract across two slots is built on; a cold session start costs several
+seconds before the first chunk, so bound a turn generously and assert on the
+ORDER of what the two streams saw, never on absolute latency.
+
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by
 the bare name `conftest`; a second top-level `conftest` shadows it and 160
