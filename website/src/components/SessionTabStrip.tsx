@@ -147,7 +147,12 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
   if (tabs.length < 2) return null
 
   return (
-    <div className="relative shrink-0 min-w-0 border-b border-border" style={{ background: 'var(--bg)' }}>
+    // The bottom divider belongs to the shell that mounts the strip (ChatPage):
+    // while the desktop sidebar is collapsed the shell insets the strip past
+    // the stationary toggle, and a border on this root would stop short of
+    // the gutter and leave a notch. Drawing it once, on the shell, keeps the
+    // hairline continuous across the full width.
+    <div className="relative shrink-0 min-w-0" style={{ background: 'var(--bg)' }}>
       <div
         ref={attachEdges}
         role="tablist"

@@ -75,4 +75,99 @@ test.describe('Active slot persistence across surface switches', () => {
       page.locator(`[data-slot-key="${selectedKey}"] .session-row.session-active`),
     ).toBeVisible({ timeout: 5000 })
   })
+
+  test('keeps scrolled session tabs clear of the collapsed sidebar toggle', async ({ page, request }) => {
+    const seededKeys: string[] = []
+    const stamp = Date.now()
+
+    try {
+      for (let i = 0; i < 8; i++) {
+        const slot = await (
+          await request.post('/api/chat/slots', { data: { agent: 'default' } })
+        ).json()
+        seededKeys.push(slot.key)
+        await request.patch(`/api/chat/slots/${slot.key}/title`, {
+          data: { title: `overlap-regression-${stamp}-${i}` },
+        })
+      }
+
+      await page.setViewportSize({ width: 900, height: 700 })
+      await page.evaluate(() => localStorage.setItem('mc-sidebar-pinned', 'true'))
+      await page.reload({ waitUntil: 'domcontentloaded' })
+
+      const seededRows = seededKeys.map(key => page.locator(`[data-slot-key="${key}"] .session-row`))
+      await expect(seededRows[0]).toBeVisible({ timeout: 10000 })
+      await seededRows[0].click()
+      for (const row of seededRows.slice(1)) await row.click({ button: 'middle' })
+
+      const strip = page.getByTestId('session-tab-strip')
+      await expect(strip.getByRole('tab')).toHaveCount(8)
+      await page.getByRole('button', { name: 'Hide sessions sidebar', exact: true }).click()
+      const toggle = page.getByRole('button', { name: 'Show sessions sidebar', exact: true })
+      await expect(toggle).toBeVisible()
+
+      // The strip's inset glides on the same 240ms curve as the sidebar morph
+      // and the aria-label flips at the START of that slide, so a measurement
+      // taken then reads mid-transition geometry. As in the sidebar alignment
+      // specs, poll until two consecutive frames measure identically, then
+      // assert against the settled numbers.
+      type Geometry = {
+        toggle: { x: number; width: number }
+        strip: { x: number; width: number; scrollLeft: number; maxScroll: number }
+        tabs: { left: number; right: number }[]
+      }
+      const measure = (): Promise<Geometry> =>
+        page.evaluate(() => {
+          const toggleEl = document.querySelector<HTMLElement>('button[aria-label="Show sessions sidebar"]')
+          const stripEl = document.querySelector<HTMLElement>('[data-testid="session-tab-strip"]')
+          if (!toggleEl || !stripEl) throw new Error('toggle or strip missing')
+          const t = toggleEl.getBoundingClientRect()
+          const s = stripEl.getBoundingClientRect()
+          return {
+            toggle: { x: t.x, width: t.width },
+            strip: { x: s.x, width: s.width, scrollLeft: stripEl.scrollLeft, maxScroll: stripEl.scrollWidth - stripEl.clientWidth },
+            tabs: Array.from(stripEl.querySelectorAll<HTMLElement>('[role="tab"]')).map(tab => {
+              const r = tab.getBoundingClientRect()
+              return { left: r.left, right: r.right }
+            }),
+          }
+        })
+      const settleAndMeasure = async (): Promise<Geometry> => {
+        const frames: { prev: Geometry | null; cur: Geometry | null } = { prev: null, cur: null }
+        await expect
+          .poll(async () => {
+            frames.prev = frames.cur
+            frames.cur = await measure()
+            return frames.prev !== null && JSON.stringify(frames.cur) === JSON.stringify(frames.prev) ? 'settled' : 'moving'
+          }, { timeout: 15000, message: 'toggle and tab strip geometry should settle after the sidebar collapses' })
+          .toBe('settled')
+        return frames.cur as Geometry
+      }
+
+      const assertClearance = (geometry: Geometry) => {
+        const toggleRight = geometry.toggle.x + geometry.toggle.width
+        const stripRight = geometry.strip.x + geometry.strip.width
+        const firstPaintedTabLeft = Math.min(
+          ...geometry.tabs
+            .filter(tab => tab.right > geometry.strip.x && tab.left < stripRight)
+            .map(tab => Math.max(tab.left, geometry.strip.x)),
+        )
+        expect(firstPaintedTabLeft - toggleRight).toBeGreaterThanOrEqual(4)
+      }
+
+      const atStart = await settleAndMeasure()
+      expect(atStart.strip.scrollLeft).toBe(0)
+      assertClearance(atStart)
+
+      // maxScroll is read from the settled geometry: the strip's clientWidth
+      // shrinks as the inset animates in, so a value read earlier would be stale.
+      expect(atStart.strip.maxScroll).toBeGreaterThan(0)
+      await strip.evaluate((element, left) => { element.scrollLeft = left }, atStart.strip.maxScroll)
+      const atEnd = await settleAndMeasure()
+      expect(atEnd.strip.scrollLeft).toBe(atStart.strip.maxScroll)
+      assertClearance(atEnd)
+    } finally {
+      for (const key of seededKeys) await request.delete(`/api/chat/slots/${key}`)
+    }
+  })
 })
