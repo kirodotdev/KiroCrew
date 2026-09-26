@@ -1188,6 +1188,20 @@ def decisions_consent_path() -> Path:
     return config_dir() / "decisions_consent.json"
 
 
+def decisions_questions_dir() -> Path:
+    """Return the ``options.rank`` question registry directory -- not created here.
+
+    One JSON question definition per ``*.json`` file, read by
+    ``decisions.points.options_rank.load_registry`` and never written by Kiro Crew:
+    the owner edits it by hand. It sits under the decision-log directory, so it
+    inherits that directory's seals -- the OS sandbox mounts ``decisions`` read-only
+    and the file-edit gate write-protects everything under it -- because a question
+    an agent could author would let it steer the owner's pick. Respects
+    ``KIROCREW_HOME``.
+    """
+    return config_dir() / "decisions" / "questions"
+
+
 def file_delivery_consent_path() -> Path:
     """Return path to file_delivery_consent.json -- flagged-file delivery consent.
 

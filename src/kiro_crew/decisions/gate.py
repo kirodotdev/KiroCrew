@@ -70,6 +70,7 @@ DECISION_POINT_NAMES = (
     "compaction.keep",
     "memory.recall",
     "nudge.wake",
+    "options.rank",
 )
 
 #: The ONE point that has two providers, and therefore the one point whose
@@ -137,6 +138,13 @@ POINTS_NEEDING_MEMORY_TEXT = frozenset({"memory.recall"})
 #: forge they do not control. An install that granted any other scope is inert
 #: here, which is the property every scope on this keystone exists to give.
 POINTS_NEEDING_NUDGE_EVIDENCE = frozenset({"nudge.wake"})
+
+#: Points whose request carries a FINALIZED REPLY AND ITS OFFERED OPTIONS -- the
+#: reply text, the option labels, this session's earlier offered-then-picked pairs
+#: and its ledger goal -- and which therefore need the keystone's ``options_text``
+#: scope (``consent.consented_options_text``). A set of its own because no other
+#: scope was reviewed as the agent's reply or as a record of the owner's own picks.
+POINTS_NEEDING_OPTIONS_TEXT = frozenset({"options.rank"})
 
 #: The model id sent when the config leaves ``provider.model`` empty -- the same
 #: fallback ``impl_jev`` applies, so the id the scrub clears is the id sent.
@@ -356,6 +364,7 @@ POINT_SCOPE_KEYS: dict[str, str] = {
     **{p: _consent.STATE_KEY_COMPACTION for p in POINTS_NEEDING_COMPACTION},
     **{p: _consent.STATE_KEY_MEMORY_TEXT for p in POINTS_NEEDING_MEMORY_TEXT},
     **{p: _consent.STATE_KEY_NUDGE_EVIDENCE for p in POINTS_NEEDING_NUDGE_EVIDENCE},
+    **{p: _consent.STATE_KEY_OPTIONS_TEXT for p in POINTS_NEEDING_OPTIONS_TEXT},
 }
 
 
@@ -377,6 +386,10 @@ _POINT_SCOPES: dict[str, tuple[str, str]] = {
     **{
         p: ("consented_nudge_evidence", "evidence from other sessions and third parties")
         for p in POINTS_NEEDING_NUDGE_EVIDENCE
+    },
+    **{
+        p: ("consented_options_text", "the reply and its offered options")
+        for p in POINTS_NEEDING_OPTIONS_TEXT
     },
 }
 

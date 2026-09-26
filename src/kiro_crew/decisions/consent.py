@@ -22,12 +22,14 @@ What makes it un-flippable by the agent:
 * every read fails soft to ``{}`` -> **NOT CONSENTED**. A missing, unreadable,
   truncated or hand-mangled file must never mean "send".
 
-Four scopes sit on the keystone beside the switch, and each is a SEPARATE yes:
+Five scopes sit on the keystone beside the switch, and each is a SEPARATE yes:
 ``tool_args`` (the arguments of the one call about to run), ``compaction`` (a whole
 slot transcript, conversation text and every tool input in it), ``memory_text``
-(the text of recalled memories) and ``nudge_evidence`` (a watched session's
+(the text of recalled memories), ``nudge_evidence`` (a watched session's
 transcript tail, and a watched pull request's typed facts plus a fixed-width
-fingerprint of its comment bodies, never their text). A ceiling sits beside them --
+fingerprint of its comment bodies, never their text) and ``options_text`` (a
+finalized reply, the options it offers, this session's earlier offered-then-picked
+pairs and its ledger goal). A ceiling sits beside them --
 ``history_budget_chars``, on prior turns. Absent reads as not consented in every
 case, so a record written before a scope existed authorizes exactly the text its
 owner reviewed and never a category added later.
@@ -105,6 +107,16 @@ STATE_KEY_MEMORY_TEXT = "memory_text"
 #: three is inert here.
 STATE_KEY_NUDGE_EVIDENCE = "nudge_evidence"
 
+#: Whether the owner consented to sending a FINALIZED REPLY AND ITS OFFERED OPTIONS
+#: -- the reply text, the ``[OPTIONS:]`` labels, this session's earlier
+#: offered-then-picked pairs and its ledger goal -- the category ``options.rank``
+#: needs and no other point does. A fifth leaf for the reason there is a fourth: the
+#: message excerpt the main switch records is text the owner typed, while a reply is
+#: text the AGENT wrote and the pairs are a record of the owner's own choices. Absent
+#: reads as NOT consented, so an install that granted any of the other four is inert
+#: here.
+STATE_KEY_OPTIONS_TEXT = "options_text"
+
 #: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
 #: because ``0`` is a ceiling an owner may choose and no number can mean "not asked".
 #: Resolved inside the read-modify-write, so the value written comes from the same
@@ -136,8 +148,12 @@ KEEP_MEMORY_TEXT: object = object()
 #: cleared.
 KEEP_NUDGE_EVIDENCE: object = object()
 
+#: "Keep whatever reply-and-options scope is recorded", on the same terms and for the
+#: same reason as :data:`KEEP_MEMORY_TEXT`, resolved inside the same lock.
+KEEP_OPTIONS_TEXT: object = object()
+
 #: "Keep whatever the keystone records" -- the switch AND the endpoint it is bound to.
-#: A distinct object for the reason the four above are: ``False`` is a state an owner
+#: A distinct object for the reason the sentinels above are: ``False`` is a state an owner
 #: may choose, so no boolean can also mean "not asked".
 #:
 #: It exists so a write that only moves a SCOPE never carries the switch. A caller that
@@ -311,6 +327,18 @@ def consented_nudge_evidence(state: "dict | None" = None) -> bool:
     return data.get(STATE_KEY_NUDGE_EVIDENCE) is True
 
 
+def consented_options_text(state: "dict | None" = None) -> bool:
+    """Whether the owner consented to sending a reply and its options. Absent reads False.
+
+    Only a literal ``True`` consents, on the same terms as
+    :func:`consented_tool_args`. Not implied by any other scope: none of them was
+    reviewed as the agent's own reply text, nor as a record of which option the owner
+    picked earlier in the session.
+    """
+    data = load_state() if state is None else state
+    return data.get(STATE_KEY_OPTIONS_TEXT) is True
+
+
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
     """Whether the keystone consents to sending to *endpoint*, exactly.
 
@@ -358,6 +386,7 @@ def save_enabled(
     compaction: object = False,
     memory_text: object = False,
     nudge_evidence: object = False,
+    options_text: object = False,
 ) -> dict:
     """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
 
@@ -419,6 +448,9 @@ def save_enabled(
     their own transcript scored for compaction without the tail of every session they
     are watching leaving the machine.
 
+    *options_text* is the REPLY-AND-OPTIONS scope ``options.rank`` needs, on the same
+    terms again, down to :data:`KEEP_OPTIONS_TEXT` and the lock.
+
     This is what makes the route safe rather than careful. A caller that must supply
     ``enabled`` can only supply what it last read, so a view read before a revoke
     re-grants egress; with the switch resolved here, no scope write can move it.
@@ -452,6 +484,9 @@ def save_enabled(
     keep_nudge = nudge_evidence is KEEP_NUDGE_EVIDENCE
     if not keep_nudge and not isinstance(nudge_evidence, bool):
         raise ValueError("nudge_evidence must be a bool")
+    keep_options = options_text is KEEP_OPTIONS_TEXT
+    if not keep_options and not isinstance(options_text, bool):
+        raise ValueError("options_text must be a bool")
     target = normalize_endpoint(endpoint)
     if enabled is True and not target:
         raise ValueError("consent needs the endpoint it is given for")
@@ -486,6 +521,8 @@ def save_enabled(
             memory_text = consented_memory_text(state)
         if keep_nudge:
             nudge_evidence = consented_nudge_evidence(state)
+        if keep_options:
+            options_text = consented_options_text(state)
         state[STATE_KEY_ENABLED] = enabled
         state[STATE_KEY_ENDPOINT] = target if enabled else ""
         state[STATE_KEY_HISTORY_BUDGET] = history_budget_chars if enabled else 0
@@ -493,5 +530,6 @@ def save_enabled(
         state[STATE_KEY_COMPACTION] = compaction is True if enabled else False
         state[STATE_KEY_MEMORY_TEXT] = memory_text is True if enabled else False
         state[STATE_KEY_NUDGE_EVIDENCE] = nudge_evidence is True if enabled else False
+        state[STATE_KEY_OPTIONS_TEXT] = options_text is True if enabled else False
         atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state
