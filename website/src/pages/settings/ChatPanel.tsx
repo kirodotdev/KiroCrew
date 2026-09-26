@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Btn, Input } from '../../components/ui'
@@ -21,6 +22,7 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
+import { normalizeModelKey } from '../../lib/model'
 import { isMac } from '../../utils/platform'
 import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
 import { platformShortcut } from '../../utils/platform'
@@ -31,6 +33,7 @@ import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
  *
@@ -918,9 +921,63 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     if (!modelOptions.includes(kept)) modelOptions.unshift(kept)
   }
 
-  const defaultModelMut = useMutation(
-    optimisticConfigOpts('agent.model', () => i18nT('pages.settings.chatPanel.failed_to_save_default_model'))
-  )
+  const defaultModelOpts = optimisticConfigOpts('agent.model', () => i18nT('pages.settings.chatPanel.failed_to_save_default_model'))
+  const defaultModelMut = useMutation({
+    ...defaultModelOpts,
+    // The default agent's resolved model falls back to `agent.model`, so the
+    // pin notice below must re-ask the resolver once the new global lands.
+    onSuccess: (data: unknown, v: string, token: number) => {
+      qc.invalidateQueries({ queryKey: ['resolved-model'] })
+      return defaultModelOpts.onSuccess(data, v, token)
+    },
+  })
+
+  // A new chat on the default agent does not necessarily start on `agent.model`:
+  // the agent's own pin, then its template's pin, outrank it. The backend owns
+  // that precedence (`GET /api/agents/resolved-model`, the same resolver every
+  // new session runs through), so the notice below compares its answer with
+  // this select rather than re-deriving the chain from the roster — which would
+  // miss a template pin and would notice a pin the active harness cannot claim.
+  const agentsQ = useQuery<{ agents?: KiroCrewAgent[]; default_agent?: string }>({
+    queryKey: ['kirocrew-agents'],
+    queryFn: () => api.kirocrewAgents(),
+  })
+  const pinAgentName = agentsQ.data?.default_agent || 'default'
+  const pinAgent = agentsQ.data?.agents?.find(a => a.name === pinAgentName)
+  const pinAgentModel = pinAgent?.model || ''
+  // '' asks the server for its configured default agent, so this cannot
+  // disagree with the roster's `default_agent` even while that read is in flight.
+  const resolvedQ = useQuery<{ model?: string }>({
+    queryKey: ['resolved-model', 'settings-default-agent'],
+    queryFn: () => api.agentResolvedModel(''),
+  })
+  // Compared as canonical keys, not raw ids: a pin spelled `claude-opus-4.8`
+  // names the same model as the setting's `claude-opus-4-8[1m]` or `opus`.
+  const resolvedModel = resolvedQ.data?.model || ''
+  const resolvedKey = normalizeModelKey(resolvedModel)
+  const globalKey = normalizeModelKey(defaultModel)
+  // Only an explicit global default can be overridden: on Auto the setting
+  // itself says the agent config decides, so whatever resolves is expected. The
+  // SHOWN value is also accepted so a pick still in flight does not flash a
+  // notice against the answer the server has not recomputed yet.
+  const agentPinOverrides =
+    globalKey !== 'auto' &&
+    !!resolvedKey && resolvedKey !== 'auto' &&
+    resolvedKey !== globalKey &&
+    resolvedKey !== normalizeModelKey(shownDefaultModel)
+  // Which tier answered. The roster is authoritative for the member pin; a
+  // resolved model that is not the member's pin came from its template, which
+  // this panel cannot edit — so that notice has no button.
+  const memberPinOverrides = agentPinOverrides && normalizeModelKey(pinAgentModel) === resolvedKey
+  const clearAgentPinMut = useMutation({
+    // '' is the inherit sentinel: the agent falls back to the global default.
+    mutationFn: () => api.updateKirocrewAgent(pinAgentName, { model: '' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+      qc.invalidateQueries({ queryKey: ['resolved-model'] })
+    },
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_clear_agent_model_pin')),
+  })
 
   const defaultEffort = mcCfg?.agent?.reasoning_effort ?? ''
   const shownDefaultEffort = overlay.shown('agent.reasoning_effort', defaultEffort)
@@ -1074,6 +1131,26 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <Btn onClick={() => mcQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
+      {agentsQ.isError && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {/* No hand-off: same drafts as above share this panel. */}
+          <ErrorNotice
+            className="flex-1 min-w-[16rem]"
+            message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
+          />
+          <Btn onClick={() => agentsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
+        </div>
+      )}
+      {resolvedQ.isError && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {/* No hand-off: same drafts as above share this panel. */}
+          <ErrorNotice
+            className="flex-1 min-w-[16rem]"
+            message={i18nT('pages.settings.chatPanel.failed_to_load_config')}
+          />
+          <Btn onClick={() => resolvedQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
+        </div>
+      )}
       {(availableModelsQ.isError || availableModelsQ.isDegraded) && (
         <div className="mb-4 flex flex-wrap items-center gap-3">
           {/* No hand-off: the editable drafts in this panel stay mounted while
@@ -1120,6 +1197,35 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             onChange={v => defaultModelMut.mutate(v)}
             disabled={!mcQ.isSuccess}
           />
+          {agentPinOverrides && pinAgent && (
+            <div
+              className="mt-1 mb-3 flex flex-wrap items-center gap-3 text-[13px] text-warn"
+              role="status"
+              data-testid="agent-model-pin-notice"
+            >
+              <span className="min-w-0 flex-1 break-words">
+                <Trans
+                  i18nKey={memberPinOverrides
+                    ? 'pages.settings.chatPanel.agent_model_pin_overrides_default'
+                    : 'pages.settings.chatPanel.agent_template_pin_overrides_default'}
+                  components={{
+                    agent: <span className="font-mono">{crewDisplayName(pinAgent)}</span>,
+                    model: <span className="font-mono">{resolvedModel}</span>,
+                  }}
+                />
+              </span>
+              {memberPinOverrides && (
+                <Btn
+                  type="button"
+                  className="shrink-0"
+                  onClick={() => clearAgentPinMut.mutate()}
+                  disabled={clearAgentPinMut.isPending}
+                >
+                  {i18nT('pages.settings.chatPanel.remove_the_agents_pin')}
+                </Btn>
+              )}
+            </div>
+          )}
           <SettingsMultiSelect
             label={i18nT('pages.settings.chatPanel.selectable_models')}
             description={i18nT('pages.settings.chatPanel.selectable_models_description')}

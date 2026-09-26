@@ -7327,12 +7327,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Gerenciar nas configurações",
       "manage_visible_models": "Gerenciar modelos visíveis",
-      "default_for_agent": "Modelo padrão de <agent/>",
+      "default_for_agent": "Fixado no agente <agent/>",
       "filter_models": "Filtrar modelos",
       "model_list": "Lista de modelos",
       "models_failed": "Não foi possível carregar os modelos da instância.",
       "pin_model_unavailable": "<model/> não está sendo oferecido no momento",
-      "set_default_for_agent": "Definir <model/> como modelo padrão de <agent/>",
+      "set_default_for_agent": "Fixar <model/> no agente <agent/> (substitui o padrão global)",
       "set_default_for_new_sessions": "Padrão global para novas sessões…",
       "type_to_filter": "Digite para filtrar…"
     },
@@ -14349,6 +14349,8 @@
       },
       "chatPanel": {
         "advanced": "Avançado",
+        "agent_model_pin_overrides_default": "Novos chats no agente <agent/> usam o próprio modelo fixado <model/>, não esta configuração.",
+        "agent_template_pin_overrides_default": "Novos chats no agente <agent/> usam <model/>, fixado pelo modelo de agente, não esta configuração.",
         "discovery": "Descoberta",
         "rail_label": "Configurações do chat",
         "side_panel": "Painel lateral",
@@ -14572,7 +14574,9 @@
         "minimap_location": "Localização do minimapa",
         "minimap_location_desc": "Na borda direita, o minimapa substitui a barra de rolagem.",
         "message_font_size": "Tamanho da fonte das mensagens",
-        "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados."
+        "message_font_size_desc": "Tamanho da fonte da conversa, em todas as sessões: texto das mensagens, código, tabelas, respostas sugeridas e o campo de entrada de mensagens. A largura de conteúdo compacta cresce na mesma proporção. A barra lateral, a lista de sessões e o restante da interface não são afetados.",
+        "remove_the_agents_pin": "Remover a fixação do agente",
+        "failed_to_clear_agent_model_pin": "Não foi possível remover o modelo fixado do agente"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

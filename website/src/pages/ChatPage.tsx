@@ -259,7 +259,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import { useSlotDeferredValue } from '../hooks/useSlotDeferredValue'
 import { useLatchedRunning } from '../hooks/useLatchedRunning'
-import type { KiroCrewAgent } from '../components/AgentSelector'
+import { crewDisplayName, type KiroCrewAgent } from '../components/AgentSelector'
 import type { ModelInfo } from '../providers/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from '../components/AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
@@ -8181,7 +8181,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: SETTINGS_DEFAULT_MODEL_ID }))
                 }}
-                agentName={_modelPinAgent}
+                agentName={_modelPinCfg ? crewDisplayName(_modelPinCfg) : _modelPinAgent}
                 pinModelName={_modelPinActive || 'auto'}
                 pinModelUnavailable={pinIsWithheld(_modelPinActive, _pinShownModel)}
                 pinnedToAgent={_modelPinPinned}

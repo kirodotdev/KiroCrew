@@ -7113,12 +7113,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "设置中管理",
       "manage_visible_models": "管理显示的模型",
-      "default_for_agent": "<agent/> 的默认模型",
+      "default_for_agent": "已置顶到 <agent/> 代理",
       "filter_models": "筛选模型",
       "model_list": "模型列表",
       "models_failed": "无法加载实例的模型。",
       "pin_model_unavailable": "<model/> 目前未提供",
-      "set_default_for_agent": "将 <model/> 设为 <agent/> 的默认模型",
+      "set_default_for_agent": "将 <model/> 置顶到 <agent/> 代理（覆盖全局默认）",
       "set_default_for_new_sessions": "新会话的全局默认…",
       "type_to_filter": "输入以筛选…"
     },
@@ -13925,6 +13925,8 @@
       },
       "chatPanel": {
         "advanced": "高级",
+        "agent_model_pin_overrides_default": "<agent/> 代理上的新聊天使用它自己已置顶的模型 <model/>，而不是此设置。",
+        "agent_template_pin_overrides_default": "<agent/> 代理上的新聊天使用其模板置顶的模型 <model/>，而不是此设置。",
         "discovery": "发现",
         "rail_label": "聊天设置",
         "side_panel": "侧边面板",
@@ -14148,7 +14150,9 @@
         "minimap_location": "小地图位置",
         "minimap_location_desc": "位于右边缘时，小地图将取代滚动条。",
         "message_font_size": "消息字号",
-        "message_font_size_desc": "所有会话中对话内容的字号：消息文本、代码、表格、建议回复和消息输入框。紧凑内容宽度会随之增大。侧边栏、会话列表和其余界面不受影响。"
+        "message_font_size_desc": "所有会话中对话内容的字号：消息文本、代码、表格、建议回复和消息输入框。紧凑内容宽度会随之增大。侧边栏、会话列表和其余界面不受影响。",
+        "remove_the_agents_pin": "移除该代理的置顶",
+        "failed_to_clear_agent_model_pin": "无法清除代理已置顶的模型"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

@@ -7220,12 +7220,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "In Einstellungen verwalten",
       "manage_visible_models": "Sichtbare Modelle verwalten",
-      "default_for_agent": "Standardmodell für <agent/>",
+      "default_for_agent": "An den Agenten <agent/> angeheftet",
       "filter_models": "Modelle filtern",
       "model_list": "Modellliste",
       "models_failed": "Die Modelle der Instanz konnten nicht geladen werden.",
       "pin_model_unavailable": "<model/> wird derzeit nicht angeboten",
-      "set_default_for_agent": "<model/> als Standardmodell für <agent/> festlegen",
+      "set_default_for_agent": "<model/> an den Agenten <agent/> anheften (überschreibt den globalen Standard)",
       "set_default_for_new_sessions": "Globaler Standard für neue Sitzungen…",
       "type_to_filter": "Zum Filtern tippen…"
     },
@@ -14137,6 +14137,8 @@
       },
       "chatPanel": {
         "advanced": "Erweitert",
+        "agent_model_pin_overrides_default": "Neue Chats mit dem Agenten <agent/> verwenden dessen eigenes angeheftetes Modell <model/>, nicht diese Einstellung.",
+        "agent_template_pin_overrides_default": "Neue Chats mit dem Agenten <agent/> verwenden <model/>, angeheftet durch die Vorlage des Agenten, nicht diese Einstellung.",
         "discovery": "Entdecken",
         "rail_label": "Chat-Einstellungen",
         "side_panel": "Seitenleiste",
@@ -14360,7 +14362,9 @@
         "minimap_location": "Position der Minimap",
         "minimap_location_desc": "Am rechten Rand ersetzt die Minimap die Scrollleiste.",
         "message_font_size": "Schriftgröße der Nachrichten",
-        "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen."
+        "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen.",
+        "remove_the_agents_pin": "Anheftung des Agenten entfernen",
+        "failed_to_clear_agent_model_pin": "Angeheftetes Modell des Agenten konnte nicht entfernt werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",
