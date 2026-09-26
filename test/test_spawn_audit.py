@@ -1610,6 +1610,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "service/linux.py::_systemctl",
         "service/linux.py::_write_unit_via_sudo",
         "service/macos.py::_launchctl",
+        # Task Scheduler twin of _launchctl and _systemctl: the single
+        # chokepoint for `schtasks.exe /<verb> /TN \KiroCrew\gateway ...`. The
+        # exe is resolved through trusted_system_bin rather than PATH, and argv
+        # is a fixed verb set plus a module-constant task name and, for
+        # /Create, a definition path this module generates in its own mkdtemp.
+        # Nothing agent-influenced reaches it, and the flow runs from
+        # `kirocrew service <verb>` on a TTY, not from an agent turn.
+        "service/windows.py::_schtasks",
         "session_pid.py::_our_orphan_pids",
         "session_pid.py::find_orphan_mcp_candidates",
         "session_pid.py::kill_orphan_mcps",
