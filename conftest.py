@@ -2080,8 +2080,8 @@ def _restore_log_record_factory():
     installing over the already-installed wrapper captured it as its own base factory.
 
     **Sharding hides this class, so the floor cannot rely on a full-suite run to find it.**
-    ``ci.yml`` assigns whole files to Linux/Windows shards before import (macOS keeps
-    pytest-split groups), and a leak only damages tests in the SAME process, so PR CI
+    CI assigns whole files to a shard before import on every platform, and a leak only
+    damages tests in the SAME process, so PR CI
     usually cannot observe it at all; the
     release job runs the suite whole and is otherwise the first place it appears -- as
     failures in files unrelated to the cause, long after the diff merged. Restoring here
