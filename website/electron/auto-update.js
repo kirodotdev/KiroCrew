@@ -378,7 +378,13 @@ const DEFAULT_FEED_BASE = "https://updates.crew.kiro.dev/feed";
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
-
+// How long the pre-install freshness check (verifyStageIsLatest) may take
+// before the install proceeds on the stage it already has. Bounded on BOTH
+// install paths: one of them runs inside before-quit, where a feed that hangs
+// must not hold the app open, and on the other a click must not sit dead
+// waiting on a socket. Bytes the user already downloaded still install when the
+// network is gone.
+const FRESHNESS_CHECK_TIMEOUT_MS = 8 * 1000;
 /**
  * Platforms with a working publish lane + updater.
  *
@@ -1541,8 +1547,121 @@ function initAutoUpdate(deps) {
   let downloadWasAutomatic = false;
   let foundVersion = null; // last version surfaced to the user, awaiting consent
   let installing = false;
+  // The install claiming `installing` was dispatched from the quit handler, not
+  // from a click. Read only on the failure path, where the two want opposite
+  // things: a click's install can be recovered from in place (bring the gateway
+  // back, leave the app running, let the user retry), but this one has a quit
+  // waiting behind it that already stopped the gateway and already got its
+  // preventDefault. Recovery here would leave the app alive with a dead
+  // dashboard — see reportUpdaterFailure.
+  let deferredInstalling = false;
   let quitHandled = false;
   let checking = false;
+  // Resolves when the check that owns `checking` settles; null whenever no check
+  // is in flight.
+  //
+  // Held so a caller that finds a check ALREADY running can wait for its answer.
+  // Without it the only two options are both wrong for the freshness gates:
+  // re-entering is refused outright (safeCheck's first line), and proceeding
+  // reads `foundVersion`/`stagedVersion` while the running check is in the middle
+  // of replacing them — which is how the download gate could spend the ~350MB it
+  // exists to protect on the very stale build it was checking for.
+  let checkInFlight = null;
+  let releaseCheckInFlight = null;
+  // A pre-install freshness check is in flight (see verifyStageIsLatest). Kept
+  // apart from `checking` because it doubles as the install path's re-entrancy
+  // guard: the verify awaits the feed BEFORE `installing` is set, so without it
+  // two fast clicks would both reach the dispatch.
+  let verifyingStage = false;
+
+  //: A quit that arrived while the MANUAL path owned the install, prevented rather
+  //: than obeyed. That path has multi-second awaits (the freshness verify, then
+  //: stopGateway) before it reaches quitAndInstall, and simply standing down inside
+  //: them lets Electron exit first -- the user asked to install and restart and gets
+  //: a plain quit with the stage uninstalled. So the quit is held and replayed by
+  //: `honorDeferredQuit` once the path either installs (which quits anyway) or aborts.
+  let quitDeferredForInstall = false;
+  // Suppress the automatic download of a newer build for the CURRENT verify.
+  // Set only by the quit-time caller: discovering a newer release seconds
+  // before the process exits must not start a ~350MB fetch the exit will kill.
+  let verifyQuiet = false;
+  // A freshness check whose bounded WAIT expired while its request stayed in
+  // flight (see verifyStageIsLatest). The fail-open contract sends that caller
+  // straight on to install, so the abandoned request's outcome can now land
+  // past the install dispatch -- precisely what the post-stopGateway `checking`
+  // abort exists to prevent. That abort cannot be the answer here (aborting is
+  // what fail-open refuses to do), so the late outcome is made INERT instead:
+  // the handlers below decline to touch the stage, the install, or a download
+  // for it. Cleared by whichever lands first, the request settling or the event
+  // it produced.
+  let abandonedCheck = false;
+  // The error an abandoned request REJECTED with, captured by its own rejection
+  // continuation. This, not the timing of the flag above, is what identifies an
+  // error as the abandoned check's own.
+  //
+  // Why identity and not "the flag cleared by now": the flag clears on either
+  // settle mode, and it clears in a microtask, so reading it one macrotask later
+  // is a claim about electron-updater's emit/reject ORDER — undocumented, mocked
+  // in every test, and wrong in two reachable races even today. A genuine
+  // installer error that arrives just before the abandoned request's verdict
+  // lands reads as "the flag cleared, so that was the check's" and is swallowed
+  // with the gateway stopped; a second, genuine error arriving inside the same
+  // tick as the first is swallowed the same way. A rejection object is evidence
+  // that survives reordering: whether the library emits before it rejects
+  // (today), after, or a tick later, the abandoned request's own failure is the
+  // one whose object this holds. Null until it rejects, and null again once an
+  // `error` event has been matched against it -- one rejection explains exactly
+  // one event.
+  let abandonedError = null;
+  // The error the CURRENT ordinary check rejected with, claimed by `safeCheck`'s own
+  // catch. The sibling of `abandonedError`, for the check nobody gave up on.
+  //
+  // It exists because the guard against this hazard is one-directional. `safeCheck`
+  // refuses to START a check while `installing` (see its early return, which names
+  // this exact consequence), but nothing stops an install from starting while a check
+  // is already in flight — and in that order the check's own feed failure reaches the
+  // shared `error` event while `installing` outranks `checking`, so it is reported as
+  // the install's and fires the host's gateway recovery in the middle of the
+  // dispatch's `stopGateway()`.
+  //
+  // Cleared when the NEXT check is claimed, never in `checkSettled()`: the deferred
+  // comparison that reads it runs one macrotask AFTER the settle, so clearing on
+  // settle would blind the very comparison it exists for.
+  let inFlightCheckError = null;
+  /**
+   * Release the state a check owns FOR ITS WHOLE LIFETIME. Idempotent, because
+   * on the abandoned path either the request's own continuation or the handler
+   * for the event it fired gets here first.
+   */
+  function checkSettled() {
+    checking = false;
+    verifyQuiet = false;
+    abandonedCheck = false;
+    // Wake anyone waiting on this check BEFORE returning, and drop the promise so
+    // a later waiter cannot latch onto an already-resolved one. Nulled first so
+    // the callback cannot observe a settled check that still looks in flight.
+    const release = releaseCheckInFlight;
+    checkInFlight = null;
+    releaseCheckInFlight = null;
+    if (release) release();
+  }
+  /**
+   * Claim `checking` and publish the promise that resolves when it settles.
+   *
+   * Every `checking = true` goes through here: the promise is only useful to a
+   * waiter if it exists for the WHOLE window the flag does, and a flag set
+   * directly would be a window with nothing to wait on.
+   */
+  function claimCheck() {
+    checking = true;
+    // The previous check's claimed error must not answer for this one.
+    inFlightCheckError = null;
+    checkInFlight = new Promise((resolve) => { releaseCheckInFlight = resolve; });
+  }
+  // A manual download's own pre-download check is in flight. The download path's
+  // re-entrancy guard, for the same reason `verifyingStage` is the install
+  // path's: the gate awaits the feed BEFORE `downloading` is set.
+  let preparingDownload = false;
   // The channel the LAST configureFeed() pointed the updater at. Captured at
   // check time because the update-available handler's direction gate must
   // compare the candidate against the channel its FEED was configured for, not
@@ -1640,15 +1759,28 @@ function initAutoUpdate(deps) {
       // install prompt) from "the stage is superseded" (drop it and re-find).
       log.info(`[update] ${stagedVersion} staged — checking whether it is still latest`);
     }
-    checking = true;
+    claimCheck();
     try {
       configureFeed(); // re-read flavor/channel each check
-      emit("checking");
+      // Not for a freshness gate's own re-check: `checking` is what the renderer
+      // renders as "the user asked whether there is an update", and it UNMOUNTS
+      // the update card while it is true (showUpdateCard in AboutPanel). Emitted
+      // from inside a Download click, the user's own click makes the offer and
+      // its button vanish for a feed round trip and then come back — read as "my
+      // click dismissed the update". The log line still records every check.
+      if (!preparingDownload) emit("checking");
       await autoUpdater.checkForUpdates();
     } catch (err) {
+      // Claim this failure as THIS check's before reporting it. electron-updater
+      // emits `error` and then rejects with the same object
+      // (`AppUpdater.checkForUpdates`: `this.emit("error", e, …); throw e`), so the
+      // shared event handler has already seen it and deferred its decision by one
+      // macrotask precisely so this line can run first. The claim is what lets that
+      // handler tell a check's own feed failure from the installer's.
+      inFlightCheckError = err;
       emitError("check", err);
     } finally {
-      checking = false;
+      checkSettled();
     }
   }
 
@@ -1666,9 +1798,19 @@ function initAutoUpdate(deps) {
    * fires on a 4-hourly timer and can therefore re-enter: an in-flight download
    * is not restarted, an already-staged version is not re-fetched, and a call
    * with nothing discovered discovers instead of blind-downloading.
+   *
+   * A CLICK also re-checks first (see the freshness gate below), so the bytes
+   * that get spent are the newest ones. The automatic caller does not: it is
+   * invoked from inside a check, so its discovery is already current.
    */
   async function startDownload({ automatic = false } = {}) {
     if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
+    // A click's own re-check is still in flight (below). Standing down loses
+    // nothing — that call downloads whatever the check surfaces — and covers
+    // both re-entrant callers: a second click, and the automatic caller the
+    // check's own update-available handler fires, which would otherwise fetch
+    // the version the click is in the middle of replacing.
+    if (preparingDownload) return;
     if (updateReady && stagedVersion) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });
       return;
@@ -1680,6 +1822,53 @@ function initAutoUpdate(deps) {
       await safeCheck();
       return;
     }
+    // FRESHNESS GATE — never spend a ~350MB transfer on a build the feed has
+    // already moved past. With auto-download OFF the "found" card waits for a
+    // click that can come hours later; downloading what it says would fetch the
+    // stale build, and the pre-install gate would then correctly refuse it and
+    // fetch the newer one — two transfers to land one update, which is the waste
+    // this gate exists to prevent. EVERY manual click re-confirms: one bounded
+    // round trip is cheap beside the transfer it guards, and skipping it on a
+    // recent check meant trusting an answer that a channel switch could have
+    // invalidated in the meantime.
+    if (!automatic) {
+      const asked = foundVersion;
+      log.info(`[update] confirming ${asked} is still the newest before downloading`);
+      preparingDownload = true;
+      try {
+        // A check already in flight is WAITED FOR, not re-issued. safeCheck
+        // refuses to re-enter one (`if (checking) return`), so calling it here
+        // would be a silent no-op and the gate would then re-read state the
+        // running check is in the middle of replacing — concluding "still the
+        // newest" from the very verdict it was sent to re-confirm and spending the
+        // transfer on the stale build. Its answer is the one this gate needs, so
+        // this waits for it. Unbounded exactly as the safeCheck call is: the
+        // updater's own HTTP timeout ends both.
+        if (checkInFlight) {
+          log.info("[update] a check is already in flight — waiting for its answer");
+          await checkInFlight;
+        } else {
+          await safeCheck();
+        }
+      } finally {
+        preparingDownload = false;
+      }
+      // The check may have moved everything underneath this call. Each outcome
+      // is already reported to the renderer by the check's own handlers, so
+      // these returns are silent by design.
+      if (downloading) return; // an automatic download won the race
+      if (updateReady && stagedVersion) {
+        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        return;
+      }
+      if (!foundVersion) {
+        log.info(`[update] ${asked} is no longer offered — nothing to download`);
+        return;
+      }
+      if (foundVersion !== asked) {
+        log.info(`[update] ${asked} was superseded by ${foundVersion} — downloading the newer build`);
+      }
+    }
     log.info(`[update] downloading ${foundVersion}`);
     downloading = true;
     downloadWasAutomatic = automatic;
@@ -1690,6 +1879,112 @@ function initAutoUpdate(deps) {
       downloading = false;
       emitError("download", err);
     }
+  }
+
+  /**
+   * Re-consult the feed and report whether the STAGED build is still the newest
+   * thing the followed channel publishes. The last thing before any install.
+   *
+   * WHY an install needs this. Discovery downloads eagerly (auto-download is on
+   * by default) and then WAITS — for a click, or for the next natural quit. The
+   * feed keeps moving in that window, and the other supersede checks are driven
+   * by the 4-hourly poll, so an install landing between two polls has no fresh
+   * verdict of its own to act on. Without this call it applies the stale stage:
+   * the app relaunches on an already-superseded build, the next poll finds the
+   * newer one, and the whole ~350MB transfer runs a second time — two downloads
+   * and two restarts to reach a version one download reaches. The
+   * deferred-install-on-quit path needs it most, since nothing between "Later"
+   * and the quit consults the feed otherwise.
+   *
+   * It drives an ORDINARY check rather than parsing the feed itself, so the
+   * verdict comes from exactly the logic every other check goes through — the
+   * direction gate, the retraction path in `update-not-available`, and the
+   * supersede path in `update-available` that drops a stale stage. The answer
+   * is therefore read back out of the state those handlers left behind, which
+   * is also what keeps this from becoming a second, divergent copy of the
+   * "is this worth installing" rule.
+   *
+   * FAIL-OPEN by contract. "unknown" — feed unreachable, no answer inside
+   * `FRESHNESS_CHECK_TIMEOUT_MS`, or a check already in flight — means install what
+   * we have:
+   * bytes the user already downloaded must not become uninstallable because the
+   * network went away, so an unanswerable feed installs what is staged. Only a
+   * POSITIVE answer that the stage is gone stops an install.
+   *
+   * EVERY call asks the feed. There is no reuse of a recent answer: the saving was
+   * one bounded round trip, and the state it needed (a settle timestamp plus a
+   * forfeit flag to stop an abandoned check licensing the reuse) could still hand
+   * back a verdict a channel switch had invalidated.
+   *
+   * @param {{quiet?:boolean}} [o] `quiet` suppresses the automatic download of a
+   *   newer build (the quitting caller).
+   * @returns {Promise<"latest"|"superseded"|"unknown">}
+   */
+  async function verifyStageIsLatest({ quiet = false } = {}) {
+    if (!updateReady || !stagedVersion) return "superseded";
+    if (checking) {
+      // No request of our own to make, but a QUIET caller still needs the quiet:
+      // the foreign check in flight is about to answer, and a newer version in
+      // that answer would start a ~350MB automatic download seconds before the
+      // process exits. `verifyingStage` deliberately stays unset — nothing on
+      // this path would ever clear it (the `finally` that does belongs to the try
+      // below, which is never entered) and it would latch for the session. This
+      // flag is safe precisely because it is NOT ours to release: checkSettled()
+      // clears it, and the check that will call it is the one already running.
+      if (quiet) verifyQuiet = true;
+      return "unknown";
+    }
+    const staged = stagedVersion;
+    verifyingStage = true;
+    verifyQuiet = quiet;
+    claimCheck();
+    try {
+      configureFeed();
+      const settled = autoUpdater.checkForUpdates();
+      let timer = null;
+      const bounded = new Promise((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), FRESHNESS_CHECK_TIMEOUT_MS);
+        if (timer && typeof timer.unref === "function") timer.unref();
+      });
+      // The rejection is folded into the race rather than left to the catch
+      // below: a check that fails AFTER the timeout already won would
+      // otherwise be an unhandled rejection.
+      const outcome = await Promise.race([settled.then(() => "checked", () => "failed"), bounded]);
+      if (timer) clearTimeout(timer);
+      if (outcome === "timeout") {
+        // Only the WAIT ended; the request is still running. Its flags describe
+        // that request, not this wait, so they stay held until it lands —
+        // clearing `checking` here would let its outcome slip past the
+        // post-stopGateway abort and fire the host's gateway recovery in the
+        // middle of the bundle swap, and clearing `verifyQuiet` would let a
+        // newer version it discovers start a ~350MB fetch as the app exits.
+        // Marked abandoned so that outcome is inert (see abandonedCheck) rather
+        // than aborting the install the fail-open contract just promised. The
+        // rejection continuation KEEPS the error rather than just releasing the
+        // flags: it is what lets the shared `error` handler tell this request's
+        // own failure from an installer's, whichever order they arrive in.
+        abandonedCheck = true;
+        abandonedError = null;
+        settled.then(checkSettled, (err) => { abandonedError = err; checkSettled(); });
+        log.info(`[update] freshness check did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
+        return "unknown";
+      }
+      checkSettled();
+      if (outcome !== "checked") {
+        log.info(`[update] freshness check failed — installing the staged ${staged}`);
+        return "unknown";
+      }
+    } catch (err) {
+      // A feed we could not reach is not evidence that the stage is stale, and
+      // the `error` event has already reported the failure to the renderer.
+      checkSettled();
+      log.error(`[update] freshness check failed — installing the staged ${staged}`, err);
+      return "unknown";
+    } finally {
+      verifyingStage = false;
+    }
+    if (updateReady && stagedVersion === staged) return "latest";
+    return "superseded";
   }
 
   // Force-exit failsafe — ONLY safe once the platform's installer has actually
@@ -1771,7 +2066,22 @@ function initAutoUpdate(deps) {
   }
 
   async function applyUpdateAndRestart() {
-    if (installing) return;
+    // `verifyingStage` as well as `installing`: the freshness gate below awaits
+    // the feed before `installing` is set, so it is what makes a second click
+    // during that window a no-op instead of a second dispatch.
+    //
+    // `quitHandled` is the SYMMETRIC half, and it is the same hazard read from the
+    // other side. The quit-time install claims only `quitHandled` and then spends
+    // its own multi-second await on the freshness gate and stopGateway before it
+    // sets `installing` -- so during that window `installing` and `verifyingStage`
+    // are both false, and a click arriving here would dispatch a SECOND
+    // quitAndInstall() against the same install directory, mid-bundle-swap, which
+    // is the half-replaced app this whole ordering exists to prevent. Standing down
+    // loses nothing: that path is already installing this stage and is quitting.
+    if (installing || verifyingStage || quitHandled) {
+      log.info("[update] install click ignored: an install already owns this stage");
+      return;
+    }
     // REQUIRE a staged update. Without this guard an install() dispatched
     // before the download finished reaches MacUpdater.quitAndInstall()'s
     // squirrelDownloadedUpdate === false branch, which does NOT install --
@@ -1783,6 +2093,21 @@ function initAutoUpdate(deps) {
     if (!updateReady) {
       log.info("[update] install requested with nothing staged — ignoring");
       emit(foundVersion ? "found" : "not-available", foundVersion ? { version: foundVersion } : {});
+      return;
+    }
+    // FRESHNESS GATE — always install the NEWEST, never a stage the feed has
+    // moved past (see verifyStageIsLatest). A "ready to install" card can sit
+    // unclicked for days; installing it blind lands a superseded build and the
+    // next check immediately re-downloads the newer one. Bounded, because this
+    // runs inside the click: a feed that never answers must fall through to the
+    // install the user asked for, not leave the button doing nothing.
+    if (await verifyStageIsLatest() === "superseded") {
+      // Deliberately no state emit: the check's own handlers have ALREADY told
+      // the renderer what replaced this stage — "found"/"downloading" for a
+      // newer release, "not-available" for a retraction — and an error card
+      // stacked over a running download would contradict them.
+      log.info("[update] install refused: the stage is no longer the newest build — pursuing the newest instead");
+      honorDeferredQuit();
       return;
     }
     installing = true;
@@ -1811,6 +2136,7 @@ function initAutoUpdate(deps) {
     // about, and aborting would run the recovery a second time.
     if (!installing) {
       log.info("[update] install failed while the gateway stopped — dispatch abandoned");
+      honorDeferredQuit();
       return;
     }
     // Re-check the stage AFTER the await: a feed response already in flight
@@ -1825,7 +2151,13 @@ function initAutoUpdate(deps) {
     // makes the dispatch itself the serialization point between checks and
     // installs: no check outcome — result or failure — can land past
     // quitAndInstall.
-    if (!updateReady || checking) {
+    //
+    // An ABANDONED check is the one exception, and it is not a hole: the
+    // freshness gate stopped waiting for it and promised this install would
+    // proceed anyway, so aborting here would defeat the fail-open contract that
+    // sent us past the gate. Its outcome is neutralized at the handlers instead
+    // (see abandonedCheck), which is what keeps the guarantee above true.
+    if (!updateReady || (checking && !abandonedCheck)) {
       log.info(
         !updateReady
           ? "[update] stage invalidated while the gateway stopped — aborting install and restoring"
@@ -1847,6 +2179,8 @@ function initAutoUpdate(deps) {
           : "a feed check was still in flight when the install was ready to run",
         ...(foundVersion ? { version: foundVersion } : {}),
       });
+      // After the renderer is told, so the card is already up when the window goes.
+      honorDeferredQuit();
       return;
     }
     app.removeListener("before-quit", deferredInstallOnQuit);
@@ -1859,8 +2193,58 @@ function initAutoUpdate(deps) {
   // implementation rather than autoInstallOnAppQuit=true precisely because the
   // gateway must be stopped first; before-quit can't await async work, so
   // preventDefault, stop the gateway, then quitAndInstall.
+  /**
+   * Replay a quit that `deferredInstallOnQuit` held while the manual path owned the
+   * install. Called on every exit from that path that does NOT itself quit, so the
+   * user's request is honored late instead of silently dropped -- an app that ignores
+   * Cmd+Q is the failure this pairs with, and it is worse than a late quit because
+   * nothing tells the user their request was discarded.
+   *
+   * Idempotent: the flag is cleared first, so a caller reached twice cannot stack two
+   * quits, and a path that both aborts and later fails cannot double-quit.
+   */
+  function honorDeferredQuit() {
+    if (!quitDeferredForInstall) return;
+    quitDeferredForInstall = false;
+    // Drop the listener the defer branch re-armed. The quit being replayed is the
+    // user's plain quit, not a request to install: re-entering this handler on the way
+    // out would find `installing` cleared by the abort and fall through to the
+    // quit-time install, so an abort would end in the very dispatch it just refused.
+    app.removeListener("before-quit", deferredInstallOnQuit);
+    log.info("[update] the manual install path finished — honoring the quit it deferred");
+    app.quit();
+  }
+
   function deferredInstallOnQuit(event) {
     if (quitHandled || !updateReady) return;
+    // `installing` and `verifyingStage` stand for "the manual path already owns this
+    // install". Standing down for them would land a SECOND quitAndInstall() against
+    // the same install directory plus a second forceExitFailsafe -- but returning
+    // WITHOUT preventing is not the way to avoid that, because that path has not
+    // quit yet. It is mid-await (the freshness verify, then stopGateway), so an
+    // unprevented quit lets Electron exit before quitAndInstall() runs: the user
+    // asked to install and restart and gets a plain quit with the stage still
+    // uninstalled. Hold the quit and let that path replay it via
+    // `honorDeferredQuit` when it finishes -- on success quitAndInstall quits
+    // anyway, and on every abort the parked quit is the user's own request being
+    // honored late rather than dropped. No notifyInstallCanceled here, unlike the
+    // two returns below: the install IS still proceeding.
+    if (installing || verifyingStage) {
+      log.info("[update] quit requested while the manual install path owns the install — deferring it");
+      quitDeferredForInstall = true;
+      event.preventDefault();
+      // RE-ARM, because this listener was registered with `app.once` and Electron has
+      // already unregistered it by the time we get here. Every other exit from this
+      // handler either quits or hands off, so being consumed is correct for them --
+      // this is the one branch that returns with the app still running. Without the
+      // re-arm a SECOND Cmd+Q (the natural reaction to an app that did not quit)
+      // reaches only main.js's handler and Electron exits before quitAndInstall(),
+      // which is the exact "plain quit with the stage uninstalled" outcome this
+      // branch exists to prevent. Re-entry is safe: `quitDeferredForInstall` is
+      // already latched, so a second pass through here just prevents again.
+      app.once("before-quit", deferredInstallOnQuit);
+      return;
+    }
     // The opt-out has to govern the update the user opted out BECAUSE OF.
     // Without this, the nudge says "downloading, will install on your next
     // quit", the user follows it to the toggle and switches it off, and the
@@ -1891,12 +2275,30 @@ function initAutoUpdate(deps) {
     quitHandled = true;
     event.preventDefault();
     (async () => {
+      // FRESHNESS GATE, before anything is torn down. This is the path the
+      // stale-install bug actually took: "Later" arms this handler, the feed
+      // moves on, and the quit that follows installs the superseded build
+      // because nothing between the two ever consults the feed — the poll is
+      // 4-hourly and the quit does not wait for it. Bounded and fail-open (see
+      // verifyStageIsLatest): a quit must not hang on the network, and an
+      // offline quit still installs what was already downloaded.
+      const freshness = await verifyStageIsLatest({ quiet: true });
+      if (freshness === "superseded") {
+        log.info("[update] staged build is no longer the newest — quitting without installing");
+        // The user was told the update would finish on quit; explain why it did
+        // not, or the still-old version at next launch reads as a failure.
+        notifyInstallCanceled();
+        app.quit();
+        return;
+      }
       // Same signal as the manual path: the window can stay visible for
       // several seconds while the gateway stops and the installer stages the
       // bundle, and the renderer must not read that silence as an outage.
       emit("installing", { version: stagedVersion });
       // No onInstallDispatched here: this handler only runs from before-quit,
-      // where main.js has already set isQuitting -- the watchdog is covered.
+      // where main.js has already set isQuitting -- the watchdog is covered. Nor
+      // is it needed for the failure path's sake: that path quits rather than
+      // recovering (see reportUpdaterFailure), so there is no gateway to restore.
       log.info("[update] deferred install on quit");
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
       // Same stage re-check as the manual path: a feed response in flight at
@@ -1907,22 +2309,106 @@ function initAutoUpdate(deps) {
       // listener, and it was registered with app.once so it has already been
       // consumed -- either way no live before-quit hook re-prevents the quit,
       // so app.quit() exits normally without installing the withdrawn build.
-      if (!updateReady) {
-        log.info("[update] stage invalidated during quit — quitting without installing");
-        // The user was told the update would finish on quit; explain why it
-        // did not, or the still-old version at next launch reads as a failure.
-        try {
-          new Notification({
-            title: "Update canceled",
-            body: "The staged update was withdrawn or superseded, so it was not installed. You\u2019ll be offered the latest version next launch.",
-          }).show();
-        } catch { /* notifications optional */ }
+      // `checking` is the manual path's abort too (see applyUpdateAndRestart) and
+      // it is here for the same reason, which the freshness gate did not remove:
+      // the gate returns "unknown" without waiting when a check was ALREADY in
+      // flight, so an ordinary poll straddling the quit reaches this line live.
+      // Its late failure would then arrive with `installing` claimed below and be
+      // reported as the installer's — recovery for a feed error, mid-swap. Only a
+      // check WE abandoned is exempt: that one the identity check in the `error`
+      // handler can tell apart, and refusing for it would break the fail-open
+      // promise the gate just made.
+      if (!updateReady || (checking && !abandonedCheck)) {
+        // The user was told the update would finish on quit; explain why it did
+        // not, or the still-old version at next launch reads as a failure. The two
+        // arms get DIFFERENT copy because they are different facts: an invalidated
+        // stage really was withdrawn or superseded, while a straddling check leaves
+        // the same build staged and re-offers it, so the retraction wording would be
+        // contradicted by the next launch.
+        if (!updateReady) {
+          log.info("[update] stage invalidated — quitting without installing");
+          notifyInstallCanceled();
+        } else {
+          log.info("[update] a check straddles the quit — quitting without installing");
+          notifyInstallDeferredForCheck();
+        }
         app.quit();
         return;
       }
+      // Claim the install BEFORE dispatching it, so a genuine installer failure
+      // on this path is REPORTED as one: the error handler derives the phase from
+      // the flags, and without this a Squirrel rejection here reads as
+      // `phase: "check"` — the renderer stays on the installing overlay emitted
+      // above instead of the retryable install-failure card, a second dispatch is
+      // not blocked mid-swap, and onInstallFailed is never even called. The
+      // failsafe is no backstop either: it only arms on `before-quit-for-update`,
+      // which a rejected installer never emits, so the app survives the failed
+      // quit until the user notices and quits again.
+      //
+      // `deferredInstalling` alongside it, because the two install paths want
+      // OPPOSITE things from a failure and only this flag can tell them apart:
+      // the manual path recovers in place, this one finishes the quit it
+      // preventDefault'ed. See reportUpdaterFailure.
+      //
+      // Set both here rather than beside the "installing" event so the freshness
+      // gate above still awaits the feed with the flag clear (`installing`
+      // outranks `checking`, so an early claim would misattribute that check's
+      // own failure), and so neither quit-time refusal leaves it latched.
+      installing = true;
+      deferredInstalling = true;
       quitAndInstall();
       forceExitFailsafe("deferred install on quit");
     })();
+  }
+
+  /**
+   * "The quit did not install after all." Both quit-time refusals share one
+   * message because they are the same fact to the user and neither can claim
+   * more than this: the freshness gate reports "superseded" for a build the feed
+   * moved past AND for one it withdrew (update-not-available clears the stage
+   * the same way), so copy that announced a newer version would be a wrong
+   * statement of fact on the retraction half.
+   */
+  function notifyInstallCanceled() {
+    try {
+      new Notification({
+        title: "Update canceled",
+        body: "The staged update was withdrawn or superseded, so it was not installed. You\u2019ll be offered the latest version next launch.",
+      }).show();
+    } catch { /* notifications optional */ }
+  }
+
+  /**
+   * "The quit tried to install and the installer refused." Separate copy from
+   * notifyInstallCanceled because the two are different facts and that one's
+   * reason -- withdrawn or superseded -- would be a false statement here: the
+   * build was still the newest, the installer rejected it. The one thing both
+   * promise is the same, and is what makes the failure survivable: the stage is
+   * still on disk, so the offer comes back.
+   */
+  function notifyDeferredInstallFailed() {
+    try {
+      new Notification({
+        title: "Update not installed",
+        body: "The update could not be installed on quit. You\u2019ll be offered it again next launch.",
+      }).show();
+    } catch { /* notifications optional */ }
+  }
+
+  /**
+   * "A check was still running, so the quit did not risk installing the wrong
+   * build." Separate copy again, for the same reason: nothing was withdrawn or
+   * superseded on this path, and the SAME version is re-offered next launch, so
+   * notifyInstallCanceled's reason would be contradicted by what the user sees a
+   * moment later -- the specific way an updater loses trust.
+   */
+  function notifyInstallDeferredForCheck() {
+    try {
+      new Notification({
+        title: "Update not installed",
+        body: "A version check was still running at quit, so the update was left for next launch rather than risk installing a superseded build.",
+      }).show();
+    } catch { /* notifications optional */ }
   }
 
   async function promptInstall(versionName, notes) {
@@ -1961,37 +2447,178 @@ function initAutoUpdate(deps) {
     return "";
   }
 
-  autoUpdater.on("error", (err) => {
-    // The library funnels every failure through one event, so derive the phase
-    // from the operation actually in flight. Read the flags BEFORE clearing
-    // `downloading`, or a mid-download failure would be reported as a check
-    // failure. `installing` must outrank `checking`: once an install is
-    // dispatched the gateway is stopped ON PURPOSE, and a genuine installer
-    // failure (observed live in the OTA lane: a Squirrel signature rejection)
-    // that arrives while a check happens to be in flight would otherwise be
-    // labelled "check" — onInstallFailed never fires, nothing restores the
-    // stopped gateway, and the app survives with a dead dashboard. The
-    // converse misattribution is the recoverable one: a straddling check's
-    // feed error killing the install runs the same onInstallFailed recovery
-    // the post-stopGateway abort would run anyway — and that abort refuses to
-    // reach quitAndInstall while `checking` is true, so no check outcome can
-    // fire recovery in the middle of an actual bundle swap. The
-    // `downloading`-before-`installing` precedence is long-standing behavior,
-    // preserved as-is.
+  /**
+   * Attribute a failure to the operation in flight, then report it.
+   *
+   * The library funnels every failure through one event, so derive the phase
+   * from the operation actually in flight. Read the flags BEFORE clearing
+   * `downloading`, or a mid-download failure would be reported as a check
+   * failure. `installing` must outrank `checking`: once an install is dispatched
+   * the gateway is stopped ON PURPOSE, and a genuine installer failure (observed
+   * live in the OTA lane: a Squirrel signature rejection) that arrives while a
+   * check happens to be in flight would otherwise be labelled "check" —
+   * onInstallFailed never fires, nothing restores the stopped gateway, and the
+   * app survives with a dead dashboard. The converse misattribution is the
+   * recoverable one: a straddling check's feed error killing the install runs the
+   * same onInstallFailed recovery the post-stopGateway abort would run anyway.
+   * The `downloading`-before-`installing` precedence is long-standing behavior,
+   * preserved as-is.
+   */
+  function reportUpdaterFailure(err) {
     const phase = downloading ? "download" : installing ? "install" : "check";
     downloading = false;
     if (phase === "install") {
       // The dispatch is over: allow a retry (updateReady is still true -- the
-      // zip is still staged) and tell the host to bring the gateway back.
-      // Observed live in the OTA lane: a Squirrel signature rejection lands
-      // here; without recovery the app survives with a dead dashboard.
+      // zip is still staged).
       installing = false;
+      if (deferredInstalling) {
+        // Dispatched from the quit handler, so recovery is the WRONG answer here
+        // even though this is the same Squirrel rejection: that quit was
+        // preventDefault'ed and is still waiting, the gateway is already stopped,
+        // and `before-quit-for-update` never fires for a refused installer -- so
+        // the failsafe never arms either. Bringing the gateway back would leave
+        // the app running with a window the user asked to close, and the host's
+        // recovery could not do it anyway (it bails while the app is quitting).
+        // Finish the quit instead: the stage survives on disk and is offered
+        // again next launch, which is what the notification promises.
+        deferredInstalling = false;
+        log.error("[update] deferred install on quit failed — quitting without installing", err);
+        notifyDeferredInstallFailed();
+        emitError(phase, err);
+        app.quit();
+        return;
+      }
+      // Tell the host to bring the gateway back. Observed live in the OTA lane: a
+      // Squirrel signature rejection lands here; without recovery the app
+      // survives with a dead dashboard.
       try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      // Recovering in place is the right answer for a manual failure -- but if the
+      // user pressed Cmd+Q while this install was running, that quit was held rather
+      // than obeyed. Recovery restores the gateway; it must not also swallow the
+      // request to leave. Emit the error first so the failure is on screen for the
+      // brief moment before the app goes.
+      if (quitDeferredForInstall) {
+        emitError(phase, err);
+        honorDeferredQuit();
+        return;
+      }
     }
     emitError(phase, err);
+  }
+
+  autoUpdater.on("error", (err) => {
+    if (abandonedCheck || abandonedError) {
+      // The freshness gate stopped waiting for this check and let the install
+      // proceed (fail-open). Reporting the check's OWN failure now would derive
+      // phase "install" — `installing` outranks `checking` — reset `installing`,
+      // and fire the host's gateway recovery in the middle of the bundle swap.
+      // That failure changes nothing: the stage is exactly what it was, and it is
+      // already being installed.
+      //
+      // But `error` is the one event BOTH the check and the installer are
+      // funnelled through (`update-available`/`update-not-available` can only come
+      // from a check, which is why those suppress unconditionally), and this flag
+      // says only "a check was abandoned" — not "this error is that check's". The
+      // window is wide, not instantaneous: an abandoned request is by definition
+      // one that gave no answer in 8s, so a hung socket holds it open for the OS
+      // TCP timeout while the install handoff it released takes about a second.
+      // Deciding here would swallow exactly the Squirrel rejection the phase note
+      // above exists for, latching `installing` with the gateway deliberately
+      // stopped, no `error` state for the renderer (it sits on the installing
+      // overlay) and nothing to restore the gateway.
+      //
+      // So ask WHICH error this is instead of assuming. The abandoned request's
+      // own failure is the one it REJECTED with, and its rejection continuation
+      // keeps that object in `abandonedError` — so the question is settled by
+      // identity, not by which of the two arrived first.
+      //
+      // The one macrotask of delay is still needed, but only to give the
+      // rejection somewhere to land: electron-updater today emits `error` and
+      // then rejects, so at this instant the object may not have been captured
+      // yet, and every microtask drains before any macrotask. Unlike the flag,
+      // the ANSWER read one tick later does not depend on that order — a library
+      // that rejects first, or emits a tick late, produces the same match.
+      // Identity ALONE decides it, and deliberately so: "a failure is on record"
+      // would be enough for one error but not for two, and two is the case that
+      // matters. If the installer refuses and the abandoned request then fails in
+      // the same tick, both events queue their decision before either rejection
+      // lands, so a record-based read answers both with the first evidence it
+      // finds and gets them exactly backwards — suppressing the installer's and
+      // reporting the check's. Matching the object is the only read that keeps
+      // them apart. The cost is a library that emits an error object it does not
+      // then reject with: this would report that check's failure as the
+      // install's. Nothing does that today, and it would take a deliberate
+      // rewrap to start.
+      setTimeout(() => {
+        if (err === abandonedError) {
+          // Spent — not because the verdict needs it (identity would answer a
+          // later error correctly anyway) but so a single failed check does not
+          // route every error for the rest of the process through this deferral.
+          abandonedError = null;
+          log.info("[update] abandoned freshness check failed after the install was dispatched — ignoring", err);
+          return;
+        }
+        // No rejection carrying this object: the request is still running, or it
+        // answered successfully, or it failed with something else. Either way
+        // this error is someone else's — the installer's, on this very path.
+        log.info("[update] failure during an abandoned freshness check was not the check's own — reporting", err);
+        reportUpdaterFailure(err);
+      }, 0);
+      return;
+    }
+    if (checking && installing) {
+      // A check was already running when this install dispatched — the one order
+      // `safeCheck`'s early return cannot prevent, since it only refuses to START a
+      // check during an install. `installing` outranks `checking` in the phase
+      // derivation, so this check's own feed failure would be reported as the
+      // install's and fire the host's gateway recovery while the dispatch is still
+      // inside `stopGateway()`, respawning a gateway whose predecessor is still
+      // flushing.
+      //
+      // Ask WHOSE failure this is rather than assuming, exactly as the abandoned case
+      // does. One macrotask of delay lets the rejection land in `inFlightCheckError`
+      // (the library emits, then throws the same object), and identity — not arrival
+      // order — decides. A genuine installer failure never matches, so it still
+      // reaches recovery, which is what the deliberately-stopped gateway needs.
+      setTimeout(() => {
+        if (err === inFlightCheckError) {
+          // `safeCheck`'s own catch already reported this as phase "check", which is
+          // what it is. Reporting it again as the install's would be the misdiagnosis.
+          log.info("[update] a check straddling an install dispatch failed — reported as the check's own, not the install's", err);
+          return;
+        }
+        reportUpdaterFailure(err);
+      }, 0);
+      return;
+    }
+    reportUpdaterFailure(err);
   });
-  autoUpdater.on("checking-for-update", () => { log.info("[update] checking…"); emit("checking"); });
+  // Suppressed for the freshness gates' own re-checks, for the reason spelled out
+  // at the emit in safeCheck: `checking` unmounts the update card, so a gate
+  // running inside a Download or Install click would blank the surface the user
+  // just acted on. This handler needs both flags where safeCheck needs only one —
+  // verifyStageIsLatest calls autoUpdater.checkForUpdates() directly, so this is
+  // the only place its check would reach the renderer.
+  autoUpdater.on("checking-for-update", () => {
+    log.info("[update] checking…");
+    if (!preparingDownload && !verifyingStage) emit("checking");
+  });
   autoUpdater.on("update-not-available", () => {
+    if (abandonedCheck) {
+      // Same reason as the error handler: this is the outcome of a check the
+      // freshness gate stopped waiting for, and an install is already running on
+      // the promise that it would. Clearing the stage now would pull the bytes
+      // out from under a dispatch that has passed every guard.
+      //
+      // Known consequence, accepted: a POSITIVE retraction landing in this window
+      // is treated as unknown, so a withdrawn build can still install. That is
+      // fail-open behaving as specified rather than an oversight -- and it is why
+      // the `!updateReady` half of the post-stopGateway abort below is unreachable
+      // for an abandoned check: nothing on this path ever clears the stage.
+      checkSettled();
+      log.info("[update] abandoned freshness check reports up to date after the install was dispatched — ignoring");
+      return;
+    }
     downloading = false;
     foundVersion = null;
     // The feed's gate is DIFFERENCE-based (allowDowngrade=true), so "not
@@ -2022,6 +2649,16 @@ function initAutoUpdate(deps) {
   // follows is OUR decision, made here from the preference, so the automatic
   // and the consent paths share one guarded entry point (startDownload).
   autoUpdater.on("update-available", (info) => {
+    if (abandonedCheck) {
+      // Same reason as the error handler: an install is already running on the
+      // fail-open promise this check's wait made. Dropping the stage for the
+      // newer build here would invalidate a dispatch that has passed every
+      // guard, and starting its download would spend ~350MB during the swap.
+      // The next launch's check finds this version and offers it then.
+      checkSettled();
+      log.info(`[update] abandoned freshness check found ${(info && info.version) || "a newer build"} after the install was dispatched — ignoring`);
+      return;
+    }
     foundVersion = (info && info.version) || null;
     // What the followed lane publishes, recorded BEFORE the direction gate
     // below can null `foundVersion` out. The suppressed case is precisely the
@@ -2119,7 +2756,16 @@ function initAutoUpdate(deps) {
     // download, and startDownload() emits "downloading" over the top of it.
     // Fire-and-forget — startDownload owns its own error reporting, and this
     // handler is a synchronous event listener that cannot await.
-    if (autoDownload) void startDownload({ automatic: true });
+    //
+    // `verifyQuiet` marks the quitting caller of verifyStageIsLatest: the
+    // process is seconds from exiting, so a fetch started here would only be
+    // killed mid-flight. The next launch's check re-finds this version and
+    // downloads it then, which is one transfer rather than one and a fragment.
+    if (autoDownload && verifyQuiet) {
+      log.info(`[update] not auto-downloading ${foundVersion} — the app is quitting`);
+    } else if (autoDownload) {
+      void startDownload({ automatic: true });
+    }
   });
   autoUpdater.on("download-progress", (p) => {
     // New capability vs. the hand-rolled updater: real progress, so the card
@@ -2160,7 +2806,9 @@ function initAutoUpdate(deps) {
   // INSTALL ACTIVITY is the one state the poll must still skip, and there are
   // exactly two install entry points to cover: `installing` (the manual
   // Restart & Update dispatch) and `quitHandled` (the deferred install on a
-  // natural quit, which never sets `installing`). In either window the
+  // natural quit, which sets `installing` only at the last moment, once its
+  // freshness gate has released the feed — so `quitHandled` is what covers the
+  // whole of that window and this condition still needs both). In either the
   // gateway is being stopped on purpose and the process is about to hand off
   // to the platform installer -- a check there is useless at best, and at
   // worst its outcome (an error event, or a retraction clearing the stage
