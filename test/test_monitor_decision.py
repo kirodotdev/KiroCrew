@@ -191,6 +191,36 @@ def test_provider_failures_never_buy_a_model_turn(
 
 
 @pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ProviderErrorKind.TRANSIENT, MonitorDecision.RETRY_PROVIDER),
+        (ProviderErrorKind.RATE_LIMITED, MonitorDecision.RETRY_PROVIDER),
+        (ProviderErrorKind.AUTHENTICATION, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.AUTHORIZATION, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.NOT_FOUND, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.SETUP, MonitorDecision.STOP_BLOCKED),
+    ],
+)
+def test_supplemental_error_kind_gates_retry(
+    error: ProviderErrorKind,
+    expected: MonitorDecision,
+) -> None:
+    """A permanent secondary failure stops instead of burning the error budget."""
+    observation = MonitorObservation(
+        "dup",
+        MonitorObservationStatus.ACTIONABLE,
+        supplemental_provider_error=error,
+    )
+    state = _state(
+        last_fingerprint="dup",
+        last_wake_fingerprint="dup",
+        coalesce_alerted={"dup": 1_000.0},
+        budgets=MonitorBudgets(max_provider_errors=3),
+    )
+    assert decide_monitor(state, observation, now=1_100.0).decision is expected
+
+
+@pytest.mark.parametrize(
     ("state", "now"),
     [
         (_state(budgets=MonitorBudgets(max_runtime_secs=100)), 1_100.0),

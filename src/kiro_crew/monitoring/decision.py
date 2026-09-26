@@ -288,7 +288,9 @@ def _decide_effect(
     # Any non-actionable outcome settles the subject, so no window stays open.
     _close_window(state, now=now)
     if observation.supplemental_provider_error is not None:
-        return _supplemental_provider_error_decision(state, state.budgets)
+        return _supplemental_provider_error_decision(
+            state, state.budgets, observation.supplemental_provider_error
+        )
     if observation.status is MonitorObservationStatus.SUCCESS:
         if observation.head_changed:
             return MonitorDecision.WAKE_ACTIONABLE
@@ -382,7 +384,9 @@ def _coalesce_actionable(
         # Every condition is inside its re-alert interval, so this wake could
         # tell the owner nothing the last one did not.
         if observation.supplemental_provider_error is not None:
-            return _supplemental_provider_error_decision(state, state.budgets)
+            return _supplemental_provider_error_decision(
+                state, state.budgets, observation.supplemental_provider_error
+            )
         return MonitorDecision.NO_CHANGE
 
     window_was_open = bool(state.coalesce_windows)
@@ -606,8 +610,16 @@ def _provider_error_decision(
 def _supplemental_provider_error_decision(
     state: MonitorState,
     budgets: MonitorBudgets,
+    error: ProviderErrorKind,
 ) -> MonitorDecision:
-    """Retry incomplete secondary evidence before retiring the readable target."""
+    """Retry incomplete secondary evidence before retiring the readable target.
+
+    Gated on the same retryable set as the primary error path: a permanent
+    secondary failure (auth, not-found, setup) stops immediately instead of
+    burning retries until the provider-error budget runs out.
+    """
+    if error not in _RETRYABLE_PROVIDER_ERRORS:
+        return MonitorDecision.STOP_BLOCKED
     if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
         return MonitorDecision.STOP_BLOCKED
     return MonitorDecision.RETRY_PROVIDER
