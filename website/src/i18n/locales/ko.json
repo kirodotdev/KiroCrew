@@ -5867,6 +5867,10 @@
       "judge_no_verdict": "아직 판정 없음"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "모든 탭 닫기",
+      "close_other_tabs": "다른 탭 닫기",
+      "close_tab": "닫기",
+      "close_tabs_to_right": "오른쪽 탭 닫기",
       "close_terminal": "터미널 닫기",
       "focus_popout": "팝아웃 포커스",
       "hide_terminal_panel": "터미널 패널 숨기기",
@@ -5881,6 +5885,12 @@
       "more_actions": "추가 작업",
       "close_failed": "서버에서 이 터미널의 셸을 중지할 수 없습니다. 자동으로 정리됩니다.",
       "closing_terminal": "터미널을 닫는 중…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_other": "터미널 {{count}}개를 닫고 실행 중인 셸을 중지합니다.",
+      "close_terminals_button": "터미널 닫기",
+      "close_terminals_title": "터미널을 닫으시겠습니까?",
+      "unsaved_files_lost": "다음 파일의 저장하지 않은 변경 사항이 사라집니다."
     },
     "chatInput": {
       "auto_jev": "자동 (Jev)",

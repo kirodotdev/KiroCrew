@@ -1846,10 +1846,21 @@
       "judge_outcome_unknown": "unknown"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Close all tabs",
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
+      "close_other_tabs": "Close other tabs",
+      "close_tab": "Close",
+      "close_tabs_to_right": "Close tabs to the right",
       "closing_terminal": "Closing terminal…",
       "maximum_terminals": "Maximum {{n}} terminals",
       "terminal": "Terminal"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_one": "{{count}} terminal will close and its running shell will stop.",
+      "close_terminals_body_other": "{{count}} terminals will close and their running shells will stop.",
+      "close_terminals_button": "Close terminals",
+      "close_terminals_title": "Close terminals?",
+      "unsaved_files_lost": "These files have unsaved edits that will be lost."
     },
     "chatInput": {
       "cancel_upload": "Cancel upload",

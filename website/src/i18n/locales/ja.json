@@ -5867,6 +5867,10 @@
       "judge_no_verdict": "まだ判定なし"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "すべてのタブを閉じる",
+      "close_other_tabs": "他のタブを閉じる",
+      "close_tab": "閉じる",
+      "close_tabs_to_right": "右側のタブを閉じる",
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",
       "focus_popout": "ポップアウトをフォーカス",
       "pop_out_to_window": "別ウィンドウに切り離す",
@@ -5881,6 +5885,12 @@
       "more_actions": "その他の操作",
       "close_failed": "サーバー上でこのターミナルのシェルを停止できませんでした。自動的にクリーンアップされます。",
       "closing_terminal": "ターミナルを閉じています…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_other": "{{count}} 個のターミナルを閉じ、実行中のシェルを停止します。",
+      "close_terminals_button": "ターミナルを閉じる",
+      "close_terminals_title": "ターミナルを閉じますか？",
+      "unsaved_files_lost": "次のファイルの保存されていない変更は失われます。"
     },
     "chatInput": {
       "auto_jev": "自動 (Jev)",

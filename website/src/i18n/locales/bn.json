@@ -5963,6 +5963,10 @@
       "judge_no_verdict": "এখনও কোনো রায় নেই"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "সব ট্যাব বন্ধ করো",
+      "close_other_tabs": "অন্যান্য ট্যাব বন্ধ করো",
+      "close_tab": "বন্ধ করো",
+      "close_tabs_to_right": "ডান পাশের ট্যাবগুলো বন্ধ করো",
       "close_terminal": "টার্মিনাল বন্ধ করুন",
       "focus_popout": "পপআউটে ফোকাস করুন",
       "hide_terminal_panel": "টার্মিনাল প্যানেল লুকান",
@@ -5977,6 +5981,13 @@
       "more_actions": "আরও অ্যাকশন",
       "close_failed": "সার্ভারে এই টার্মিনালের শেল বন্ধ করা যায়নি। এটি স্বয়ংক্রিয়ভাবে পরিষ্কার হয়ে যাবে।",
       "closing_terminal": "টার্মিনাল বন্ধ হচ্ছে…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_one": "{{count}}টি টার্মিনাল বন্ধ হবে এবং এর চলমান শেল থেমে যাবে।",
+      "close_terminals_body_other": "{{count}}টি টার্মিনাল বন্ধ হবে এবং সেগুলোর চলমান শেল থেমে যাবে।",
+      "close_terminals_button": "টার্মিনাল বন্ধ করো",
+      "close_terminals_title": "টার্মিনাল বন্ধ করবে?",
+      "unsaved_files_lost": "এই ফাইলগুলোতে অসংরক্ষিত পরিবর্তন আছে, যা হারিয়ে যাবে।"
     },
     "chatInput": {
       "auto_jev": "স্বয়ংক্রিয় (Jev)",

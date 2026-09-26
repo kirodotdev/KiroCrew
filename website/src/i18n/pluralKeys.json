@@ -225,5 +225,6 @@
   "pages.contextBreakdown.scope_turns",
   "pages.contextBreakdown.earlier_hidden",
   "pages.contextBreakdown.scope_all_turns",
-  "components.fileChangeChips.omitted_files_notice"
+  "components.fileChangeChips.omitted_files_notice",
+  "components.tabCloseMenu.close_terminals_body"
 ]

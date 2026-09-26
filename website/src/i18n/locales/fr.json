@@ -6059,6 +6059,10 @@
       "judge_no_verdict": "pas encore de verdict"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fermer tous les onglets",
+      "close_other_tabs": "Fermer les autres onglets",
+      "close_tab": "Fermer",
+      "close_tabs_to_right": "Fermer les onglets à droite",
       "close_terminal": "Fermer le terminal",
       "focus_popout": "Afficher la fenêtre détachée",
       "hide_terminal_panel": "Masquer le panneau du terminal",
@@ -6073,6 +6077,14 @@
       "more_actions": "Plus d'actions",
       "close_failed": "Impossible d'arrêter le shell de ce terminal sur le serveur. Il sera nettoyé automatiquement.",
       "closing_terminal": "Fermeture du terminal…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_one": "{{count}} terminal va se fermer et son shell en cours d'exécution sera arrêté.",
+      "close_terminals_body_many": "{{count}} terminaux vont se fermer et leurs shells en cours d'exécution seront arrêtés.",
+      "close_terminals_body_other": "{{count}} terminaux vont se fermer et leurs shells en cours d'exécution seront arrêtés.",
+      "close_terminals_button": "Fermer les terminaux",
+      "close_terminals_title": "Fermer les terminaux ?",
+      "unsaved_files_lost": "Ces fichiers contiennent des modifications non enregistrées qui seront perdues."
     },
     "chatInput": {
       "auto_jev": "Automatique (Jev)",

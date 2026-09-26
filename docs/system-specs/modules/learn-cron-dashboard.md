@@ -2462,6 +2462,7 @@ toggle while the sidebar is collapsed, on mobile it renders that toggle inline,
 so the sessions list stays reachable from a split. Every split pane except the
 focused one is dimmed by a background-coloured overlay at `--pane-dim-opacity`,
 which fades as focus moves; a pane outside split view is never dimmed.
+The workspace and terminal tab strips offer Close, Close other tabs, Close tabs to the right, and Close all tabs on right-click, or on touch by holding a tab and lifting the finger without moving it. On the terminal strip they follow Rename in the chip's single context menu, and the chip suppresses that trigger's own touch long-press so the hold stays with the reorder gesture. The same hold followed by movement reorders the tab; touch swipes scroll these strips, and mouse dragging reorders tabs. Bulk workspace closes exclude its fixed views. Closing terminal tabs deletes their PTYs; hiding a panel keeps them alive. A close asks first (`batchCloseConfirm` in `TabCloseMenu.tsx`) when it would discard unsaved file edits, naming the files (up to five, then a count), or when it would stop more than one shell, stating how many; closing a single terminal, like its × control, does not ask. The terminal strip applies a confirmed batch to the tabs that still exist when the answer arrives, since the strip stays live behind the dialog.
 
 `KiroPrerequisiteGate` wraps the main dashboard route (the independent
 `/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive

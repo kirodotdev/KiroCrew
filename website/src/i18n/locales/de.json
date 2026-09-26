@@ -5963,6 +5963,10 @@
       "judge_no_verdict": "noch kein Urteil"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Alle Tabs schließen",
+      "close_other_tabs": "Andere Tabs schließen",
+      "close_tab": "Schließen",
+      "close_tabs_to_right": "Tabs rechts schließen",
       "close_terminal": "Terminal schließen",
       "focus_popout": "Ausgekoppeltes Fenster fokussieren",
       "hide_terminal_panel": "Terminal-Panel ausblenden",
@@ -5977,6 +5981,13 @@
       "more_actions": "Weitere Aktionen",
       "close_failed": "Die Shell dieses Terminals konnte auf dem Server nicht beendet werden und wird automatisch aufgeräumt.",
       "closing_terminal": "Terminal wird geschlossen…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_one": "{{count}} Terminal wird geschlossen und seine laufende Shell beendet.",
+      "close_terminals_body_other": "{{count}} Terminals werden geschlossen und ihre laufenden Shells beendet.",
+      "close_terminals_button": "Terminals schließen",
+      "close_terminals_title": "Terminals schließen?",
+      "unsaved_files_lost": "Diese Dateien enthalten nicht gespeicherte Änderungen, die verloren gehen."
     },
     "chatInput": {
       "auto_jev": "Automatisch (Jev)",

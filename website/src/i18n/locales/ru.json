@@ -6155,6 +6155,10 @@
       "judge_no_verdict": "вердикта ещё нет"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Закрыть все вкладки",
+      "close_other_tabs": "Закрыть другие вкладки",
+      "close_tab": "Закрыть",
+      "close_tabs_to_right": "Закрыть вкладки справа",
       "close_terminal": "Закрыть терминал",
       "focus_popout": "Перейти к отдельному окну",
       "hide_terminal_panel": "Скрыть панель терминала",
@@ -6169,6 +6173,15 @@
       "more_actions": "Другие действия",
       "close_failed": "Не удалось остановить оболочку этого терминала на сервере. Она будет очищена автоматически.",
       "closing_terminal": "Закрытие терминала…"
+    },
+    "tabCloseMenu": {
+      "close_terminals_body_one": "{{count}} терминал будет закрыт, а его запущенная оболочка остановлена.",
+      "close_terminals_body_few": "{{count}} терминала будут закрыты, а их запущенные оболочки остановлены.",
+      "close_terminals_body_many": "{{count}} терминалов будут закрыты, а их запущенные оболочки остановлены.",
+      "close_terminals_body_other": "{{count}} терминала будут закрыты, а их запущенные оболочки остановлены.",
+      "close_terminals_button": "Закрыть терминалы",
+      "close_terminals_title": "Закрыть терминалы?",
+      "unsaved_files_lost": "В этих файлах есть несохранённые изменения, они будут потеряны."
     },
     "chatInput": {
       "auto_jev": "Автоматически (Jev)",
