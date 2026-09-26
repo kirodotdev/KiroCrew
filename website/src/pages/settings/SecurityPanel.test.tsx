@@ -31,6 +31,8 @@ vi.mock('../../api/client', () => ({
     addUserDeniedCommand: vi.fn(),
     toggleUserDeniedCommand: vi.fn(),
     deleteUserDeniedCommand: vi.fn(),
+    redactionAllowedHosts: vi.fn(),
+    redactionRevokeHost: vi.fn(),
     governancePolicy: vi.fn(),
     securityPosture: vi.fn(),
     // Read + write for the third-party-app execution toggle. Also consumed by
@@ -1721,7 +1723,7 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Denied Commands'),
       expect.stringContaining('Tailnet origin'),
       expect.stringContaining('Third-party apps'),
-      expect.stringContaining('Credential redaction'),
+      expect.stringContaining('Redaction'),
       expect.stringContaining('Flagged-file delivery'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),
@@ -2075,5 +2077,36 @@ describe('SecurityPanel — review-round regressions', () => {
     // The listbox keeps exactly one accessible name — naming the wrapper too
     // made a screen reader announce it twice.
     expect(screen.getAllByRole('listbox', { name: 'Security sections' })).toHaveLength(1)
+  })
+})
+
+describe('SecurityPanel — redaction allowed hosts', () => {
+  beforeEach(() => {
+    ;(api.redactionAllowedHosts as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: { default: ['reviews.corp.example'] } })
+    ;(api.redactionRevokeHost as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, removed: true })
+  })
+
+  it('lists each allowed host with its workspace and revokes one', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=redaction' })
+    expect(await screen.findByText('reviews.corp.example')).toBeTruthy()
+    expect(screen.getByText('Workspace: default')).toBeTruthy()
+    expect(screen.getByTestId('redaction-settings-note').textContent).toContain('always on')
+    fireEvent.click(screen.getByTestId('redaction-revoke'))
+    await waitFor(() => expect(api.redactionRevokeHost).toHaveBeenCalledWith('default', 'reviews.corp.example'))
+  })
+
+  it('says so when no host is allowed', async () => {
+    ;(api.redactionAllowedHosts as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: {} })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=redaction' })
+    expect(await screen.findByTestId('redaction-allowed-empty')).toBeTruthy()
+  })
+
+  it('a failed revoke shows a notice that its dismiss control clears', async () => {
+    ;(api.redactionRevokeHost as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=redaction' })
+    fireEvent.click(await screen.findByTestId('redaction-revoke'))
+    expect(await screen.findByText("Couldn't revoke that host. It is still allowed.")).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByText("Couldn't revoke that host. It is still allowed.")).toBeNull())
   })
 })

@@ -206,3 +206,158 @@ class TestFileDownloadGuards:
         dest = tmp_path / "out"
         await self._client().download_file("https://files-edge.slack.com/x.png", str(dest))
         assert dest.read_bytes() == b"X"
+
+
+class TestUnfurlAlwaysOff:
+    """Bot posts must never trigger Slack link/media previews. An unfurl is a
+    zero-click fetch of an agent-written URL, and every caller of this client
+    is reachable from agent-authored content (the send_message tool, cron
+    notifications), so the interface deliberately carries NO opt-in parameter —
+    a flag would hand a prompt-injected agent the one bit it needs to
+    re-enable the fetch. See
+    docs/request-for-change/rfc-redaction-explain-and-reveal.md §5."""
+
+    def _client(self) -> tuple[RealSlackClient, list[dict[str, Any]]]:
+        calls: list[dict[str, Any]] = []
+
+        async def _post(**kwargs: Any) -> dict[str, str]:
+            calls.append(kwargs)
+            return {"ts": "1712793600.000100"}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(chat_postMessage=_post)
+        return client, calls
+
+    @pytest.mark.asyncio
+    async def test_post_message_sends_unfurl_off(self) -> None:
+        client, calls = self._client()
+        await client.post_message("C1", "see https://example.com/?q=x")
+        assert calls[0]["unfurl_links"] is False
+        assert calls[0]["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_post_blocks_sends_unfurl_off(self) -> None:
+        client, calls = self._client()
+        await client.post_blocks("C1", [{"type": "section"}], "fallback")
+        assert calls[0]["unfurl_links"] is False
+        assert calls[0]["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_edit_and_ephemeral_paths_send_no_unfurl_args(self) -> None:
+        """The edit path sends NO unfurl flags, and that is intended.
+
+        ``chat.update`` and ``chat.postEphemeral`` accept no
+        ``unfurl_links``/``unfurl_media`` argument — an unknown argument earns
+        ``invalid_arg_name``, so passing them here turns every streamed edit
+        into an API error, which is why this path is asymmetric with
+        ``post_message`` by design. The renderer delivers streamed agent text
+        through this path, so a URL that first appears in a later chunk is
+        edited into a message posted without it; whether Slack's fetchers unfurl
+        that is a property of their servers, established by live check rather
+        than by a flag this client can set. Read the API reference before
+        changing this assertion.
+        """
+        calls: list[dict[str, Any]] = []
+
+        async def _record(**kwargs: Any) -> dict[str, str]:
+            calls.append(kwargs)
+            return {"ts": "1712793600.000100"}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(chat_update=_record, chat_postEphemeral=_record)
+        await client.update_message("C1", "1712793600.000100", "now see https://x.example")
+        await client.post_ephemeral("C1", "U1", "also https://y.example")
+        assert len(calls) == 2
+        for params in calls:
+            assert "unfurl_links" not in params
+            assert "unfurl_media" not in params
+
+    @pytest.mark.asyncio
+    async def test_no_opt_in_parameter_exists(self) -> None:
+        """The absence of the parameter IS the control: with no ``unfurl_*``
+        kwarg on the client, no forwarding caller (the send_message handler,
+        an app backend) can be talked into re-enabling the fetch."""
+        import inspect
+
+        for method in (RealSlackClient.post_message, RealSlackClient.post_blocks):
+            params = inspect.signature(method).parameters
+            assert "unfurl_links" not in params
+            assert "unfurl_media" not in params
+
+    @pytest.mark.parametrize(
+        "blocks",
+        [
+            [{"type": "image", "image_url": "https://attacker.example/pixel.png"}],
+            [{"type": "section", "accessory": {"thumbnail_url": "https://attacker.example/t.png"}}],
+            [{"type": "video", "video_url": "https://attacker.example/v.mp4"}],
+            [{"type": "section", "fields": [{"image_url": "https://attacker.example/p.png"}]}],
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_remote_media_is_refused_at_the_client_seam(self, blocks) -> None:
+        """The boundary is HERE, not only at the agent-facing entry.
+
+        The gateway has ~20 direct ``post_blocks`` callers; a check that lives
+        one layer above them is a check each of them can forget. Refusing at the
+        seam every tree passes through makes the bypass unrepresentable, and no
+        Slack call is made.
+        """
+        client, calls = self._client()
+        with pytest.raises(ValueError, match="blocks_remote_media_disabled"):
+            await client.post_blocks("C1", blocks, "fallback")
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_remote_media_is_refused_on_the_edit_path_too(self) -> None:
+        """Send and edit share one boundary: a clean tree posted first and media
+        edited in afterwards would otherwise reach Slack's fetchers unchecked."""
+        updates: list[dict[str, Any]] = []
+
+        async def _update(**kwargs: Any) -> dict[str, str]:
+            updates.append(kwargs)
+            return {"ok": "true"}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(chat_update=_update)
+        with pytest.raises(ValueError, match="blocks_remote_media_disabled"):
+            await client.update_message(
+                "C1",
+                "1712793600.000100",
+                blocks=[{"type": "image", "image_url": "https://attacker.example/pixel.png"}],
+            )
+        assert updates == []
+
+    @pytest.mark.asyncio
+    async def test_remote_media_is_refused_on_the_ephemeral_path_too(self) -> None:
+        """Every seam method taking a blocks tree refuses media, not just the two
+        channel-post methods: Slack's fetchers treat an ephemeral post's blocks
+        like any other, and a seam where one method of three checks is a seam a
+        caller routes around by accident."""
+        posts: list[dict[str, Any]] = []
+
+        async def _ephemeral(**kwargs: Any) -> dict[str, str]:
+            posts.append(kwargs)
+            return {"ok": "true"}
+
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(chat_postEphemeral=_ephemeral)
+        with pytest.raises(ValueError, match="blocks_remote_media_disabled"):
+            await client.post_ephemeral(
+                "C1",
+                "U1",
+                "fallback",
+                blocks=[{"type": "video", "video_url": "https://attacker.example/v.mp4"}],
+            )
+        assert posts == []
+
+    @pytest.mark.asyncio
+    async def test_a_media_free_tree_still_posts(self) -> None:
+        """The refusal is scoped to media fields: ordinary blocks are unaffected,
+        and no in-repo caller constructs an image or video block."""
+        client, calls = self._client()
+        await client.post_blocks(
+            "C1",
+            [{"type": "section", "text": {"type": "mrkdwn", "text": "see the report"}}],
+            "fallback",
+        )
+        assert len(calls) == 1

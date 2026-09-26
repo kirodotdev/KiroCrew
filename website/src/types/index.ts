@@ -1349,7 +1349,7 @@ export interface ChatMessage {
   /** Structured metadata for role-specific data (e.g. tool_input for permission messages). */
   meta?: Record<string, unknown>
   /** Regenerated variants of an assistant message (most recent last). */
-  variants?: { content: string; ts?: string }[]
+  variants?: { content: string; ts?: string; blocked_links?: unknown; redactions?: unknown }[]
   /** Which variant index is currently active. */
   variant_idx?: number
   /** Counter for consecutive identical tool message deduplication. */

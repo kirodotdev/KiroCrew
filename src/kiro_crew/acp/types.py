@@ -799,6 +799,11 @@ class AcpEvent:
     #: carried no result payload; a measured empty payload has byte length 0.
     tool_output_digest: str = ""
     tool_output_bytes: int = -1
+    #: ``(fingerprint, section)`` for every credential redacted from the result,
+    #: from ``security.credential_sources.tool_output_fingerprints``. Keyed
+    #: digests only: the dashboard uses them to name where a credential in a
+    #: later reply came from, and the value itself is never carried.
+    tool_output_credentials: tuple[tuple[str, str | None], ...] = ()
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     #: The backend's own status on this ``tool_call_update``, verbatim and
     #: unmapped: ``completed``, ``failed``, and whatever else it sends.

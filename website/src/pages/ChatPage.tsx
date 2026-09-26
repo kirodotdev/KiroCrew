@@ -38,6 +38,7 @@ import {
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
   retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
   requestSlotReveal,
+  refreshSlot,
   mcpAppKey,
   selectAutomationForSlot,
   sseAutomation,
@@ -47,7 +48,7 @@ import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
-import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
+import { onTerminalReady, sendToTerminalSession, sendRawToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
 import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal } from '../hooks/useBottomTerminal'
 import { isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
@@ -3852,6 +3853,51 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Both are stable for the provider's / component's lifetime (a context
     // client and a []-dep useCallback), so the listener still installs once.
   }, [queryClient, showActionError])
+  // A redaction card's "Open in Terminal": open a dock terminal and TYPE the
+  // command without submitting it, so the reader reviews it before it runs.
+  // The typing tier refuses a newline, which is what keeps this from running.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {}
+      const command: unknown = detail.command
+      const reqId: unknown = detail.reqId
+      const emit = (ok: boolean) =>
+        window.dispatchEvent(new CustomEvent('mc:prefill-terminal-result', { detail: { reqId, ok } }))
+      if (typeof command !== 'string' || !command || /[\r\n]/.test(command)) { emit(false); return }
+      const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
+      if (!sessionId) { emit(false); return }
+      let settled = false
+      const unsub = onTerminalReady(sessionId, () => {
+        settled = true
+        emit(sendRawToTerminalSession(sessionId, command))
+      })
+      setTimeout(() => { if (!settled) { unsub(); emit(false) } }, RUN_IN_TERMINAL_READY_DEADLINE_MS)
+    }
+    window.addEventListener('mc:prefill-terminal', handler)
+    return () => window.removeEventListener('mc:prefill-terminal', handler)
+  }, [])
+  // A redaction card's "Pre-fill request": the text lands in the composer for
+  // the reader to review; nothing is sent. It appends to unsent text rather
+  // than replacing it, because the pending-input path persists what it sets.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text: unknown = (e as CustomEvent).detail?.text
+      if (typeof text === 'string' && text) dispatch(setPendingInput(mergeIntoDraft(inputRef.current, text)))
+    }
+    window.addEventListener('mc:prefill-composer', handler)
+    return () => window.removeEventListener('mc:prefill-composer', handler)
+  }, [dispatch])
+  // A redaction card's "Allow for this host": the reply was saved with the
+  // link removed, and the server shows allowed hosts' links again when it
+  // serves the slot, so reload it to show the link in place of the chip.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const slot: unknown = (e as CustomEvent).detail?.slot
+      if (typeof slot === 'string' && slot) void dispatch(refreshSlot(slot))
+    }
+    window.addEventListener('mc:redaction-hosts-changed', handler)
+    return () => window.removeEventListener('mc:redaction-hosts-changed', handler)
+  }, [dispatch])
   // Cold-tab hydration: after a reload (or when restoring a slot's strip from
   // the persisted panel-tabs store), file tabs come back as lightweight
   // references with their heavy content stripped (content === undefined). Read
@@ -5796,6 +5842,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // through the memo.
   const visibleIndexMapRef = useRef(visibleIndexMap); visibleIndexMapRef.current = visibleIndexMap
   const lastTextIdxRef = useRef(lastTextIdx); lastTextIdxRef.current = lastTextIdx
+  // The first reply in this session with a removed credential: the one-time
+  // redaction coach renders after it and nowhere else.
+  const redactionCoachTs = useMemo(() => {
+    for (const m of messages) {
+      const r = (m.meta as Record<string, unknown> | undefined)?.redactions
+      if (m.role === 'assistant' && Array.isArray(r) && r.length > 0) return m.ts ?? null
+    }
+    return null
+  }, [messages])
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
 
   // ── Registry-driven row dispatch (chat-core P5-a) ──
@@ -5897,7 +5952,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
+              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.blocked_links} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -6013,7 +6068,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

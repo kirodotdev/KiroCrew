@@ -62,18 +62,15 @@ class FlakySlack(MockSlackClient):
             raise RuntimeError("slack remove_reaction unavailable")
         await super().remove_reaction(channel, ts, emoji, raise_on_error)
 
-    async def post_message(self, channel, text, thread_ts=None, unfurl_links=None,
-                           unfurl_media=None):
+    async def post_message(self, channel, text, thread_ts=None):
         if "post_message" in self.fail:
             raise RuntimeError("slack post_message unavailable")
-        return await super().post_message(channel, text, thread_ts, unfurl_links, unfurl_media)
+        return await super().post_message(channel, text, thread_ts)
 
-    async def post_blocks(self, channel, blocks, text, thread_ts=None, unfurl_links=None,
-                          unfurl_media=None):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         if "post_blocks" in self.fail:
             raise RuntimeError("slack post_blocks unavailable")
-        return await super().post_blocks(channel, blocks, text, thread_ts, unfurl_links,
-                                         unfurl_media)
+        return await super().post_blocks(channel, blocks, text, thread_ts)
 
 
 def _raising_sel(*, method: str) -> MagicMock:

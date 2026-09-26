@@ -79,8 +79,6 @@ class TestTargetedChannel:
                     "C0123ABC456",
                     "hello channel",
                     thread_ts=None,
-                    unfurl_links=None,
-                    unfurl_media=None,
                     reply_broadcast=None,
                 )
                 slack.open_dm.assert_not_called()
@@ -205,8 +203,6 @@ class TestTargetedUser:
                     "D_USER_DM",
                     "hello user",
                     thread_ts=None,
-                    unfurl_links=None,
-                    unfurl_media=None,
                     reply_broadcast=None,
                 )
 
@@ -283,8 +279,6 @@ class TestFallbackToOwnerDM:
                 "D_OWNER",
                 "hello owner",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 
@@ -293,9 +287,15 @@ class TestFallbackToOwnerDM:
 
 
 class TestUnfurlControl:
+    """Unfurls are ALWAYS off on bot posts (a Slack preview is a zero-click
+    fetch of a possibly agent-written URL). ``false``/``null``/absent are
+    accepted for backward compatibility — they ask for what is now always the
+    case — while an explicit ``true`` is refused, not silently dropped, so a
+    caller cannot believe a preview was sent when it never can be."""
+
     @pytest.mark.asyncio
-    async def test_unfurl_links_false_passes_through(self, mock_sel):
-        """When unfurl_links=false in payload, it reaches post_message."""
+    async def test_unfurl_links_false_accepted(self, mock_sel):
+        """unfurl_links=false is accepted (it matches the always-off state)."""
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D_OWNER")
         slack.post_message = AsyncMock(return_value="1712793600.000001")
@@ -317,14 +317,13 @@ class TestUnfurlControl:
                 "D_OWNER",
                 "no previews",
                 thread_ts=None,
-                unfurl_links=False,
-                unfurl_media=False,
                 reply_broadcast=None,
             )
 
     @pytest.mark.asyncio
-    async def test_unfurl_defaults_to_none(self, mock_sel):
-        """When unfurl params are omitted, they default to None (Slack server default)."""
+    async def test_unfurl_omitted_posts_without_flags(self, mock_sel):
+        """When unfurl params are omitted, the post goes out; the client
+        itself always sends unfurl off."""
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D_OWNER")
         slack.post_message = AsyncMock(return_value="1712793600.000001")
@@ -341,14 +340,38 @@ class TestUnfurlControl:
                 "D_OWNER",
                 "with previews",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 
     @pytest.mark.asyncio
-    async def test_unfurl_json_null_passes_as_none(self, mock_sel):
-        """JSON null for unfurl params passes through as None (no 400)."""
+    async def test_unfurl_true_is_refused(self, mock_sel):
+        """Explicit true is a 400 refusal BEFORE any post: this endpoint is
+        reachable from agent-authored tool calls, and enabling an unfurl is
+        the one bit a prompt-injected agent needs to make Slack fetch its
+        exfiltration URL with no human click."""
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER")
+        slack.post_message = AsyncMock(return_value="1712793600.000001")
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={
+                    "text": "with previews",
+                    "unfurl_links": True,
+                    "session": "slack",
+                },
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert body.get("code") == "unfurl_disabled"
+            slack.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unfurl_json_null_accepted(self, mock_sel):
+        """JSON null for unfurl params is accepted (no 400)."""
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D_OWNER")
         slack.post_message = AsyncMock(return_value="1712793600.000001")
@@ -370,8 +393,6 @@ class TestUnfurlControl:
                 "D_OWNER",
                 "null test",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 
@@ -389,8 +410,36 @@ class TestUnfurlControl:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_unfurl_with_blocks_passes_through(self, mock_sel):
-        """unfurl params reach post_blocks when blocks are provided."""
+    @pytest.mark.parametrize(
+        "blocks",
+        [
+            [{"type": "image", "image_url": "https://attacker.example/pixel"}],
+            [
+                {
+                    "type": "section",
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open"},
+                        "image_url": "https://attacker.example/pixel",
+                    },
+                }
+            ],
+            [
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "image",
+                            "image_url": "https://attacker.example/pixel",
+                            "alt_text": "status",
+                        }
+                    ],
+                }
+            ],
+        ],
+        ids=["image-block", "nested-accessory-image-url", "context-image-element"],
+    )
+    async def test_block_kit_remote_media_is_refused(self, mock_sel, blocks):
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D_OWNER")
         slack.post_blocks = AsyncMock(return_value="1712793600.000001")
@@ -400,9 +449,41 @@ class TestUnfurlControl:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/send-message",
+                json={"text": "fallback", "blocks": blocks, "session": "slack"},
+            )
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "blocks_remote_media_disabled"
+            slack.open_dm.assert_not_called()
+            slack.post_blocks.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_section_and_button_blocks_are_accepted(self, mock_sel):
+        """Blocks without server-fetched media still reach Slack."""
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER")
+        slack.post_blocks = AsyncMock(return_value="1712793600.000001")
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "hi"}},
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open"},
+                        "action_id": "open",
+                    }
+                ],
+            },
+        ]
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
                 json={
                     "text": "fallback",
-                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}],
+                    "blocks": blocks,
                     "unfurl_links": False,
                     "unfurl_media": False,
                     "session": "slack",
@@ -411,11 +492,9 @@ class TestUnfurlControl:
             assert resp.status == 200
             slack.post_blocks.assert_called_once_with(
                 "D_OWNER",
-                [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}],
+                blocks,
                 "fallback",
                 thread_ts=None,
-                unfurl_links=False,
-                unfurl_media=False,
                 reply_broadcast=None,
             )
 
@@ -595,8 +674,6 @@ class TestThreadTsAndBroadcast:
                 "D_OWNER",
                 "threaded",
                 thread_ts="1712793600.123456",
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 
@@ -624,8 +701,6 @@ class TestThreadTsAndBroadcast:
                 "D_OWNER",
                 "broadcast me",
                 thread_ts="1712793600.123456",
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=True,
             )
 
@@ -696,8 +771,6 @@ class TestThreadTsAndBroadcast:
                     "C0AP0AT1ESJ",
                     "threaded channel",
                     thread_ts="1712793600.123456",
-                    unfurl_links=None,
-                    unfurl_media=None,
                     reply_broadcast=True,
                 )
                 slack.open_dm.assert_not_called()
@@ -737,8 +810,6 @@ class TestCronSlackDefault:
                 "D_OWNER",
                 "sweep done",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 

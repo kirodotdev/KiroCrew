@@ -16,6 +16,7 @@ import secrets
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -52,11 +53,21 @@ from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS, safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     _exempt_exact_hosts,
+    bounded_blocked_links,
     oauth_url_contains_credential,
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.security.credential_sources import bounded_credential_records
+from kiro_crew.security.exfil import (
+    current_scoped_exempt_hosts,
+    restore_allowed_links,
+    scoped_exempt_hosts,
+)
+from kiro_crew.security.redaction_allow import allowed_hosts_for
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
 from kiro_crew.slack.outbound import (
@@ -1727,6 +1738,121 @@ def _redact_value(v):  # type: ignore[no-untyped-def]
     return v
 
 
+#: Every record set a row carries about its own redactions: the key it lives
+#: under, the one bounded constructor that rebuilds it from a transcript line,
+#: and the placeholder tags its text must still hold for the records to describe
+#: anything. One table, so a helper that moves or bounds records covers every
+#: kind at once and a new kind is one row, not a new call site to forget.
+REDACTION_RECORD_FIELDS: dict[str, tuple[Callable[[object], list[dict]], tuple[str, ...]]] = {
+    "blocked_links": (bounded_blocked_links, (EXFILTRATION_REDACTION_TAG_PREFIX,)),
+    "redactions": (bounded_credential_records, tuple(CREDENTIAL_REDACTION_TAGS)),
+}
+
+
+def variant_from_row(row: dict) -> dict:
+    """Stash a row as a variant, taking its redaction records with it.
+
+    The mirror of ``adopt_variant_text``: that one moves a variant onto the row,
+    this one moves the row into the variant list. Both directions carry the
+    records because the records cannot be recovered from the text -- the stashed
+    content is already redacted, so what they describe is gone and a rescan
+    finds nothing to describe. A stash that dropped them would destroy the
+    explanation for good, and the reader switching back would be handed a bare
+    placeholder with no way to learn what was removed.
+    """
+    entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
+    meta = row.get("meta")
+    if isinstance(meta, dict):
+        # Bounded here, at retention: the row's meta was read off a transcript
+        # line, and a variant list outlives the render that would bound it later.
+        for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
+            records = bound(meta.get(key))
+            if records:
+                entry[key] = records
+    return entry
+
+
+def with_bounded_redaction_records(container: dict) -> dict:
+    """``container`` with each redaction record set rebuilt through its one
+    bounded constructor, or removed when nothing valid is left.
+
+    Every place that RETAINS a row's meta or a variant read off a transcript line
+    goes through this, not only the places that display it: a bound applied at
+    render leaves the slot holding whatever the line carried. Returns the same
+    object when there is no such key, so the common row costs nothing.
+    """
+    if not any(key in container for key in REDACTION_RECORD_FIELDS):
+        return container
+    out = dict(container)
+    for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
+        if key not in out:
+            continue
+        records = bound(out[key])
+        if records:
+            out[key] = records
+        else:
+            del out[key]
+    return out
+
+
+def drop_records_without_placeholders(container: dict, text: str) -> None:
+    """Remove each record set with no placeholder of its kind in ``text``.
+
+    Records describe one text; a text with no placeholder of their kind has
+    nothing for them to explain.
+    """
+    for key, (_bound, tags) in REDACTION_RECORD_FIELDS.items():
+        if key in container and not any(tag in text for tag in tags):
+            container.pop(key, None)
+
+
+def _variant_for_emit(variant: dict) -> dict:
+    """A regenerate variant as the client receives it: allowed links restored,
+    display-redacted text, and its redaction records rebuilt through their
+    bounded constructors. Runs inside the same allowed-host scope as the row it
+    belongs to, so a variant shows the links its row shows."""
+    bounded = with_bounded_redaction_records(variant)
+    text = bounded.get("content", "")
+    if isinstance(text, str) and "blocked_links" in bounded:
+        text, left = restore_allowed_links(
+            text, bounded["blocked_links"], current_scoped_exempt_hosts()
+        )
+        bounded = {**bounded, "content": text}
+        if left:
+            bounded["blocked_links"] = left
+        else:
+            bounded.pop("blocked_links", None)
+    return with_bounded_redaction_records(
+        {**bounded, "content": redact_display_content(bounded.get("content", ""))}
+    )
+
+
+def adopt_variant_text(row: dict, variant: dict) -> None:
+    """Move a row onto one of its variants, text and redaction records together.
+
+    A record describes ONE text: it names what was removed from a placeholder
+    standing in that text. A caller that takes a variant's content without its
+    records leaves the row explaining something absent from the text on screen.
+    The pair moves through this one function so no site can take half of it --
+    the records are replaced when the variant carries them and REMOVED when it
+    does not, because a variant with no records has nothing to explain.
+    """
+    row["content"] = variant.get("content", "")
+    row["ts"] = variant.get("ts", row.get("ts", ""))
+    meta = row.get("meta")
+    for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
+        records = bound(variant.get(key))
+        if records:
+            if not isinstance(meta, dict):
+                meta = {}
+                row["meta"] = meta
+            meta[key] = records
+        elif isinstance(meta, dict):
+            meta.pop(key, None)
+    if isinstance(meta, dict) and not meta:
+        row.pop("meta", None)
+
+
 def _redact_meta(meta: dict) -> dict:
     """Recursively redact string values in meta dict.
 
@@ -1752,9 +1878,23 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     dependency runs chat_persistence -> chat_utils, so keeping it here lets both
     the save path and the emit path share one implementation without a cycle.
     """
+    # Redaction records (REDACTION_RECORD_FIELDS) are born at the redaction that
+    # removed each value (chat_runner._flush_segment) and carried with their
+    # text; the generic string redaction below would blank them. Preserve them
+    # across every role, but the transcript line is attacker-writable, so each
+    # set is rebuilt through its one bounded constructor: it re-validates each
+    # record, drops any that fails on its own -- never the message -- and bounds
+    # the count, because this is a RETENTION point that reads the line and it
+    # runs on every render of the message that holds it.
+    validated_records = {
+        key: bound(meta.get(key)) for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items()
+    }
+
     if role == "mcp_oauth":
         out: dict = {}
         for k, v in list(meta.items()):
+            if k in REDACTION_RECORD_FIELDS:
+                continue
             if k == "oauth_url" and isinstance(v, str):
                 # Two gates, and deliberately NOT a third:
                 #   1. http(s)-only — a tampered history line can't smuggle a
@@ -1781,8 +1921,11 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
             else:
                 out[k] = _redact_value(v)
+        out.update({k: v for k, v in validated_records.items() if v})
         return out
-    return _redact_meta(meta)
+    out = {k: _redact_value(v) for k, v in list(meta.items()) if k not in REDACTION_RECORD_FIELDS}
+    out.update({k: v for k, v in validated_records.items() if v})
+    return out
 
 
 # One process-local LRU shared by HTTP snapshot renders and live WS emission.
@@ -1844,7 +1987,9 @@ def _display_redaction_cache_key(text: str) -> tuple[_DisplayRedactionKey, int]:
     hash per lookup, so the cache stays cheaper than the battery it fronts.
     """
     raw = text.encode("utf-8", errors="surrogatepass")
-    hosts = "\0".join(sorted(_exempt_exact_hosts())).encode("utf-8", errors="surrogatepass")
+    hosts = "\0".join(sorted(_exempt_exact_hosts() | current_scoped_exempt_hosts())).encode(
+        "utf-8", errors="surrogatepass"
+    )
     digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + hosts, hashlib.sha256).digest()
     return (digest, len(raw)), len(raw)
 
@@ -3754,7 +3899,9 @@ def _expire_dead_child_oauth_meta(role: str, meta: dict, live_child: str) -> dic
     return out
 
 
-def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
+def _prepare_messages(
+    messages: list[dict], running: bool, *, live_child: str, workspace: str | None = None
+) -> list[dict]:
     """Prepare messages for API response.
 
     ``live_child`` is the process-instance identity of the ACP child currently
@@ -3765,7 +3912,41 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
     :func:`_live_child_instance` on the event loop, as close to the render as
     possible (a verdict sampled long before use can name a child that has
     since died, serving one stale read).
+
+    ``workspace`` is the slot's workspace: the display redaction relaxes the
+    hosts a reader allowed there, the same hosts the segment flush relaxed, so
+    an allowed link reaches the page it was kept for.
     """
+    with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+        return _prepare_messages_scoped(messages, running, live_child=live_child)
+
+
+def with_allowed_links_restored(m: dict) -> dict:
+    """``m`` with the blocked links its reader has since allowed shown again.
+
+    Runs inside an allowed-host scope (:func:`_prepare_messages` and the live
+    ``chat_message`` frame), before the
+    display redaction, so a restored address is checked by the same pass that
+    let the host through (see :func:`restore_allowed_links`).
+    """
+    text = m.get("content")
+    meta = m.get("meta")
+    if not isinstance(text, str) or not isinstance(meta, dict) or "blocked_links" not in meta:
+        return m
+    records = bounded_blocked_links(meta.get("blocked_links"))
+    new_text, left = restore_allowed_links(text, records, current_scoped_exempt_hosts())
+    if new_text == text:
+        return m
+    new_meta = dict(meta)
+    if left:
+        new_meta["blocked_links"] = left
+    else:
+        new_meta.pop("blocked_links", None)
+    return {**m, "content": new_text, "meta": new_meta}
+
+
+def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child: str) -> list[dict]:
+    """:func:`_prepare_messages` inside its allowed-host scope."""
     out: list[dict] = []
     for m in _collapse_wire_rows(messages):
         role = m.get("role", "")
@@ -3801,7 +3982,8 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         # Content may be structured (a legacy or hand-edited row):
         # redact_display_content recurses into it rather than raising.
         if role != "user" and text:
-            m = {**m, "content": redact_display_content(text)}
+            m = with_allowed_links_restored(m)
+            m = {**m, "content": redact_display_content(m.get("content", ""))}
         else:
             # The wire-string invariant covers EVERY row, not just the
             # redacted ones: a structured user row or a falsy container
@@ -3814,11 +3996,13 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         if msg_out.get("variants"):
             # Snapshot for the same reason as _redact_meta — this runs in a
             # worker thread (slot-detail render offload) while the event
-            # loop may still be appending variants to the live list.
+            # loop may still be appending variants to the live list. A variant's
+            # records are re-validated here exactly as a row's are in
+            # _redact_meta_for_role: they can hold a full address a reader may
+            # open, and a transcript line is attacker-writable, so no record
+            # reaches a client without the serve-time check.
             msg_out["variants"] = [
-                {**v, "content": redact_display_content(v.get("content", ""))}
-                for v in list(msg_out["variants"])
-                if isinstance(v, dict)
+                _variant_for_emit(v) for v in list(msg_out["variants"]) if isinstance(v, dict)
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:

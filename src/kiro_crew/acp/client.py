@@ -267,6 +267,7 @@ from kiro_crew.sandbox import (
     wrapped_by_crew_sandbox,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.credential_sources import tool_output_fingerprints
 from kiro_crew.sel import sel
 from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
@@ -13650,14 +13651,14 @@ class AcpClient:
                 tool_status=tool_status,
             )
 
-        final_output = "\n".join(output_parts)
+        final_joined = "\n".join(output_parts)
         # Redact the WHOLE join, then bound -- never the reverse. Bounding first
         # can split a credential across the cut into fragments no pattern
         # matches: with a connection URI whose "@" lands on byte 8000, the head
         # slice keeps "://user:password" and drops the "@" the prefilter needs,
         # so the password reaches the dashboard in clear text. Same ordering as
         # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
-        _redacted = redact_text(final_output)
+        _redacted = redact_text(final_joined)
         tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
         final_output = _redacted[:8000]
         return AcpEvent(
@@ -13666,6 +13667,11 @@ class AcpClient:
             tool_output=final_output,
             tool_output_digest=tool_output_digest,
             tool_output_bytes=tool_output_bytes,
+            # Same contract as `_dispatch._build_tool_result_event`: only a
+            # result the redactor changed can hold a credential to trace.
+            tool_output_credentials=(
+                tool_output_fingerprints(final_joined) if _redacted != final_joined else ()
+            ),
             tool_final=update.get("status") == "completed",
             tool_status=str(update.get("status") or ""),
         )
@@ -13855,11 +13861,15 @@ class AcpClient:
                             elif rc.get("kind") == "text":
                                 output_parts.append(str(rc.get("data", ""))[:4000])
                         if output_parts:
+                            joined = "\n".join(output_parts)
                             results.append(
                                 AcpEvent(
                                     kind=EVENT_TOOL_RESULT,
                                     tool_call_id=tool_use_id,
-                                    tool_output="\n".join(output_parts)[:8000],
+                                    tool_output=joined[:8000],
+                                    # A kiro-cli result read back from its session
+                                    # file traces credentials like a streamed one.
+                                    tool_output_credentials=tool_output_fingerprints(joined),
                                 )
                             )
         except Exception:

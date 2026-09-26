@@ -263,6 +263,15 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'components.redaction.link_open_confirm_title':
+    'the {{host}} operand is a hostname the blocked-link record already passed through a '
+    + 'strict host shape (letters, digits, dots, hyphens, underscores, or a bracketed IPv6 '
+    + 'literal), so it cannot carry a space or a quote that would blur where it ends',
+  'components.redaction.link_allow_confirm_title':
+    'the {{host}} operand is a hostname validated by the same strict host shape as '
+    + 'link_open_confirm_title, so it cannot carry a space or a quote',
+  'components.redaction.link_open_confirm_body':
+    'the {{chars}} operand is a non-negative integer character count, never user text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',

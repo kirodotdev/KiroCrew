@@ -218,7 +218,11 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
     from kiro_crew import security as security_mod
 
     assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
-    body = inspect_source(security_mod.redact_credentials)
+    # `redact_credentials` is a wrapper over the one plan both redactors share;
+    # the scan lives in that plan.
+    from kiro_crew.security import redaction as redaction_mod
+
+    body = inspect_source(redaction_mod._credential_redaction_plan)
     assert "_CREDENTIAL_PATTERNS.finditer(text)" in body
     assert "_might_contain_credential(text)" in body
     assert "re.compile(" not in body

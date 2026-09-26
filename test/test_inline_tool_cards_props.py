@@ -21,6 +21,7 @@ from kiro_crew.dashboard.chat import _flush_segment, _prepare_messages
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.credential_sources import CredentialEvidence
 
 # ── Helpers ──
 
@@ -65,6 +66,12 @@ class _SegmentSlotStub:
         self.messages: list[dict] = []
         self._pending_variants: list[dict] = []
         self.pending_chunks_released = False
+        # The flush redacts the segment's raw copy and describes credentials
+        # from this turn's evidence, as on _ChatSlot.
+        self.segment_raw_text: str | None = ""
+        self.credential_evidence = CredentialEvidence()
+        # Its allowed hosts scope the flush's link redaction.
+        self.workspace = ""
 
     def append(
         self,

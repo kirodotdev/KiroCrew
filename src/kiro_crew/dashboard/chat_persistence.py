@@ -38,11 +38,13 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    drop_records_without_placeholders,
     effective_session_key,
     redact_display_content,
     session_key_for,
     slot_history_key,
     slot_transcript_key,
+    with_bounded_redaction_records,
 )
 from kiro_crew.dashboard.slot_buffers import (
     committed_filtered_note_ids,
@@ -1171,10 +1173,12 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
     """Copy variant history from a persisted message onto the slot's last message, with redaction."""
     if m.get("variants"):
         slot.messages[-1]["variants"] = [  # type: ignore[assignment]
-            {
-                **v,
-                "content": redact_display_content(v.get("content", "")),
-            }
+            with_bounded_redaction_records(
+                {
+                    **v,
+                    "content": redact_display_content(v.get("content", "")),
+                }
+            )
             for v in m["variants"]
             if isinstance(v, dict)
         ]
@@ -1941,8 +1945,14 @@ def _rehydrate_slot_from_history(
                 # the large payloads, so meta redaction was ~5.5s of a ~7s restore
                 # while content redaction was only ~0.4s. Redacted at emit instead
                 # (chat_utils._prepare_messages), which is the only path that returns
-                # meta to a client.
-                meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
+                # meta to a client. Blocked-link records are the exception: they are
+                # BOUNDED here because this is where the slot retains them, and the
+                # bound is a no-op for a row that carries none.
+                meta=(
+                    with_bounded_redaction_records(m["meta"])
+                    if isinstance(m.get("meta"), dict)
+                    else None
+                ),
                 mint_mid=False,
             )
             # Provenance is not a slot.append() argument, so carry it onto the
@@ -2475,7 +2485,13 @@ def _apply_recent_session(
             cls,
             ts=m.get("ts", ""),
             broadcast=False,
-            meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
+            # Blocked-link records bounded where the slot retains them; see the
+            # equivalent append in _rehydrate_slot_from_history.
+            meta=(
+                with_bounded_redaction_records(m["meta"])
+                if isinstance(m.get("meta"), dict)
+                else None
+            ),
             mint_mid=False,
         )
         # See the equivalent call in _rehydrate_slot_from_history.
@@ -3077,14 +3093,30 @@ def _build_message_entry_uncached(
                     vc = rewritten
             vc, _ = redact_exfiltration_urls(vc)
             vc, _ = redact_credentials(vc)
-            redacted_variants.append({**v, "content": vc})
+            v_entry = {**v, "content": vc}
+            # A variant's records are ITS OWN, under the same rule the row obeys:
+            # they describe this variant's text, so they ride with it, they go
+            # through their bounded constructors, and they are dropped when that
+            # text holds no placeholder to explain.
+            drop_records_without_placeholders(v_entry, vc)
+            v_entry = with_bounded_redaction_records(v_entry)
+            redacted_variants.append(v_entry)
         entry["variants"] = redacted_variants
         entry["variant_idx"] = m.get("variant_idx", 0)
     cls_val = m.get("cls", "")
     if role == "system" and cls_val:
         entry["cls"] = cls_val
-    if isinstance(m.get("meta"), dict):
-        entry["meta"] = _redact_meta_for_role(role, m["meta"])
+    meta_src = m.get("meta") if isinstance(m.get("meta"), dict) else None
+    if meta_src is not None:
+        meta_in = dict(meta_src)
+        # Records are CARRIED, never re-derived here. They are born at the one
+        # moment the URL exists -- the redaction that produces this row's text --
+        # so by the time this function sees the content it holds the placeholder
+        # and a scan of it would describe nothing. The records still have to
+        # DESCRIBE this text, so a row whose content shows no placeholder does not
+        # keep them; `_redact_meta_for_role` re-validates whatever survives.
+        drop_records_without_placeholders(meta_in, content)
+        entry["meta"] = _redact_meta_for_role(role, meta_in)
     return entry
 
 

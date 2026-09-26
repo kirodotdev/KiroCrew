@@ -753,8 +753,6 @@ class TestSendMessage:
                 "C123",
                 "hello",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
 
@@ -811,8 +809,6 @@ class TestSendMessage:
                 blocks,
                 "fallback",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
             slack.post_message.assert_not_called()
@@ -834,8 +830,6 @@ class TestSendMessage:
                 "C123",
                 "hello",
                 thread_ts=None,
-                unfurl_links=None,
-                unfurl_media=None,
                 reply_broadcast=None,
             )
             slack.post_blocks.assert_not_called()

@@ -89,6 +89,7 @@ import {
   useSyncExternalStore,
 } from 'react'
 import { isRailSettling, RAIL_SETTLE_MS } from '../useRailWidth'
+import { inPlaceDeltaAbove, resizedInPlaceBelow } from './inPlaceResize'
 import { HeightIndex } from './HeightIndex'
 import {
   loadScrollAnchor,
@@ -2803,11 +2804,16 @@ export function useVirtualChat<T>(
             // effect, which cannot run until the debounced sync lands and so
             // leaves the reader displaced for that whole window (measured: one
             // 108 CSS px step, undone ~100ms later).
+            const foldTop = el.getBoundingClientRect().top
+            const inPlace = resizedInPlaceBelow(entry.target, foldTop)
+            // An on-screen disclosure change is not compensated; a change noted
+            // above the fold in the same row still is, by exactly its size.
+            if (inPlace) aboveFoldReprice += inPlaceDeltaAbove(entry.target, foldTop)
             aboveFoldReprice += repriceAboveFoldDelta({
               rowTop: (entry.target as HTMLElement).getBoundingClientRect().top,
               prevHeight: prevH,
               newHeight: newH,
-              foldTop: el.getBoundingClientRect().top,
+              foldTop,
               // The streaming row (and the row in its post-stream settle grace)
               // grows by APPENDING at its bottom. Same identity the immediate
               // sync below keys on; a straddling row growing this way moves
@@ -2821,8 +2827,13 @@ export function useVirtualChat<T>(
               // append. Keep the straddling-row compensation for that window
               // (WebKit has no native anchor to fall back on); the per-token
               // drift it re-admits is bounded by RAIL_SETTLE_MS.
+              //
+              // A disclosure the reader toggled on screen (see inPlaceResize)
+              // changes the row below the fold only, the same geometry as an
+              // append: compensating it would scroll the page by its height.
               appendsAtBottom:
-                (idx === streamingIndexRef.current || idx === graceIndexRef.current) && !isRailSettling(),
+                ((idx === streamingIndexRef.current || idx === graceIndexRef.current) && !isRailSettling())
+                || inPlace,
             })
             // Which row grew decides whether growth is FOLLOWABLE. Streaming
             // and widget-load growth happens at the TAIL, where following it

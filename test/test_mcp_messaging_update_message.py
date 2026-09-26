@@ -333,6 +333,31 @@ class TestUpdateMessageEndpoint:
         assert "AKIAIOSFODNN7EXAMPLE" not in str(sent_blocks)
 
     @pytest.mark.asyncio
+    async def test_remote_media_blocks_are_refused_on_edit(self) -> None:
+        """The edit path carries the same server-fetched-media boundary as send:
+        without it an agent could send clean blocks and EDIT remote media in —
+        Slack fetches Block Kit media regardless of unfurl flags."""
+        slack = _slack()
+        async with TestClient(TestServer(_make_app(_mock_state(slack)))) as client:
+            resp = await client.post(
+                "/api/update-message",
+                json={
+                    "channel": _CHANNEL,
+                    "ts": _TS,
+                    "blocks": [
+                        {
+                            "type": "image",
+                            "image_url": "https://attacker.example/pixel",
+                            "alt_text": "x",
+                        }
+                    ],
+                },
+            )
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "blocks_remote_media_disabled"
+        slack.update_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_markup_split_credential_in_blocks_is_redacted(self) -> None:
         """The literal scan sees fragments; the display-form floor normalizes first.
 

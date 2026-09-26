@@ -36,7 +36,12 @@ beforeEach(() => {
 
 function renderErrored(content: string) {
   const utils = render(<MarkdownRenderer content={content} />)
-  const img = utils.container.querySelector('img')
+  let img = utils.container.querySelector('img')
+  if (!img) {
+    const approval = utils.container.querySelector('button')
+    if (approval) fireEvent.click(approval)
+    img = utils.container.querySelector('img')
+  }
   if (!img) throw new Error('no <img> rendered')
   fireEvent.error(img)
   return utils

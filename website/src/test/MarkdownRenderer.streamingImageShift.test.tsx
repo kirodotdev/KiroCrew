@@ -30,6 +30,12 @@ import MarkdownRenderer, { reservedImageStyle, reservedImageClass } from '../com
 
 const STREAM = { streaming: true, glow: true, smooth: true } as const
 
+function renderApproved(ui: Parameters<typeof render>[0]) {
+  const result = render(ui)
+  fireEvent.click(result.container.querySelector('button')!)
+  return result
+}
+
 /** True when the <img> (or its wrapper) reserves vertical layout space before
  *  the bytes load — via width+height attributes, an aspect-ratio, an explicit
  *  height, or a min-height placeholder. Fix-agnostic across those approaches. */
@@ -53,14 +59,14 @@ describe('streaming image layout-shift regression (gap #1)', () => {
   it('PREMISE: a markdown image renders an <img> element', () => {
     // A quick check so a rendering regression is distinguishable
     // from the reserved-space assertion below.
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![diagram](https://example.com/diagram.png)'} {...STREAM} />,
     )
     expect(container.querySelector('img')).not.toBeNull()
   })
 
   it('GAP: a raster markdown image reserves vertical space before it loads (no on-load shift)', () => {
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer
         content={'Here is the chart:\n\n![chart](https://example.com/chart.png)\n\nand text below it.'}
         {...STREAM}
@@ -84,7 +90,7 @@ describe('learned image dimensions (exact reserve on remount)', () => {
   it('records natural dimensions on load and reserves them exactly on the next mount', () => {
     localStorage.clear()
     const md = '![shot](https://example.com/learned-shot.png)'
-    const first = render(<MarkdownRenderer content={md} />)
+    const first = renderApproved(<MarkdownRenderer content={md} />)
     const img1 = first.container.querySelector('img') as HTMLImageElement
     expect(img1).not.toBeNull()
     // First mount: no learned dims yet -> heuristic pending box, no width/height attrs.
@@ -94,7 +100,7 @@ describe('learned image dimensions (exact reserve on remount)', () => {
     fireEvent.load(img1)
     first.unmount()
     // Second mount (virtualized remount): exact reserve BEFORE any bytes.
-    const second = render(<MarkdownRenderer content={md} />)
+    const second = renderApproved(<MarkdownRenderer content={md} />)
     const img2 = second.container.querySelector('img') as HTMLImageElement
     // The reserve must replicate the replaced-element min/max resolution,
     // including the max-height cap BACK-PROPAGATING into the width (a tall
@@ -119,13 +125,13 @@ describe('learned image dimensions (exact reserve on remount)', () => {
   it('a failed load teaches nothing (zero natural size is not recorded)', () => {
     localStorage.clear()
     const md = '![broken](https://example.com/broken-shot.png)'
-    const first = render(<MarkdownRenderer content={md} />)
+    const first = renderApproved(<MarkdownRenderer content={md} />)
     const img1 = first.container.querySelector('img') as HTMLImageElement
     Object.defineProperty(img1, 'naturalWidth', { configurable: true, get: () => 0 })
     Object.defineProperty(img1, 'naturalHeight', { configurable: true, get: () => 0 })
     fireEvent.load(img1)
     first.unmount()
-    const second = render(<MarkdownRenderer content={md} />)
+    const second = renderApproved(<MarkdownRenderer content={md} />)
     const img2 = second.container.querySelector('img') as HTMLImageElement
     // Nothing learned -> heuristic pending box, no exact-reserve style.
     expect(img2.style.aspectRatio === '' || img2.style.aspectRatio === undefined).toBe(true)
@@ -155,7 +161,7 @@ describe('reservedImageStyle / reservedImageClass: the reserve contract', () => 
 describe('sent-prompt image alignment (coupled with the bubble shrink-wrap)', () => {
   it('aligns a compact image to the end edge with a DEFINITE width cap', () => {
     const md = '![a](https://x.test/align.png)'
-    const compact = render(<MarkdownRenderer content={md} compactImages />)
+    const compact = renderApproved(<MarkdownRenderer content={md} compactImages />)
     const img = compact.container.querySelector('img')!
     // ms-auto sits on the IMG, never on the wrapper: a shrink-to-fit wrapper
     // makes a percentage max-width resolve against its own content, silently
@@ -172,7 +178,7 @@ describe('sent-prompt image alignment (coupled with the bubble shrink-wrap)', ()
   })
 
   it('leaves response images at the start edge with their own cap', () => {
-    const normal = render(<MarkdownRenderer content={'![a](https://x.test/a.png)'} />)
+    const normal = renderApproved(<MarkdownRenderer content={'![a](https://x.test/a.png)'} />)
     const img = normal.container.querySelector('img')!
     expect(img.className).not.toContain('ms-auto')
     expect(img.className).toContain('max-w-[min(100%,760px)]')
@@ -191,7 +197,7 @@ describe('loading skeleton (fixed pending box + pulse overlay)', () => {
   // keeps its shape between loading and loaded.
   it('reserves a fixed (not full-width) box before first load', () => {
     localStorage.clear()
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![shot](https://example.com/pending-box.png)'} />,
     )
     const img = container.querySelector('img') as HTMLImageElement
@@ -201,7 +207,7 @@ describe('loading skeleton (fixed pending box + pulse overlay)', () => {
 
   it('uses the compact thumbnail caps as the compact pending box', () => {
     localStorage.clear()
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![shot](https://example.com/pending-box-c.png)'} compactImages />,
     )
     const img = container.querySelector('img') as HTMLImageElement
@@ -211,7 +217,7 @@ describe('loading skeleton (fixed pending box + pulse overlay)', () => {
 
   it('shows a decorative pulse overlay while loading and removes it on load', () => {
     localStorage.clear()
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![shot](https://example.com/skeleton.png)'} />,
     )
     const img = container.querySelector('img') as HTMLImageElement
@@ -231,7 +237,7 @@ describe('loading skeleton (fixed pending box + pulse overlay)', () => {
 
   it('compact overlay aligns to the end edge, matching the ms-auto img', () => {
     localStorage.clear()
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![shot](https://example.com/skeleton-c.png)'} compactImages />,
     )
     const overlay = container.querySelector('span[aria-hidden="true"].pointer-events-none')!
@@ -241,7 +247,7 @@ describe('loading skeleton (fixed pending box + pulse overlay)', () => {
 
   it('an SVG gets no skeleton overlay (definite width basis already)', () => {
     localStorage.clear()
-    const { container } = render(
+    const { container } = renderApproved(
       <MarkdownRenderer content={'![d](https://example.com/diagram.svg)'} />,
     )
     expect(container.querySelector('img')).not.toBeNull()

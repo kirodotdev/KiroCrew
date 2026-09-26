@@ -53,9 +53,10 @@ def _url_payload_command(n: int) -> str:
 #: Ceiling on the whole security PACKAGE, not on any one file in it. The controls
 #: were one module of about 21,800 lines, and the split adds a re-export block, an
 #: export manifest and the mirroring facade on top of the code it relocates, so the
-#: budget is that size plus room for the machinery. It is a bound on total volume:
+#: budget is that size plus room for the machinery, plus the redaction record,
+#: credential-source and allowed-host modules. It is a bound on total volume:
 #: relocating a declaration between submodules moves nothing across it.
-_PACKAGE_LINE_BUDGET = 26_000
+_PACKAGE_LINE_BUDGET = 27_000
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

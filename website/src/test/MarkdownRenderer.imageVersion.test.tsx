@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, fireEvent } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
 /**
@@ -56,10 +56,11 @@ describe('local image URLs are scoped to the message that renders them', () => {
     expect(srcOf(container)).toBe(before)
   })
 
-  it('leaves remote images untouched', () => {
+  it('leaves remote image URLs untouched after approval', () => {
     const { container } = render(
       <MarkdownRenderer content="![x](https://example.com/a.png)" messageTs="2026-08-08T00:00:04Z" />,
     )
+    fireEvent.click(container.querySelector('button')!)
     expect(srcOf(container)).toBe('https://example.com/a.png')
   })
 

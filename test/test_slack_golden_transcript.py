@@ -43,15 +43,11 @@ class RecordingSlackClient(SlackClientOps):
         self.transcript.append((method, kw))
 
     # -- abstract methods --
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ) -> str:
+    async def post_message(self, channel, text, thread_ts=None) -> str:
         self._rec("post_message", channel=channel, text=text, thread_ts=thread_ts)
         return self._next_ts()
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ) -> str:
+    async def post_blocks(self, channel, blocks, text, thread_ts=None) -> str:
         self._rec(
             "post_blocks", channel=channel, text=text, thread_ts=thread_ts, n_blocks=len(blocks)
         )

@@ -152,7 +152,14 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "blocks": {
                         "type": "array",
-                        "description": "Optional Slack Block Kit blocks array. When provided, the message is sent as a rich Block Kit message with text as fallback.",
+                        "description": (
+                            "Optional Slack Block Kit blocks array. When provided, "
+                            "the message is sent as rich Block Kit with text as "
+                            "fallback. Agent-supplied blocks cannot contain image "
+                            "or video blocks, or image_url, thumbnail_url, or "
+                            "video_url fields; those server-fetched media forms are "
+                            "refused."
+                        ),
                         "items": {"type": "object"},
                         "maxItems": 50,
                     },
@@ -196,11 +203,18 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "unfurl_links": {
                         "type": "boolean",
-                        "description": "Whether to unfurl URL link previews. Defaults to true.",
+                        "description": (
+                            "Deprecated. Link previews are always off on bot "
+                            "posts (a preview is a zero-click fetch of the "
+                            "URL). false is accepted; true is refused."
+                        ),
                     },
                     "unfurl_media": {
                         "type": "boolean",
-                        "description": "Whether to unfurl media (images/video) previews. Defaults to true.",
+                        "description": (
+                            "Deprecated. Media previews are always off on bot "
+                            "posts. false is accepted; true is refused."
+                        ),
                     },
                     "thread_ts": {
                         "type": "string",

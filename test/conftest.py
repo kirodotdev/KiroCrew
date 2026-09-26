@@ -1411,16 +1411,15 @@ class MockSlackClient(SlackClientOps):
         self._fetch_message_result: str | None = None
         self._fetch_thread_replies_result: list[dict] = []
 
-    async def post_message(self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_message(self, channel, text, thread_ts=None):
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
         self.actions.append(
-            ("post", {"channel": channel, "text": text, "thread_ts": thread_ts, "ts": ts,
-                      "unfurl_links": unfurl_links, "unfurl_media": unfurl_media})
+            ("post", {"channel": channel, "text": text, "thread_ts": thread_ts, "ts": ts})
         )
         return ts
 
-    async def post_blocks(self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
         self.actions.append(
@@ -1432,8 +1431,6 @@ class MockSlackClient(SlackClientOps):
                     "text": text,
                     "thread_ts": thread_ts,
                     "ts": ts,
-                    "unfurl_links": unfurl_links,
-                    "unfurl_media": unfurl_media,
                 },
             )
         )

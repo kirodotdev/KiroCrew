@@ -277,7 +277,6 @@ src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/blocks.py
-src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
 src/kiro_crew/slack/sessions_view.py
@@ -870,7 +869,6 @@ test/test_slack_thread_sync.py
 test/test_slack_transport_integration.py
 test/test_slack_upload_binary.py
 test/test_slash_task_tracking.py
-test/test_slot_detail_offload.py
 test/test_slot_needs_input_status.py
 test/test_slot_sync_on_create.py
 test/test_slots_broadcast_coalesce.py
