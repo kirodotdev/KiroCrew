@@ -278,6 +278,12 @@ hygiene embeds rows hygiene is about to prune; pushing before hygiene makes ever
 re-derive the same dedupe locally so the repo never converges. Pinned by
 `test_stage_order_is_pull_hygiene_index_push`.
 
+When `memory.persistence_enabled` is false, the pass preserves that stage order
+but the index stage is a no-op decided before `VectorMemoryStore` construction.
+Pull, ledger hygiene, incident pruning, and push still run: they mutate the
+app's own durable state, while only the projection into shared episodic memory
+is an automatic persistent-memory write.
+
 Before this, **both halves were wired to nothing.** `ledger_sync` had no caller anywhere,
 and `dispatch`'s semantic recall queried an index `import_pending` never populated — so on
 a real install recall returned zero hits forever while every unit test passed. Two modules

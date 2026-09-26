@@ -103,13 +103,11 @@ EXEMPT = {
     # The CLI's own explicit `kirocrew learn add`, which carries its own check
     # (a refusal message rather than a silent skip) — see cli_commands.
     "cli_commands.py::_learn": "carries its own refusal",
-    # KNOWN GAP, flagged for a maintainer ruling rather than silently widened:
-    # an installed app's sweep projects its ops ledger into the shared episodic
-    # store, so it writes while the switch is off. It is app-scoped and reached
-    # only through that app's own trigger, but "no automatic memory writes" does
-    # not currently hold for it.
+    # The app's nightly sweep gates its only caller, routes._index_ledger_safely,
+    # before constructing the vector store. This function stays policy-free so
+    # its isolated projection tests can inject a fake store directly.
     "apps/builtins/ops_mission_control/backend/ledger_index.py::import_pending": (
-        "app-scoped sweep; ungated pending a ruling"
+        "internal helper; automatic caller carries the persistence gate"
     ),
 }
 
