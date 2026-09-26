@@ -18,6 +18,7 @@ not enable pytest-asyncio auto mode).
 import argparse
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -733,6 +734,9 @@ class TestLogsCmdSystemd:
         self, monkeypatch, tmp_path, sel_rec, fake_execvp
     ) -> None:
         monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent.service")
+        # POSIX fall-through execs tail(1): pin the binary present so the
+        # no-tail in-process branch (Windows) does not swallow the exec.
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: "/usr/bin/tail")
         log = tmp_path / "gateway.log"
         log.write_text("hi\n", encoding="utf-8", newline="\n")
         monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
@@ -777,6 +781,9 @@ class TestLogsCmdOtherSources:
     ) -> None:
         """A foreground gateway on macOS reaches the config-dir log, not the agent's."""
         launchd.plist.unlink()
+        # POSIX fall-through execs tail(1): pin the binary present so the
+        # no-tail in-process branch (Windows) does not swallow the exec.
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: "/usr/bin/tail")
         fallback = tmp_path / "fallback" / "gateway.log"
         fallback.parent.mkdir()
         fallback.write_text("real\n", encoding="utf-8", newline="\n")
@@ -790,6 +797,9 @@ class TestLogsCmdOtherSources:
     ) -> None:
         """A 0-byte agent log satisfies exists(), so size is what gates the branch."""
         launchd.stdout_log.write_text("", encoding="utf-8", newline="\n")
+        # POSIX fall-through execs tail(1): pin the binary present so the
+        # no-tail in-process branch (Windows) does not swallow the exec.
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: "/usr/bin/tail")
         fallback = tmp_path / "fallback" / "gateway.log"
         fallback.parent.mkdir()
         fallback.write_text("real\n", encoding="utf-8", newline="\n")
@@ -818,6 +828,55 @@ class TestLogsCmdOtherSources:
         (tmp_path / "gateway.log").write_text("x\n", encoding="utf-8", newline="\n")
         cli_server._logs_cmd(argparse.Namespace(follow=False, lines=0))
         assert capsys.readouterr().out == "x\n"
+
+    def test_missing_tail_binary_reads_the_log_in_python(
+        self, monkeypatch, tmp_path, sel_rec, capsys
+    ) -> None:
+        """No ``tail(1)`` (Windows ships none): the resolved file is read
+        in-process instead of exec'ing a missing binary."""
+        monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+        lines = [f"line {i}\n" for i in range(150)]
+        (tmp_path / "gateway.log").write_text("".join(lines), encoding="utf-8", newline="\n")
+
+        def _no_exec(*a, **k):  # pragma: no cover - proves no exec attempted
+            raise AssertionError("must not exec when tail is missing")
+
+        monkeypatch.setattr(os, "execvp", _no_exec)
+        cli_server._logs_cmd(argparse.Namespace(follow=False, lines=10))
+        assert capsys.readouterr().out == "".join(lines[-10:])
+        assert sel_rec.operations == ["logs"]
+
+    def test_missing_tail_follow_streams_until_interrupt(
+        self, monkeypatch, tmp_path, sel_rec, capsys
+    ) -> None:
+        """Follow mode without ``tail(1)`` prints the tail, streams an
+        appended line, then exits cleanly on interrupt (no hang, no traceback)."""
+        monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+        log = tmp_path / "gateway.log"
+        log.write_text("one\ntwo\n", encoding="utf-8", newline="\n")
+
+        def _no_exec(*a, **k):  # pragma: no cover - proves no exec attempted
+            raise AssertionError("must not exec when tail is missing")
+
+        monkeypatch.setattr(os, "execvp", _no_exec)
+        calls = []
+
+        def _sleep(_s):
+            calls.append(1)
+            if len(calls) == 1:
+                with open(log, "a", encoding="utf-8", newline="\n") as fh:
+                    fh.write("three\n")
+            else:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli_server.time, "sleep", _sleep)
+        cli_server._logs_cmd(argparse.Namespace(follow=True, lines=10))
+        out = capsys.readouterr().out
+        assert out == "one\ntwo\nthree\n"
 
 
 # --------------------------------------------------------------------------
