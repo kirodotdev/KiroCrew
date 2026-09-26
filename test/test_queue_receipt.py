@@ -485,10 +485,16 @@ class TestAnAddressKeyNamesOneConversation:
         ``lines``; a write anywhere else would retain a whole burst verbatim, or an
         uncapped list of records, for the life of the process -- the defect this pin
         exists to stop coming back.
+
+        Emptying the list is the other direction and cannot retain anything, so it has
+        its own seam: ``abandon``, which gives a debt up and returns the count that keeps
+        the loss from being silent. Pinned here as well, so a third site cannot discard
+        records by claiming to be that one.
         """
         src = Path(Q.__file__).with_suffix(".py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         offenders = []
+        emptied = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
@@ -497,11 +503,13 @@ class TestAnAddressKeyNamesOneConversation:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "append"
                 and isinstance(node.func.value, ast.Attribute)
                 and node.func.value.attr == "owed_bodies"
             ):
-                offenders.append(node.lineno)
+                if node.func.attr == "append":
+                    offenders.append(node.lineno)
+                elif node.func.attr == "clear":
+                    emptied.append(node.lineno)
         # The one inside terminalize is the seam itself.
         assert len(offenders) == 1, (
             "owed_bodies is written outside terminalize, so that site retains records "
@@ -512,6 +520,13 @@ class TestAnAddressKeyNamesOneConversation:
         ]
         assert seam, "terminalize is gone; the bound has no home"
         assert seam[0].lineno < offenders[0] < seam[0].end_lineno
+        give_up = [
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "abandon"
+        ]
+        assert give_up, "abandon is gone; giving a debt up has no counted seam"
+        assert all(
+            give_up[0].lineno < line < give_up[0].end_lineno for line in emptied
+        ), f"owed_bodies is emptied outside abandon, so those records drop uncounted: {emptied}"
 
     def test_every_receipt_surface_stand_in_names_its_address(self) -> None:
         """A fake without an address withholds every write, and says nothing about why.
@@ -713,6 +728,9 @@ class TestSeveralOwedRecordsSurviveInOrder:
         A mid-turn message meeting a terminal entry gets no bubble, and its line is not
         kept: no path reads a terminal entry's lines, so keeping them would change
         nothing a reader sees while holding a verbatim burst for the whole outage.
+
+        Held to one message inside the lifetime bound, so what is pinned here is the line
+        retention alone; giving the debt up past that bound has its own tests.
         """
 
         async def go() -> ReceiptQueue:
@@ -721,7 +739,7 @@ class TestSeveralOwedRecordsSurviveInOrder:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
                 await queue.flip_answering_locked("s", chat, ["first"])
-                for n in range(6):
+                for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
                     await queue.create_or_grow_locked("s", chat, f"during outage {n}", "alice")
             return queue
 
@@ -899,3 +917,208 @@ class TestReleasedRecordsAreCounted:
         chat = asyncio.run(go())
         assert all(self.OMITTED not in body for _, body in chat.edits)
         assert all(self.OMITTED not in body for body in chat.sent)
+
+
+class TestRetentionIsBoundedInLifetimeAndPopulation:
+    """A debt is kept while it is plausibly publishable, and while the registry has room.
+
+    ``RECEIPT_MAX_OWED`` bounds how much one debt holds. These bound the other two ways it
+    can grow without end: how LONG one is held, and how MANY are held. The entry is the
+    registry's only entry for its session key, and a key can span several conversations,
+    so a debt that is never given up is a key that is never released -- and every healthy
+    conversation sharing it goes without receipts too.
+    """
+
+    @staticmethod
+    async def _owing(chat: _Surface, key: str = "s") -> ReceiptQueue:
+        """A terminal entry on *key*, owing one record that reached nobody."""
+        queue = ReceiptQueue()
+        async with queue.lock:
+            await queue.create_or_grow_locked(key, chat, "first", "alice")
+            await queue.flip_answering_locked(key, chat, ["first"])
+        assert queue._receipts[key].owes_record, "the record was refused, so it is owed"
+        return queue
+
+    def test_a_conversation_that_refuses_every_write_gives_the_debt_up(self) -> None:
+        """The permanent-failure case: neither the edit nor the post ever lands.
+
+        Every arriving message is turned away with no bubble while the debt is held, so the
+        count of refusals is a count of acknowledgements the debt is costing. Past the
+        bound it is given up and the key is released.
+        """
+
+        async def go() -> tuple[ReceiptQueue, bool]:
+            # One surface throughout, and its sends are spent, so nothing this
+            # conversation is offered can land and no fresh bubble hides the release.
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._owing(chat)
+            async with queue.lock:
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
+                    await queue.create_or_grow_locked("s", chat, "again", "alice")
+                held = "s" in queue._receipts
+                await queue.create_or_grow_locked("s", chat, "again", "alice")
+            return queue, held
+
+        queue, held = asyncio.run(go())
+        assert held, "inside the bound the record is still owed, not discarded"
+        assert "s" not in queue._receipts, "past it the debt is given up and the key freed"
+        assert queue.abandoned_debts == 1
+        assert queue.abandoned_records == 1, "the record given up is counted, not dropped"
+
+    def test_a_healthy_sibling_on_a_shared_key_gets_its_receipt_back(self) -> None:
+        """The harm the lifetime bound exists to end.
+
+        One session key can span several conversations -- a group space routes as one key
+        for every member. While an unreachable conversation holds the key, a healthy
+        sibling's mid-turn message takes the terminal branch and gets no bubble. Once the
+        debt is given up, the very next message opens a fresh bubble on the sibling's own
+        surface.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            gone = _Surface(edit_refuses=True, send_fails_after=1, address="gone")
+            queue = await self._owing(gone)
+            alive = _Surface(address="alive")
+            async with queue.lock:
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
+                    await queue.create_or_grow_locked("s", alive, "hello", "bob")
+            return queue, alive
+
+        queue, alive = asyncio.run(go())
+        assert alive.sent == [receipt_text(["hello"])], "the sibling gets one fresh bubble"
+        assert queue.has_receipt("s"), "and a live entry, so its next message grows that one"
+        assert queue._receipts["s"].address == alive.address_key, "opened on the sibling"
+
+    def test_a_debt_that_publishes_part_of_itself_is_not_given_up(self) -> None:
+        """Progress restarts the allowance, so a slow channel keeps its records.
+
+        The bound is spent by attempts that move NOTHING. A channel that lands the oldest
+        record and refuses the next is working, and giving the rest up there would discard
+        records on their way to a reader.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._owing(chat)
+            async with queue.lock:
+                # A second record joins the debt, then arriving messages are turned away
+                # until one attempt short of the bound.
+                await queue.flip_answering_locked("s", chat, ["second"])
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
+                    await queue.create_or_grow_locked("s", chat, "again", "alice")
+                spent = queue._receipts["s"].publish_failures
+                # Edits land again: the oldest record publishes, the newer one still
+                # cannot be posted beneath it.
+                chat.edit_refuses = False
+                await queue.create_or_grow_locked("s", chat, "again", "alice")
+            return queue, chat
+
+        queue, chat = asyncio.run(go())
+        receipt = queue._receipts["s"]
+        assert receipt.owed_bodies == [receipt_text(["second"], answering=True)]
+        assert receipt.publish_failures == 0, "one record landed, so the allowance restarts"
+        assert queue.abandoned_records == 0, "nothing is given up while the debt is draining"
+
+    def test_a_key_that_stops_arriving_is_released_by_the_population_bound(self) -> None:
+        """The orphan case: a debt no transition will ever visit again.
+
+        A session key carries a generation that rotates on reset, so traffic moves to a new
+        key and the debt on the old one is never retried -- per-debt attempts cannot expire
+        what is never attempted. The population bound is what reaches it, and it takes the
+        least recently retained debt, which is the one whose key has been silent longest.
+        """
+
+        async def go() -> ReceiptQueue:
+            queue = await self._owing(
+                _Surface(edit_refuses=True, send_fails_after=1, address="before"), "s"
+            )
+            async with queue.lock:
+                for n in range(Q.RECEIPT_MAX_DEBTS):
+                    key = f"s:gen{n + 1}"
+                    chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
+                    await queue.create_or_grow_locked(key, chat, "m", "alice")
+                    await queue.flip_answering_locked(key, chat, ["m"])
+            return queue
+
+        queue = asyncio.run(go())
+        assert "s" not in queue._receipts, "the orphaned pre-rotation debt is the one released"
+        assert len(queue._receipts) == Q.RECEIPT_MAX_DEBTS, "the registry is held at the bound"
+        assert queue.abandoned_debts == 1
+        assert queue.abandoned_records == 1, "the released record is counted, not silent"
+
+    def test_the_population_bound_counts_the_records_already_counted_as_omitted(self) -> None:
+        """A released debt carries its own count of losses, and that is given up too.
+
+        Counting only the bodies still held would lose a count that was itself the record
+        of a loss -- the same silence one level up.
+        """
+
+        async def go() -> ReceiptQueue:
+            chat = _Surface(edit_refuses=True, send_fails_after=1, address="before")
+            queue = ReceiptQueue()
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                # Six records owed: four retained, two counted as omitted.
+                for n in range(6):
+                    await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+                overflowed = queue._receipts["s"]
+                assert len(overflowed.owed_bodies) == RECEIPT_MAX_OWED
+                assert overflowed.omitted_records == 2
+                for n in range(Q.RECEIPT_MAX_DEBTS):
+                    key = f"s:gen{n + 1}"
+                    other = _Surface(edit_refuses=True, send_fails_after=1, address=key)
+                    await queue.create_or_grow_locked(key, other, "m", "alice")
+                    await queue.flip_answering_locked(key, other, ["m"])
+            return queue
+
+        queue = asyncio.run(go())
+        assert "s" not in queue._receipts
+        assert queue.abandoned_records == RECEIPT_MAX_OWED + 2, "held bodies AND the omitted"
+
+    def test_the_population_bound_never_releases_a_live_entry(self) -> None:
+        """A live entry's messages are still QUEUED, so its bubble is not the registry's.
+
+        Dropping one strands that bubble on "⏳ Queued" and opens a second beside it. Only
+        terminal entries are candidates, however full the registry is.
+        """
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            live = _Surface(address="live")
+            async with queue.lock:
+                await queue.create_or_grow_locked("live", live, "still queued", "alice")
+                for n in range(Q.RECEIPT_MAX_DEBTS + 3):
+                    key = f"debt{n}"
+                    chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
+                    await queue.create_or_grow_locked(key, chat, "m", "alice")
+                    await queue.flip_answering_locked(key, chat, ["m"])
+            return queue
+
+        queue = asyncio.run(go())
+        assert queue.has_receipt("live"), "the live entry survives a registry full of debts"
+        assert queue._receipts["live"].texts == ["still queued"]
+        assert queue.abandoned_debts == 3, "only the terminal entries past the bound go"
+
+    def test_giving_a_debt_up_says_nothing_to_the_reader(self) -> None:
+        """The count is for the operator's log, not for a chat nobody can write to.
+
+        Every write to that conversation has just been refused, so there is no reader to
+        tell. What the bound leaves behind is the bubble's own stale text, which no write
+        could have corrected either.
+        """
+
+        async def go() -> tuple[ReceiptQueue, list[str]]:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._owing(chat)
+            # Read from here on rather than clearing the log: the fake refuses sends past
+            # a count of what it has already sent, so emptying it would let them land.
+            mark_sent, mark_edits = len(chat.sent), len(chat.edits)
+            async with queue.lock:
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
+                    await queue.create_or_grow_locked("s", chat, "again", "alice")
+            return queue, chat.sent[mark_sent:] + [b for _, b in chat.edits[mark_edits:]]
+
+        queue, offered = asyncio.run(go())
+        assert queue.abandoned_records == 1
+        assert all("omitted" not in body for body in offered)
+        assert all("given up" not in body for body in offered)

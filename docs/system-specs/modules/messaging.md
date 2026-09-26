@@ -1688,6 +1688,36 @@ What is released is COUNTED at that same seam and named on the next record to re
 reader, since a shortened list is otherwise indistinguishable from a burst that produced
 no such records at all.
 
+A debt is bounded in three directions, all decided at that one seam, because each is a
+way the same retention grows without end. How MUCH one holds is `RECEIPT_MAX_OWED`
+above. How LONG one is held is `RECEIPT_MAX_PUBLISH_ATTEMPTS`: publications that move
+nothing are counted on the entry, and past that many the debt is GIVEN UP -- emptied,
+counted, and its key released. The count restarts on any body that lands and on any new
+record joining the debt, so the guarantee is that a record is given up only after being
+offered and refused that many times itself, and a channel draining slowly is never given
+up on. That bound exists because the entry is the registry's only entry for its session
+key and a key can span several conversations: one permanently unwritable chat -- the bot
+removed from the thread -- would otherwise take the terminal branch on every burst
+forever, so no HEALTHY sibling on that key gets a bubble or a drain record again either.
+Releasing the key is what lets the next arriving message open a fresh bubble on its own
+surface. What it costs is the stale `⏳ Queued` text in the conversation that takes no
+writes, which no write could have corrected.
+
+How MANY debts the registry holds is `RECEIPT_MAX_DEBTS`, enforced where the retention
+happens. Attempts alone cannot reach every debt: one is retried only by a later
+transition ON ITS OWN KEY, and a session key carries a `:gen{N}` generation that rotates
+on reset, so an outage spanning a rotation leaves a debt nothing will ever attempt again
+-- `finish_cancelled_locked` is reached only from the `/stop` handlers and clearing a
+queue does not touch the registry. Past the cap the LEAST RECENTLY retained debt is
+released, which is the one whose key has been silent longest and so the likeliest orphan;
+each retention moves its entry to the back of the registry, which is what puts them in
+that order. A LIVE entry is never released -- its messages are still queued, so dropping
+it strands that bubble on `⏳ Queued` and opens a second beside it. Both releases go
+through one counted seam and land in `abandoned_records` and `abandoned_debts`, for the
+same reason the body cap counts what it drops: a registry that quietly got smaller reads
+exactly like one that never owed anything. Nothing is said to the reader, deliberately --
+the conversation those records belonged to is the one that would not take a write.
+
 The key is released only once the record is on the bubble, because that entry is the
 bubble's only handle. Editing is tried first, so the record lands in the bubble the
 reader is already looking at; when the bubble refuses edits the record is POSTED as a
@@ -1971,7 +2001,9 @@ of its own yet and its line is not recorded either: no path reads a terminal ent
 lines, so keeping them would change nothing a reader sees while holding a verbatim burst
 for as long as the channel refuses. Nothing is lost by that -- the caller enqueued
 before calling and the drain renders its record from what it dequeued -- and the
-residual is one missing `⏳ Queued` acknowledgement.
+residual is one missing `⏳ Queued` acknowledgement -- one per message that arrives while
+the debt is held, which is exactly what `RECEIPT_MAX_PUBLISH_ATTEMPTS` bounds the number
+of.
 
 Retiring an owed record does not retire the transition that retried it. A drain
 meeting a terminal entry publishes the OLDER record first -- writing this turn's words
