@@ -15,7 +15,13 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
-from kiro_crew.github_runner import SetupError, resolve_gh, run_gh
+from kiro_crew.github_runner import (
+    GITHUB_OWNER_SEGMENT_RE,
+    GITHUB_REPO_SEGMENT_RE,
+    SetupError,
+    resolve_gh,
+    run_gh,
+)
 from kiro_crew.monitoring.github_provider_errors import (
     REASON_SHARED_COOLDOWN,
     classify_cli_error,
@@ -43,7 +49,6 @@ from kiro_crew.monitoring.pull_request import (
 from kiro_crew.security import redact
 
 _GITHUB_HOST = "github.com"
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _URL_IN_CHECK_IDENTITY_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _RAW_URL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 _HTTP_STATUS_RE = re.compile(r"\bhttp\s+(\d{3})\b", re.IGNORECASE)
@@ -121,10 +126,11 @@ comments(first:PAGE_SIZE,after:$CURSOR){
 # these two paths keep answering, which is the whole reason the fallback exists.
 #
 # Both are built only from a validated target: `GitHubPullRequestTarget` admits
-# an owner and repository matching `_SEGMENT_RE` and a positive integer number,
-# and a revision reaching the second path has already passed
-# `_HEAD_REVISION_RE`. So no provider-controlled text is interpolated into a
-# request path.
+# an owner matching `GITHUB_OWNER_SEGMENT_RE`, a repository matching
+# `GITHUB_REPO_SEGMENT_RE` -- each a bounded charset AND a bounded width -- and a
+# positive integer number, and a revision reaching the second path has already
+# passed `_HEAD_REVISION_RE`. So no provider-controlled text is interpolated into
+# a request path.
 _REST_PULL_REQUEST_PATH = "repos/{owner}/{repo}/pulls/{number}"
 _REST_COMMIT_STATUS_PATH = "repos/{owner}/{repo}/commits/{revision}/status?per_page={page_size}"
 _REST_STATUS_PAGE_SIZE = 100
@@ -186,9 +192,11 @@ class GitHubPullRequestTarget:
     def __post_init__(self) -> None:
         if self.host != _GITHUB_HOST:
             raise ValueError("target must be a public GitHub pull request")
-        if any(
-            segment in {".", ".."} or _SEGMENT_RE.fullmatch(segment) is None
-            for segment in (self.owner, self.repo)
+        if (
+            self.owner in {".", ".."}
+            or self.repo in {".", ".."}
+            or GITHUB_OWNER_SEGMENT_RE.fullmatch(self.owner) is None
+            or GITHUB_REPO_SEGMENT_RE.fullmatch(self.repo) is None
         ):
             raise ValueError("target must be a public GitHub pull request")
         if isinstance(self.number, bool) or not isinstance(self.number, int) or self.number <= 0:

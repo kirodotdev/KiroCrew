@@ -857,7 +857,22 @@ def run_gh(
     return decoded
 
 
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+#: GitHub's own maximum widths for the two path segments a repository URL carries,
+#: used as the length bound on each: an account login -- user or organization -- is
+#: 1-39 characters, and a repository name is at most 100. A charset with no
+#: quantifier is satisfied by a segment of ANY width, so bounding only the charset
+#: leaves the size half of the guard below unenforced on values that reach a
+#: subprocess argv. These are the public shape of a GitHub owner/repository
+#: segment for this package: the monitoring adapters bind the same two patterns
+#: rather than each redeclaring one, which is how three copies drift apart.
+GITHUB_MAX_OWNER_CHARS = 39
+GITHUB_MAX_REPO_CHARS = 100
+#: ``\Z`` and not ``$``, so the quantifier above is a bound on the segment's width:
+#: ``$`` also matches immediately before a final newline, which admits one
+#: character past the maximum and makes the two anchors disagree with each other
+#: depending on whether a caller uses ``match`` or ``fullmatch``.
+GITHUB_OWNER_SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITHUB_MAX_OWNER_CHARS}}}\Z")
+GITHUB_REPO_SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITHUB_MAX_REPO_CHARS}}}\Z")
 
 
 def parse_github_repo_url(link: str) -> tuple[str, str]:
@@ -865,8 +880,9 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
 
     Deliberately strict (full URL only, per product decision — no bare
     ``owner/repo`` shorthand): rejects non-github.com hosts (SSRF guard) and
-    constrains owner/repo to a safe charset before either value is ever
-    interpolated into a subprocess argv.
+    constrains owner/repo to a safe charset AND to GitHub's own maximum width
+    for each (:data:`GITHUB_MAX_OWNER_CHARS`, :data:`GITHUB_MAX_REPO_CHARS`)
+    before either value is ever interpolated into a subprocess argv.
     """
     if not link or not isinstance(link, str):
         raise RepoUrlError("repo link is empty")
@@ -883,7 +899,8 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
     if (
         owner in (".", "..")
         or repo in (".", "..")
-        or not (_SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo))
+        or not GITHUB_OWNER_SEGMENT_RE.match(owner)
+        or not GITHUB_REPO_SEGMENT_RE.match(repo)
     ):
         raise RepoUrlError(f"invalid owner/repo segment in {link!r}")
     return owner, repo
