@@ -1112,7 +1112,16 @@ export default function CommandBarOverlay({
     error: foldersSearchError,
     refetch: refetchFolders,
   } = useQuery({
-    queryKey: ['command-bar', 'folders', folderQuery],
+    // Nested UNDER the corpus key, like the artifacts view above, because these rows
+    // are DERIVED from `['chat-folders']` and every folder write ends in
+    // `invalidateQueries({ queryKey: ['chat-folders'] })` (`ChatSidebar` create,
+    // delete and update). React-Query matches that by key PREFIX, so a key outside
+    // the corpus namespace is a cache no folder write can reach — and this view is
+    // unmounted whenever the bar is closed, so its one chance to re-derive is the
+    // remount, which refetches nothing that is still fresh. A folder deleted in that
+    // window would otherwise stay listed and selectable for the whole `staleTime`,
+    // pointing its reveal at an id the sidebar does not hold.
+    queryKey: ['chat-folders', 'command-bar', 'view', folderQuery],
     queryFn: () => Promise.resolve(folders.search(folderQuery)) as Promise<Result[]>,
     enabled: scope === 'folders',
     staleTime: 15_000,
