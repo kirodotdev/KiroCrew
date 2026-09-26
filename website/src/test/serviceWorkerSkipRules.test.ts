@@ -241,6 +241,19 @@ describe('hashed-asset 5xx retry', () => {
     expect((await r.result).status).toBe(200)
     expect(r.attempts()).toBe(2)
   })
+
+  it('retries the /pcm-worklet.js voice-capture module, which addModule fetches once', async () => {
+    // addModule() rejects on the first failed fetch and nothing retries it, so a
+    // dropped connection or a 5xx while a new chat mounts aborted dictation with
+    // the "audio worklet unavailable" toast. The shell fallback it used to reach
+    // made a thrown fetch into Response.error() on the first attempt.
+    const dropped = assetRequest(['throw', 200], '/pcm-worklet.js')
+    expect((await dropped.result).status).toBe(200)
+    expect(dropped.attempts()).toBe(2)
+    const unavailable = assetRequest([503, 200], '/pcm-worklet.js')
+    expect((await unavailable.result).status).toBe(200)
+    expect(unavailable.attempts()).toBe(2)
+  })
 })
 
 describe('what deliberately gets no retry', () => {
