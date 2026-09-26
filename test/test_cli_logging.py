@@ -53,7 +53,10 @@ def _pristine_logging():
     any handler the test added so the tmp gateway.log file descriptor is
     released promptly (required on Windows, where an open fd blocks the
     tmpdir cleanup). Also stops the module's QueueListener so its drain
-    thread and the file handler's fd never leak across tests.
+    thread and the file handler's fd never leak across tests — including a
+    listener some earlier test left running: the short-lived-command setup
+    never retires one, so a listener inherited from another test file would
+    fail the "no listener" assertions below.
     """
     root = logging.getLogger()
     kc = logging.getLogger("kiro_crew")
@@ -61,6 +64,7 @@ def _pristine_logging():
     saved_kc = (kc.handlers[:], kc.level)
     root.handlers[:] = []
     kc.handlers[:] = []
+    _stop_log_queue_listener()
     yield
     _stop_log_queue_listener()
     for logger, (handlers, _) in ((root, saved_root), (kc, saved_kc)):

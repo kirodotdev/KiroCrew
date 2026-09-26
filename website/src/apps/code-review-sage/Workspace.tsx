@@ -9,7 +9,7 @@
 // Reports are the widest content in the app (finding bodies, diffs, check
 // tables), so the space belongs to them.
 import { ScanSearch } from 'lucide-react'
-import { useEffect } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 
 import { IconButton } from '../../components/ui'
 import ListDetailBack from '../../components/ListDetailBack'
@@ -28,6 +28,12 @@ import {
 import LearningView from './views/LearningView'
 import SettingsView from './views/SettingsView'
 import type { ListTab, MainView } from './lib/types'
+
+// Lazy: the local-review surface (diff rendering, finding forms, review-fix
+// setup) is the app's heaviest subtree and is only mounted when the operator
+// opens the Local tab, so keeping it out of the eager chunk keeps every other
+// entry's initial download smaller.
+const LocalReviewView = lazy(() => import('./views/LocalReviewView'))
 
 import { i18nT } from '../../i18n/t'
 /** The 6px vertical drag handle between two columns. */
@@ -214,6 +220,12 @@ export default function Workspace() {
             )}
           </main>
         </>
+      ) : mainView === 'local' ? (
+        <main className={mainClass}>
+          <Suspense fallback={<div className="flex-1" aria-busy="true" />}>
+            <LocalReviewView />
+          </Suspense>
+        </main>
       ) : mainView === 'learning' ? (
         <main className={mainClass}><LearningView /></main>
       ) : (
