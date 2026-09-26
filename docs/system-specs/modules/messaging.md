@@ -584,7 +584,11 @@ through. It is synchronous, so it adds no suspension point between the destinati
 check and the send. Two markdown concerns ride along, because Discord renders the
 message as markdown: whitespace is collapsed so a multi-line preview stays one block,
 and backticks are dropped so the preview cannot close the fence it sits in and style
-the rest of the message.
+the rest of the message. Telegram's `deliver_spawn_approval` clears the same preview
+in display form through its renderer's own `_display_safe`, the pass every other
+Telegram sink runs, and only then HTML-escapes it: `html.escape` keeps a zero-width
+character, so escaping alone leaves the split secret intact. Its `<pre>` body is
+HTML, not markdown, so the two markdown concerns do not apply there.
 
 ## Layer 2b — `Renderer` + `OutputEvent` (`renderer.py`)
 

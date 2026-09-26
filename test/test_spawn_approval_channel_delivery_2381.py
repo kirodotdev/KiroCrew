@@ -38,6 +38,7 @@ import pytest
 from test_telegram import _cfg, _dispatcher, _prime_live  # noqa: E402
 
 from kiro_crew.messaging import spawn_approval_delivery as seam
+from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.messaging.link import CHAT_TYPE_FORUM, parse_session_key
 from kiro_crew.messaging.session_trust import (
     _trusted_sessions,
@@ -334,6 +335,40 @@ class TestTelegramDeliveryHook:
             await task
 
         asyncio.run(_go())
+
+    def test_a_credential_split_by_invisible_characters_is_not_displayed(self) -> None:
+        """The preview is cleared in the form Telegram renders, as Discord's twin is.
+
+        A zero-width character between two halves of a key breaks every literal
+        scan while rendering as nothing, so the upstream pass leaves it intact and
+        ``html.escape`` keeps it, and the reader sees a whole secret. The assertion
+        is made on the canonicalized text for the same reason: the literal message
+        never contains the secret as one string, so checking the literal would
+        pass with no redaction at all.
+        """
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        split = secret[:6] + "​" + secret[6:]
+
+        async def _go() -> str:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval(
+                    "spawn:abc", f"spawn_run(deploy using {split})", session_key
+                )
+            )
+            for _ in range(50):
+                if cli.sent:
+                    break
+                await asyncio.sleep(0.01)
+            text, _markup = cli.sent[0]
+            await _press(d, session_key, "spawn:abc", "0")
+            await task
+            return text
+
+        text = asyncio.run(_go())
+        assert secret not in canonicalize_display(text), "the rendered preview carries the secret"
+        assert "REDACTED" in text, text
 
     def test_a_forum_parent_threads_the_prompt_into_the_originating_topic(self) -> None:
         # A supergroup forum Topic parent: the only branch of _spawn_chat_target
