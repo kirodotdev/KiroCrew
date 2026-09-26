@@ -9857,6 +9857,14 @@ class GatewayOrchestrator:
                     # can't let an earlier turn fire synthesis before this result
                     # is delivered. try/finally so a CancelledError can't leak it.
                     _injection_slot._subagent_deliveries_inflight += 1
+                    # The same attachment the counter above records, mirrored
+                    # into the manager's fence: the child has left ``_agents``
+                    # (``info.done`` was set first), so ``running_agents_for``
+                    # does not see it while this delivery still needs the
+                    # parent session -- the fence's queued/in-flight halves keep
+                    # ``remove_if_unclaimed`` from reaping it mid-delivery.
+                    if self.subagent_mgr:
+                        self.subagent_mgr.bump_attachment(parent_key)
                     try:
                         if getattr(_injection_slot, "_in_stage_execution", False) is True:
                             # The Python stage controller owns this boundary. It
