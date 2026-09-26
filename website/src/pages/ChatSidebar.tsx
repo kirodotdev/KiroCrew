@@ -9,7 +9,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision, type ClientRect, type DroppableContainer } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -277,11 +277,59 @@ function isFolderNestBandHit(args: Parameters<CollisionDetection>[0], collision:
   if (!args.pointerCoordinates) return false
   const rect = collision?.data?.droppableContainer?.rect?.current
   if (!rect) return false
-  const node = collision?.data?.droppableContainer?.node?.current
-  const headerEl = node?.firstElementChild as HTMLElement | null
-  const headerH = headerEl?.getBoundingClientRect().height
-    || Math.min(rect.height, FOLDER_HEADER_DROP_BAND)
-  return isFolderNestBand(args.pointerCoordinates.y - rect.top, headerH)
+  const headerRect = folderDropHeaderRect(collision?.data?.droppableContainer as DroppableContainer | undefined)
+  const headerH = headerRect?.height || Math.min(rect.height, FOLDER_HEADER_DROP_BAND)
+  // The band is measured from the header's LIVE top, not the block's: a sticky
+  // header pinned to the lane sits below its block's top edge, so the block
+  // offset would place the band over rows the header is not painted on.
+  const headerTop = headerRect?.top ?? rect.top
+  return isFolderNestBand(args.pointerCoordinates.y - headerTop, headerH)
+}
+
+/** The live rect of a `folder-drop` container's header row (the block's first
+ *  child), or null when the node is unavailable or not yet laid out (a zero-size
+ *  rect, e.g. before first measure or under jsdom). */
+function folderDropHeaderRect(container: DroppableContainer | undefined): ClientRect | null {
+  const node = container?.node?.current as HTMLElement | null | undefined
+  const headerEl = node?.firstElementChild as HTMLElement | null | undefined
+  if (!headerEl) return null
+  const r = headerEl.getBoundingClientRect()
+  if (!(r.width > 0) || !(r.height > 0)) return null
+  return r
+}
+
+/**
+ * The `folder-drop` whose HEADER ROW is painted under the pointer, or null.
+ *
+ * Folder headers are `position: sticky`, so a pinned header's painted position
+ * is decoupled from its block's rect: with a descendant block scrolled up
+ * underneath it, the pointer on the visible ancestor header is ALSO inside the
+ * descendant's unclipped `folder-drop` rect, and a leaf-first hit-test on block
+ * rects hands the drop to the descendant the user cannot see. The header is
+ * what the user is aiming at, so it wins outright; a pointer on rows BELOW the
+ * pinned header is in no header rect and keeps the block-rect resolution.
+ *
+ * Only real folders are considered (`folderId` set): the root lane and the
+ * ungrouped bucket carry no header row as their first child. When two headers
+ * both contain the pointer (a parent's header pushed out over its child's as
+ * the block ends), the OUTERMOST wins, matching the paint order
+ * (`FOLDER_ROW_STICKY_Z - depth`).
+ */
+function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers: DroppableContainer[]): Collision | null {
+  const p = args.pointerCoordinates
+  if (!p) return null
+  let hit: DroppableContainer | null = null
+  for (const c of containers) {
+    const d = c.data?.current as { type?: string; folderId?: string | null } | undefined
+    if (d?.type !== 'folder-drop' || !d.folderId) continue
+    const r = folderDropHeaderRect(c)
+    if (!r) continue
+    if (p.x < r.left || p.x > r.right || p.y < r.top || p.y > r.bottom) continue
+    const node = c.node.current as HTMLElement | null
+    const hitNode = hit?.node.current as HTMLElement | null | undefined
+    if (!hit || (node && hitNode && node !== hitNode && node.contains(hitNode))) hit = c
+  }
+  return hit ? { id: hit.id, data: { droppableContainer: hit, value: 0 } } : null
 }
 
 /**
@@ -334,13 +382,18 @@ export const sidebarCollision: CollisionDetection = (args) => {
         return d?.type === 'folder-drop' && !(d.folderId && subtree.has(d.folderId))
       })
       const within = pointerWithinDeepest({ ...args, droppableContainers: dropContainers })
+      // A pinned header painted over a descendant block wins outright; see
+      // folderDropHeaderHit. It takes the innermost slot below so the sibling
+      // thirds rule still applies to it.
+      const headerHit = folderDropHeaderHit(args, dropContainers)
+      const ranked = headerHit ? [headerHit, ...within.filter(c => c.id !== headerHit.id)] : within
       // The thirds rule, consulted only when the innermost zone under the pointer
       // belongs to a SIBLING: the middle band of that header re-parents INTO it,
       // its edges and everything below fall through to the sibling reorder. A
       // pointer on any other container's header is unambiguous — there is no
       // reorder to fall through to there — so it stays a re-parent at every
       // offset, exactly as it did before nested rows were reorderable.
-      const innermost = within[0]
+      const innermost = ranked[0]
       const innermostId = (innermost?.data?.droppableContainer?.data?.current as { folderId?: string | null } | undefined)?.folderId
       if (innermost && innermostId && siblings?.includes(innermostId)
         && !isFolderNestBandHit(args, innermost)) {
@@ -361,7 +414,7 @@ export const sidebarCollision: CollisionDetection = (args) => {
       // down. Without a sibling ring (drag data predating the field) there is no
       // reorder to offer, so it keeps the folder-drop resolution it had when
       // re-parent was a nested row's only gesture.
-      if (within.length || args.pointerCoordinates) return within
+      if (ranked.length || args.pointerCoordinates) return ranked
       if (siblings) return closestCenter({ ...args, droppableContainers: reorderContainers })
       return closestCenter({ ...args, droppableContainers: dropContainers })
     }
@@ -388,7 +441,9 @@ export const sidebarCollision: CollisionDetection = (args) => {
         return d?.type === 'folder-drop' && !!d.folderId && !subtree.has(d.folderId)
       })
       const within = pointerWithin({ ...args, droppableContainers: dropContainers })
-      const first = within[0]
+      // A pinned header painted over a descendant block is the target, not the
+      // descendant whose smaller rect pointerWithin would rank first.
+      const first = folderDropHeaderHit(args, dropContainers) ?? within[0]
       // Anchor the nest band to the MEASURED header height, not a constant —
       // isFolderNestBandHit owns that reasoning, and the nested branch above
       // reads it the same way.
@@ -417,6 +472,13 @@ export const sidebarCollision: CollisionDetection = (args) => {
     }
     return true
   })
+  // A sticky folder header pinned over a descendant block: the pointer on that
+  // visible header is also inside the descendant's unclipped rect, and
+  // leaf-first containment would file the session into the descendant. The
+  // header the user sees wins (folderDropHeaderHit); rows below it are in no
+  // header rect and keep the containment resolution.
+  const headerHit = folderDropHeaderHit(args, sidebarContainers)
+  if (headerHit) return [headerHit]
   const within = pointerWithinDeepest({ ...args, droppableContainers: sidebarContainers })
   if (within.length) return within
   const paneWithin = pointerWithinDeepest(args)
@@ -1633,6 +1695,12 @@ export const FOLDER_BODY_INSET_PX = 2
 /** Padding the folder body carries while open. The LEFT term is the alignment
  *  algebra's `D`; the vertical 2px keeps focus rings off the clip edge. */
 const FOLDER_BODY_OPEN_PADDING = `2px 0 2px ${FOLDER_BODY_INSET_PX}px`
+
+/** Stacking base for pinned folder headers. A header at depth d gets
+ *  `FOLDER_ROW_STICKY_Z - d`, so a parent's header paints over its child's as the
+ *  child's block scrolls out beneath it. Kept small: it only has to beat the
+ *  session rows in the lane, and every menu and popover renders in a portal. */
+const FOLDER_ROW_STICKY_Z = 20
 
 /** Test seam: reports every SessionRow body execution. The memo boundary
  *  below is a behavioral contract — one slot's background event re-renders one
@@ -7757,7 +7825,7 @@ function ChatSidebar({
       && (!listNarrowed || narrowedSubtreeShowsSomething(f)))
       .sort(bySidebarOrder)
 
-  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false) => {
+  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false, depth = 0) => {
     // Same predicate `renderFolderBlock` renders by, so the number describes what
     // the row can actually show. Counting a hidden-when-empty child made the count
     // and the body disagree: the body skipped it, so no body rendered, while the
@@ -7860,7 +7928,17 @@ function ChatSidebar({
         // wearing the same one is the whole reason the previous round's dead click
         // read as broken. Its cluster is already visible at rest, so hover has
         // nothing left to reveal here either.
-        className={`folder-row group relative flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
+        // Pinned to the top of the lane while any of its folder is on screen: the
+        // header is `sticky` inside its own folder block (the drop container that
+        // holds header + body), so it rides the top edge until the block's end
+        // pushes it off, and the next folder's header takes over. A nested header
+        // pins one row lower per depth so the whole ancestor path stays readable,
+        // and a shallower header paints above a deeper one as it is pushed out.
+        // The opaque surface and the row height live in index.css
+        // (`.folder-row-sticky`); `sticky` also serves as the containing block
+        // the old `relative` provided for the absolutely-positioned children.
+        style={{ top: `calc(var(--folder-row-sticky-h) * ${depth} - var(--folder-row-sticky-inset))`, zIndex: FOLDER_ROW_STICKY_Z - depth }}
+        className={`folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
@@ -8220,8 +8298,12 @@ function ChatSidebar({
     return [
       <DndDroppable key={`folder-drop-${folder.id}`} id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
         {({ setNodeRef, isOver }) => (
-          <div ref={setNodeRef} data-folder-drop={folder.id} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
-            {renderFolderHeader(folder, dragHandleProps, emptyBody)}
+          // `--folder-pin-stack` is how far the pinned headers above this block's
+          // rows reach down the lane (this header plus every ancestor's), so a
+          // row that keyboard roving or a reveal scrolls into view lands below
+          // them instead of behind them (`scroll-margin-top` in index.css).
+          <div ref={setNodeRef} data-folder-drop={folder.id} style={{ '--folder-pin-stack': `calc(var(--folder-row-sticky-h) * ${depth + 1})` } as React.CSSProperties} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
+            {renderFolderHeader(folder, dragHandleProps, emptyBody, depth)}
             {renderFolderCreateError(folder.id)}
             {wrapped && <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>}
           </div>

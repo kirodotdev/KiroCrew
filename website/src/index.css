@@ -2514,6 +2514,33 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
 .session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
+/* Pinned folder headers in the Sessions lane (ChatSidebar renderFolderHeader).
+   A sticky row needs an opaque surface or the session rows scroll visibly
+   through it; it takes the card's own surface so it reads as part of the
+   panel. `:where()` keeps this at one class of specificity so the row's
+   `hover:bg-bg-hover` still wins on hover. kiro-light steps the card back to
+   --panel (.sidebar-inner above), so the pinned row follows it. A host that
+   repaints the card sets --folder-row-sticky-bg to the same surface (the
+   /embed/sessions wrapper in ChatPage paints it --bg).
+   --folder-row-sticky-h is the header's height, which is what a nested header
+   is offset by per depth, so the row is held to it: a default-agent badge or
+   the rename input would otherwise grow the row 4-6px and the pinned header
+   below would overlap it. Both fit inside the row's padding at this height.
+   The Playwright spec sidebar-sticky-folder-header.spec.ts measures the row
+   against it.
+   --folder-row-sticky-inset is the lane's top padding (LIST_BODY_CLS `p-2`):
+   sticky offsets count from the scroll container's padding edge, so without
+   it the pinned row sits 8px low and sessions scroll through the gap above. */
+.sidebar,.folder-row-sticky{--folder-row-sticky-h:32px;--folder-row-sticky-inset:0.5rem}
+.folder-row-sticky{height:var(--folder-row-sticky-h)}
+/* Rows scrolled into view (arrow-key roving, focus, reveal) stop below the
+   pinned header stack of their folder block (ChatSidebar renderFolderBlock
+   sets --folder-pin-stack); unfiled rows have no stack and keep 0. Chromium's
+   `block: 'nearest'` ignores this margin for a row already in view, so the
+   arrow-key rove re-aligns such a row itself (chat/sessionRowNav.ts). */
+:where(.sidebar) .session-row{scroll-margin-top:var(--folder-pin-stack,0px)}
+:where(.sidebar) .folder-row-sticky{background-color:var(--folder-row-sticky-bg,var(--bg-elevated))}
+:where([data-theme="kiro-light"] .sidebar-inner) .folder-row-sticky{background-color:var(--folder-row-sticky-bg,var(--panel))}
 /* Stalled goal loop (ChatSidebar `goalLoopStalled`): the loop is armed but its
    last turn died and nothing is executing — the whole card flashes danger-red
    until the user resumes. Two-class specificity outranks the Tailwind

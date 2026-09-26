@@ -512,17 +512,21 @@ describe('DesignTweak — request toggling and history', () => {
       expect(screen.getByText('Make the button red')).toBeInTheDocument()
     })
 
-    // Click the request header to collapse
+    // Click the request header to collapse. A pending group starts open with no
+    // stored state, so the first click stores `true` (still open) and the
+    // second closes it; DesignTweakProjectRailCov80 pins that cycle.
     const header = screen.getByText(
       i18nT('apps.designTweak.requests.request_number', { number: 1 }),
     )
     fireEvent.click(header)
+    fireEvent.click(header)
 
-    // The comment is now hidden (FolderBody's visibility toggle)
+    // The comment is now hidden (FolderBody's visibility toggle). Match the
+    // declaration: a bare 'hidden' also matches an `overflow: hidden` clip.
     const commentText = screen.getByText('Make the button red')
     const folderBody = commentText.closest('[style*="visibility"]')
     expect(folderBody).toBeTruthy()
-    expect(folderBody!.getAttribute('style')).toContain('hidden')
+    expect(folderBody!.getAttribute('style')).toContain('visibility: hidden')
   })
 
   it('opens the history section and shows archived requests', async () => {

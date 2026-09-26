@@ -150,7 +150,10 @@ describe('collapsed folder contributes no layout height', () => {
     // Explicitly `content-visibility`, not just `visibility`: `visibility:
     // hidden` is what the buggy version already had, and it keeps layout.
     expect(style).toContain('content-visibility: hidden')
-    expect(style).toContain('overflow: hidden')
+    // `clip`, not `hidden`: `hidden` would make this box a scroll container and
+    // capture the sticky nested folder headers inside it.
+    expect(style).toContain('overflow: clip')
+    expect(style).toContain('min-height: 0')
   })
 
   it('keeps the collapsed rows mounted for keyboard navigation', async () => {
