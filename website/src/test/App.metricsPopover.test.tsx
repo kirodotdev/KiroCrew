@@ -14,7 +14,7 @@
  * is exactly the signal the component reads.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -61,6 +61,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import App from '../App'
+import { api } from '../api/client'
 
 /** Reproduce the rung's own verdict: the readings (and so the probe that
  *  carries their class) are dropped at this width. */
@@ -77,6 +78,7 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
 
   beforeEach(() => {
     localStorage.clear()
+    vi.mocked(api.system).mockReset().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 })
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1400 })
   })
   afterEach(() => {
@@ -184,6 +186,114 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
 
     expect(screen.queryByLabelText('System metrics')).toBeNull()
     expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()
+  })
+
+  it('previews the card on hover while the readings are expanded inline', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+    // No native title tooltip: it would pop up on top of the card.
+    expect(readout.getAttribute('title')).toBeNull()
+    expect(screen.queryByRole('tooltip', { name: /System metrics/ })).toBeNull()
+
+    fireEvent.mouseEnter(readout)
+
+    // The inline form shows percentages only; the card adds the absolute
+    // figures, and names the click-to-hide the title used to carry.
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    await waitFor(() => expect(card.textContent).toMatch(/4\/16\s*GB/))
+    expect(card.textContent).toMatch(/40\/100\s*GB/)
+    expect(card.textContent).toContain('Click to hide')
+    // Assistive tech reaches the tooltip through the trigger, and the
+    // description is the card's text: no aria-label may shadow the rows.
+    expect(readout.getAttribute('aria-describedby')).toBe(card.id)
+    expect(card.hasAttribute('aria-label')).toBe(false)
+    expect(card.textContent).toMatch(/4\/16\s*GB[\s\S]*40\/100\s*GB/)
+    // A hover preview is not a pinned dialog.
+    expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()
+
+    fireEvent.mouseLeave(readout)
+    await waitFor(() => expect(screen.queryByRole('tooltip', { name: /System metrics/ })).toBeNull())
+    // Hovering changed no preference, and the click still hides the readout.
+    expect(localStorage.getItem('mc-topbar-metrics')).toBe('1')
+    fireEvent.mouseEnter(readout)
+    await screen.findByRole('tooltip', { name: /System metrics/ })
+    fireEvent.click(readout)
+    expect(localStorage.getItem('mc-topbar-metrics')).toBe('0')
+    // The click closes the card, and the pointer resting on the same control
+    // raises no new mouseenter, so it does not reopen under the cursor.
+    expect(screen.queryByRole('tooltip', { name: /System metrics/ })).toBeNull()
+    await new Promise(r => setTimeout(r, 450))
+    expect(screen.queryByRole('tooltip', { name: /System metrics/ })).toBeNull()
+  })
+
+  it('keeps age-only stale metrics as a non-error tooltip', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+      await waitFor(() => expect(vi.mocked(api.system)).toHaveBeenCalled())
+
+      now.mockReturnValue(1_090_001)
+      fireEvent.mouseEnter(readout)
+
+      const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+      expect(card.querySelector('[role="alert"]')).toBeNull()
+      expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('shows a failed metrics refetch in the expanded-readout hover dialog', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    vi.mocked(api.system)
+      .mockResolvedValueOnce({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 })
+      .mockRejectedValue(new Error('metrics unavailable'))
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['system-metrics'] })
+    })
+    expect(queryClient.getQueryState(['system-metrics'])?.status).toBe('error')
+
+    fireEvent.mouseEnter(readout)
+
+    const card = await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(card.textContent).toMatch(/4\/16\s*GB/)
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('Metrics are stale, latest fetch failed')
+    expect(readout.getAttribute('aria-describedby')).toBe(card.id)
+  })
+
+  it('shows a failed metrics fetch in the bare-icon hover dialog', async () => {
+    vi.mocked(api.system).mockRejectedValue(new Error('metrics unavailable'))
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    const btn = await screen.findByLabelText('System metrics')
+
+    await waitFor(() => expect(queryClient.getQueryState(['system-metrics'])?.status).toBe('error'))
+    fireEvent.mouseEnter(btn)
+
+    const card = await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('Metrics are stale, latest fetch failed')
+    expect(btn.getAttribute('aria-describedby')).toBe(card.id)
+  })
+
+  it('previews the card on hover in the collapsed band, and a click pins it as a dialog', async () => {
+    injected = collapseTheLadder()
+    renderWithProviders(<App />, { route: '/chat' })
+    const btn = await screen.findByLabelText('System metrics')
+
+    fireEvent.mouseEnter(btn)
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    expect(card.textContent).toContain('CPU')
+    // Only the expanded readout hides on click, so only it advertises that.
+    expect(card.textContent).not.toContain('Click to hide')
+
+    fireEvent.click(btn)
+    await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(screen.queryByRole('tooltip', { name: /System metrics/ })).toBeNull()
   })
 
   it('keeps the inline toggle unchanged while the readings still fit', async () => {

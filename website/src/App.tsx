@@ -2981,6 +2981,28 @@ export default function App() {
     capsulePulseTimer.current = setTimeout(() => setCapsuleLayoutPulse(false), 350)
   }, [])
   useEffect(() => () => clearTimeout(capsulePulseTimer.current), [])
+  // Hovering the metrics control previews the same card the click-pinned
+  // popover shows, in every desktop form of the control: the bare icon, the
+  // narrow-band popover trigger, and the expanded inline readout (which shows
+  // percentages only, so the absolute GB figures live in the card). A pinned
+  // popover owns the card while it is open, so the hover path is disabled then.
+  const metricsHover = useHoverIntent({
+    enabled: !isMobile && !capsuleCollapsed && !metricsPopoverOpen,
+    triggerRef: metricsBtnRef,
+    surfaceRef: metricsPopoverRef,
+  })
+  const [metricsHoverAnchor, setMetricsHoverAnchor] = useState<{ top: number; right: number } | null>(null)
+  useEffect(() => {
+    if (!metricsHover.open) { setMetricsHoverAnchor(null); return }
+    const r = metricsBtnRef.current?.getBoundingClientRect()
+    setMetricsHoverAnchor(r ? { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) } : null)
+  }, [metricsHover.open])
+  const metricsCardAnchor = metricsPopoverAnchor ?? metricsHoverAnchor
+  const metricsCardOpen = metricsCardAnchor !== null
+  // The hover form describes the trigger even when a stale-fetch hand-off
+  // promotes the card from a tooltip to a non-modal dialog.
+  const metricsCardId = 'topbar-metrics-card'
+  const metricsDescribedBy = metricsHoverAnchor && !metricsPopoverOpen ? metricsCardId : undefined
   // macOS fullscreen hides the native traffic lights, so the header's 84px
   // clearance inset drops while fullscreen (mac-fullscreen class on the root).
   const [macFullscreen, setMacFullscreen] = useState(false)
@@ -2993,16 +3015,19 @@ export default function App() {
   // separate strip inset to relay to Electron — positionTrafficLights centers on
   // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsPopoverOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsCardOpen ? 30_000 : 60_000, enabled: true })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
-    if (!metricsOpen && !metricsPopoverOpen) return
+    if (!metricsOpen && !metricsCardOpen) return
     const id = setInterval(() => setStaleTick(t => t + 1), 10_000)
     return () => clearInterval(id)
-  }, [metricsOpen, metricsPopoverOpen])
+  }, [metricsOpen, metricsCardOpen])
   // Consider metrics stale if last successful fetch was > 90s ago (3x the 30s poll interval) while the widget is open.
-  const sysMetricsStale = (metricsOpen || metricsPopoverOpen) && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  const sysMetricsStale = (metricsOpen || metricsCardOpen) && (sysMetricsError || (sysMetricsUpdatedAt > 0 && Date.now() - sysMetricsUpdatedAt > 90_000))
+  // A pinned card is a dialog; a hover preview is a tooltip unless the stale
+  // fetch notice makes it interactive, which promotes it to a dialog too.
+  const metricsCardRole: 'dialog' | 'tooltip' = metricsPopoverOpen || (metricsCardOpen && sysMetricsError) ? 'dialog' : 'tooltip'
   // Re-read the rung's verdict on any resize of the group -- its width is what
   // the container query measures -- and whenever the update pill mounts or
   // unmounts, which moves the rung without resizing anything.
@@ -3982,9 +4007,9 @@ export default function App() {
                 // No room for the inline readings here, so the click opens the
                 // popover and the stored preference is left untouched -- it still
                 // describes what to do once the readings fit again.
-                segments.push(<button key="metrics" ref={metricsBtnRef} className={`${seg} ${metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-haspopup="dialog" aria-expanded={metricsPopoverOpen} onClick={toggleMetricsPopover}><AudioWaveform size={12} /></button>)
+                segments.push(<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} ${metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} aria-label={i18nT('app.system_metrics')} aria-haspopup="dialog" aria-expanded={metricsPopoverOpen} onClick={toggleMetricsPopover}><AudioWaveform size={12} /></button>)
               } else if (!metricsOpen) {
-                segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
+                segments.push(<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} text-muted hover:text-text`} onClick={() => { metricsHover.close(); setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
                 // Every OPEN state pushes a toggle. This branch is reached
                 // whenever the query has produced no frame, which is the whole
@@ -4038,21 +4063,12 @@ export default function App() {
                 const memPct = memValid ? m.memUsed / m.memTotal : 0
                 const dskUsed = m.diskTotal - m.diskFree
                 const dskPct = dskValid ? dskUsed / m.diskTotal : 0
-                const staleTitle = sysMetricsStale ? ` ${i18nT('app.stale_fetch_failing')}` : ''
-                // The container query can collapse this button to a bare icon, and
-                // the per-value tooltips ride on the spans it hides — so the
-                // readings have to live on the BUTTON's own title or they become
-                // unreachable on any window narrow enough to trip the rung.
-                // fmtPercent localizes the digits and the unit, and already
-                // renders a non-finite ratio as an em dash, which is what the
-                // invalid branches would otherwise hand-write.
-                const readings = [
-                  `${i18nT('app.cpu')} ${fmtPercent(cpuValid ? m.cpuPct / 100 : NaN)}`,
-                  `${i18nT('app.mem')} ${fmtPercent(memValid ? memPct : NaN)}`,
-                  `${i18nT('app.dsk')} ${fmtPercent(dskValid ? dskPct : NaN)}`,
-                ].join(' · ')
-                const metricsHint = sysMetricsStale ? i18nT('app.metrics_are_stale_latest_fetch_failed') : i18nT('app.click_to_hide')
-                segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={`${readings} — ${metricsHint}`} aria-pressed={true} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+                // No title tooltip on this button or its readings: the hover card
+                // carries the absolute figures, the stale note and the
+                // click-to-hide hint, and a native title would pop up on top of
+                // it. The readings are visible text here, so they are already in
+                // the button's accessible name.
+                segments.push(<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} aria-pressed={true} onClick={() => { metricsHover.close(); setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
                   {/* Both forms are rendered and the container query picks one:
                       the rung has to fire on the GROUP's width, which no JS
                       branch here can see. Collapsing to the icon (rather than
@@ -4070,9 +4086,9 @@ export default function App() {
                       carries the same distinction to assistive tech. */}
                   <AudioWaveform size={12} className="tb-narrow-only text-accent" />
                   <span className="tb-drop-metrics flex items-center gap-2">
-                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : i18nT('app.cpu_unavailable')}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
-                  <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : i18nT('app.memory_unavailable')}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
-                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : i18nT('app.disk_unavailable')}>{i18nT('app.dsk')} {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
+                  <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'}>{i18nT('app.cpu')} {cpuValid ? fmtPercent(m.cpuPct / 100) : '—'}</span>
+                  <span className={memValid ? metricColor(memPct) : 'text-muted'}>{i18nT('app.mem')} {memValid ? fmtPercent(memPct) : '—'}</span>
+                  <span className={dskValid ? metricColor(dskPct) : 'text-muted'}>{i18nT('app.dsk')} {dskValid ? fmtPercent(dskPct) : '—'}</span>
                   </span>
                 </button>)
               }
@@ -5009,17 +5025,27 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    {metricsPopoverAnchor && createPortal(
+    {metricsCardAnchor && createPortal(
+      // One card, two ways in: a click pins it as a dialog (the narrow band),
+      // and a hover previews it over any desktop form of the control. A clean
+      // hover preview is a tooltip; a stale-fetch hand-off is interactive, so
+      // that hover form is a non-modal dialog without moving focus into it.
       <div
         ref={metricsPopoverRef}
-        role="dialog"
-        aria-label={i18nT('app.system_metrics')}
+        id={metricsCardId}
+        {...(metricsPopoverOpen ? {} : metricsHover.surfaceProps)}
+        role={metricsCardRole}
+        // Only the dialog form carries a name. The tooltip is what the
+        // trigger's aria-describedby resolves to, and an aria-label there
+        // would replace the card's text (the readout rows) with a second
+        // copy of the trigger's own name.
+        {...(metricsCardRole === 'dialog' ? { 'aria-label': i18nT('app.system_metrics') } : {})}
         // Programmatically focusable so the open effect above can move the
         // caret here; -1 keeps it out of the tab ring, which is right for a
         // transient readout.
         tabIndex={-1}
         className="fixed z-[70] min-w-[176px] rounded-xl bg-card border border-border shadow-xl px-3 py-2.5 flex flex-col gap-1.5"
-        style={{ top: metricsPopoverAnchor.top, right: metricsPopoverAnchor.right }}
+        style={{ top: metricsCardAnchor.top, right: metricsCardAnchor.right }}
       >
         <div className="text-[11px] font-semibold text-text-strong">{i18nT('app.system_metrics')}</div>
         {(() => {
@@ -5049,10 +5075,20 @@ export default function App() {
                   </span>
                 </div>
               ))}
-              {sysMetricsStale && <div className="text-[10px] text-warn">{i18nT('app.metrics_are_stale_latest_fetch_failed')}</div>}
+              {/* The expanded readout's click hides it; the hover card is where
+                  that affordance is announced now that the button carries no
+                  title tooltip. */}
+              {!metricsPopoverOpen && metricsOpen && metricsInlineFits && <div className="text-[10px] text-muted">{i18nT('app.click_to_hide')}</div>}
             </>
           )
         })()}
+        {metricsCardOpen && sysMetricsError && (
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            message={i18nT('app.metrics_are_stale_latest_fetch_failed')}
+          />
+        )}
       </div>,
       document.body
     )}

@@ -388,10 +388,9 @@ describe('App — system metrics segment', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    const cpu = await screen.findByTitle('CPU: unavailable')
-    expect(cpu.textContent).toContain('—')
-    expect(screen.getByTitle('Memory: unavailable').textContent).toContain('—')
-    expect(screen.getByTitle('Disk: unavailable').textContent).toContain('—')
+    expect(await screen.findByText('CPU —')).toBeInTheDocument()
+    expect(screen.getByText('MEM —')).toBeInTheDocument()
+    expect(screen.getByText('DSK —')).toBeInTheDocument()
   })
 })
 

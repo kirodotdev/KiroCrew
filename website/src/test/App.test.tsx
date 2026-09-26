@@ -1519,7 +1519,7 @@ describe('TopbarMetrics widget', () => {
   it('shows only the Activity toggle button when metricsOpen is not set', () => {
     localStorage.removeItem('mc-topbar-metrics')
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getByTitle('System metrics')).toBeInTheDocument()
+    expect(screen.getByLabelText('System metrics')).toBeInTheDocument()
     expect(screen.queryByText(/CPU /)).not.toBeInTheDocument()
     expect(screen.queryByText(/MEM /)).not.toBeInTheDocument()
   })
