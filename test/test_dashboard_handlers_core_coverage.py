@@ -2804,3 +2804,27 @@ class TestSessionAgentPathIdValidation:
         monkeypatch.setattr("kiro_crew.session_workspace.list_results", lambda _s: [])
         resp = await core_mod.api_session_agents_list(_req(match_info={"id": good}))
         assert resp.status == 200
+
+
+class TestNonAsciiLocalSecret:
+    """A non-ASCII ``X-Local-Secret`` is a wrong secret, never a crash.
+
+    ``hmac.compare_digest`` raises TypeError on a str holding a non-ASCII
+    character, so each of the three local-secret gates answered 500 and never
+    wrote its denial record. A raw non-UTF-8 header byte decodes to a lone
+    surrogate, which is the second parameter.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler", ["api_token_local", "api_logout", "api_shutdown"])
+    @pytest.mark.parametrize("bad", ["é", "\udcff", "\ud800"])
+    async def test_refused_like_a_wrong_secret(
+        self, monkeypatch, fake_sel, handler: str, bad: str
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        resp = await getattr(core_mod, handler)(
+            _req(app={"local_secret": "right"}, headers={"X-Local-Secret": bad})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["error"] == "invalid secret"
+        assert fake_sel.log_api_access.call_args.kwargs["resources"] == "invalid-secret"

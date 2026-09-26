@@ -6,7 +6,6 @@ import asyncio
 import copy
 import difflib
 import functools
-import hmac
 import json
 import logging
 import math
@@ -79,6 +78,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS, PROVIDER_LOCAL
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
+    _ct_eq,
     _unix_request_socket,
     generate_token,
     parse_duration,
@@ -3151,7 +3151,7 @@ async def api_token_local(request: web.Request) -> web.Response:
     if not expected:
         return web.json_response({"error": "not available"}, status=503)
     provided = request.headers.get("X-Local-Secret", "")
-    if not provided or not hmac.compare_digest(expected, provided):
+    if not provided or not _ct_eq(expected, provided):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="token.local",
@@ -3360,7 +3360,7 @@ async def api_logout(request: web.Request) -> web.Response:
 
     expected = request.app.get("local_secret", "")
     provided = request.headers.get("X-Local-Secret", "")
-    if not expected or not provided or not hmac.compare_digest(expected, provided):
+    if not expected or not provided or not _ct_eq(expected, provided):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="logout",
@@ -3432,7 +3432,7 @@ async def api_shutdown(request: web.Request) -> web.Response:
 
     expected = request.app.get("local_secret", "")
     provided = request.headers.get("X-Local-Secret", "")
-    if not expected or not provided or not hmac.compare_digest(expected, provided):
+    if not expected or not provided or not _ct_eq(expected, provided):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="shutdown",
