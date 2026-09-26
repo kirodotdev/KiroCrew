@@ -42,6 +42,21 @@ const folderContainer = (f: ChatFolder, known: ReadonlySet<string>): string => {
 }
 
 /**
+ * The container a drag's renumber is computed against — the same scoping
+ * `computeSiblingReorder` applies internally, exposed so the caller can state
+ * it to the reorder endpoint as `expected_parent`. Empty string is the root
+ * lane, a real claim rather than an absent one.
+ */
+export const siblingReorderContainer = (
+  folders: ChatFolder[],
+  activeId: string,
+): string | undefined => {
+  const active = folders.find(f => f.id === activeId)
+  if (!active) return undefined
+  return folderContainer(active, new Set(folders.map(f => f.id)))
+}
+
+/**
  * Compute new `order` values for a drag among the dragged folder's SIBLINGS.
  *
  * `order` is a per-container index, not a global one: the sidebar sorts each

@@ -2183,7 +2183,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             reorder_body = [{"id": sid, "order": pos} for sid, pos in order_writes]
             shifted = _post(
                 "/api/chat/folders/reorder",
-                {"orders": reorder_body},
+                # Every row in the batch lives in the destination container by
+                # this point (the reparent PATCH above has landed), and the
+                # batch was computed from a snapshot -- so the claim lets the
+                # endpoint refuse the renumber if a concurrent reparent moved a
+                # sibling between that read and this write, instead of landing
+                # an index computed for a container the row has left.
+                {"orders": reorder_body, "expected_parent": dest_id},
                 session_key=caller_key,
             )
             if shifted.get("error"):

@@ -401,3 +401,192 @@ class TestTheRequestShapeIsValidatedBeforeTheStore:
                 body = await resp.json()
                 assert resp.status == 400, bad
                 assert body["code"] == "order_not_int", bad
+
+
+class TestAContainerClaimIsComparedUnderTheWriteLock:
+    """``expected_parent`` is a compare-and-set on the one field the renumber's
+    correctness depends on.
+
+    ``order`` is a per-container index, so a batch is only correct for rows
+    still living in the container the caller computed it against. The optional
+    request-level claim states that container, and each written row's stored
+    parent is compared against it inside the same transaction that writes --
+    so a reparent landing first refuses the whole batch as a 409 instead of
+    persisting an index computed for the old container onto a row that now
+    lives in a new one. Absence of the key is the one way to say "no
+    assumption", told apart from an empty string by the key's presence, never
+    its value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_matching_root_claim_lands_the_batch(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={
+                    "orders": [
+                        {"id": PERSON, "order": 2},
+                        {"id": RADAR, "order": 0},
+                        {"id": LEGACY, "order": 1},
+                    ],
+                    "expected_parent": "",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+        assert resp.status == 200
+        assert _by_id(state, PERSON)["order"] == 2
+        assert _by_id(state, RADAR)["order"] == 0
+        assert _by_id(state, LEGACY)["order"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reparent_landing_first_refuses_the_whole_batch(self) -> None:
+        """The interleaving the claim exists for: the caller computes a root-lane
+        renumber, a concurrent reparent moves one row into a subfolder before
+        the write, and the batch must not land -- the moved row's number was
+        computed for a container it has left, and writing the others around it
+        renumbers a tree the caller never saw."""
+        state = _state(_ChatSlot("chat-1-100"))
+        # The reparent lands first, exactly what a concurrent move writes into
+        # the store under the same lock this endpoint takes.
+        next(f for f in state._folders if f["id"] == RADAR)["parent_id"] = PERSON
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={
+                    "orders": [
+                        {"id": PERSON, "order": 2},
+                        {"id": RADAR, "order": 0},
+                        {"id": LEGACY, "order": 1},
+                    ],
+                    "expected_parent": "",
+                },
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            body = await resp.json()
+        assert resp.status == 409
+        assert body["code"] == "folder_parent_changed"
+        # Nothing landed: not the moved row, and not the rows whose parent
+        # still matched the claim.
+        assert _by_id(state, PERSON)["order"] == 0
+        assert _by_id(state, RADAR)["order"] == 1
+        assert _by_id(state, LEGACY)["order"] == 2
+        # The stored parent is read, never written: the reparent survives.
+        assert _by_id(state, RADAR)["parent_id"] == PERSON
+
+    @pytest.mark.asyncio
+    async def test_absence_of_the_claim_makes_no_assumption(self) -> None:
+        """The same store state that refuses a root claim lands without one: a
+        caller positioning rows by absolute index never read a container, so
+        no claim is demanded of it and the endpoint behaves as before."""
+        state = _state(_ChatSlot("chat-1-100"))
+        next(f for f in state._folders if f["id"] == RADAR)["parent_id"] = PERSON
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={"orders": [{"id": RADAR, "order": 7}]},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+        assert resp.status == 200
+        assert _by_id(state, RADAR)["order"] == 7
+
+    @pytest.mark.asyncio
+    async def test_a_nested_container_claim_matches_its_own_lane(self) -> None:
+        """A claim naming a subfolder admits rows living there and refuses a
+        row living elsewhere -- the claim is one value for the whole batch, so
+        a batch spanning two containers cannot state it and is refused."""
+        nested = [
+            {"id": PERSON, "name": "Work", "parent_id": "", "order": 0, "owner_app": ""},
+            {"id": RADAR, "name": "Radar", "parent_id": PERSON, "order": 0, "owner_app": ""},
+            {"id": LEGACY, "name": "Old", "parent_id": PERSON, "order": 1, "owner_app": ""},
+        ]
+        state = _state(_ChatSlot("chat-1-100"), folders=nested)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={
+                    "orders": [{"id": RADAR, "order": 1}, {"id": LEGACY, "order": 0}],
+                    "expected_parent": PERSON,
+                },
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            assert resp.status == 200
+            assert _by_id(state, RADAR)["order"] == 1
+            assert _by_id(state, LEGACY)["order"] == 0
+            # The same claim naming the root row is a mismatch: PERSON lives at
+            # the root, not inside itself.
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={
+                    "orders": [{"id": PERSON, "order": 5}],
+                    "expected_parent": PERSON,
+                },
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            body = await resp.json()
+        assert resp.status == 409
+        assert body["code"] == "folder_parent_changed"
+        assert _by_id(state, PERSON)["order"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_non_string_claim_is_refused_before_the_store(self) -> None:
+        """Coercing a JSON null or 0 through falsiness would silently turn
+        caller junk into a root claim -- an unchecked precondition that reads
+        exactly like an enforced one. A present key must be a real string."""
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            for bad in (None, 0, True, ["fldr"], {"id": "fldr"}):
+                resp = await client.post(
+                    "/api/chat/folders/reorder",
+                    json={"orders": [{"id": RADAR, "order": 5}], "expected_parent": bad},
+                    headers={"X-Session-Key": "dashboard:chat-1-100"},
+                )
+                body = await resp.json()
+                assert resp.status == 400, bad
+                assert body["code"] == "expected_parent_invalid", bad
+        assert _by_id(state, RADAR)["order"] == 1
+
+    @pytest.mark.asyncio
+    async def test_authorization_wins_over_the_precondition(self) -> None:
+        """A row that is both foreign and moved is refused as foreign: a caller
+        refused a row it does not own learns nothing about where that row now
+        lives."""
+        moved = [
+            {"id": PERSON, "name": "Work", "parent_id": LEGACY, "order": 0, "owner_app": ""},
+            {"id": RADAR, "name": "Radar", "parent_id": "", "order": 1, "owner_app": "issue-radar"},
+            {"id": LEGACY, "name": "Old", "parent_id": "", "order": 2, "owner_app": ""},
+        ]
+        state = _state(_app_slot("chat-1-200", "issue-radar"), folders=moved)
+        async with TestClient(TestServer(_make_app(state, app_scope="issue-radar"))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={"orders": [{"id": PERSON, "order": 5}], "expected_parent": ""},
+                headers={"X-Session-Key": "dashboard:chat-1-200"},
+            )
+            body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "folder_not_owned"
+        assert _by_id(state, PERSON)["order"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_claim_over_an_empty_batch_is_a_no_op_success(self) -> None:
+        """An empty batch writes no row, so a claim over it is vacuously true
+        -- but its shape is still validated, so a malformed claim is a 400
+        even when there is nothing to write."""
+        state = _state(_ChatSlot("chat-1-100"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={"orders": [], "expected_parent": ""},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            assert resp.status == 200
+            resp = await client.post(
+                "/api/chat/folders/reorder",
+                json={"orders": [], "expected_parent": 0},
+                headers={"X-Session-Key": "dashboard:chat-1-100"},
+            )
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "expected_parent_invalid"
+        assert [f["order"] for f in state._folders] == [0, 1, 2]

@@ -30,7 +30,7 @@ import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 import { findReport, type ErrorReport } from '../utils/errorReport'
-import { computeSiblingReorder } from '../utils/reorderFolders'
+import { computeSiblingReorder, siblingReorderContainer } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
@@ -6377,6 +6377,13 @@ function ChatSidebar({
     // that gesture is a re-parent and the collision layer routes it as one.
     const changes = computeSiblingReorder(current, activeId, overId)
     if (!changes.length) return
+    // The container this renumber was computed against, stated to the endpoint
+    // as its precondition: a concurrent re-parent landing between this read and
+    // the write refuses the whole batch (409) instead of persisting an index
+    // computed for a container a row has left. The failure lands in the same
+    // catch below, whose rollback + invalidate is exactly the resync a stale
+    // tree needs.
+    const expectedParent = siblingReorderContainer(current, activeId)
     // Snapshot the pre-drag order of exactly the rows this drag renumbers, so a
     // rejected write can be rolled back field-scoped rather than by restoring a
     // whole-list snapshot (which would clobber a concurrent rename/move).
@@ -6396,7 +6403,7 @@ function ChatSidebar({
     // per-row PATCH loop is wrong here. On failure, roll back only the rows
     // this drag set, and only where the cache still holds its optimistic
     // value, then re-sync from the server.
-    api.reorderChatFolders(changes).catch((e) => {
+    api.reorderChatFolders(changes, expectedParent).catch((e) => {
       setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')))
       queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
         (old ?? []).map(f => {
