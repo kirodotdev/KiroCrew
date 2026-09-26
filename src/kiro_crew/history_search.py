@@ -60,6 +60,37 @@ _RECENCY_HALF_WEIGHT_DAYS = 30.0
 # ranks CJK results. They still gate the AND match at full strength — the weight
 # only dampens their contribution to the relevance score.
 _CJK_CHAR_WEIGHT = 0.25
+# A short ASCII needle (one or two casefolded characters) has its CONTENT
+# contribution saturated — ``log1p`` of its length-normalized hit count, in
+# place of the raw count divided by the length norm. Such a needle is a
+# substring match, and agent transcripts are dense in exactly the text it
+# matches incidentally — ISO timestamps, account ids, commit hashes, instance
+# types — so a long session can rack up thousands of hits on ``5`` without
+# once being about "case 5". Raw frequency there is noise, not relevance, and
+# it outgrows the ``_TITLE_BOOST`` field boost: a title containing the whole
+# query scores ~60 while a 500 KB transcript scores 100-300 on stray digits
+# alone. LENGTH is the whole test, digits included: incidental substring
+# frequency falls by roughly 10x per extra character (``5`` matches thousands
+# of times in a 500 KB transcript, ``55`` hundreds, ``555`` tens, ``4411`` a
+# handful), so a run of three or more characters is specific enough that its
+# frequency measures relevance and its raw hits already sit far below one
+# title hit — saturating ``4411`` would cap the very term that tells a
+# specific query ("timeout 50051") apart from its ordinary co-term, letting
+# the co-term's linear frequency drive body-only ranking instead.
+# Saturation, not a smaller multiplier, because
+# the noise density varies by orders of magnitude between transcripts and no
+# constant is right for all of them; saturating the NORMALIZED count (hit
+# density) rather than the raw one keeps body-only matches ordered as before
+# — a long substantive discussion still beats one stray mention in a short
+# session — without dividing by the length norm twice. 10,000 incidental hits
+# in a 45 KB transcript come to about 7 points, so no digit density can outrank
+# one title hit. The needle keeps FULL strength for the AND gate (presence still
+# qualifies a session) and full weight in the title (short and intentional, so
+# one hit there is real evidence). CJK needles are exempt: a bigram is two
+# characters by construction and is the module's intended adjacency signal, and
+# lone characters already carry _CJK_CHAR_WEIGHT. Longer words keep raw
+# frequency, so no existing query without a short token is re-ranked.
+_SHORT_NEEDLE_MAX_CHARS = 2
 # Weight of one forge-reference spelling hit contributed for RANKING a bare
 # number query ("4411"). Such a query keeps its plain substring needle, so
 # recall is untouched — the spellings only move the session that actually
@@ -139,6 +170,12 @@ class SearchNeedle(NamedTuple):
     Scoring-only needles that are not adjacency evidence (the forge spellings
     added for ranking a bare number) therefore cannot arm that floor, which
     would otherwise turn a ranking hint into a hidden gate.
+
+    ``saturate_body`` saturates the needle's CONTENT hit count (``log1p``)
+    before weighting — title hits and the AND gate ignore it. Set only for the
+    short ASCII terms :func:`parse_search_query` marks (see
+    :data:`_SHORT_NEEDLE_MAX_CHARS`), whose raw body frequency is
+    incidental-text noise rather than relevance.
     """
 
     text: str
@@ -147,6 +184,36 @@ class SearchNeedle(NamedTuple):
     alts: tuple[str, ...] = ()
     digit_bounded: bool = False
     adjacency: bool = False
+    saturate_body: bool = False
+
+
+def _is_short_term(term: str) -> bool:
+    """True for an ASCII term whose body frequency is noise, not relevance.
+
+    One or two casefolded characters (``5``, ``s3``, ``pr``): each is a
+    substring that incidental transcript text — timestamps, ids, hashes —
+    contains far more often than prose about the thing does. Length is the
+    whole test, digits included: incidental substring frequency falls by
+    roughly 10x per extra character, so a run of three or more (``555``,
+    ``4411``) is specific enough that its frequency measures relevance, and
+    saturating it would cap the very term that tells a specific query
+    ("timeout 50051") apart from its ordinary co-term. ASCII only: a
+    two-character Hangul word (``한글``) is a whole word, not noise, and
+    Hangul is not a CJK run here (modern Korean is space-separated, see
+    :func:`_is_cjk_char`), so it arrives on this path. Callers apply it to
+    non-CJK runs only.
+    """
+    return term.isascii() and len(term) <= _SHORT_NEEDLE_MAX_CHARS
+
+
+def _saturates(spellings: Iterable[str]) -> bool:
+    """``count_needle`` sums every spelling, so one short spelling makes the
+    whole needle's body count incidental-noise dominated.
+
+    A needle whose shortest spelling is three or more characters
+    (hash-prefixed ``4411``, ``pull/4411``, ``4411``) keeps raw frequency.
+    """
+    return any(_is_short_term(spelling) for spelling in spellings)
 
 
 def count_needle(needle: SearchNeedle, folded_text: str) -> int:
@@ -594,7 +661,14 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     this one parse so the halves of a query cannot drift apart.
 
     Non-CJK terms become one required, weight-1.0 needle each — the classic
-    substring-AND behavior (``"cont"`` hits ``"contention"``). A run of CJK
+    substring-AND behavior (``"cont"`` hits ``"contention"``). A term of one or
+    two characters additionally carries
+    ``saturate_body=True``: it still gates and title-scores at full strength,
+    but its content frequency is saturated (``log1p``) because such a
+    substring matches incidental transcript text (timestamps, ids, hashes)
+    far more often than it marks relevance; a run of three or more
+    characters, digits included (``4411``), keeps raw frequency (see
+    :data:`_SHORT_NEEDLE_MAX_CHARS`). A run of CJK
     characters cannot keep that rule: CJK text is written without spaces, so
     requiring the run verbatim demands the user's exact sentence and a
     multi-word query like ``"修复内存泄漏"`` would only ever match transcripts
@@ -703,7 +777,17 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
                     if canonical not in charged:
                         charged.add(canonical)
                         forge_budget -= 1
-                    required.setdefault(canonical, SearchNeedle(canonical, 1.0, True, alts, True))
+                    required.setdefault(
+                        canonical,
+                        SearchNeedle(
+                            canonical,
+                            1.0,
+                            True,
+                            alts,
+                            True,
+                            saturate_body=_saturates((canonical, *alts)),
+                        ),
+                    )
                     # Continue like the built-in path does: the literal token must
                     # not ALSO survive into the gate through _script_runs, or a
                     # provider query would carry two required needles.
@@ -726,7 +810,11 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
                 if ref.bare:
                     seen = required[canonical]
                     if ref.number not in seen.alts:
-                        required[canonical] = seen._replace(alts=(*seen.alts, ref.number))
+                        alts = (*seen.alts, ref.number)
+                        required[canonical] = seen._replace(
+                            alts=alts,
+                            saturate_body=_saturates((seen.text, *alts)),
+                        )
                 continue
             if canonical not in charged and not forge_budget:
                 ref = None
@@ -742,7 +830,17 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
             # run would return every session mentioning #42.
             for word in _forge_type_suffix(lead):
                 required.pop(word, None)
-            required.setdefault(canonical, SearchNeedle(canonical, 1.0, True, alts, True))
+            required.setdefault(
+                canonical,
+                SearchNeedle(
+                    canonical,
+                    1.0,
+                    True,
+                    alts,
+                    True,
+                    saturate_body=_saturates((canonical, *alts)),
+                ),
+            )
             if ref.repo:
                 # Ranking only: the repo slug appears in a URL mention but not in
                 # a prose "#4411" one, so requiring it would hide real hits. It
@@ -768,10 +866,22 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
                     dict.fromkeys(s for s in (gh_text, *gh_alts, mr_text, *mr_alts) if s != part)
                 )
                 ranking[gh_text] = SearchNeedle(
-                    spellings[0], _FORGE_REF_WEIGHT, False, spellings[1:], True
+                    spellings[0],
+                    _FORGE_REF_WEIGHT,
+                    False,
+                    spellings[1:],
+                    True,
+                    saturate_body=_saturates(spellings),
                 )
         for run, is_cjk in _script_runs(part):
-            if not is_cjk or len(run) == 1:
+            if not is_cjk:
+                # Short ASCII terms gate and title-score at full strength but
+                # count their body hits saturated — see _SHORT_NEEDLE_MAX_CHARS
+                # for why raw frequency there is noise.
+                needle = SearchNeedle(run, 1.0, True, saturate_body=_is_short_term(run))
+                required.setdefault(run, needle)
+                continue
+            if len(run) == 1:
                 required.setdefault(run, SearchNeedle(run, 1.0, True))
                 continue
             for ch in run:
@@ -1144,18 +1254,34 @@ class SessionCatalogProjection:
         Ranking (higher is better)::
 
             score = ((title_hits * _TITLE_BOOST)
-                  + (content_hits / sqrt(1 + doc_chars / 1024))) * recency
+                  + (content_hits / sqrt(1 + doc_chars / 1024))
+                  + saturated_hits) * recency
 
         where ``*_hits`` sum the per-needle weighted counts, plus
         ``_PHRASE_BOOST`` per occurrence of the exact whole query when it
-        carries more than a single needle. The phrase bonus rewards adjacency:
+        carries more than a single needle. A short ASCII needle (``5``,
+        ``s3``; one or two characters, see ``_SHORT_NEEDLE_MAX_CHARS``)
+        contributes to ``saturated_hits`` instead of
+        ``content_hits``: ``log1p`` of its length-normalized body count. As a
+        substring it matches timestamps,
+        ids and hashes far more often than prose about the thing does, and
+        unsaturated a long transcript's thousands of incidental digit hits
+        out-score the session whose title IS the query. Saturating the
+        NORMALIZED count keeps body-only matches in frequency order (a
+        substantive long discussion still beats one stray mention in a short
+        session) without dividing by the length norm a second time. Its title
+        hits and its place in the AND gate are unchanged, and longer terms,
+        digit runs of three or more (``4411``) included,
+        keep raw frequency. The phrase bonus rewards adjacency:
         at comparable term frequency, the session containing the words TOGETHER
         as typed ranks above one that merely mentions them far apart.  It is
         deliberately a bonus and not an override — a session repeating one term
         far more often still wins on raw term frequency, exactly as it already
-        did for a single-token query.  (Saturating term frequency, BM25-style,
-        would change that; it would also re-rank every existing single-token
-        query, so it is out of scope here.)
+        did for a single-token query.  (Saturating term frequency generally,
+        BM25-style, would change that and re-rank every existing single-token
+        query, so it stays out of scope; only the short needles above
+        are saturated, because for them frequency was measuring digit density,
+        not relevance.)
 
         ``recency`` is a bounded multiplicative boost — ``1 +
         _RECENCY_MAX_BOOST / (1 + age_days / _RECENCY_HALF_WEIGHT_DAYS)`` — so
@@ -1206,7 +1332,9 @@ class SessionCatalogProjection:
                 continue
             doc_chars, folded = self._folded_for(key, rowids)
             title_folded = (meta.get("title") or "").casefold()
+            length_norm = math.sqrt(1 + doc_chars / 1024)
             content_hits = 0.0
+            saturated_hits = 0.0
             title_hits = 0.0
             adjacency_hits = 0
             disqualified = False
@@ -1220,9 +1348,20 @@ class SessionCatalogProjection:
                     break
                 if needle.adjacency:
                     adjacency_hits += in_content + in_title
-                content_hits += in_content * needle.weight
+                if needle.saturate_body:
+                    # A short substring's body frequency is mostly
+                    # incidental text. Saturate the length-NORMALIZED count (hit
+                    # density), so order among body-only matches is kept
+                    # (1 < 10 < 1000 hits at equal length; one stray hit in a
+                    # long transcript still loses to one in a short one) while
+                    # thousands of digit hits cannot outrank a title. Kept
+                    # apart from content_hits: it is already normalized, and
+                    # dividing it again would compound the two penalties.
+                    saturated_hits += math.log1p(in_content / length_norm) * needle.weight
+                else:
+                    content_hits += in_content * needle.weight
                 title_hits += in_title * needle.weight
-            if disqualified or (not content_hits and not title_hits):
+            if disqualified or not (content_hits or saturated_hits or title_hits):
                 continue
             if adjacency_floor and not adjacency_hits:
                 # Adjacency floor: a CJK query whose characters ALL appear but
@@ -1242,8 +1381,7 @@ class SessionCatalogProjection:
                 if folded:
                     content_hits += folded.count(phrase) * _PHRASE_BOOST
                 title_hits += title_folded.count(phrase) * _PHRASE_BOOST
-            length_norm = math.sqrt(1 + doc_chars / 1024)
-            score = title_hits * _TITLE_BOOST + content_hits / length_norm
+            score = title_hits * _TITLE_BOOST + content_hits / length_norm + saturated_hits
             # Recency boost: multiplicative and bounded to (1.0, 2.5], so a
             # fresh session with comparable relevance outranks a stale one, but
             # an old session with a decisively better match still wins — the
@@ -1252,7 +1390,7 @@ class SessionCatalogProjection:
             age_days = max(0.0, now - meta.get("modified", 0.0)) / 86400
             score *= 1.0 + _RECENCY_MAX_BOOST / (1.0 + age_days / _RECENCY_HALF_WEIGHT_DAYS)
             # Negate rank so a smaller (newer) rank wins ties after score desc sort.
-            scored.append((score, -rank, meta, content_hits > 0))
+            scored.append((score, -rank, meta, (content_hits or saturated_hits) > 0))
         scored.sort(reverse=True)
 
         # Snippets are attached AFTER the sort+slice, so the cost is proportional

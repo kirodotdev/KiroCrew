@@ -853,6 +853,146 @@ class TestSearchSessions:
             "threshold where title evidence dominates."
         )
 
+    def test_short_needle_digit_noise_does_not_bury_a_title_phrase_match(self, tmp_path):
+        """A titled ``case 5`` session outranks a long transcript dense in digit 5s.
+
+        ``5`` is a one-character substring needle, and agent transcripts are
+        dense in digits (timestamps, account ids, commit hashes), so on raw
+        frequency a long session that merely CONTAINS thousands of 5s out-scores
+        the session whose TITLE is the query. This pins the fix at realistic scale
+        (~10,000 digit-5 hits in a ~45 KB transcript): the body hit count of a
+        short needle is saturated, so digit noise cannot beat a
+        ``_TITLE_BOOST``-weighted whole-phrase title hit. The noisy session is
+        written NEWER so recency alone would rank it
+        first — only the ranking change can flip it.
+        """
+        # ~10,000 digit-5 hits spread over a realistic transcript: ISO timestamps
+        # and account ids on every line, plus a handful of real "case 5" mentions.
+        noisy_lines = []
+        for i in range(400):
+            noisy_lines.append(
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"2026-05-15T15:55:{i % 60:02d} ledger 5555-5555-5555 "
+                            f"instance i-5f5e5d5c5b5a5{i:04d} rebooted; "
+                            + ("edge case 5 needs live discovery" if i % 40 == 0 else "ok")
+                        ),
+                    }
+                )
+            )
+        (tmp_path / "noisy.jsonl").write_text(
+            '{"_type": "metadata", "title": "DR-11898 edge cases sweep"}\n'
+            + "\n".join(noisy_lines)
+            + "\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "titled.jsonl").write_text(
+            '{"_type": "metadata", "title": "Case 5 ARM64 failback"}\n'
+            '{"role": "user", "content": "unrelated text"}\n',
+            encoding="utf-8",
+        )
+        os.utime(tmp_path / "titled.jsonl", (1000, 1000))
+        os.utime(tmp_path / "noisy.jsonl", (2000, 2000))
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("case 5")
+
+        assert [s["key"] for s in results] == ["titled", "noisy"], (
+            "the session titled with the whole query must outrank a long "
+            "transcript whose only advantage is thousands of incidental digit-5 "
+            "substring hits"
+        )
+
+    def test_short_forge_needle_digit_noise_does_not_bury_a_title_match(self, tmp_path):
+        noisy_lines = []
+        for i in range(400):
+            noisy_lines.append(
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"2026-05-15T15:55:{i % 60:02d} ledger 5555-5555-5555 "
+                            f"instance i-5f5e5d5c5b5a5{i:04d} rebooted; "
+                            + ("edge case 5 needs live discovery" if i % 40 == 0 else "ok")
+                        ),
+                    }
+                )
+            )
+        (tmp_path / "noisy.jsonl").write_text(
+            '{"_type": "metadata", "title": "DR-11898 edge cases sweep"}\n'
+            + "\n".join(noisy_lines)
+            + "\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "titled.jsonl").write_text(
+            '{"_type": "metadata", "title": "Case 5 ARM64 failback"}\n'
+            '{"role": "user", "content": "unrelated text"}\n',
+            encoding="utf-8",
+        )
+        os.utime(tmp_path / "titled.jsonl", (1000, 1000))
+        os.utime(tmp_path / "noisy.jsonl", (2000, 2000))
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("issue 5")
+
+        assert results[0]["key"] == "titled"
+
+    def test_short_needle_saturation_keeps_substantive_long_session_ahead(self, tmp_path):
+        """Saturation must not invert body-only order for a short token.
+
+        Query ``s3``: a long session that discusses S3 two hundred times must
+        still outrank a short session with one incidental ``s3`` mention. The
+        saturated count is the length-NORMALIZED one, so the length norm is
+        applied once; saturating the raw count and then dividing by the norm
+        compounds two penalties on the long session and flips this order.
+        The short session is written NEWER so recency favors it.
+        """
+        long_lines = [
+            json.dumps({"role": "assistant", "content": f"bucket policy for s3 step {i}: " + "x" * 400})
+            for i in range(200)
+        ]
+        (tmp_path / "long-substantive.jsonl").write_text(
+            '{"_type": "metadata", "title": "storage design"}\n' + "\n".join(long_lines) + "\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "short-incidental.jsonl").write_text(
+            '{"_type": "metadata", "title": "quick question"}\n'
+            '{"role": "user", "content": "copied it from s3 once, unrelated otherwise"}\n',
+            encoding="utf-8",
+        )
+        os.utime(tmp_path / "long-substantive.jsonl", (1000, 1000))
+        os.utime(tmp_path / "short-incidental.jsonl", (2000, 2000))
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("s3")
+
+        assert [s["key"] for s in results] == ["long-substantive", "short-incidental"]
+
+    def test_short_needle_still_gates_on_body_presence(self, tmp_path):
+        """Dampening is a ranking change only: a body-only short token still matches.
+
+        The ``5`` in ``case 5`` may appear ONLY in a session's content. Dropping
+        short needles from the body scan would fail the AND gate for exactly
+        the sessions the query is for, so the gate is untouched and only the
+        weight moves.
+        """
+        (tmp_path / "body-only.jsonl").write_text(
+            '{"_type": "metadata", "title": "edge cases"}\n'
+            '{"role": "user", "content": "case 5 needs live discovery"}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "miss.jsonl").write_text(
+            '{"_type": "metadata", "title": "edge cases"}\n'
+            '{"role": "user", "content": "case four needs live discovery"}\n',
+            encoding="utf-8",
+        )
+        log = ConversationLog(base_dir=tmp_path)
+
+        assert [s["key"] for s in log.search_sessions("case 5")] == ["body-only"]
+        assert [s["key"] for s in log.search_sessions("5")] == ["body-only"]
+
     def test_scan_window_caps_files_scored(self, tmp_path, monkeypatch):
         """Only the ``_SEARCH_SCAN_WINDOW`` newest files are scored.
 
@@ -1235,6 +1375,95 @@ class TestParseSearchQuery:
         needles, _, _ = history.parse_search_query("泄")
 
         assert needles == [history.SearchNeedle("泄", 1.0, True)]
+
+    def test_short_ascii_terms_saturate_body_only(self):
+        """``5`` and ``s3`` keep full title weight and full gate strength.
+
+        Only their CONTENT hit count is saturated (``saturate_body``): a one-
+        or two-character substring matches incidental text (timestamps, ids,
+        hashes) so often that its raw body frequency is noise, not relevance.
+        Length is the whole test, digits included: incidental frequency falls
+        roughly 10x per extra character, so ``4411`` keeps raw frequency
+        alongside longer words -- saturating it would cap the specific term of
+        a query like ``timeout 50051`` while its ordinary co-term stays
+        linear, inverting which term drives body-only ranking. ``555`` and
+        ``pod`` pin the boundary at exactly three characters.
+        """
+        needles, _, _ = history.parse_search_query("case 5 s3 555 pod 4411 deploy")
+
+        by_text = {n.text: n for n in needles if n.required}
+        for unsaturated in ("case", "deploy", "555", "pod", "4411"):
+            assert by_text[unsaturated].saturate_body is False, unsaturated
+        for short in ("5", "s3"):
+            needle = by_text[short]
+            assert needle.weight == 1.0, short
+            assert needle.required is True, short
+            assert needle.saturate_body is True, short
+
+    @pytest.mark.parametrize("query", ["issue 5", "pr 5"])
+    def test_forge_needles_with_a_short_spelling_are_saturated(self, query):
+        needles, _, _ = history.parse_search_query(query)
+        required = [needle for needle in needles if needle.required]
+
+        assert len(required) == 1
+        assert required[0].saturate_body is True
+
+    def test_duplicate_reference_alt_merge_recomputes_saturation(self):
+        """A duplicate reference recomputes saturation after merging a bare alt."""
+        needles, _, _ = history.parse_search_query("#42 issue 42")
+        required = [needle for needle in needles if needle.required]
+
+        assert len(required) == 1
+        needle = required[0]
+        assert "42" in needle.alts
+        assert needle.saturate_body is True
+
+        needles, _, _ = history.parse_search_query("#4411 issue 4411")
+        required = [needle for needle in needles if needle.required]
+
+        assert len(required) == 1
+        needle = required[0]
+        assert "4411" in needle.alts
+        assert needle.saturate_body is False
+
+    @pytest.mark.parametrize("query", ["PR 4411", "#4411", "pull/4411"])
+    def test_forge_needles_without_a_short_spelling_are_not_saturated(self, query):
+        needles, _, _ = history.parse_search_query(query)
+        required = [needle for needle in needles if needle.required]
+
+        assert len(required) == 1
+        assert required[0].saturate_body is False
+
+    @pytest.mark.parametrize("query, expected", [("5", True), ("4411", False)])
+    def test_bare_number_ranking_hint_saturation(self, query, expected):
+        needles, _, _ = history.parse_search_query(query)
+        ranking = [needle for needle in needles if not needle.required]
+
+        assert len(ranking) == 1
+        assert ranking[0].saturate_body is expected
+
+    def test_cjk_needles_are_not_saturated(self):
+        """The short-token rule is an ASCII noise rule; CJK ranking is untouched.
+
+        A CJK bigram is two characters long and a lone character is one, and
+        both are the module's *intended* CJK signal — the character needles
+        already carry their own ``_CJK_CHAR_WEIGHT``.
+        """
+        needles, _, _ = history.parse_search_query("内存 泄")
+
+        assert not any(n.saturate_body for n in needles), needles
+
+    def test_short_non_ascii_words_are_not_saturated(self):
+        """A two-character Hangul word is a whole word, not digit noise.
+
+        Hangul is space-separated so it is NOT segmented as a CJK run and
+        arrives on the plain-term path; the short-token rule must not treat
+        ``한글`` like ``s3``. Same for a short accented Latin term.
+        """
+        needles, _, _ = history.parse_search_query("한글 où")
+
+        assert [n.text for n in needles] == ["한글", "où"]
+        assert not any(n.saturate_body for n in needles), needles
 
     def test_scoring_extras_are_capped(self):
         """Bigrams cost one scan each, so they get their own bound."""
@@ -1979,6 +2208,20 @@ class TestProviderSearchRefSeam:
         assert needle.text == "ref-987654321"
         assert set(needle.alts) == {"items/ref-987654321", "ref 987654321"}
         assert needle.digit_bounded is True
+
+    def test_a_provider_reference_with_a_short_spelling_is_saturated(self):
+        """A provider reference saturates when any spelling is short."""
+        history_search.register_search_ref_resolver(
+            lambda token: ("x5", ("items/x5", "5"))
+            if token.casefold() == "x5"
+            else None
+        )
+
+        assert self._needle("X5").saturate_body is True
+
+        history_search.register_search_ref_resolver(self._resolver)
+
+        assert self._needle("REF-987654321").saturate_body is False
 
     def test_every_provider_spelling_finds_every_spelling(self, tmp_path):
         """A URL mention and a prose mention answer the same query."""
