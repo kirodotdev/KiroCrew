@@ -60,7 +60,6 @@ import aiohttp
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import ssm as cloud_ssm
-from kiro_crew.cloud.connect import FARGATE_TURN_PATH
 
 # The local (embedding) gateway's configured port — carried into the minted
 # remote token as the CSP frame-ancestor parent origin so the embedded pane can
@@ -77,7 +76,6 @@ from kiro_crew.instances.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
-from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT_SECS
 from kiro_crew.instances.constants import (
     DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS as _MODELS_CAPABILITY_PROXY_TIMEOUT,
 )
@@ -94,12 +92,6 @@ from kiro_crew.instances.constants import (
 )
 from kiro_crew.instances.constants import DEFAULT_SEARCH_PROXY_TIMEOUT_SECS as _SEARCH_PROXY_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
-from kiro_crew.instances.constants import (
-    DEFAULT_SSM_CONNECT_TIMEOUT_SECS as _DEFAULT_SSM_CONNECT_TIMEOUT_SECS,
-)
-from kiro_crew.instances.constants import (
-    DEFAULT_SSM_MINT_TIMEOUT_SECS as _DEFAULT_SSM_MINT_TIMEOUT_SECS,
-)
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
 from kiro_crew.instances.constants import (
@@ -118,7 +110,6 @@ from kiro_crew.instances.port_allocator import PortAllocator, _is_addr_free, _is
 from kiro_crew.instances.registry import (
     _NO_FORWARDER_PID,
     _UNALLOCATED_PORT,
-    SSM_TRANSPORT_METHODS,
     Instance,
     InstancesRegistry,
 )
@@ -132,16 +123,15 @@ from kiro_crew.instances.token_mint import (
     run_remote_kirocrew,
     ttl_to_seconds,
 )
+from kiro_crew.instances.transports import (
+    TransportParams,
+    TransportRefusal,
+    TransportSeams,
+    resolve_peer_transport,
+)
 from kiro_crew.instances.validation import (
     SshValidationError,
     SsmValidationError,
-    split_ecs_target,
-    validate_aws_profile,
-    validate_aws_region,
-    validate_remote_bin,
-    validate_ssh_host,
-    validate_ssm_run_as,
-    validate_ssm_target,
 )
 from kiro_crew.security import redact
 from kiro_crew.sel import _HMAC_KEY_MIN_BYTES as _SEL_HMAC_KEY_MIN_BYTES
@@ -1355,54 +1345,10 @@ def _verify_and_reclaim_forwarder(
     return "not_gone"
 
 
-@dataclass
-class _TransportParams:
-    """Validated, transport-specific connection parameters for one instance.
-
-    Resolved once by :meth:`SshTunnelManager._resolve_transport` so the
-    connect / rebuild / self-heal / token-refresh paths all build their tunnel
-    and mint their token from the same validated values instead of each
-    re-branching on ``connection_method``.
-    """
-
-    method: str  # "ssh" | "ssm" | "fargate"
-    ssh_host: str = ""
-    remote_bin: str = ""
-    ssm_target: str = ""
-    aws_profile: str = ""
-    aws_region: str = ""
-    ssm_run_as: str = ""
-
-    @property
-    def target(self) -> str:
-        """The human-facing target (ssh host, SSM instance id or ECS task) for messages."""
-        return self.ssm_target if self.method in SSM_TRANSPORT_METHODS else self.ssh_host
-
-    @property
-    def forwards_over_ssm(self) -> bool:
-        """Whether the forwarder child is ``aws ssm start-session``."""
-        return self.method in SSM_TRANSPORT_METHODS
-
-    def tunnel_kwargs(self) -> dict:
-        """Transport kwargs for the ``_SshTunnel`` constructor.
-
-        The tunnel child knows two argv shapes, ssh and the SSM port-forward. A
-        fargate instance's child IS the SSM port-forward (aimed at an ECS task), so
-        it is handed the ``ssm`` transport; what differs for fargate lives on the
-        manager (no mint, no remote ``kirocrew``), not in the child.
-        """
-        return {
-            "transport": "ssm" if self.forwards_over_ssm else "ssh",
-            "ssm_target": self.ssm_target,
-            "aws_profile": self.aws_profile,
-            "aws_region": self.aws_region,
-        }
-
-    def turn_url(self, local_port: int) -> str:
-        """The local turn-API URL for a fargate forward, ``""`` otherwise."""
-        if self.method != "fargate":
-            return ""
-        return f"http://{_LOOPBACK}:{local_port}{FARGATE_TURN_PATH}"
+#: Retained name for the validated-params value object, which now lives with the
+#: transports that produce it (``kiro_crew.instances.transports.params``). Callers
+#: and tests import it from here unchanged.
+_TransportParams = TransportParams
 
 
 class SshTunnelManager:
@@ -1802,121 +1748,85 @@ class SshTunnelManager:
     def _connect_timeout_for(self, method: str) -> float:
         """Readiness timeout for *method*, honoring an explicit caller override.
 
-        SSM's ``session-manager-plugin`` has to complete a WebSocket handshake
-        with the SSM service before it binds the local port, which routinely
-        takes longer than a direct ssh TCP connect — so the SSM default is
-        higher. A caller that passed an explicit ``connect_timeout_secs``
-        (tests, tuning) wins for both transports.
+        The per-transport default is the transport's own
+        ``connect_timeout_default``: SSM's ``session-manager-plugin`` has to
+        complete a WebSocket handshake with the SSM service before it binds the
+        local port, which routinely takes longer than a direct ssh TCP connect.
+        A caller that passed an explicit ``connect_timeout_secs`` (tests, tuning)
+        wins for every transport.
         """
         if self._connect_timeout is not None:
             return self._connect_timeout  # explicit override
-        if method in SSM_TRANSPORT_METHODS:
-            return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
-        return _DEFAULT_CONNECT_TIMEOUT_SECS
+        return resolve_peer_transport(method).connect_timeout_default
 
     def _mint_timeout_for(self, method: str) -> float:
         """Token-mint timeout for *method*, honoring an explicit override.
 
-        Mirrors :meth:`_connect_timeout_for`: the SSM mint dispatches
-        ``aws ssm send-command`` and polls ``get-command-invocation``, whose
-        dispatch latency (agent poll interval) makes its default higher. A
-        caller that passed an explicit ``mint_timeout_secs`` (config, tests)
-        wins for both transports — including a value equal to either
-        transport's default.
+        Mirrors :meth:`_connect_timeout_for` against the transport's
+        ``mint_timeout_default``: the SSM mint dispatches ``aws ssm send-command``
+        and polls ``get-command-invocation``, whose dispatch latency (agent poll
+        interval) makes its default higher. A caller that passed an explicit
+        ``mint_timeout_secs`` (config, tests) wins for every transport —
+        including a value equal to a transport's default.
         """
         if self._mint_timeout is not None:
             return self._mint_timeout  # explicit override
-        if method == "ssm":
-            return _DEFAULT_SSM_MINT_TIMEOUT_SECS
-        return _DEFAULT_MINT_TIMEOUT_SECS
+        return resolve_peer_transport(method).mint_timeout_default
 
     def _resolve_transport(self, inst: Instance) -> _TransportParams:
         """Validate + resolve *inst*'s transport params immediately before use.
 
-        Raises :class:`SshValidationError` / :class:`SsmValidationError` so each
+        Delegates to the transport registered for ``inst.connection_method``, so
+        each method's addressing rules live with the transport that uses them.
+        Raises :class:`SshValidationError` / :class:`SsmValidationError` (an
+        unmapped method raises ``UnknownTransportError``, which is both) so each
         caller can surface a clean per-instance error. Validation happens here —
         right before a command line is built — rather than trusting the
         registry's lighter early-reject charset checks.
         """
-        method = (inst.connection_method or "ssh").strip().lower()
-        if method == "fargate":
-            target = validate_ssm_target(inst.ssm_target)
-            # validate_ssm_target admits every SSM target shape; this method only
-            # forwards to an ECS task, so an EC2 id is refused here rather than
-            # handed to a forward that would reach a box with no turn API.
-            if split_ecs_target(target) is None:
-                raise SsmValidationError(
-                    f"ssm_target {target!r} must be an ECS task target "
-                    f"(ecs:<cluster>_<task-id>_<runtime-id>) for a fargate instance"
-                )
-            return _TransportParams(
-                method="fargate",
-                ssm_target=target,
-                aws_profile=validate_aws_profile(inst.aws_profile),
-                aws_region=validate_aws_region(inst.aws_region),
-            )
-        if method == "ssm":
-            target = validate_ssm_target(inst.ssm_target)
-            # Connect-time mirror of the registry's ssm arm, for records stored
-            # before the registry refused them: an ECS task has no SSM agent to
-            # run ``kirocrew token`` on, so forwarding it would only fail later
-            # at the mint with a generic error. Refuse here and name the method
-            # that owns the target.
-            if split_ecs_target(target) is not None:
-                raise SsmValidationError(
-                    f"ssm_target {target!r} is an ECS task target; it belongs to the "
-                    f"fargate connection method, not ssm"
-                )
-            return _TransportParams(
-                method="ssm",
-                ssm_target=target,
-                aws_profile=validate_aws_profile(inst.aws_profile),
-                aws_region=validate_aws_region(inst.aws_region),
-                ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),
-                remote_bin=validate_remote_bin(inst.remote_bin),
-            )
-        return _TransportParams(
-            method="ssh",
-            ssh_host=validate_ssh_host(inst.ssh_host),
-            remote_bin=validate_remote_bin(inst.remote_bin),
+        return resolve_peer_transport(inst.connection_method).validate(inst)
+
+    def _seams(self) -> TransportSeams:
+        """The outward calls handed to a transport, read from THIS module per call.
+
+        Resolved here rather than imported by the transports so this module stays
+        the single substitution point: the existing tests patch
+        ``ssh_tunnel_manager.mint_remote_token_ssm`` (and the restart / diagnose
+        entry points) to drive the transports without touching a remote, and a
+        bare global read here is what makes a transport see the patched callable.
+        ``mint_ssh`` is the constructor-injected mint seam instead, for the same
+        reason at the object level.
+        """
+        return TransportSeams(
+            mint_ssh=self._mint_token,
+            mint_ssm=mint_remote_token_ssm,
+            restart_ssh=run_remote_kirocrew,
+            restart_ssm=run_remote_kirocrew_ssm,
+            diagnose_ssh=diagnose_instance,
+            diagnose_ssm=diagnose_instance_ssm,
+            diagnose_fargate=diagnose_instance_fargate,
         )
 
     async def _mint_for(self, inst: Instance, params: _TransportParams) -> str:
         """Mint a dashboard token for *inst* over its configured transport.
 
-        The SSH path goes through the injectable ``self._mint_token`` seam (kept
-        so the existing tests can substitute a fake mint); the SSM path calls
-        :func:`mint_remote_token_ssm`. Never logs the token.
+        The mint seams (``self._mint_token`` for SSH, this module's
+        ``mint_remote_token_ssm`` for SSM — both kept substitutable so the
+        existing tests can drive them with fakes) are handed over by
+        :meth:`_seams`; the transport uses the one it needs. Never logs the token.
 
         A fargate instance has nothing to mint: the task runs no ``kirocrew`` and
-        serves no dashboard. Every mint path (connect, self-heal, proactive and
-        on-demand refresh) funnels through here, so refusing here is what keeps a
-        later caller from dispatching ``kirocrew token`` at an ECS task.
+        serves no dashboard, so its transport raises here. Every mint path
+        (connect, self-heal, proactive and on-demand refresh) funnels through
+        this method, so that refusal is what keeps a later caller from
+        dispatching ``kirocrew token`` at an ECS task.
         """
-        if params.method == "fargate":
-            raise TokenMintError(
-                "a fargate instance has no dashboard token: the task serves only its "
-                "turn API, reached at the tunnel's turn_url"
-            )
-        if params.method == "ssm":
-            return await mint_remote_token_ssm(
-                params.ssm_target,
-                aws_profile=params.aws_profile,
-                aws_region=params.aws_region,
-                ssm_run_as=params.ssm_run_as,
-                remote_bin=params.remote_bin,
-                ttl=inst.ttl,
-                remote_port=inst.remote_port,
-                embed_parent_port=self._parent_port,
-                timeout_secs=self._mint_timeout_for(params.method),
-            )
-        return await self._mint_token(
-            params.ssh_host,
-            remote_bin=params.remote_bin,
-            ttl=inst.ttl,
-            remote_port=inst.remote_port,
-            embed_parent_port=self._parent_port,
+        return await resolve_peer_transport(params.method).mint(
+            inst,
+            params,
+            parent_port=self._parent_port,
             timeout_secs=self._mint_timeout_for(params.method),
+            seams=self._seams(),
         )
 
     async def connect(
@@ -2149,7 +2059,7 @@ class SshTunnelManager:
                 compression=self._ssh_compression,
                 probe_failure_threshold=self._probe_fails,
                 on_exit=self._on_tunnel_exit,
-                **params.tunnel_kwargs(),
+                **resolve_peer_transport(params.method).open(params),
             )
             self._tunnels[instance_id] = tunnel
             self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
@@ -2168,8 +2078,10 @@ class SshTunnelManager:
             # Mint a per-instance token over the same transport (never logged).
             # A fargate forward reaches a turn API, not a dashboard: there is no
             # token to mint and none to refresh, so the forward alone is the
-            # connection and the status carries the turn URL instead.
-            if params.method != "fargate":
+            # connection and the status carries the turn URL instead. The test is
+            # the transport's own capability, not its name — a later transport
+            # that mints or does not mint needs no edit here.
+            if resolve_peer_transport(params.method).mints_token:
                 try:
                     token = await self._mint_for(inst, params)
                 except TokenMintError as e:
@@ -2506,7 +2418,7 @@ class SshTunnelManager:
             compression=self._ssh_compression,
             probe_failure_threshold=self._probe_fails,
             on_exit=self._on_tunnel_exit,
-            **params.tunnel_kwargs(),
+            **resolve_peer_transport(params.method).open(params),
         )
         tunnel.status.turn_url = params.turn_url(local_port)
         async with self._lock:
@@ -2665,11 +2577,11 @@ class SshTunnelManager:
             logger.info("Self-heal tier 1 finished for %s", instance_id)
             return
 
-        # Tier 2 -- re-mint the dashboard token, then rebuild. A fargate instance
-        # has no token, so its tier 2 is the rebuild alone: the tier-1 failure
+        # Tier 2 -- re-mint the dashboard token, then rebuild. A transport with no
+        # token (fargate) has its tier 2 as the rebuild alone: the tier-1 failure
         # already bumped the generation once, which is the stamp the second
         # rebuild binds to below.
-        if params.method == "fargate":
+        if not resolve_peer_transport(params.method).mints_token:
             logger.info("Self-heal tier 2 (re-forward) for %s", instance_id)
         else:
             logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
@@ -2747,32 +2659,16 @@ class SshTunnelManager:
             return None
         tunnel = self._tunnels.get(instance_id)
         local_port = (tunnel.status.local_port if tunnel else 0) or inst.local_port
-        method = (inst.connection_method or "ssh").strip().lower()
-        if method == "fargate":
-            result = await diagnose_instance_fargate(
-                inst.ssm_target,
-                local_port,
-                aws_profile=inst.aws_profile,
-                aws_region=inst.aws_region,
-            )
-        elif method == "ssm":
-            result = await diagnose_instance_ssm(
-                inst.ssm_target,
-                inst.remote_port,
-                local_port,
-                aws_profile=inst.aws_profile,
-                aws_region=inst.aws_region,
-                ssm_run_as=inst.ssm_run_as,
-            )
-        else:
-            result = await diagnose_instance(
-                inst.ssh_host,
-                inst.remote_port,
-                local_port,
-                connect_timeout_secs=min(
-                    self._connect_timeout_for("ssh"), _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS
-                ),
-            )
+        transport = resolve_peer_transport(inst.connection_method)
+        result = await transport.diagnose(
+            inst,
+            local_port=local_port,
+            connect_timeout_secs=min(
+                self._connect_timeout_for(transport.method),
+                _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS,
+            ),
+            seams=self._seams(),
+        )
         diag = result.to_dict()
         # Re-fetch the tunnel (it may have changed during the probes) and attach.
         tunnel = self._tunnels.get(instance_id)
@@ -2800,34 +2696,18 @@ class SshTunnelManager:
             params = self._resolve_transport(inst)
         except (SshValidationError, SsmValidationError) as e:
             return {"ok": False, "message": f"invalid {inst.connection_method} settings: {e}"}
-        if params.method == "fargate":
-            # Refused before any command is built: the task runs no kirocrew
-            # gateway, so a restart dispatched at it would only fail remotely.
-            return {
-                "ok": False,
-                "message": (
-                    "a fargate instance runs no Kiro Crew gateway to restart; "
-                    "stop and relaunch the task instead"
-                ),
-            }
-        if params.method == "ssm":
-            rc, err = await run_remote_kirocrew_ssm(
-                params.ssm_target,
-                "restart",
-                aws_profile=params.aws_profile,
-                aws_region=params.aws_region,
-                ssm_run_as=params.ssm_run_as,
-                remote_bin=params.remote_bin,
-                marker_port=inst.remote_port,
+        try:
+            rc, err = await resolve_peer_transport(params.method).restart(
+                inst,
+                params,
+                timeout_secs=self._mint_timeout_for(params.method),
+                seams=self._seams(),
             )
-        else:
-            rc, err = await run_remote_kirocrew(
-                params.ssh_host,
-                "restart",
-                remote_bin=params.remote_bin,
-                marker_port=inst.remote_port,
-                connect_timeout_secs=self._mint_timeout_for(params.method),
-            )
+        except TransportRefusal as e:
+            # Refused before any command is built: this transport reaches
+            # something that runs no Kiro Crew gateway, so a restart dispatched
+            # at it would only fail remotely.
+            return {"ok": False, "message": str(e)}
         if rc == 0:
             logger.info("Restarted remote gateway for %s", instance_id)
             return {"ok": True, "message": "remote gateway restart requested"}
