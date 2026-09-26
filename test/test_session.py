@@ -117,6 +117,21 @@ class TestSessionManager:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_release_refreshes_liveness(self, cfg):
+        """Release marks the end of a live turn, not the start of idleness.
+
+        A backdated session released after work must read fresh again, so the
+        idle sweep measures from when the session went quiet rather than when
+        it was acquired and a run working between tasks is not reaped mid-run.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr._sessions["thread1"].last_used = time.monotonic() - 9999
+        mgr.release("thread1")
+        assert mgr._sessions["thread1"].last_used > time.monotonic() - 5
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_reinjection_helpers_tolerate_an_unknown_key(self, cfg):
         """A compaction callback can fire for a session that has since been
         evicted; neither helper may raise."""

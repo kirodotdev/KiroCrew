@@ -1155,6 +1155,13 @@ class SessionAllocationService:
                     "new occupant's",
                     key,
                 )
+            else:
+                # A release marks the end of a live turn, not the start of
+                # idleness: refresh liveness so the idle sweep measures from
+                # when the session went quiet rather than when it was
+                # acquired. A run that never returns still goes stale and is
+                # reaped; a run working between tasks is not mistaken for one.
+                session.last_used = time.monotonic()
 
     async def _safe_cleanup(self, provider: LLMProvider, session_id: str) -> None:
         try:
