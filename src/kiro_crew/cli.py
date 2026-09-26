@@ -1021,6 +1021,11 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     Short-lived commands attach the file handler synchronously — they run no
     event loop, and several exec-over-self (skipping atexit), where a queued
     tail would be lost. See the inline comment at the attach site.
+
+    In every shape the ``kiro_crew`` logger is the SINGLE level gate: the file
+    handler and the queue handler carry no level of their own, so a runtime
+    ``agent.log_level`` change (``handlers/updates.py::apply_log_level``) that
+    moves the logger reaches ``gateway.log`` with nothing else to update.
     """
     if verbose >= 2:
         level = logging.DEBUG
@@ -1082,11 +1087,12 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     # later raw stderr from all retained logs.
     handler_cls = _FdTrackingRotatingFileHandler if detached else RotatingFileHandler
     fh = handler_cls(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    # In detached mode the handler also serves the root logger: cap its level
-    # at WARNING so third-party WARNINGs keep flowing even when kiro_crew's
-    # own configured level is stricter (kiro_crew records below `level` are
-    # already filtered at the kiro_crew logger, so this cannot over-log).
-    fh.setLevel(min(level, logging.WARNING) if detached else level)
+    # No level on the handler: every record that can reach it is already gated
+    # by a logger level -- kiro_crew records by the kiro_crew logger set above,
+    # third-party records (root attach, detached mode) by the root logger's
+    # WARNING. The logger level is the one level a runtime agent.log_level
+    # change moves, so keeping the handler at NOTSET is what lets a raised
+    # level reach gateway.log without a restart.
     fh.setFormatter(
         logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s [PID %(process)d]: %(message)s",
@@ -1127,11 +1133,13 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
             for stale in [h for h in lgr.handlers if isinstance(h, _CliLogQueueHandler)]:
                 lgr.removeHandler(stale)  # re-entrant call: orphaned producer
         log_queue: "queue.SimpleQueue[logging.LogRecord]" = queue.SimpleQueue()
+        # No level on the queue handler either, and no handler-level re-check at
+        # dequeue: the loggers decide what enters the queue, and everything that
+        # enters is written. A level here would be a second copy of `level` that
+        # the runtime applier does not move; a re-check at dequeue would judge
+        # records already queued by a level set after they were logged.
         queue_handler = _CliLogQueueHandler(log_queue)
-        # Gate at the producer: records the file handler would drop must not
-        # transit the queue at all.
-        queue_handler.setLevel(fh.level)
-        _LOG_QUEUE_LISTENER = QueueListener(log_queue, fh, respect_handler_level=True)
+        _LOG_QUEUE_LISTENER = QueueListener(log_queue, fh)
         _LOG_QUEUE_LISTENER.start()
         atexit.register(_stop_log_queue_listener)
         target_logger.addHandler(queue_handler)
