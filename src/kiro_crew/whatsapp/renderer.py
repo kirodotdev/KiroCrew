@@ -63,6 +63,7 @@ import asyncio
 import re
 from typing import Callable
 
+from kiro_crew.constants import md_link_destination
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.markup import (
     MERMAID_INFO,
@@ -101,7 +102,13 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _BOLD_US_RE = re.compile(r"__(.+?)__")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+#: A balanced pair may sit inside the url (``.../Python_(programming_language)``);
+#: see :func:`kiro_crew.constants.md_link_destination`. The label class is the
+#: display-safety screen's: no ``[``, ``]`` or line break.
+_LINK_DESTINATION_CHAR_CLASS = r"[^()\s]"
+_LINK_RE = re.compile(
+    rf"\[([^\[\]\n]+)\]\((https?://{md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}+)\)"
+)
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+")
 #: A single-backtick inline-code span, matching the Telegram renderer's shape.
 #: The dialect has ONE code marker, so a longer run carries no distinct meaning
