@@ -54,6 +54,11 @@
     "afterSign": "scripts/notarize.js",
     "linux": {
       "category": "Development",
+      "desktop": {
+        "entry": {
+          "Name": "Kiro Crew"
+        }
+      },
       "icon": "build/icons",
       "executableName": "kirocrew-desktop",
       "maintainer": "Kiro Crew Maintainers <maintainers@crew.kiro.dev>",
@@ -145,6 +150,7 @@
       "native-theme.js",
       "zoom.js",
       "instance-guard.js",
+      "linux-desktop-integration.js",
       "context-menu.js",
       "find-bin.js",
       "gateway-env.js",

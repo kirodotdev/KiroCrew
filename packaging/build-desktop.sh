@@ -912,6 +912,7 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       "-c.productName=KiroCrew Nightly"
       "-c.mac.icon=icon-nightly.icns"
       "-c.linux.icon=icon-nightly.png"
+      "-c.linux.desktop.entry.Name=Kiro Crew Nightly"
       "-c.win.icon=icon-nightly.png"
       # Finder/Dock title (CFBundleDisplayName) mirrors the spaced display
       # name. Never override CFBundleName: Electron derives its helper-app

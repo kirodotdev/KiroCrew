@@ -186,6 +186,44 @@ describe("macOS bundle naming", () => {
 });
 
 
+describe("Linux desktop naming", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const desktopEntry = pkg.build.linux.desktop?.entry || {};
+  const buildScript = fs.readFileSync(
+    path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+    "utf8"
+  );
+
+  it("uses spaced display names without changing package identity", () => {
+    assert.equal(pkg.build.productName, "KiroCrew"); // brand-ok -- internal package identity
+    assert.equal(desktopEntry.Name, "Kiro Crew");
+    assert.match(
+      buildScript,
+      /-c\.linux\.desktop\.entry\.Name=Kiro Crew Nightly/
+    );
+  });
+
+  it("pins the metadata helper to the packaged Linux interpreter", () => {
+    const integration = fs.readFileSync(
+      path.join(ROOT, "linux-desktop-integration.js"),
+      "utf8"
+    );
+    assert.match(
+      integration,
+      /path\.join\(resourcesPath, "backend-dist", "kirocrew-backend", "bin"\)/
+    );
+    assert.match(
+      buildScript,
+      /build_backend "\$PBS_DIR" "\$ELECTRON_DIR\/backend-dist\/kirocrew-backend" ""/
+    );
+    assert.match(
+      buildScript,
+      /"\$out\/bin\/python3\.12"(?: -[sP]+)* -m kiro_crew --version/
+    );
+  });
+});
+
+
 describe("first-download installer design contract", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const background = path.join(INSTALLER_ASSETS, "dmg-background.tiff");
