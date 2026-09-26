@@ -3671,11 +3671,28 @@ export const forkSlot = createAsyncThunk(
   'chat/forkSlot',
   async (
     { slot, atIndex, messageId, prompt, mode, direction }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail' },
-    { dispatch },
+    { dispatch, rejectWithValue },
   ) => {
-    const d = messageId
-      ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
-      : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+    let d
+    try {
+      d = messageId
+        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
+        : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+    } catch (e) {
+      // Same boundary as fetchSlotDetail above: `miniSerializeError` drops the
+      // backend `code`, and the check is STRUCTURAL for the reason documented there.
+      const status = (e as { status?: unknown } | null)?.status
+      const body = (e as { body?: unknown } | null)?.body
+      const raw = typeof body === 'string' ? body : undefined
+      if (typeof status === 'number') {
+        return rejectWithValue({
+          status,
+          message: errMessage(e),
+          code: parseErrorCode(raw),
+        })
+      }
+      throw e
+    }
     if (d.ok) {
       // memory_mode is the parent's, echoed by the server; without it the new
       // tab would read as persistent until the next slots refresh.
