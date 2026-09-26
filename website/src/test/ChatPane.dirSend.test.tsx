@@ -8,10 +8,11 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages } from '../store/chatSlice'
+import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages, recordSendAttempt } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { store as appStore } from '../store'
+import { writePaneDraft } from '../utils/chatPaneDrafts'
 
 /* ChatPane sends must follow ChatPage's wire/bubble split for folder tokens
  * (issue #743 review finding): the API payload carries `[attached_dir N] path`
@@ -434,6 +435,200 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     await waitFor(() => expect(noticesIn(store, 'pane-ask-late')).toHaveLength(1))
     expect(errorsIn(store, 'pane-ask-late')).toHaveLength(0)
   })
+
+  /** The pane's own restore declines this case by design: a `response-late` whose
+   *  optimistic bubble was minted stays pending rather than restoring, to avoid a
+   *  duplicate row. So the record is the only copy once a wholesale page write
+   *  drops that bubble. */
+  it('records a pane prompt, so a late receipt that keeps its bubble still leaves it recoverable', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new DOMException('The operation was aborted.', 'AbortError'),
+    )
+    const { store } = renderPane('pane-record')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    fireEvent.change(box, { target: { value: 'pane prompt at risk' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(store.getState().chat.attemptedSends?.['pane-record']?.map(a => a.text))
+        .toContain('pane prompt at risk')
+    })
+  })
+
+  /** The record above was unreachable from the pane that wrote it: the pane's
+   *  ChatInput was passed no recall list at all, so ↑ had nothing to offer once a
+   *  page write left no transcript row carrying the prompt. */
+  it('offers a recorded pane prompt to ArrowUp when no transcript row carries it', async () => {
+    const { store } = renderPane('pane-recall')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    act(() => { store.dispatch(recordSendAttempt({ slot: 'pane-recall', text: 'prompt with no row', sendId: 's-lost' })) })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('prompt with no row'))
+  })
+
+  /** Send clears the text and the staged files in one statement, so restoring the
+   *  text alone leaves the prompt ready to resend with its attachment dropped. */
+  it('restores the recalled prompt staged files, not only its text', async () => {
+    const { store } = renderPane('pane-sidecar')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    act(() => {
+      store.dispatch(recordSendAttempt({
+        slot: 'pane-sidecar', text: 'had a file', sendId: 's-f', files: ['/tmp/report.pdf'],
+      }))
+    })
+    expect(screen.queryByText('report.pdf')).toBeNull()
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('had a file'))
+    await waitFor(() => expect(screen.getByText('report.pdf')).toBeTruthy())
+  })
+
+  /** Editing ADOPTS the recall, so the attachment stays staged; the pre-recall set
+   *  returns only on ↓-past-newest. This asserted the opposite and was wrong. */
+  it('keeps the recalled file staged when the recalled text is edited', async () => {
+    const { store } = renderPane('pane-exit')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    act(() => {
+      store.dispatch(recordSendAttempt({
+        slot: 'pane-exit', text: 'had a file', sendId: 's-x', files: ['/tmp/report.pdf'],
+      }))
+    })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(screen.getByText('report.pdf')).toBeTruthy())
+    fireEvent.change(box, { target: { value: 'had a file, edited' } })
+    await waitFor(() => expect(box.value).toBe('had a file, edited'))
+    expect(screen.getByText('report.pdf')).toBeTruthy()
+  })
+
+  /** Recall must never BLANK the composer's own staging. Blanking on every ↑ let
+   *  the park write the emptied list under the slot, leaving the pane's ref the
+   *  only copy — and that park is a LAYOUT effect that runs before the passive
+   *  exit report, so the snapshot was dropped unread and the file was gone. */
+  it('keeps the composer own staged file when the recalled prompt carries none', async () => {
+    writePaneDraft('pane-keep', { text: '', files: ['/tmp/mine.pdf'], pastes: [] })
+    const { store } = renderPane('pane-keep')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(screen.getByText('mine.pdf')).toBeTruthy())
+    act(() => {
+      store.dispatch(recordSendAttempt({ slot: 'pane-keep', text: 'this one had none', sendId: 's-bare' }))
+    })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('this one had none'))
+    expect(screen.getByText('mine.pdf')).toBeTruthy()
+  })
+
+  /** Sending a recalled prompt clears the composer, which diverges the value and
+   *  is reported as a history exit — so the snapshot has to be dropped by the send
+   *  rather than applied, or the attachments the send just consumed are re-staged
+   *  and ride the user's NEXT message. */
+  it('does not re-stage the sent draft attachments after a recalled prompt is sent', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, json: () => Promise.resolve({ ok: true }),
+    })
+    writePaneDraft('pane-sent', { text: '', files: ['/tmp/mine.pdf'], pastes: [] })
+    const { store } = renderPane('pane-sent')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(screen.getByText('mine.pdf')).toBeTruthy())
+    act(() => {
+      store.dispatch(recordSendAttempt({
+        slot: 'pane-sent', text: 'resend this', sendId: 's-had', files: ['/tmp/recalled.pdf'],
+      }))
+    })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(screen.getByText('recalled.pdf')).toBeTruthy())
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(box.value).toBe(''))
+    // Not `recalled.pdf`: the sent bubble renders the attachment it carried, so it
+    // is on screen legitimately. The DISPLACED draft is what must not come back.
+    expect(screen.queryByText('mine.pdf')).toBeNull()
+  })
+
+  /** The record keeps `displayTxt`, which still holds the `[ Paste #N · M lines ]`
+   *  token, while the side table behind that token is keyed on EXPANDED content —
+   *  so an attempt recorded without its blocks recalls a token with no body and the
+   *  retry ships the marker instead of what was pasted. */
+  it('sends the pasted body, not the literal token, when a paste prompt is recalled', async () => {
+    const { store } = renderPane('pane-paste')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    const token = '[ Paste #1 · 4 lines ]'
+    act(() => {
+      store.dispatch(recordSendAttempt({
+        slot: 'pane-paste', text: `look at ${token}`, sendId: 's-p',
+        pastes: [{ id: 'p1', seq: 1, lines: 4, content: 'THE PASTED BODY' }],
+      }))
+    })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toContain(token))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
+    const wire = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(wire).toContain('THE PASTED BODY')
+    expect(wire).not.toContain(token)
+  })
+
+  /** The record half: a pane send must STORE the blocks behind its tokens. */
+  it('records the paste blocks behind a pane send, not just its token text', async () => {
+    const token = '[ Paste #1 · 4 lines ]'
+    writePaneDraft('pane-rec', {
+      text: `ship ${token}`, files: [],
+      pastes: [{ id: 'p1', seq: 1, lines: 4, content: 'STORED BODY' }],
+    })
+    const { store } = renderPane('pane-rec')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toContain(token))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(store.getState().chat.attemptedSends?.['pane-rec']).toBeTruthy())
+    const rec = store.getState().chat.attemptedSends!['pane-rec'][0]
+    expect(rec.pastes?.[0]?.content).toBe('STORED BODY')
+  })
+
+  /** ↓-past-newest restores the draft's OWN blocks unpruned: pruning against the
+   *  still-recalled text drops the body behind a token the draft keeps. */
+  it('restores the draft own paste body on ArrowDown past newest', async () => {
+    const token = '[ Paste #1 · 4 lines ]'
+    writePaneDraft('pane-dn', { text: `mine ${token}`, files: [],
+      pastes: [{ id: 'd1', seq: 1, lines: 4, content: 'MY OWN BODY' }] })
+    const { store } = renderPane('pane-dn')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toContain(token))
+    act(() => {
+      store.dispatch(recordSendAttempt({ slot: 'pane-dn', text: 'theirs', sendId: 's-t',
+        pastes: [{ id: 't1', seq: 1, lines: 2, content: 'THEIRS' }] }))
+    })
+    box.setSelectionRange(0, 0)
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('theirs'))
+    box.setSelectionRange(box.value.length, box.value.length)
+    fireEvent.keyDown(box, { key: 'ArrowDown', code: 'ArrowDown' })
+    await waitFor(() => expect(box.value).toBe(`mine ${token}`))
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
+    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('MY OWN BODY')
+  })
+
+  /** Once ↑ has replaced a kind, moving onto an entry carrying none must not leave
+   *  the earlier entry's attachment staged — Enter would send it with the wrong
+   *  prompt. What belongs under that text is the composer's own set. */
+  it('unstages an earlier entry attachment when arrowing onto one that carries none', async () => {
+    writePaneDraft('pane-bare', { text: '', files: ['/tmp/mine.pdf'], pastes: [] })
+    const { store } = renderPane('pane-bare')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(screen.getByText('mine.pdf')).toBeTruthy())
+    act(() => {
+      store.dispatch(recordSendAttempt({ slot: 'pane-bare', text: 'older bare prompt', sendId: 's-a' }))
+      store.dispatch(recordSendAttempt({
+        slot: 'pane-bare', text: 'newer with a file', sendId: 's-b', files: ['/tmp/other.pdf'],
+      }))
+    })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(screen.getByText('other.pdf')).toBeTruthy())
+    box.setSelectionRange(0, 0)
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('older bare prompt'))
+    expect(screen.queryByText('other.pdf')).toBeNull()
+    expect(screen.getByText('mine.pdf')).toBeTruthy()
+  })
+
 
   it('passes an abort signal so a hung send cannot sit silent', async () => {
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({

@@ -646,6 +646,11 @@ interface ChatInputProps {
   memoryMode?: string
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
   sentMessages?: string[]
+  /** Which `sentMessages` index ↑/↓ just moved to, or null on leaving history.
+   *  Lets the owner stage that entry's files and pastes. On null, `exit` says
+   *  whether the user asked for their own draft back (`draft`, only ↓-past-newest)
+   *  or adopted the recalled prompt by editing or sending it (`adopt`). */
+  onRecall?: (index: number | null, exit?: 'draft' | 'adopt') => void
   /** Authoritative automation record for this slot (if any). */
   onAutomationClick?: (open: boolean) => void
   automation?: AutomationRecord | null
@@ -1011,6 +1016,7 @@ function ChatInput({
   projectDetached,
   memoryMode,
   sentMessages,
+  onRecall,
   onAutomationClick,
   automation,
   automationOpen,
@@ -2176,6 +2182,24 @@ function ChatInput({
   // Refs keep the handler stable across re-renders while preserving state between keystrokes.
   const historyIdxRef = useRef(-1)
   const draftRef = useRef('')
+  /** Mirror of `onRecall` for the two EFFECTS that report an exit. Naming the
+   *  prop in their deps instead would re-run them whenever the owner's callback
+   *  is re-created — it closes over the recall entries, so that is every store
+   *  update — and the slot effect would then reset history and close the open
+   *  picker mid-typing. */
+  const onRecallRef = useRef(onRecall)
+  onRecallRef.current = onRecall
+  /** Leaving history tells the OWNER, which holds the pre-recall text and sidecars;
+   *  an unreported exit strands that snapshot. The KIND matters: `adopt` (edit,
+   *  send-clear, slot switch) keeps the recalled prompt's sidecars staged, while
+   *  `draft` — only ↓-past-newest — asks for the pre-recall set back. Treating every
+   *  exit as `draft` un-staged the attachment of a prompt merely being edited. */
+  const exitHistory = useCallback((exit: 'draft' | 'adopt' = 'adopt') => {
+    if (historyIdxRef.current === -1) return
+    historyIdxRef.current = -1
+    draftRef.current = ''
+    onRecallRef.current?.(null, exit)
+  }, [])
   // Refs mirror frequently-changing props/state read from inside the keydown handler
   // so it doesn't re-create on every keystroke.
   const valueRef = useRef(value)
@@ -2443,20 +2467,24 @@ function ChatInput({
     // Exit history mode when value diverges from the recalled message
     // (user edited it, or the send pipeline cleared it).
     if (historyIdxRef.current !== -1 && value !== sentMessages?.[historyIdxRef.current]) {
-      historyIdxRef.current = -1
-      draftRef.current = ''
+      exitHistory()
     }
     prevValueRef.current = value
-  }, [value, resetHeight, sentMessages])
+  }, [value, resetHeight, sentMessages, exitHistory])
 
   // ChatInput is one instance shared by every slot, so a switch would carry the
   // previous tab's menu over; an unsent draft never hits the clear above.
+  /** The recall position is per-conversation for the same reason: it indexes the
+   *  OUTGOING slot's prompts, so leaving it in place pointed ↓ at another chat's
+   *  history. Exiting reports it, so no owner keeps a snapshot taken in a
+   *  conversation the composer has left. */
   useEffect(() => {
     setSlashMenuOpen(false)
     setFilePickerOpen(false); setFileQuery('')
     setSkillPickerOpen(false); setSkillQuery('')
     setPathPickerOpen(false); setPathQuery('')
-  }, [slotId])
+    exitHistory()
+  }, [slotId, exitHistory])
 
   // Record undo snapshots as the controlled value changes.
   useEffect(() => {
@@ -3028,10 +3056,12 @@ function ChatInput({
         draftRef.current = cur
         historyIdxRef.current = len - 1
         onChange(sentMessages[len - 1])
+        onRecall?.(len - 1)
         moveCaretAfterRecall('start')
       } else if (idx > 0) {
         historyIdxRef.current = idx - 1
         onChange(sentMessages[idx - 1])
+        onRecall?.(idx - 1)
         moveCaretAfterRecall('start')
       } else {
         // Already at oldest — consume to avoid caret jumping in textarea.
@@ -3046,17 +3076,19 @@ function ChatInput({
       if (idx < len - 1) {
         historyIdxRef.current = idx + 1
         onChange(sentMessages[idx + 1])
+        onRecall?.(idx + 1)
         moveCaretAfterRecall('end')
       } else {
-        // Past newest — restore draft and exit history mode.
-        historyIdxRef.current = -1
-        onChange(draftRef.current)
-        draftRef.current = ''
+        // Past newest — restore draft and exit history mode. Through the shared
+        // exit, so this and the two silent ones cannot drift apart.
+        const draft = draftRef.current
+        onChange(draft)
+        exitHistory('draft')
         moveCaretAfterRecall('end')
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
+  }, [fireComposer, onChange, sentMessages, onRecall, exitHistory, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
