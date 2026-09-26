@@ -87,7 +87,9 @@ describe('active vs non-active chat-frame applier parity', () => {
       { role: 'user', content: 'hi', cls: 'msg msg-u' },
       { role: 'assistant', content: 'streamed answer', cls: 'msg msg-a' },
     ]
-    bg = reducer(bg, { type: warmSlotCache.fulfilled.type, payload: { key: SLOT, messages: canonical } })
+    // The turn-done warm is dispatched AFTER the chunk above, so it carries
+    // the entry's tick as the thunk would have read it then.
+    bg = reducer(bg, { type: warmSlotCache.fulfilled.type, payload: { key: SLOT, messages: canonical, runTickAtDispatch: bg.slotRun[SLOT]?.tick ?? 0 } })
 
     expect((bg.slotMessages[SLOT] ?? []).map((m) => ({ role: m.role, content: m.content }))).toEqual(
       canonical.map((m) => ({ role: m.role, content: m.content })),
