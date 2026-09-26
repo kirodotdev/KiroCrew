@@ -7981,6 +7981,12 @@ class TestForkModeRefresh:
             custom = {"prompt": "file:///Users/someone/Documents/prompt.md", "mcpServers": {}}
             agent_mod._refresh_dynamic_fields(custom, gated_off=frozenset(), fork=True)
             assert custom["prompt"] == "file:///Users/someone/Documents/prompt.md"
+            nested = {
+                "prompt": "file:///old/lib/site-packages/kiro_crew/apps/builtins/mochi/agents/context/prompt.md",
+                "mcpServers": {},
+            }
+            agent_mod._refresh_dynamic_fields(nested, gated_off=frozenset(), fork=True)
+            assert nested["prompt"].endswith("/mochi/agents/context/prompt.md")
 
     def test_prompt_always_overwritten_when_not_fork(self, tmp_path: Path):
         import kiro_crew.agent as agent_mod
@@ -8000,7 +8006,24 @@ class TestForkModeRefresh:
         with _fork_env(tmp_path) as (_kiro, prompt):
             assert agent_mod.is_managed_prompt(agent_mod._NATIVE_PROMPT_STUB)
             assert agent_mod.is_managed_prompt(f"file://{prompt}")
+            assert agent_mod.is_managed_prompt("file:///old-home/.kiro/crew/prompt.md")
+            assert agent_mod.is_managed_prompt(
+                "file:///old-venv/lib/python3.12/site-packages/kiro_crew/prompt.md"
+            )
+            assert agent_mod.is_managed_prompt(
+                "file:///Applications/KiroCrew.app/Contents/Resources/backend-dist/"
+                "kirocrew-backend-arm64/lib/python3.12/site-packages/kiro_crew/config/prompt.md"
+            )
             assert not agent_mod.is_managed_prompt("file:///Users/someone/persona.md")
+            assert not agent_mod.is_managed_prompt(
+                "file:///Users/someone/src/kiro_crew/config/prompt.md"
+            )
+            assert not agent_mod.is_managed_prompt(
+                "file:///Users/someone/.kiro/crew/workspace/.kiro/agents/prompt.md"
+            )
+            assert not agent_mod.is_managed_prompt(
+                "file:///old/lib/site-packages/kiro_crew/apps/builtins/mochi/agents/context/prompt.md"
+            )
             assert not agent_mod.is_managed_prompt("You are a bespoke reviewer.")
             assert not agent_mod.is_managed_prompt("")
 

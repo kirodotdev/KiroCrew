@@ -3466,15 +3466,33 @@ _NATIVE_PROMPT_STUB = (
 )
 
 
+def _is_managed_prompt_pointer(prompt: str) -> bool:
+    """Recognise an older managed URI after its install or data home moved."""
+    if not prompt.startswith("file://"):
+        return False
+    managed_prompt = _prompt_path()
+    if prompt == f"file://{managed_prompt}":
+        return True
+    norm = prompt[len("file://") :].replace("\\", "/")
+    managed_suffixes = (
+        "/.kiro/crew/prompt.md",
+        "/.kirocrew/prompt.md",
+        "/site-packages/kiro_crew/prompt.md",
+        "/site-packages/kiro_crew/config/prompt.md",
+        "/dist-packages/kiro_crew/prompt.md",
+        "/dist-packages/kiro_crew/config/prompt.md",
+    )
+    return any(norm.endswith(suffix) for suffix in managed_suffixes)
+
+
 def is_managed_prompt(prompt: str) -> bool:
     """Whether a spec ``prompt`` is the managed operating contract.
 
     context.py injects that contract at session start, so the readers that must
-    not deliver it twice recognise it here. It has two spellings: the ``file://``
-    pointer a not-yet-healed fork or an older spec carries, and
-    ``_NATIVE_PROMPT_STUB``.
+    not deliver it twice recognise it here. A spec may carry the native stub,
+    the current managed file URI, or a URI from an older install.
     """
-    return prompt == _NATIVE_PROMPT_STUB or prompt == f"file://{_prompt_path()}"
+    return prompt == _NATIVE_PROMPT_STUB or _is_managed_prompt_pointer(prompt)
 
 
 def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
@@ -3630,28 +3648,12 @@ def _refresh_dynamic_fields(
     # too, so name matching would silently and irrecoverably rewrite real user
     # references. A custom pointer that goes stale is left alone — not healing
     # preserves the user's path; healing destroys it.
-    managed_prompt = _prompt_path()
-    managed_uri = f"file://{managed_prompt}"
     if not fork:
         config["prompt"] = _NATIVE_PROMPT_STUB
     else:
         current = str(config.get("prompt") or "")
-        if current.startswith("file://"):
-            norm = current[len("file://") :].replace("\\", "/")
-            managed_homes = (
-                "/.kiro/crew/",
-                "/.kirocrew/",
-                # Installed-package spellings ONLY: a bare "/kiro_crew/" also
-                # matches a source CHECKOUT of this repo, where prompt.md is a
-                # user's custom file the heal would irreversibly overwrite.
-                "/site-packages/kiro_crew/",
-                "/dist-packages/kiro_crew/",
-            )
-            if current == managed_uri or (
-                norm.rsplit("/", 1)[-1] == managed_prompt.name
-                and any(spelling in norm for spelling in managed_homes)
-            ):
-                config["prompt"] = _NATIVE_PROMPT_STUB
+        if _is_managed_prompt_pointer(current):
+            config["prompt"] = _NATIVE_PROMPT_STUB
 
     # Managed MCP servers — ensure present and up-to-date.
     # Only refresh command/args; preserve user customizations (e.g. autoApprove).

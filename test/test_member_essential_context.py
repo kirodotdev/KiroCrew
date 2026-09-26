@@ -1260,6 +1260,31 @@ def test_managed_stub_reaches_owner_session_start(env, tmp_path, monkeypatch):
     env.forbidden.assert_not_called()
 
 
+def test_stale_installed_product_prompt_uses_current_session_start(env, tmp_path, monkeypatch):
+    """A prior bundled gateway's URI remains managed after its install changes."""
+    from kiro_crew import agent
+
+    package = tmp_path / "current-package" / "config"
+    monkeypatch.setattr(agent, "_BUNDLED_CFG_DIR", package)
+    monkeypatch.setattr(agent, "_project_dir", lambda: None)
+    package.mkdir(parents=True)
+    (package / "prompt.md").write_text("CURRENT_PRODUCT_PROMPT", encoding="utf-8")
+    stale = (
+        "file:///Applications/KiroCrew.app/Contents/Resources/backend-dist/"
+        "kirocrew-backend-arm64/lib/python3.12/site-packages/kiro_crew/config/prompt.md"
+    )
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(json.dumps({"name": "writer-template", "prompt": stale}), encoding="utf-8")
+
+    message, _ = env.builder.build_message(
+        "Continue", True, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+
+    assert message.count("CURRENT_PRODUCT_PROMPT") == 1
+    assert stale not in message
+    env.forbidden.assert_not_called()
+
+
 @pytest.mark.parametrize("template", ["writer-template", "kirocrew"])
 @pytest.mark.parametrize("source", ["inline", "relative", "absolute"])
 def test_custom_persona_is_not_classified_by_template_name(env, template, source):
