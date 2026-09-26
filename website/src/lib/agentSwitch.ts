@@ -29,15 +29,31 @@ export function performAgentSlotSwitch(
       // Two-arg form when no kind was picked: the legacy request shape, byte
       // for byte, so a name-only control sends exactly what it always sent.
       const r = kind ? await api.chatSlotAgent(slot, agent, kind) : await api.chatSlotAgent(slot, agent)
-      return { agent: r?.agent ?? agent, agentKind: r?.agent_kind, workspace: r?.workspace }
+      return { agent: r?.agent ?? agent, agentKind: r?.agent_kind, workspace: r?.workspace, model: r?.model }
     },
     (value) => dispatch(updateSlot({
       key: slot, agent: value.agent,
+      ...(value.model !== undefined ? { model: value.model } : {}),
       // Absent means the response did not name it (an older gateway); the
       // write then leaves the slot's stored value alone rather than clobber.
       ...(value.agentKind !== undefined ? { agent_kind: value.agentKind } : {}),
       // An absent workspace means the response did not name one; the write
       // must then leave the slot's workspace untouched rather than clobber.
       ...(value.workspace !== undefined ? { workspace: value.workspace } : {}),
-    })))
+      // The switch re-spawns the slot's session, so the OLD session's
+      // resolved model no longer describes this slot. `updateSlot` is a
+      // partial merge, so the stale id would otherwise survive the commit —
+      // and with the websocket down the slots rebroadcast that would refresh
+      // it never arrives, leaving `displayModel` to substitute the dead
+      // served id for the auto pin forever. '' is the honest "not known
+      // yet" state (ChatSlot.served_model); the rebroadcast (or the next
+      // model pick) re-reports once the new session advertises.
+      served_model: '',
+    })),
+    // The response's model is the pair's post-commit model: settle it into
+    // the shared adjudication entry, so a model pick racing this switch
+    // recovers THIS value on failure instead of a model the backend already
+    // dropped.
+    (value) => (value.model !== undefined ? [['model', value.model] as const] : []),
+  )
 }

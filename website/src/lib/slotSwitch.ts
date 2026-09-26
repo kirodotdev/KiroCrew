@@ -71,6 +71,7 @@ import { i18nT } from '../i18n/t'
  *  response is the follow-up that closes this. */
 export interface AgentSwitchValue {
   agent: string
+  model?: string
   /** The namespace the backend committed the pick in; absent when the
    *  response omitted it (an older gateway), in which case the write leaves
    *  the slot's stored value alone. */
@@ -96,23 +97,46 @@ export interface SlotSwitchValueMap {
 export type SlotSwitchField = keyof SlotSwitchValueMap
 
 interface Entry {
-  /** Ticket of the newest request begun for this slot+field. */
+  /** Pair-level ticket: the order requests began across the coupled set, for
+   *  holding successes against the pair's newest member. */
   seq: number
-  /** Newest in-flight target ('' once the newest request settles). */
-  pending: string
-  /** How the newest request ended, once it has. */
-  newestOutcome: 'inflight' | 'success' | 'failure'
-  /** Highest ticket whose value has been written to the store. */
-  bestWrittenSeq: number
-  /** Newest superseded success HELD while the newest request is in flight:
-   *  the backend applied it, but a newer request may still supersede it.
-   *  Stored opaquely — the SlotSwitchValueMap pins what it really is. */
-  heldSuccess: { seq: number; value: unknown } | null
+  /** Per field: the ticket of that field's newest request. Authority is
+   *  per-field — a model pick does not supersede an agent switch's authority
+   *  over the agent field, only over the model it commits. */
+  fieldSeq: Partial<Record<SlotSwitchField, number>>
+  /** Newest in-flight target per field ('' once that field's newest request
+   *  settles). Coupled fields keep their own targets inside one entry. */
+  pending: Partial<Record<SlotSwitchField, string>>
+  /** Per field: how that field's newest request ended. */
+  outcomes: Partial<Record<SlotSwitchField, 'inflight' | 'success' | 'failure'>>
+  /** Highest ticket per field whose value has been written to the store. */
+  bestWritten: Partial<Record<SlotSwitchField, number>>
+  /** Per field: the newest superseded success HELD while the newest request
+   *  is in flight — the backend applied it, but a newer request may still
+   *  supersede it. Stored opaquely — the SlotSwitchValueMap pins what it
+   *  really is. `pairSeq` is the pair ticket, so a coupled member's commit
+   *  holds over an older same-field success it already replaced. */
+  heldSuccesses: Map<SlotSwitchField, { pairSeq: number; value: unknown }>
 }
 
 const entries = new Map<string, Entry>()
 
 const keyOf = (field: SlotSwitchField, slot: string): string => field + ':' + slot
+
+/** The COUPLED set a field belongs to, for the shared adjudication entry —
+ *  derived from the chain coupling below, so the two structures cannot
+ *  drift apart. */
+const coupledFieldsOf = (field: SlotSwitchField): SlotSwitchField[] =>
+  COUPLED_CHAIN_FIELDS[field].length > 1
+    ? COUPLED_CHAIN_FIELDS[field]
+    : [field]
+
+/** The adjudication entry key: every field of one coupled set shares ONE
+ *  entry (a superseded model success must be adjudicated against the agent
+ *  switch that clears it, or the failure path replays a model the backend
+ *  already dropped), while uncoupled fields keep their own. */
+const entryKeyOf = (field: SlotSwitchField, slot: string): string =>
+  coupledFieldsOf(field).slice().sort().join('+') + ':' + slot
 
 /** Targets STAGED but not yet on the wire (a debounced control's pending
  *  intent). A slider drag debounces its persist ~150ms; without staging, a
@@ -130,17 +154,29 @@ export function stageSlotSwitchTarget(field: SlotSwitchField, slot: string, targ
   staged.set(keyOf(field, slot), target)
 }
 
-/** Register a new in-flight switch and return its ticket for the settle calls. */
-function beginSlotSwitch(field: SlotSwitchField, slot: string, target: string): number {
-  const key = keyOf(field, slot)
-  staged.delete(key)
-  const entry = entries.get(key)
-    ?? { seq: 0, pending: '', newestOutcome: 'inflight' as const, bestWrittenSeq: 0, heldSuccess: null }
+/** Register a new in-flight switch and return its tickets for the settle
+ *  calls: `pairSeq` orders the settle within the coupled set (what a held
+ *  success is superseded by), `fieldSeq` is the field's own newest-request
+ *  ticket (what authority is decided by). */
+function beginSlotSwitch(
+  field: SlotSwitchField, slot: string, target: string,
+): { pairSeq: number; fieldSeq: number } {
+  const key = entryKeyOf(field, slot)
+  staged.delete(keyOf(field, slot))
+  let entry = entries.get(key)
+  if (!entry) {
+    entry = {
+      seq: 0, fieldSeq: {}, pending: {}, outcomes: {}, bestWritten: {},
+      heldSuccesses: new Map(),
+    }
+    entries.set(key, entry)
+  }
   entry.seq += 1
-  entry.pending = target
-  entry.newestOutcome = 'inflight'
+  entry.fieldSeq[field] = (entry.fieldSeq[field] ?? 0) + 1
+  entry.pending[field] = target
+  entry.outcomes[field] = 'inflight'
   entries.set(key, entry)
-  return entry.seq
+  return { pairSeq: entry.seq, fieldSeq: entry.fieldSeq[field] as number }
 }
 
 /** The newest declared target for this slot+field — a STAGED (not yet on the
@@ -153,8 +189,10 @@ export function pendingSlotSwitchTarget(field: SlotSwitchField, slot: string): s
   const key = keyOf(field, slot)
   const stagedTarget = staged.get(key)
   if (stagedTarget !== undefined) return stagedTarget
-  const entry = entries.get(key)
-  return entry && entry.newestOutcome === 'inflight' ? entry.pending : null
+  const entry = entries.get(entryKeyOf(field, slot))
+  if (!entry || entry.outcomes[field] !== 'inflight') return null
+  const pending = entry.pending[field]
+  return pending === undefined ? null : pending
 }
 
 /** The newest in-flight target for this slot+field, `''` when none. */
@@ -162,39 +200,74 @@ export function pendingSlotSwitch(field: SlotSwitchField, slot: string): string 
   return pendingSlotSwitchTarget(field, slot) || ''
 }
 
+/** The per-field adjudication bookkeeping for a settled success. Returns the
+ *  write flag for the PRIMARY field (the call site's write fires on it);
+ *  coupled members settle through the same entry, so their held successes
+ *  and written tickets are adjudicated against the shared newest request. */
+function settleBookkeepingSuccess(
+  field: SlotSwitchField, slot: string, fieldSeq: number, pairSeq: number, value: unknown,
+): boolean {
+  const entry = entries.get(entryKeyOf(field, slot))
+  if (!entry) return false
+  if (fieldSeq === entry.fieldSeq[field]) {
+    // Newest request succeeded: authoritative, supersedes anything held.
+    entry.pending[field] = ''
+    entry.outcomes[field] = 'success'
+    entry.bestWritten[field] = pairSeq
+    entry.heldSuccesses.delete(field)
+    return true
+  }
+  if (entry.outcomes[field] === 'inflight') {
+    // The race is still live: hold the newest superseded success for the
+    // newest request's failure settle. Pair-ordered, so a coupled member's
+    // commit holds over an older same-field success it already replaced.
+    const held = entry.heldSuccesses.get(field)
+    if (!held || held.pairSeq < pairSeq) {
+      entry.heldSuccesses.set(field, { pairSeq, value })
+    }
+    return false
+  }
+  if (entry.outcomes[field] === 'failure' && pairSeq > (entry.bestWritten[field] ?? 0)) {
+    // The newest request failed (changed nothing server-side) and this late
+    // success is the newest value that actually landed: write it.
+    entry.bestWritten[field] = pairSeq
+    return true
+  }
+  // A newer success has already been written — this one is history.
+  return false
+}
+
 /** Settle a ticket whose API call SUCCEEDED, with the server's stored value.
  *  True: the caller must write that value to the store. False: hold or
  *  discard per the adjudication model above — do not write.
  */
 function settleSlotSwitchSuccess(
-  field: SlotSwitchField, slot: string, seq: number, value: unknown,
+  field: SlotSwitchField, slot: string, fieldSeq: number, pairSeq: number, value: unknown,
 ): boolean {
-  const entry = entries.get(keyOf(field, slot))
-  if (!entry) return false
-  if (seq === entry.seq) {
-    // Newest request succeeded: authoritative, supersedes anything held.
-    entry.pending = ''
-    entry.newestOutcome = 'success'
-    entry.bestWrittenSeq = seq
-    entry.heldSuccess = null
-    return true
-  }
-  if (entry.newestOutcome === 'inflight') {
-    // The race is still live: hold the newest superseded success for the
-    // newest request's failure settle.
-    if (!entry.heldSuccess || entry.heldSuccess.seq < seq) {
-      entry.heldSuccess = { seq, value }
+  return settleBookkeepingSuccess(field, slot, fieldSeq, pairSeq, value)
+}
+
+/** Record a coupled member's settled success without a write flag: its value
+ *  rides the primary field's single write (an agent switch's response names
+ *  the post-commit model, and the call site writes both), while the shared
+ *  entry still holds or discards it for the pair's failure path. */
+function recordSettledSuccess(
+  field: SlotSwitchField, slot: string, pairSeq: number, value: unknown,
+): void {
+  const entry = entries.get(entryKeyOf(field, slot))
+  if (!entry) return
+  if (entry.outcomes[field] === 'inflight') {
+    const held = entry.heldSuccesses.get(field)
+    if (!held || held.pairSeq < pairSeq) {
+      entry.heldSuccesses.set(field, { pairSeq, value })
     }
-    return false
+    return
   }
-  if (entry.newestOutcome === 'failure' && seq > entry.bestWrittenSeq) {
-    // The newest request failed (changed nothing server-side) and this late
-    // success is the newest value that actually landed: write it.
-    entry.bestWrittenSeq = seq
-    return true
+  if (entry.outcomes[field] === 'failure') {
+    // The member's commit landed after the field's newest request failed:
+    // its value rides the primary write, and this records it as written.
+    entry.bestWritten[field] = Math.max(entry.bestWritten[field] ?? 0, pairSeq)
   }
-  // A newer success has already been written — this one is history.
-  return false
 }
 
 /** Settle a ticket whose API call FAILED.
@@ -208,16 +281,16 @@ function settleSlotSwitchSuccess(
  *  failure is a pure no-op — a failed call changed nothing server-side.
  */
 function settleSlotSwitchFailure(
-  field: SlotSwitchField, slot: string, seq: number,
+  field: SlotSwitchField, slot: string, fieldSeq: number,
 ): { value: unknown } | null {
-  const entry = entries.get(keyOf(field, slot))
-  if (!entry || seq !== entry.seq) return null
-  entry.pending = ''
-  entry.newestOutcome = 'failure'
-  const held = entry.heldSuccess
-  entry.heldSuccess = null
-  if (held && held.seq > entry.bestWrittenSeq) {
-    entry.bestWrittenSeq = held.seq
+  const entry = entries.get(entryKeyOf(field, slot))
+  if (!entry || fieldSeq !== entry.fieldSeq[field]) return null
+  entry.pending[field] = ''
+  entry.outcomes[field] = 'failure'
+  const held = entry.heldSuccesses.get(field)
+  entry.heldSuccesses.delete(field)
+  if (held && held.pairSeq > (entry.bestWritten[field] ?? 0)) {
+    entry.bestWritten[field] = held.pairSeq
     return { value: held.value }
   }
   return null
@@ -233,24 +306,55 @@ const chains = new Map<string, Promise<unknown>>()
  *  module header for why the chain must never be advanced early). */
 export const SWITCH_CONFIRM_TIMEOUT_MS = 15_000
 
+/** Which fields serialize on ONE chain per slot.
+ *
+ *  `agent` and `model` form one per-slot transaction: the backend's agent
+ *  switch commits the slot's model in the same breath (a replacement agent
+ *  cannot serve the old pin, so it is cleared, and the response names both).
+ *  If the two fields rode separate chains, a model pick racing an agent
+ *  switch could reach the gateway in either order — the backend's commit
+ *  sequence would be unknowable — and the two responses' store writes would
+ *  settle in that same unknowable order, leaving the chip on a model the
+ *  backend already dropped. One shared chain keeps send order equal pick
+ *  order across the pair, so the latest-request-wins adjudication converges
+ *  on the value the backend actually holds. Every other field chains alone:
+ *  a project or effort request must not queue behind an agent pick.
+ */
+const COUPLED_CHAIN_FIELDS: Readonly<Record<SlotSwitchField, SlotSwitchField[]>> = {
+  agent: ['agent', 'model'],
+  model: ['agent', 'model'],
+  project: ['project'],
+  reasoning_effort: ['reasoning_effort'],
+}
+
+/** The chain keys a request for this slot+field queues behind (and registers
+ *  its own tail under) — the field itself, plus every field it couples with. */
+const chainKeysOf = (field: SlotSwitchField, slot: string): string[] =>
+  COUPLED_CHAIN_FIELDS[field].map(f => keyOf(f, slot))
+
 /** Run `request` after every earlier chained request for the same slot+field
- *  has settled or timed out — at most one switch request per slot+field is
- *  ever knowingly in flight, which is what makes ticket order equal server
- *  processing order (see the module header). Callers begin their ticket
- *  BEFORE chaining, so the pending target is visible to the next keypress
- *  immediately, while the wire call waits its turn.
+ *  — or any field it couples with — has settled or timed out. At most one
+ *  switch request per coupled set is ever knowingly in flight, which is what
+ *  makes ticket order equal server processing order (see the module header).
+ *  Callers begin their ticket BEFORE chaining, so the pending target is
+ *  visible to the next keypress immediately, while the wire call waits its
+ *  turn.
  */
 function chainSlotSwitch<T>(
   field: SlotSwitchField, slot: string, request: () => Promise<T>,
 ): Promise<T> {
-  const key = keyOf(field, slot)
-  const prev = chains.get(key) ?? Promise.resolve()
+  const keys = chainKeysOf(field, slot)
+  // The tails stored under the coupled keys are promises that never reject,
+  // so Promise.all always settles.
+  const prev = Promise.all(keys.map(k => chains.get(k) ?? Promise.resolve()))
   // A predecessor's failure is ITS caller's to handle (each call site catches
   // and settles its own ticket); the chain carries only ordering.
   const run = prev.catch(() => undefined).then(request)
   // The stored tail must never reject, or the next link would re-throw a
-  // failure that was already handled downstream.
-  chains.set(key, run.catch(() => undefined))
+  // failure that was already handled downstream. Registered under every
+  // coupled key, so a later request for either field queues behind this one.
+  const tail = run.catch(() => undefined)
+  for (const k of keys) chains.set(k, tail)
   return run
 }
 
@@ -291,18 +395,26 @@ export async function performSlotSwitch<F extends SlotSwitchField>(
   target: string,
   request: () => Promise<SlotSwitchValueMap[F]>,
   write: (value: SlotSwitchValueMap[F]) => void,
+  extraSettles?: (value: SlotSwitchValueMap[F]) => ReadonlyArray<readonly [SlotSwitchField, unknown]>,
 ): Promise<void> {
-  const seq = beginSlotSwitch(field, slot, target)
+  const { pairSeq, fieldSeq } = beginSlotSwitch(field, slot, target)
   // The wire outcome ALWAYS adjudicates, whether or not the caller is still
   // waiting when it lands — this is the only path that touches the settles,
   // so a caller released by the timeout cannot race a second settle in.
   const adjudicated = chainSlotSwitch(field, slot, request).then(
     (value) => {
-      if (settleSlotSwitchSuccess(field, slot, seq, value)) write(value)
+      if (settleSlotSwitchSuccess(field, slot, fieldSeq, pairSeq, value)) write(value)
+      // Coupled members of the same response settle into the shared entry
+      // without their own writes: their values ride the primary write above
+      // (the call site's payload carries them), while the entry still holds
+      // or discards them for the pair's failure path.
+      for (const [member, memberValue] of extraSettles?.(value) ?? []) {
+        recordSettledSuccess(member, slot, pairSeq, memberValue)
+      }
       return { ok: true as const, value }
     },
     (error) => {
-      const recovered = settleSlotSwitchFailure(field, slot, seq)
+      const recovered = settleSlotSwitchFailure(field, slot, fieldSeq)
       if (recovered) write(recovered.value as SlotSwitchValueMap[F])
       return { ok: false as const, error }
     },

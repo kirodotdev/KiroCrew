@@ -7326,8 +7326,26 @@ async def _apply_remote_pick_locked(
     except RemoteTurnError as exc:
         return web.json_response({"error": str(exc), "code": "remote_pick_failed"}, status=502)
     value = body[control]
+    agent_changed = control == "agent" and value != slot.agent
+    model_changed = False
     setattr(slot, control, value)
     if control == "agent":
+        # The peer's switch response names the model the peer's commit left on
+        # the slot, so that report — not the agent-name comparison — decides
+        # whether the mirror must clear. The two can disagree: a kind-only
+        # re-pick resets the model while the name stays put, and an agent
+        # change can keep a pin the replacement serves. Older peers omit the
+        # field; for them the name change stands in.
+        peer_model = accepted.get("model")
+        if isinstance(peer_model, str):
+            model_changed = peer_model != str(slot.model)
+        else:
+            model_changed = agent_changed
+        if model_changed:
+            # The peer's agent switch clears this provider-bound state before
+            # its reset; its mirror must not retain a model the replacement
+            # agent cannot serve.
+            clear_slot_model_binding(slot)
         # The peer resolved this agent against ITS bindings and committed a
         # workspace for it — the same derivation the local switch does further
         # down. Mirroring what it reported keeps the header and the next turn's
@@ -7362,6 +7380,8 @@ async def _apply_remote_pick_locked(
     # can only ever disagree with itself, which is why the local model/effort/
     # workspace routes can leave it to the flush and this one cannot.
     persisted: dict[str, Any] = {control: value}
+    if model_changed:
+        persisted["model"] = ""
     if normalized_model:
         persisted["model"] = normalized_model
     if control == "agent" and slot.workspace:
@@ -7400,14 +7420,7 @@ async def _apply_remote_pick_locked(
             )
     logger.info("Remote slot %s %s set to %r on %s", slot.key, control, value, slot.instance_id)
     state.push_slots_update()
-    return web.json_response(
-        {
-            "ok": True,
-            control: value,
-            "remote": True,
-            **({"model": normalized_model} if normalized_model else {}),
-        }
-    )
+    return web.json_response({"ok": True, control: value, "remote": True, "model": str(slot.model)})
 
 
 async def _record_explicit_agent_selection(
@@ -7489,6 +7502,30 @@ class _CommitToken(str):
     """
 
     __slots__ = ()
+
+
+def clear_slot_model_binding(slot: Any) -> None:
+    """Drop the model pin and its fallback walk, as one unit.
+
+    Model ids and fallback recovery belong to the provider that serves the
+    slot's agent, so dashboard agent picks and their remote mirrors clear them
+    through here. Provider-reported in-turn switches retain the active pin.
+    An id the new provider does not serve would otherwise be re-sent, and a
+    stale walk would resume on the wrong model.
+
+    ``_active_fallback_model`` takes a FRESH token rather than a plain ``""``:
+    the switch handler authorizes its rollback with ``slot._active_fallback_model
+    is committed_active_fallback_model``, so a later clear has to be
+    distinguishable by identity from the one being unwound.
+    """
+    slot.model = _CommitToken("")
+    slot._model_pick_gen += 1
+    slot._fallback_candidate_idx = 0
+    slot._fallback_walked = []
+    slot._active_fallback_model = _CommitToken("")
+    slot._fallback_primary_model = ""
+    slot._fallback_slot_model = ""
+    slot._fallback_pick_gen = 0
 
 
 # Serializes slot SWITCH transactions that share one session, keyed by
@@ -7693,10 +7730,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # slotSwitch failure-recovery relies on, with no rollback machinery to
     # race against concurrent writers (e.g. the project endpoint, which does
     # not take this lock).
-    # Two locks, in the order documented at _slot_switch_session_lock:
-    # slot._lock, then the session lock. An ExitStack because the session
-    # lock's KEY is only known after the in-lock read below, and locking on
-    # any earlier read could leave this holding the wrong session lock.
+    # Three locks, in the order documented at _slot_switch_session_lock:
+    # slot._lock, then the session lock, then _model_pick_lock. An ExitStack
+    # because the session lock's KEY is only known after the in-lock read
+    # below, and locking on any earlier read could leave this holding the
+    # wrong session lock.
     async with contextlib.AsyncExitStack() as _stack:
         await _stack.enter_async_context(slot._lock)
         # Re-authorize after the await above (see _slot_replaced_while_queued):
@@ -7719,8 +7757,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # a binding landed while this request waited on slot._lock (see
         # _slot_switch_session_lock).
         await _stack.enter_async_context(_slot_switch_session_lock(session_key))
-        # Second lock-acquisition await, second re-check: a same-name
-        # recreate lands during this wait just as easily as during the first.
+        await _stack.enter_async_context(slot._model_pick_lock)
+        # Re-check after the lock-acquisition awaits: a same-name recreate
+        # lands during any of these waits just as easily as during the first.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_agent"):
             return _slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel routes'
@@ -7808,6 +7847,22 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # otherwise deliberately not rolled back on a failing reset (see the
         # teardown_incomplete comment), so this is the ONE case that unwinds.
         prior_agent = slot.agent
+        prior_agent_kind = slot.agent_kind
+        # A same-name member->template pick is still a rebind: the kind rides
+        # the picker request, and skipping the clear hands the replacement
+        # session the member binding's provider-bound model. Name-only picks
+        # are checked again against the resolved namespace below.
+        agent_changed = agent_name != prior_agent or (
+            agent_kind != "" and slot.agent_kind != "" and agent_kind != slot.agent_kind
+        )
+        prior_model = slot.model
+        prior_model_pick_gen = slot._model_pick_gen
+        prior_fallback_candidate_idx = slot._fallback_candidate_idx
+        prior_fallback_walked = slot._fallback_walked
+        prior_active_fallback_model = slot._active_fallback_model
+        prior_fallback_primary_model = slot._fallback_primary_model
+        prior_fallback_slot_model = slot._fallback_slot_model
+        prior_fallback_pick_gen = slot._fallback_pick_gen
         # Stored verbatim — never rewritten to whatever currently answers. See
         # the same reasoning in api_chat_slot_create.
         new_workspace = slot.workspace
@@ -7853,6 +7908,47 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # concurrent same-agent dispatch would restore the old agent under a
         # turn already running the new one.
         committed_agent = slot.agent
+        committed_active_fallback_model: str | None = None
+        committed_model_pick_gen: int | None = None
+        if agent_changed:
+            # Model ids and fallback recovery are tied to the provider that
+            # serves this agent. Leave no old-provider id for a replacement
+            # session to send while the reset below awaits. Cleared through the
+            # shared helper so the in-turn switch cannot drift from it.
+            clear_slot_model_binding(slot)
+            committed_model_pick_gen = slot._model_pick_gen
+            committed_active_fallback_model = slot._active_fallback_model
+
+        def _unwind_model_commit(owns_agent: bool) -> None:
+            """Restore the pin this request cleared, while the clear is still ours.
+
+            Agent ownership is captured before restoring it: in-turn agent
+            events replace the agent without advancing the model generation.
+            ``slot.model`` is authorized by generation, not by the identity
+            comparison the other fields use: its unlocked writers include
+            rewrites that are not picks at all (``chat_runner`` normalizes the
+            value and backfills the canonical id, replacing the token without
+            touching ``_model_pick_gen``). Every real pick bumps that
+            generation and no incidental rewrite does, which is what separates
+            "a concurrent pick owns this" from "still my clear". Every exit
+            that restores the agent calls this, because a refused switch that
+            keeps the cleared pin has changed something while reporting
+            failure.
+            """
+            if (
+                owns_agent
+                and committed_model_pick_gen is not None
+                and slot._model_pick_gen == committed_model_pick_gen
+                and slot._active_fallback_model is committed_active_fallback_model
+            ):
+                slot.model = prior_model
+                slot._model_pick_gen = prior_model_pick_gen
+                slot._fallback_candidate_idx = prior_fallback_candidate_idx
+                slot._fallback_walked = prior_fallback_walked
+                slot._active_fallback_model = prior_active_fallback_model
+                slot._fallback_primary_model = prior_fallback_primary_model
+                slot._fallback_slot_model = prior_fallback_slot_model
+                slot._fallback_pick_gen = prior_fallback_pick_gen
 
         # Resolve workspace from agent bindings. The response value is seeded
         # from the slot's CURRENT workspace, not a "default" literal: if
@@ -7901,12 +7997,24 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 if selected_store is not None and selected_store.memory_version == 2:
                     # The member may have moved to V2 during resolution. No
                     # derived fields, reset or history write has committed yet.
-                    if slot.agent is committed_agent:
+                    owns_agent = slot.agent is committed_agent
+                    if owns_agent:
                         slot.agent = prior_agent
+                    _unwind_model_commit(owns_agent)
                     denied = await require_owner_dashboard_request(request, "chat.slot_agent")
                     if denied is not None:
                         return denied
             assignment_resolved = bindings.requested_resolved
+            if (
+                assignment_resolved
+                and not agent_changed
+                and prior_agent_kind != ""
+                and bindings.selection_kind != prior_agent_kind
+                and slot.agent is committed_agent
+            ):
+                clear_slot_model_binding(slot)
+                committed_model_pick_gen = slot._model_pick_gen
+                committed_active_fallback_model = slot._active_fallback_model
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             new_workspace = ws_name
             workspace = ws_name
@@ -8009,16 +8117,23 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     # user chose and runs the next turn's tools elsewhere.
                     new_project = default_project_dir(workspace)
         except asyncio.CancelledError:
-            if slot.agent is committed_agent:
+            owns_agent = slot.agent is committed_agent
+            if owns_agent:
                 slot.agent = prior_agent
+            _unwind_model_commit(owns_agent)
             raise
         except Exception:
             logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
 
         if agent_kind and not assignment_resolved:
             # A stated namespace never falls back to whoever answers by default.
-            if slot.agent is committed_agent:
+            owns_agent = slot.agent is committed_agent
+            if owns_agent:
                 slot.agent = prior_agent
+            # A stated kind implies agent_changed, so the model commit above
+            # already cleared the pin: without this unwind the retained agent
+            # keeps a blank pin and reports a refusal that changed state.
+            _unwind_model_commit(owns_agent)
             return web.json_response(
                 {
                     "error": "the selected agent choice is not available",
@@ -8030,8 +8145,10 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         if not assignment_resolved and prior_selection is not None:
             # A failed lookup cannot commit a name while retaining a different
             # protected selection. Leave the established conversation usable.
-            if slot.agent is committed_agent:
+            owns_agent = slot.agent is committed_agent
+            if owns_agent:
                 slot.agent = prior_agent
+            _unwind_model_commit(owns_agent)
             from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
             from kiro_crew.memory_stores import UnknownMemoryStore
 
@@ -8078,19 +8195,28 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         def _rollback_switch() -> None:
             """Unwind this request's commit — only the values still OURS.
 
-            EVERY field is unwound on IDENTITY of its commit token, never
-            value equality: unlocked writers (the in-turn /agent and
-            set_project directives in chat_runner, members, openai_compat)
-            can write the SAME text during this handler's awaits — the
-            in-turn set_project directive can legitimately write the very
-            project this handler derived — and a value compare-and-set would
-            erase that successful concurrent write. Any write replaces the
-            token object, so an identity match proves the field is still
-            this commit's; a field this request never committed (the
-            write-side CAS lost) has a None token and is never touched.
+            Fields are unwound on IDENTITY of their commit token, never value
+            equality: unlocked writers (the in-turn /agent and set_project
+            directives in chat_runner, members, openai_compat) can write the
+            SAME text during this handler's awaits — the in-turn set_project
+            directive can legitimately write the very project this handler
+            derived — and a value compare-and-set would erase that successful
+            concurrent write. Any write replaces the token object, so an
+            identity match proves the field is still this commit's; a field
+            this request never committed (the write-side CAS lost) has a None
+            token and is never touched.
+
+            ``slot.model`` is the exception, on its own comment below: its
+            unlocked writers include rewrites that are not picks at all, so
+            identity there proves nothing about ownership.
             """
-            if slot.agent is committed_agent:
+            owns_agent = slot.agent is committed_agent
+            if owns_agent:
                 slot.agent = prior_agent
+                slot.agent_kind = prior_agent_kind
+            # The model unwind is shared with the exits that restore the agent
+            # before this helper became reachable; see _unwind_model_commit.
+            _unwind_model_commit(owns_agent)
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
@@ -8242,6 +8368,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # the slot's TRANSCRIPT (the .jsonl the restart scan reads), not the
         # live session the reset above addressed — the same history-vs-session
         # split ``_cancel_target`` documents.
+        # The transcript write below persists agent and model together, so it
+        # must carry the KIND this request committed: the periodic flush is the
+        # only other writer of ``agent_kind``, and a restart landing before it
+        # rehydrates the PRIOR namespace onto the new agent.
+        resolved_agent_kind = bindings.selection_kind if assignment_resolved else ""
         conversation_log = state.conversation_log if not slot.is_restricted else None
         if conversation_log:
 
@@ -8251,7 +8382,15 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        # Both keys, mirroring the persist this unwinds: a
+                        # restore naming only the agent leaves the cleared
+                        # model in the transcript, and a restart rehydrates the
+                        # switch that was just rolled back.
+                        {
+                            "agent": str(slot.agent),
+                            "model": str(slot.model),
+                            "agent_kind": slot.agent_kind,
+                        },
                     )
                 except Exception:
                     logger.warning(
@@ -8268,7 +8407,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 await drained_to_thread(
                     conversation_log.update_metadata,
                     _history_key_for(name),
-                    {"agent": agent_name},
+                    {
+                        "agent": agent_name,
+                        "model": str(slot.model),
+                        "agent_kind": resolved_agent_kind,
+                    },
                 )
             except asyncio.CancelledError:
                 # Drain the writer before restoring history, and retain both
@@ -8304,12 +8447,20 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
                         _history_key_for(name),
-                        {"agent": str(slot.agent)},
+                        {
+                            "agent": str(slot.agent),
+                            "model": str(slot.model),
+                            "agent_kind": slot.agent_kind,
+                        },
                     )
                 except Exception:
                     logger.warning(
                         "Failed to restore agent metadata for slot %s", name, exc_info=True
                     )
+                    # Same reasoning as the persist above, mirrored: the 409
+                    # says nothing changed, so metadata still naming the
+                    # rolled-back switch has to be corrected by the flush.
+                    slot._dirty = True
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
@@ -8332,7 +8483,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                         await drained_to_thread(
                             state.conversation_log.update_metadata,
                             _history_key_for(name),
-                            {"agent": str(slot.agent)},
+                            {
+                                "agent": str(slot.agent),
+                                "model": str(slot.model),
+                                "agent_kind": slot.agent_kind,
+                            },
                         )
 
             try:
@@ -8503,13 +8658,14 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
     if slot.agent is committed_agent:
-        slot.agent_kind = bindings.selection_kind if assignment_resolved else ""
+        slot.agent_kind = resolved_agent_kind
     schedule_eager_spawn(state, slot)
     state.push_slots_update()
     resp_body: dict = {
         "ok": True,
         "agent": agent_name,
         "agent_kind": slot.agent_kind,
+        "model": str(slot.model),
         "workspace": workspace,
     }
     if teardown_incomplete:

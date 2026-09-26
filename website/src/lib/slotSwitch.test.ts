@@ -218,9 +218,9 @@ describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
   it('agent field writes the adjudicated object on success', async () => {
     const writes: AgentSwitchValue[] = []
     await performSlotSwitch('agent', 'slot-ag-ok', 'researcher',
-      async () => ({ agent: 'researcher', workspace: 'research-ws' }),
+      async () => ({ agent: 'researcher', workspace: 'research-ws', model: '' }),
       (v) => writes.push(v))
-    expect(writes).toEqual([{ agent: 'researcher', workspace: 'research-ws' }])
+    expect(writes).toEqual([{ agent: 'researcher', workspace: 'research-ws', model: '' }])
   })
 
   it('agent field: newest failure adopts the older held OBJECT success intact', async () => {
@@ -230,13 +230,13 @@ describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
     // the object value exists to prevent).
     const writes: Array<[string, AgentSwitchValue]> = []
     const first = performSlotSwitch('agent', 'slot-ag-adopt', 'researcher',
-      async () => ({ agent: 'researcher', workspace: 'research-ws' }),
+      async () => ({ agent: 'researcher', workspace: 'research-ws', model: '' }),
       (v) => writes.push(['w1', v]))
     const second = performSlotSwitch('agent', 'slot-ag-adopt', 'writer',
       () => Promise.reject(new Error('boom')), (v) => writes.push(['w2', v]))
     await first
     await expect(second).rejects.toThrow('boom')
-    expect(writes).toEqual([['w2', { agent: 'researcher', workspace: 'research-ws' }]])
+    expect(writes).toEqual([['w2', { agent: 'researcher', workspace: 'research-ws', model: '' }]])
   })
 
   it('reasoning_effort field adjudicates: two rapid picks end on the latest', async () => {
@@ -322,5 +322,80 @@ describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
     await p
     expect(pendingSlotSwitchTarget('agent', 'slot-ag-pend')).toBeNull()
     expect(pendingSlotSwitch('agent', 'slot-ag-pend')).toBe('')
+  })
+
+  it('a model failure after an agent switch recovers the cleared model, not the superseded pin', async () => {
+    // The reaching burst behind the shared-entry fix: model A lands, an agent
+    // switch clears the backend pin and names the post-commit model in its
+    // response, then model B fails (the switch makes this likely: a model
+    // from the pre-switch list is refused 400 model_unavailable). The
+    // failure path must replay the switch's cleared model — not model A,
+    // which the backend already dropped.
+    const writes: string[] = []
+    let releaseA: (v: string) => void = () => {}
+    let releaseAgent: (v: AgentSwitchValue) => void = () => {}
+    let rejectB: (e: Error) => void = () => {}
+    const pickA = performSlotSwitch('model', 'slot-clear-race', 'model-a',
+      () => new Promise<string>(res => { releaseA = res }),
+      (v) => writes.push('mA:' + v))
+    const switchAgent = performSlotSwitch('agent', 'slot-clear-race', 'researcher',
+      () => new Promise<AgentSwitchValue>(res => { releaseAgent = res }),
+      (v) => writes.push('ag:' + v.agent + '+' + (v.model ?? '∅')),
+      (v) => (v.model !== undefined ? [['model', v.model] as const] : []))
+    const pickB = performSlotSwitch('model', 'slot-clear-race', 'model-b',
+      () => new Promise<string>((_, rej) => { rejectB = rej }),
+      (v) => writes.push('mB:' + v))
+    await new Promise(res => setTimeout(res, 0))
+    releaseA('model-a')
+    await pickA
+    releaseAgent({ agent: 'researcher', model: '' })
+    await switchAgent
+    rejectB(new Error('model_unavailable'))
+    await expect(pickB).rejects.toThrow('model_unavailable')
+    // Model A was superseded the moment B began, so it is HELD, never
+    // written; the agent switch's write carries the cleared model, and the
+    // failure path then replays exactly that — the store converges on what
+    // the backend actually holds, not the pin it already dropped.
+    expect(writes).toEqual(['ag:researcher+', 'mB:'])
+  })
+
+  it('an agent pick queues behind an in-flight model pick on the same slot', async () => {
+    // The backend's agent switch commits the slot's model, so the pair must
+    // reach the gateway in pick order: with the model pick still in flight,
+    // the agent switch waits its turn and its write (which carries the
+    // post-commit model) lands last.
+    const events: string[] = []
+    let releaseModel: (v: string) => void = () => {}
+    const modelPick = performSlotSwitch('model', 'slot-couple-a', 'model-a',
+      () => { events.push('model-start'); return new Promise<string>(res => { releaseModel = res }) },
+      () => events.push('model-write'))
+    const agentPick = performSlotSwitch('agent', 'slot-couple-a', 'researcher',
+      async () => { events.push('agent-start'); return { agent: 'researcher', model: '' } },
+      () => events.push('agent-write'))
+    await new Promise(res => setTimeout(res, 0))
+    expect(events).toEqual(['model-start'])
+    releaseModel('model-a')
+    await modelPick
+    await agentPick
+    expect(events.indexOf('agent-start')).toBeGreaterThan(events.indexOf('model-start'))
+    expect(events.filter(e => e.endsWith('-write'))).toEqual(['model-write', 'agent-write'])
+  })
+
+  it('a model pick queues behind an in-flight agent switch on the same slot', async () => {
+    const events: string[] = []
+    let releaseAgent: (v: AgentSwitchValue) => void = () => {}
+    const agentPick = performSlotSwitch('agent', 'slot-couple-b', 'researcher',
+      () => { events.push('agent-start'); return new Promise<AgentSwitchValue>(res => { releaseAgent = res }) },
+      () => events.push('agent-write'))
+    const modelPick = performSlotSwitch('model', 'slot-couple-b', 'model-b',
+      async () => { events.push('model-start'); return 'model-b' },
+      () => events.push('model-write'))
+    await new Promise(res => setTimeout(res, 0))
+    expect(events).toEqual(['agent-start'])
+    releaseAgent({ agent: 'researcher', model: '' })
+    await agentPick
+    await modelPick
+    expect(events.indexOf('model-start')).toBeGreaterThan(events.indexOf('agent-start'))
+    expect(events.filter(e => e.endsWith('-write'))).toEqual(['agent-write', 'model-write'])
   })
 })

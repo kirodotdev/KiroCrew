@@ -8554,6 +8554,12 @@ class TestRuntimeWiring:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.agent = "oncall"
+        slot.model = "oncall-model"
+        slot._model_pick_gen = 3
+        slot._active_fallback_model = "oncall-fallback"
+        slot._fallback_primary_model = "oncall-model"
+        slot._fallback_slot_model = "oncall-model"
+        slot._fallback_pick_gen = 3
         alive = MagicMock(spec=LLMProvider)
         alive.has_active_turn.return_value = False
         state.sessions.get_provider = MagicMock(return_value=alive)
@@ -8564,6 +8570,12 @@ class TestRuntimeWiring:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
             assert resp.status == 500
             assert slot.agent == "oncall"
+            assert slot.model == "oncall-model"
+            assert slot._model_pick_gen == 3
+            assert slot._active_fallback_model == "oncall-fallback"
+            assert slot._fallback_primary_model == "oncall-model"
+            assert slot._fallback_slot_model == "oncall-model"
+            assert slot._fallback_pick_gen == 3
 
     @pytest.mark.asyncio
     async def test_api_chat_slot_agent_reset_raise_with_successor_succeeds(
@@ -8916,15 +8928,26 @@ class TestRuntimeWiring:
             assert slot.project == "/workspace/new-ws"
 
     @pytest.mark.asyncio
-    async def test_api_chat_slot_agent_persists_to_metadata(self, tmp_path, monkeypatch):
-        """Switching a slot's agent writes the new value to the JSONL metadata.
+    async def test_api_chat_slot_agent_resets_model_and_persists_bindings(
+        self, tmp_path, monkeypatch
+    ):
+        """Switching agents clears provider-specific state and persists both bindings.
 
         Without this, a session resumed after a gateway restart reverts to
         whatever agent (if any) was recorded in the initial metadata line.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        state.get_or_create_slot("s1")
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "old-agent"
+        slot.model = "old-provider-model"
+        slot._model_pick_gen = 4
+        slot._fallback_candidate_idx = 2
+        slot._fallback_walked = ["old-fallback"]
+        slot._active_fallback_model = "old-fallback"
+        slot._fallback_primary_model = "old-provider-model"
+        slot._fallback_slot_model = "old-provider-model"
+        slot._fallback_pick_gen = 4
         state.sessions.reset = AsyncMock()
 
         # Seed a session file so update_metadata has something to patch.
@@ -8936,6 +8959,7 @@ class TestRuntimeWiring:
         # leave the "dashboard_s1" cache entry stale.
         history_key = "dashboard:s1"
         state.conversation_log.append(history_key, "user", "hi", agent="old-agent")
+        state.conversation_log.update_metadata(history_key, {"model": "old-provider-model"})
         assert state.conversation_log.get_metadata(history_key).get("agent") == "old-agent"
 
         # Minimal config stub (agent-binding resolution is exercised by the
@@ -8955,6 +8979,147 @@ class TestRuntimeWiring:
         assert (
             meta.get("agent") == "new-agent"
         ), f"expected new-agent in metadata, got {meta.get('agent')!r}"
+        assert meta.get("model") == ""
+        assert slot.model == ""
+        assert slot._model_pick_gen == 5
+        assert slot._fallback_candidate_idx == 0
+        assert slot._fallback_walked == []
+        assert slot._active_fallback_model == ""
+        assert slot._fallback_primary_model == ""
+        assert slot._fallback_slot_model == ""
+        assert slot._fallback_pick_gen == 0
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_same_agent_keeps_model_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "same-agent"
+        slot.model = "same-provider-model"
+        slot._model_pick_gen = 4
+        slot._active_fallback_model = "same-fallback"
+        slot._fallback_primary_model = "same-provider-model"
+        slot._fallback_slot_model = "same-provider-model"
+        slot._fallback_pick_gen = 4
+        state.sessions.reset = AsyncMock()
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        # The handler imports the owner check locally from source_providers, so
+        # that is the namespace to patch; short-circuiting it keeps this test on
+        # the same-agent path instead of the binding-resolution refusal.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "same-agent"})
+            assert resp.status == 200
+
+        assert slot.model == "same-provider-model"
+        assert slot._model_pick_gen == 4
+        assert slot._active_fallback_model == "same-fallback"
+        assert slot._fallback_primary_model == "same-provider-model"
+        assert slot._fallback_slot_model == "same-provider-model"
+        assert slot._fallback_pick_gen == 4
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_same_name_kind_switch_clears_the_binding(
+        self, tmp_path, monkeypatch
+    ):
+        """A same-name member->template pick is a rebind, not an affirmation.
+
+        The replacement session must not send the member binding's
+        provider-bound model; only the kind distinguishes the two, so the
+        clear keys on it as well as the name.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "same-agent"
+        slot.agent_kind = "member"
+        slot.model = "member-provider-model"
+        slot._model_pick_gen = 4
+        slot._active_fallback_model = "member-fallback"
+        slot._fallback_primary_model = "member-provider-model"
+        slot._fallback_slot_model = "member-provider-model"
+        slot._fallback_pick_gen = 4
+        state.sessions.reset = AsyncMock()
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
+        )
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/agent", json={"agent": "same-agent", "agent_kind": "template"}
+            )
+            assert resp.status == 200
+
+        assert slot.agent_kind == "template"
+        assert slot.model == ""
+        assert slot._model_pick_gen == 5
+        assert slot._active_fallback_model == ""
+        assert slot._fallback_primary_model == ""
+        assert slot._fallback_slot_model == ""
+        assert slot._fallback_pick_gen == 0
+
+    @pytest.mark.asyncio
+    async def test_rolled_back_owner_switch_persists_the_restored_model(
+        self, tmp_path, monkeypatch
+    ):
+        """A rolled-back switch must not leave the transcript with a blank model.
+
+        The persist after a failed reset writes only the agent on the rollback
+        path, and update_metadata merges, so the earlier ``model`` survives on
+        disk while memory restored the pin -- a restart would rehydrate the
+        cleared model. The rollback write must carry the restored model.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "oncall"
+        slot.model = "pinned-model"
+        slot._active_fallback_model = "old-fallback"
+        slot.workspace = "oncall-ws"
+        slot.project = "/tmp/oncall"
+        state.conversation_log.append("dashboard:s1", "user", "hi", agent="oncall")
+        state.conversation_log.update_metadata("dashboard:s1", {"model": "pinned-model"})
+
+        state.sessions.reset = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._record_explicit_agent_selection",
+            AsyncMock(side_effect=ValueError("member memory write failed")),
+        )
+        self._patch_agent_resolution(monkeypatch)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
+            assert resp.status != 200
+
+        assert slot.agent == "oncall"
+        assert slot.model == "pinned-model"
+        metadata = state.conversation_log.get_metadata("dashboard:s1")
+        assert metadata.get("agent") == "oncall"
+        assert metadata.get("model") == "pinned-model"
 
     @pytest.mark.asyncio
     async def test_api_chat_slot_create_response_includes_workspace(self, tmp_path, monkeypatch):

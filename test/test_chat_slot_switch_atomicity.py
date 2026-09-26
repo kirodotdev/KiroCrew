@@ -13,10 +13,12 @@ the mid-turn 409 (clones of the concurrency template in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
+from aiohttp.client_exceptions import ServerDisconnectedError
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
@@ -1441,7 +1443,9 @@ class TestLinkedSlotSessionKey:
             assert state.sessions.reset.await_args.args[0] == "slack:123.456"
 
     @pytest.mark.asyncio
-    async def test_binding_that_lands_while_queued_on_the_lock_is_the_one_switched(self):
+    async def test_binding_that_lands_while_queued_on_the_lock_is_the_one_switched(
+        self,
+    ):
         # The key is resolved INSIDE the lock: a slot that gets linked while
         # the request waits on slot._lock has its LINKED session probed and
         # reset, not the dashboard:<slot> key a pre-lock read would have named.
@@ -1573,6 +1577,92 @@ class TestLinkedSlotSessionKey:
             assert meta_call.args[0] == "dashboard:test"
 
     @pytest.mark.asyncio
+    async def test_rollback_restores_the_model_past_a_concurrent_normalize(self, monkeypatch):
+        # A concurrent turn rewrites slot.model without picking anything --
+        # chat_runner normalizes it and backfills its canonical id, replacing
+        # the token object while _model_pick_gen stands still. Authorizing the
+        # unwind on token identity read that as a concurrent pick and skipped
+        # it, so a 409'd switch kept its own cleared model and the slot lost
+        # the pin it had before the request.
+        # Owner-gated, so the handler skips the agent-binding resolution this
+        # test is not about and reaches the concurrent-normalize rollback.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+
+        async def _normalize_then_rebind(*_a, **_k):
+            # What the runner does mid-turn: same value, new object, no pick.
+            slot.model = str(slot.model)
+            if not slot.linked_session_key:
+                slot.linked_session_key = "cron:job-1"
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=_normalize_then_rebind)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+            assert slot.agent == "old-agent"
+            assert slot.model == "claude-opus-5", "the rejected switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    async def test_failed_agent_metadata_write_rolls_back_and_reports_503(self, monkeypatch):
+        # Upstream's contract: a metadata write that fails does not let the
+        # switch stand. The selection is rolled back and the request reports the
+        # failure, so a restart cannot rehydrate a half-applied switch.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        state.conversation_log.update_metadata.side_effect = OSError("disk full")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 503
+            assert slot.agent == "old-agent"
+
+    @pytest.mark.asyncio
+    async def test_the_rollback_metadata_names_the_model_too(self, monkeypatch):
+        # The persist writes agent+model, so its restore has to correct both.
+        # Restoring only the agent leaves the cleared model on disk, and the
+        # restart reads model back from exactly this record.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        # First write (the persist) fails; the restore write succeeds.
+        state.conversation_log.update_metadata.side_effect = [
+            OSError("disk full"),
+            None,
+        ]
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            assert resp.status == 503
+        restore = state.conversation_log.update_metadata.call_args_list[-1]
+        assert restore.args[1] == {
+            "agent": "old-agent",
+            "model": "claude-opus-5",
+            "agent_kind": "",
+        }
+
+    @pytest.mark.asyncio
     async def test_agent_switch_sees_the_linked_sessions_active_turn(self):
         # The busy probe lands on the live linked session: an in-flight
         # channel turn answers 409 instead of tearing the turn (or a
@@ -1647,7 +1737,8 @@ class TestLinkedSlotSessionKey:
         state.sessions.reset = AsyncMock(return_value=True)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             assert resp.status == 200
             assert slot.reasoning_effort == "high"
@@ -1673,7 +1764,8 @@ class TestLinkedSlotSessionKey:
         )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             data = await resp.json()
             assert resp.status == 200
@@ -1689,7 +1781,8 @@ class TestLinkedSlotSessionKey:
         state = _mock_state(slot, provider=None)
         async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             assert resp.status == 404
             assert slot.reasoning_effort == ""
@@ -1707,7 +1800,8 @@ class TestLinkedSlotSessionKey:
         state.sessions.reset = AsyncMock(side_effect=_reset_and_rebind)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             data = await resp.json()
             assert resp.status == 409
@@ -1794,7 +1888,8 @@ class TestLinkedSlotSessionKey:
         state.sessions.reset = AsyncMock(return_value=False)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             data = await resp.json()
             assert resp.status == 409
@@ -1833,10 +1928,17 @@ class TestLinkedSlotSessionKey:
             assert slot.agent == "old-agent"
             # The restore wrote the rolled-back agent back into the
             # transcript metadata (last call).
-            assert log.update_metadata.call_args.args[1] == {"agent": "old-agent"}
+            assert log.update_metadata.call_args.args[1] == {
+                "agent": "old-agent",
+                "model": "",
+                "agent_kind": "",
+            }
 
     @pytest.mark.asyncio
-    async def test_concurrent_same_agent_write_survives_the_rollback(self, monkeypatch):
+    @pytest.mark.parametrize("concurrent_agent", ["new-agent", "third-agent"])
+    async def test_concurrent_same_agent_write_survives_the_rollback(
+        self, monkeypatch, concurrent_agent
+    ):
         # An unlocked writer (openai_compat / members / in-turn directive)
         # can write the SAME agent name during this handler's reset await and
         # dispatch on it. The rollback is gated on the write GENERATION, not
@@ -1849,13 +1951,14 @@ class TestLinkedSlotSessionKey:
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
         slot = _ChatSlot("test")
         slot.agent = "old-agent"
+        slot.model = _MODEL_A
         state = _mock_state(slot, provider=None)
         state.conversation_log = MagicMock()
 
         async def _reset_concurrent_write_and_rebind(*_a, **_k):
             # The concurrent same-value write, then the rebind that forces
             # this request onto its rollback path.
-            slot.agent = "new-agent"
+            slot.agent = concurrent_agent
             slot.linked_session_key = "cron:job-1"
             return True
 
@@ -1866,7 +1969,9 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 409
             assert data["code"] == "session_rebound"
             # The concurrent writer's value survives; only OUR commit unwinds.
-            assert slot.agent == "new-agent"
+            assert slot.agent == concurrent_agent
+            assert slot.model == ""
+            assert slot._model_pick_gen == 1
 
     @pytest.mark.asyncio
     async def test_concurrent_same_project_write_survives_the_rollback(self, monkeypatch):
@@ -2003,7 +2108,8 @@ class TestLinkedSlotSessionKey:
         state.sessions.get_provider = MagicMock(return_value=provider)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots/test/reasoning-effort", json={"reasoning_effort": "high"}
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
             )
             data = await resp.json()
             assert resp.status == 200
@@ -2173,7 +2279,10 @@ class TestAliasSlotSwitchSerialization:
         async with TestClient(TestServer(_make_app(state))) as client:
             async with _slot_switch_session_lock(_LINKED_KEY):
                 task = asyncio.create_task(
-                    client.post("/api/chat/slots/alias-a/workspace", json={"workspace": "new-ws"})
+                    client.post(
+                        "/api/chat/slots/alias-a/workspace",
+                        json={"workspace": "new-ws"},
+                    )
                 )
                 await asyncio.sleep(0.05)
                 assert slot.workspace == "old-ws"
@@ -2570,3 +2679,268 @@ class TestBulkModelSwitchAtomicity:
             assert data["switched"] == []
             assert slot.model == _MODEL_A
             state.sessions.reset.assert_not_awaited()
+
+
+class TestRefusedSwitchUnwindsTheModel:
+    """A refused agent switch must not keep the model pin it cleared.
+
+    The clear lands before the resolution awaits, so every exit that restores
+    the agent has to unwind the pin as well -- otherwise a rejected pick leaves
+    the slot advertising the agent it kept and a model it silently dropped,
+    and the next turn runs on a cleared pin.
+    """
+
+    @staticmethod
+    async def _switch(client, agent: str = "new-agent"):
+        return await client.post("/api/chat/slots/test/agent", json={"agent": agent})
+
+    @pytest.mark.asyncio
+    async def test_v2_denial_during_resolution_restores_the_model(self, monkeypatch):
+        # A member that moved to V2 between the pick and the resolution is
+        # refused by the owner gate. That refusal sits AFTER the clear, so the
+        # slot must come out of it exactly as it went in.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: False,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        # First lookup (the pre-commit choice) is still V1, so the switch
+        # commits; the second (during resolution) is V2 and refuses.
+        cfg = MagicMock()
+        cfg.memory_stores.get.side_effect = [
+            MagicMock(memory_version=1),
+            MagicMock(memory_version=2),
+        ]
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig",
+            MagicMock(load=MagicMock(return_value=cfg)),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            MagicMock(
+                return_value=MagicMock(
+                    memory_store_name="store-x",
+                    workspace_dir="/tmp/ws",
+                    requested_resolved=True,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.require_owner_dashboard_request",
+            AsyncMock(
+                return_value=web.json_response(
+                    {"error": "owner required", "code": "owner_required"}, status=403
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.read_private_session_store", lambda key: None
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await self._switch(client)
+            assert resp.status == 403
+        assert slot.agent == "old-agent"
+        assert slot.model == "claude-opus-5", "the refused switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_resolution_restores_the_model(self, monkeypatch):
+        # Cancellation is the exit with no response to carry the failure, so
+        # nothing but the unwind can put the pin back.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig",
+            MagicMock(load=MagicMock(return_value=MagicMock())),
+        )
+
+        # A plain function: resolve_agent_bindings runs in a worker thread, so
+        # an async side-effect would return a coroutine instead of raising.
+        def _cancelled(*_a, **_k):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            MagicMock(side_effect=_cancelled),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.read_private_session_store", lambda key: None
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            # The handler unwinds and then re-raises, which drops the
+            # connection: the slot state below is the whole assertion.
+            with contextlib.suppress(asyncio.CancelledError, ServerDisconnectedError):
+                await self._switch(client)
+        assert slot.agent == "old-agent"
+        assert slot.model == "claude-opus-5", "a cancelled switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    async def test_unavailable_selection_restores_the_model(self, monkeypatch):
+        # A failed lookup cannot commit the name while a protected selection
+        # stands, so the handler answers 503 -- and the cleared pin comes back.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig",
+            MagicMock(load=MagicMock(side_effect=RuntimeError("config unreadable"))),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.session_agent_selection_name",
+            lambda key: "writer",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.read_private_session_store", lambda key: None
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await self._switch(client)
+            assert resp.status == 503
+        assert slot.agent == "old-agent"
+        assert slot.model == "claude-opus-5", "the refused switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    async def test_a_stated_kind_that_fails_resolution_restores_the_model(self, monkeypatch):
+        # A stated namespace that does not resolve is refused with 409, and that
+        # exit sits after the commit cleared the pin: without the unwind the
+        # retained agent keeps a blank model and the refusal silently changed
+        # state.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig",
+            MagicMock(load=MagicMock(return_value=MagicMock())),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            MagicMock(
+                return_value=MagicMock(
+                    memory_store_name="store-x",
+                    workspace_dir="/tmp/ws",
+                    requested_resolved=False,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.read_private_session_store", lambda key: None
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = "claude-opus-5"
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/agent",
+                json={"agent": "new-agent", "agent_kind": "member"},
+            )
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "agent_choice_unavailable"
+        assert slot.agent == "old-agent"
+        assert slot.model == "claude-opus-5", "the refused switch kept its cleared model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "prior_agent, prior_kind, request_kind, resolved_kind, expected_model",
+        [
+            ("old-agent", "member", "template", "template", ""),
+            ("new-agent", "template", "", "member", ""),
+            ("new-agent", "template", "", "template", _MODEL_A),
+            ("new-agent", "", "", "member", _MODEL_A),
+            ("new-agent", "", "member", "member", _MODEL_A),
+        ],
+    )
+    async def test_agent_switch_persists_resolved_kind_and_model(
+        self, monkeypatch, prior_agent, prior_kind, request_kind, resolved_kind, expected_model
+    ):
+        # The transcript write carries agent and model; the kind must ride with
+        # them or a restart before the periodic flush rehydrates the PRIOR
+        # namespace onto the new agent, which then re-persists it.
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            lambda cfg, name, project_dir=None, **kwargs: MagicMock(
+                workspace_dir="/tmp/ws2",
+                memory_store_name="",
+                kiro_agent=name,
+                selection_kind=resolved_kind,
+                resolved_alias="",
+                requested_resolved=True,
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
+            lambda cfg, ws_dir: "ws2",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.default_project_dir",
+            lambda ws: "/workspace/derived",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.cached_project_agent_names",
+            lambda p: frozenset(),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._record_explicit_agent_selection",
+            AsyncMock(return_value=None),
+        )
+        slot = _ChatSlot("test")
+        slot.agent = prior_agent
+        slot.agent_kind = prior_kind
+        slot.model = _MODEL_A
+        slot.messages = [{"role": "user", "content": "existing conversation"}]
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.conversation_log = MagicMock()
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/agent",
+                json={
+                    "agent": "new-agent",
+                    **({"agent_kind": request_kind} if request_kind else {}),
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json())["model"] == expected_model
+        assert slot.agent_kind == resolved_kind
+        assert slot.model == expected_model
+        written = state.conversation_log.update_metadata.call_args.args[1]
+        assert written == {
+            "agent": "new-agent",
+            "model": expected_model,
+            "agent_kind": resolved_kind,
+        }

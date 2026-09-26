@@ -4011,7 +4011,7 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', {
       agent,
       ...(kind ? { agent_kind: kind } : {}),
-    }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string }>,
+    }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string; model?: string }>,
   chatSlotModel: (slot: string, model: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
   /** This slot's auto-compact threshold override (null = follows the global). */
