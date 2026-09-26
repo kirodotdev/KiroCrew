@@ -866,11 +866,7 @@ def _upsert_lanes() -> list[str]:
     withhold-before-write arm at all, so they are absent here by being absent
     from the mechanism rather than by being excluded from a list.
     """
-    return [
-        lane
-        for lane in LANES
-        if f"{UPSERT}() {{" in DISCOVERED[lane][1]["run"]
-    ]
+    return [lane for lane in LANES if f"{UPSERT}() {{" in DISCOVERED[lane][1]["run"]]
 
 
 UPSERT_LANES = _upsert_lanes()
@@ -961,14 +957,12 @@ class TestAVerdictWithheldBeforeAnyWriteIsRetained:
         assert len(starts) == 1, starts
         # The branch ends where the create path begins, which is the first write
         # attempted inside it.
-        writes = [i for i, line in enumerate(body) if line.strip().startswith("retry_comment_write ")]
+        writes = [
+            i for i, line in enumerate(body) if line.strip().startswith("retry_comment_write ")
+        ]
         assert writes, "the write primitive call moved"
         first_write = min(w for w in writes if w > starts[0])
-        arms = [
-            i
-            for i in range(starts[0], first_write)
-            if body[i].strip() == "return 0"
-        ]
+        arms = [i for i in range(starts[0], first_write) if body[i].strip() == "return 0"]
         assert len(arms) == 2, arms
         for i in arms:
             window = "\n".join(body[i - 4 : i])
@@ -1018,7 +1012,9 @@ class TestAVerdictWithheldBeforeAnyWriteIsRetained:
         assert len(declared) == 1, declared
         assert body[declared[0]].strip().startswith("local "), body[declared[0]]
         # Both retentions are gated on it.
-        gates = [i for i, line in enumerate(body) if line.strip() == 'if [ -z "$superseded" ]; then']
+        gates = [
+            i for i, line in enumerate(body) if line.strip() == 'if [ -z "$superseded" ]; then'
+        ]
         assert len(gates) == 2, gates
         for i in gates:
             assert body[i + 1].strip().startswith(f"{RETAIN} "), body[i + 1]
@@ -1095,9 +1091,7 @@ class TestAVerdictWithheldBeforeAnyWriteIsRetained:
         assert ARTIFACT_OUTPUT not in (tmp_path / "step-output.txt").read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("lane", UPSERT_PARAMS)
-    def test_a_run_that_reached_no_verdict_retains_nothing(
-        self, lane: str, tmp_path: Path
-    ) -> None:
+    def test_a_run_that_reached_no_verdict_retains_nothing(self, lane: str, tmp_path: Path) -> None:
         """Same arm, same reads, a body that is a failure notice.
 
         This is the arm the stamp proof exists for: recording it would assert a
