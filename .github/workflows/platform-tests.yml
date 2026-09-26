@@ -60,7 +60,7 @@ jobs:
   #
   # It shipped SCOPED to a 51-file glob (gateway, socketsec, platform-compat, pod,
   # MCP-apps) because a full run needed its own exclusion burn-down first. That
-  # burn-down is done, so this job now runs the WHOLE suite in duration-balanced
+  # burn-down is done, so this job now runs the WHOLE suite in file-assigned
   # shards, the same shape as backend-test-windows. 51 of 2094 test files was 2.4
   # percent of the tree: a POSIX-but-not-Linux regression outside that glob (the
   # `ru_maxrss` unit difference, BSD `ps`/`stat` argv, case-insensitive HFS+ path
@@ -70,26 +70,47 @@ jobs:
   # deprecated by GitHub, and macos-latest moves under us, which would turn an image
   # rollout into an unexplained red on an unrelated pull request.
   #
-  # 3 shards, not Windows' 4. macOS bills at 10x Linux per minute, so the shard
-  # count is the billing knob; 3 is the smallest count that keeps the slowest shard
-  # inside a budget comparable to the Windows job.
+  # macOS bills at 10x Linux per minute, so the shard count is the billing knob and
+  # the count is the SMALLEST that keeps the slowest shard inside the cap with room
+  # to spare -- see the cap's own derivation below for the measurement that sets it.
+  # Raising it is what absorbs suite growth; raising the cap would only spend more
+  # on a lane that already outgrew its budget.
   backend-test-macos:
     name: Backend Tests (macOS)
     runs-on: macos-15
-    # 40, matching backend-test-windows. MEASURED on the first full-suite run of
-    # this branch (run 34288884863): shards 1 and 2 finished their pytest step in
-    # 20.3 and 20.1 minutes, and shard 3 was still running past 27, so a 30-minute
-    # cap cancelled it. 1.5x the slowest observed shard is therefore at least 40.
-    # This is still a spend guard, not just a hang guard: a runaway macOS shard
-    # costs about ten times a Linux one.
+    # 40, matching backend-test-windows, and it is a SPEND guard as much as a hang
+    # guard: a runaway macOS shard costs about ten times a Linux one. The cap is
+    # only meaningful while the slowest shard sits well inside it, so it is the
+    # SHARD COUNT that absorbs suite growth, not this number.
+    #
+    # MEASURED on run 36223077241, at 3 shards: the pytest step took 33.0 and 32.2
+    # minutes on shards 1 and 3, and shard 2 was 98% through its progress line when
+    # the cap cancelled it at 40.0 (run 36200630682 lost the same shard the same
+    # way). So 3 shards no longer leave any headroom at all, let alone the 1.5x the
+    # cap was originally derived from. Two things restore it, and both are measured
+    # rather than guessed:
+    #
+    #   * 4 shards instead of 3 -- one more runner costs the fixed per-shard
+    #     overhead, measured on run 36223077241 as job wall MINUS the pytest step, so
+    #     it bounds everything outside the tests at once: 40 s, 43 s and 39 s on
+    #     shards 1, 2 and 3 (the `uv` install inside those is 3-5 s). Shard 1 is not
+    #     the cheap case -- it also runs the peer-identity canary and the terminal
+    #     handler suite -- so an added shard pays the 39 s shape. Under a minute
+    #     against a cancelled 40-minute shard.
+    #   * the file-sharding plugin below instead of pytest-split. pytest-split
+    #     collects the WHOLE suite in every shard and deselects the rest: measured
+    #     warm on Linux, `--splits 3 --group 2` spends 94.8 s collecting 137,829
+    #     tests to run 45,943 of them, where `--file-shards 3 --file-shard 2`
+    #     spends 29.8 s collecting only the 46,744 it owns. Every shard was paying
+    #     that import twice over for tests it then threw away.
     timeout-minutes: 40
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3]
+        group: [1, 2, 3, 4]
     env:
-      SHARD_COUNT: 3
+      SHARD_COUNT: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -214,9 +235,14 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+          # `python -m pytest`, not bare `pytest`, and that is what makes the
+          # plugin loadable: `-m` puts the working directory on sys.path, where the
+          # console script does not, so `-p scripts.ci_file_shards` resolves here
+          # exactly as it does in backend-test and backend-test-windows.
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=180 \
+            --no-cov --max-worker-restart=0 \
             -o faulthandler_timeout=150 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             2>&1 | tee "shard-macos-${{ matrix.group }}.log"
 
       # The log carries pytest's own `FAILED <nodeid> - <msg>` summary lines, so a
