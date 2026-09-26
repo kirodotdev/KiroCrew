@@ -195,3 +195,29 @@ export function collectFolderSubtreeIds(folders: readonly ChatFolder[], rootId: 
   }
   return out
 }
+
+/**
+ * Does an unchecked ANCESTOR already account for this folder's absence?
+ *
+ * Unchecking a parent takes its whole block away, so the child is gone for the
+ * parent's reason and not for its own. Both the reveal rows and the announced
+ * count fold such a folder into its ancestor, which is what keeps one hide
+ * announced exactly once instead of once per level.
+ *
+ * Cycle-guarded: a hand-edited folders.json can contain a `parent_id` loop, and
+ * this runs on every render.
+ */
+export function coveredByHiddenAncestor(
+  folder: ChatFolder,
+  folders: readonly ChatFolder[],
+  unchecked: ReadonlySet<string>,
+): boolean {
+  let cur = folder.parent_id ? folders.find(p => p.id === folder.parent_id) : undefined
+  const seen = new Set<string>([folder.id])
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    if (unchecked.has(cur.id)) return true
+    cur = cur.parent_id ? folders.find(p => p.id === cur!.parent_id) : undefined
+  }
+  return false
+}
