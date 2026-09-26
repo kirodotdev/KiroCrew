@@ -1,16 +1,19 @@
 /**
- * A discard must reach the mechanism the REQUEST IN FLIGHT uses, not the one the
- * saved setting names.
+ * Every read of the utterance in flight must reach the transport that utterance
+ * is ACTUALLY on, not the one the saved setting names.
  *
  * The setting describes the next utterance. Flip it while one utterance is open
- * and it names a transport nothing in flight is using, so a discard routed off it
- * lands on the wrong path: it closes a socket that was never opened, or it
- * skips the flag that drops a blob still on its way to the transcriber. Either
- * way the press changes the UI and the utterance survives, which is the one
- * outcome worse than offering no exit at all.
+ * and it names a transport nothing in flight is using, so any read routed off it
+ * lands on the wrong path. A discard closes a socket that was never opened, or it
+ * skips the flag that drops a blob still on its way to the transcriber. A commit
+ * calls stop on the other transport's mechanism and leaves the live recorder
+ * capturing. The recording flag reads the idle transport's flag and reports no
+ * capture at all, which silently disarms every control gated on it. Either way
+ * the press changes the UI and the utterance survives, which is the one outcome
+ * worse than offering no exit at all.
  *
- * So both cases here flip the setting AGAINST the live request. A test where the
- * two agree cannot tell a request-anchored discard from a setting-anchored one,
+ * So every case here flips the setting AGAINST the live request. A test where the
+ * two agree cannot tell a request-anchored read from a setting-anchored one,
  * so it is the disagreeing case that carries the whole assertion.
  *
  * The matching visibility half — an exit is offered only where a press really
@@ -257,5 +260,153 @@ describe('the cancellability the UI gates on', () => {
     rerender({ streaming: false })
     expect(result.current.drainCancellable).toBe(false)
     if (release) act(() => { release!() })
+  })
+})
+
+describe('stop routes on the live request, not on the setting', () => {
+  it('batch capture: ends the recorder even though the setting now says streaming', async () => {
+    const useVoiceInput = await loadHook()
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      // Batch, because a batch recorder can only start while streaming is off.
+      { initialProps: { streaming: false } },
+    )
+    await act(async () => { await result.current.start() })
+    await waitFor(() => expect(result.current.recording).toBe(true))
+
+    // The user turns streaming ON in Settings while this capture is still live.
+    rerender({ streaming: true })
+    act(() => { result.current.stop() })
+
+    // Routed on the setting this press returns at the socket branch and never
+    // reaches the recorder: the microphone stays hot with no control left that
+    // ends it, while the UI shows the press as taken.
+    expect(streamStop).not.toHaveBeenCalled()
+    expect(lastRecorder()?.state).toBe('inactive')
+  })
+
+  it('stream session: ends the socket even though the setting now says batch', async () => {
+    const useVoiceInput = await loadHook()
+    streamState.recording = true
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      { initialProps: { streaming: true } },
+    )
+
+    // Turning streaming off under a live socket closes it from the leak-guard
+    // effect as well, so the press is measured on its own from here.
+    rerender({ streaming: false })
+    streamStop.mockClear()
+    act(() => { result.current.stop() })
+
+    expect(streamStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('nothing in flight: the setting is what is left to read, and stays honoured', async () => {
+    const useVoiceInput = await loadHook()
+    // No capture at all, so there is no transport to anchor to and the setting is
+    // the only honest answer. Pinned so the anchoring cannot over-rotate into
+    // ignoring the setting where it still decides.
+    const { result } = renderHook(() => useVoiceInput(vi.fn(), { streaming: true }))
+
+    act(() => { result.current.stop() })
+
+    expect(streamStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('stream startup: ends the socket session even when the setting flips off mid-startup', async () => {
+    const useVoiceInput = await loadHook()
+    // A startup parked on its first await: no socket and no recorder exist yet, so
+    // the live read sees nothing and only the transport the startup OPENED with can
+    // say where this press goes. Routed on the setting the socket being built is
+    // never told to stop.
+    let release: (() => void) | null = null
+    streamStart.mockImplementationOnce(() => new Promise<void>(r => { release = () => r() }))
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      { initialProps: { streaming: true } },
+    )
+    act(() => { void result.current.start() })
+    expect(streamStart).toHaveBeenCalledTimes(1)
+
+    rerender({ streaming: false })
+    streamStop.mockClear()
+    act(() => { result.current.stop() })
+
+    expect(streamStop).toHaveBeenCalledTimes(1)
+    if (release) act(() => { release!() })
+  })
+})
+
+describe('the recording flag reports the live request, not the setting', () => {
+  it('stays true for a batch capture the setting no longer names', async () => {
+    const useVoiceInput = await loadHook()
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      { initialProps: { streaming: false } },
+    )
+    await act(async () => { await result.current.start() })
+    await waitFor(() => expect(result.current.recording).toBe(true))
+
+    rerender({ streaming: true })
+
+    // Read off the setting this is the idle socket's flag, so the UI reports no
+    // capture while the recorder runs — and every caller gated on it goes quiet.
+    expect(result.current.recording).toBe(true)
+    expect(lastRecorder()?.state).toBe('recording')
+  })
+
+  it('stays true for a socket session the setting no longer names', async () => {
+    const useVoiceInput = await loadHook()
+    streamState.recording = true
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      { initialProps: { streaming: true } },
+    )
+
+    rerender({ streaming: false })
+
+    // Mirror image, and honest for the window before the leak-guard effect has
+    // closed the socket: the session is still capturing, so the flag says so.
+    expect(result.current.recording).toBe(true)
+  })
+
+  it('is false for a draining socket, whose capture is already over', async () => {
+    const useVoiceInput = await loadHook()
+    // Draining is not capture. The transport is still the socket, so the anchoring
+    // must not turn every live transport into a live microphone — the drain
+    // surfaces through `transcribing` instead.
+    streamState.draining = true
+    const { result } = renderHook(() => useVoiceInput(vi.fn(), { streaming: true }))
+
+    expect(result.current.recording).toBe(false)
+    expect(result.current.transcribing).toBe(true)
+  })
+
+  it('is false with nothing in flight at all', async () => {
+    const useVoiceInput = await loadHook()
+    const { result } = renderHook(() => useVoiceInput(vi.fn(), { streaming: true }))
+    expect(result.current.recording).toBe(false)
+  })
+
+  it('toggle ends a batch capture the setting no longer names, rather than opening a second one', async () => {
+    const useVoiceInput = await loadHook()
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) => useVoiceInput(vi.fn(), { streaming }),
+      { initialProps: { streaming: false } },
+    )
+    await act(async () => { await result.current.start() })
+    await waitFor(() => expect(result.current.recording).toBe(true))
+    const live = lastRecorder()
+
+    rerender({ streaming: true })
+    await act(async () => { result.current.toggle(); await Promise.resolve() })
+
+    // `toggle` picks stop over start by reading the flag, which is why the flag and
+    // `stop()` move together: a flag on the setting sends this press to `start()`,
+    // which opens a socket on top of the recorder still capturing.
+    expect(streamStart).not.toHaveBeenCalled()
+    expect(lastRecorder()).toBe(live)
+    expect(live?.state).toBe('inactive')
   })
 })
