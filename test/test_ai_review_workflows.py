@@ -964,11 +964,24 @@ class TestPrReadiness:
         assert '"GPT 5.6 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow
         assert "AI reviews could not run" not in workflow
-        # Stage-2 fork reviewers re-trigger readiness on completion so the
-        # green verdict actually lands.
-        assert "Fork Opus 5 Review" in workflow
-        assert "Fork GPT 5.6 Review" in workflow
-        assert "github.event.workflow_run.event == 'workflow_run'" in workflow
+        # The Stage-2 fork reviewers must NOT be in the trigger allowlist.
+        # Asserting their presence there proves nothing about function: presence
+        # does not say the trigger can resolve a pull request, and it cannot. A
+        # `workflow_run`-triggered lane runs from the default branch, so the
+        # payload it hands readiness names the default branch's tip, and the
+        # resolve step's `pulls?head=<repo>:<default branch>` lookup is empty by
+        # construction. Measured 700/700 runs across all seven fork lanes on the
+        # default branch, and 158 no-op readiness runs on one default-branch SHA.
+        # The green fork verdict lands through the lanes that DO run on the PR
+        # head -- Fast Gate above -- plus the 15-minute sweep, which re-fires by
+        # PR number.
+        assert "      - Fork Opus 5 Review" not in workflow
+        assert "      - Fork GPT 5.6 Review" not in workflow
+        assert "      - Fork Internal Content Scan" not in workflow
+        assert "github.event.workflow_run.event == 'workflow_run'\n" not in workflow
+        # The check-run specs above are what read a fork lane's verdict, and
+        # they are keyed on Fast Gate, which does carry the PR head.
+        assert '|fast-gate.yml"' in workflow
 
     def test_external_check_polling_counts_each_pass_once(self) -> None:
         workflow = _workflow("pr-readiness.yml")
@@ -976,6 +989,56 @@ class TestPrReadiness:
         assert 'success|neutral|skipped) passed+=("$check_name")' not in workflow
         assert 'if [ "${#failed[@]}" -gt 0 ]; then' in workflow
         assert 'if [ "${#pending[@]}" -gt 0 ]; then' in workflow
+
+    def test_no_monitored_lane_is_itself_workflow_run_triggered(self) -> None:
+        # GitHub runs a `workflow_run`-triggered workflow from the default
+        # branch, so the payload its completion hands readiness names the
+        # default branch as head_branch and the default branch's tip as
+        # head_sha, never the pull request's head. The resolve step then asks
+        # which open pull request has `<this repo>:<default branch>` as its head
+        # and gets an empty answer every time, so the run exits SKIP having
+        # published nothing and spent one request from the shared hourly REST
+        # pool. Listing such a lane therefore buys no refresh at all while
+        # dispatching a run per completion, keyed on ONE shared concurrency
+        # group (the default branch's tip) rather than per head update -- which
+        # is how it accumulated across every open pull request at once.
+        #
+        # A lane whose verdict readiness must observe belongs in the check-run
+        # specs (keyed on a workflow that does carry the PR head) or behind the
+        # `pr-readiness-sweep.yml` backstop, which re-fires by PR number.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        # PyYAML resolves a bare `on:` key to the boolean True.
+        monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
+        assert monitored, "readiness must monitor at least one lane"
+
+        triggers: dict[str, object] = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict):
+                continue
+            name = doc.get("name")
+            on = doc.get("on", doc.get(True))
+            if isinstance(name, str):
+                triggers[name] = on
+
+        offenders = sorted(
+            name
+            for name in monitored
+            if isinstance(triggers.get(name), dict) and "workflow_run" in triggers[name]
+        )
+        assert offenders == [], (
+            "these monitored lanes are themselves workflow_run-triggered, so their "
+            f"payload can never resolve to a pull request: {offenders}"
+        )
+
+    def test_the_job_gate_refuses_a_workflow_run_upstream(self) -> None:
+        # Second fence for the same rule, so re-adding such a lane has to clear
+        # both. The allowlist is the primary one.
+        gate = yaml.safe_load(_workflow("pr-readiness.yml"))["jobs"]["readiness"]["if"]
+
+        assert "github.event.workflow_run.event == 'pull_request'" in gate
+        assert "github.event.workflow_run.event == 'dynamic'" in gate
+        assert "github.event.workflow_run.event == 'workflow_run'" not in gate
 
 
 class TestDesignReviewPresentation:
@@ -1474,8 +1537,12 @@ class TestFirstPrinciplesReview:
         workflow = _workflow("pr-readiness.yml")
 
         assert "      - First Principles Review" in workflow
-        assert "      - Fork First Principles Review" in workflow
         assert '"first-principles-review.yml|First Principles Review"' in workflow
+        # The fork path is registered by its check-run spec, keyed on Fast Gate.
+        # It is NOT in the trigger allowlist: a `workflow_run`-triggered lane
+        # runs from the default branch, so its payload names the default
+        # branch's tip and readiness can never resolve it to a pull request.
+        assert "      - Fork First Principles Review" not in workflow
         assert (
             '"checkrun:First Principles Review|First Principles Review'
             '|first-principles-pr-|fast-gate.yml"' in workflow
