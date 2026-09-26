@@ -5718,3 +5718,42 @@ async def test_a_requeue_onto_a_replaced_slot_is_refused_not_reported_as_sent(
         "a requeue onto a detached slot must be refused as target_moved, not "
         f"reported as delivered: {caught.value.code}"
     )
+
+
+def test_the_reap_spares_a_replacement_slots_arm(tmp_path, monkeypatch):
+    """The reap must re-check ownership AFTER the awaited remove, not before it.
+
+    `_slot_still_ours` is answered before `sessions.remove`, and that await is exactly the
+    window in which a same-key recreate lands and arms its OWN project. Reaping on the stale
+    verdict then erases the REPLACEMENT's arm, so its retirement retry registers against the
+    superseded project -- the wrong-cwd corruption this change exists to remove, reintroduced
+    by the reclaim added for the arm-map leak.
+    """
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-race")
+    monkeypatch.setattr(chat_handlers, "_retire_slot_nudge_loop", AsyncMock(return_value=None))
+    reaped: list[str] = []
+    sessions = MagicMock()
+    sessions.supersede_arm_for_new_slot = lambda key: reaped.append(key)
+
+    async def _recreate_during_remove(_key):
+        # A same-key recreate landing inside the await, the way POST /api/chat does: the
+        # replacement is a DIFFERENT slot object registered under the same name.
+        state._slots.pop("chat-race", None)
+        state.get_or_create_slot("chat-race")
+        # The MINT legitimately supersedes the previous occupant's arm through this same
+        # verb, so only what follows can be the close's own reap.
+        reaped.clear()
+        return None
+
+    sessions.remove = AsyncMock(side_effect=_recreate_during_remove)
+    state.sessions = sessions
+
+    asyncio.run(chat_handlers.close_slot(state, slot, slot.key))
+
+    assert reaped == [], (
+        "the close reaped an arm after a replacement slot took the key, so the "
+        f"replacement's own armed project is gone and its retry binds the old one; {reaped}"
+    )

@@ -28,8 +28,9 @@ That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
 IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
-Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+Research ownership contracts, the immutable ``AUTONUDGE_STOP_REASON`` constant
+and ``dashboard_state`` -- a MODULE, so its attribute lookup still happens at
+call time. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
 before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
 security, chat_handlers, chat_persistence, chat_tags, chat_tag_grants) are
@@ -58,6 +59,7 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_judge import screen_phrase
+from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
@@ -1060,7 +1062,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
-        slot.project = ""
+        dashboard_state.record_project(slot, "")
         if old_project:
             slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
@@ -1102,7 +1104,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
     if overlap is not None:
         return f"Error: {overlap}"
-    slot.project = rp
+    dashboard_state.record_project(slot, rp)
     if rp != old_project:
         slot._pending_reset_history_key = effective_session_key(slot)
         try:

@@ -1007,7 +1007,7 @@ async def test_project_shadow_checks_provider_default_cwd(tmp_path, monkeypatch,
     monkeypatch.setattr(
         crew_runner, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex="shadowfixture"))
     )
-    expected = loader._session_work_dir("auto-improvement-shadowfixture")
+    expected = loader.session_default_cwd("auto-improvement-shadowfixture")
     if shadow:
         agents = expected / ".kiro" / "agents"
         agents.mkdir(parents=True)

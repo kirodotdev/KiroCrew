@@ -38,6 +38,7 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    bind_linked_session_key,
     effective_session_key,
     redact_display_content,
     session_key_for,
@@ -1687,6 +1688,8 @@ def _rehydrate_slot_from_history(
             slot.agent_kind = meta["agent_kind"]
         if meta.get("project"):
             slot.project = meta["project"]
+        if meta.get("project_cleared") is True:
+            slot.project_cleared = True
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
         # history JSONL is a file on disk, so a truncated write or a hand-edit can
         # leave the ``executor="remote"`` marker without a valid instance_id /
@@ -1811,7 +1814,7 @@ def _rehydrate_slot_from_history(
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
             # channel thread would stop seeing its replies.
-            slot.linked_session_key = str(meta["linked_session_key"])
+            bind_linked_session_key(slot, str(meta["linked_session_key"]))
         # Re-seed the live compaction threshold. The SessionManager's override
         # map is process-local, so a rehydrated slot must push its persisted
         # value back or the session silently compacts at the global threshold.
@@ -2345,6 +2348,8 @@ def _apply_recent_session(
         slot.agent_kind = meta["agent_kind"]
     if meta.get("project"):
         slot.project = meta["project"]
+    if meta.get("project_cleared") is True:
+        slot.project_cleared = True
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
         slot.mode = _mode
     if meta.get("created_by"):
@@ -2430,7 +2435,7 @@ def _apply_recent_session(
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
     if meta.get("linked_session_key"):
-        slot.linked_session_key = str(meta["linked_session_key"])
+        bind_linked_session_key(slot, str(meta["linked_session_key"]))
     elif is_channel_session_key(key) and state.sessions:
         # First time this thread is surfaced: bind it to the session the
         # channel itself runs. Resolved from the session map, never derived
@@ -2438,7 +2443,7 @@ def _apply_recent_session(
         # a guess could point the tab at a session the channel never reads.
         real_key = state.sessions.channel_key_for_stem(key)
         if real_key:
-            slot.linked_session_key = real_key
+            bind_linked_session_key(slot, real_key)
     # Re-seed the live compaction threshold (see _rehydrate_slot_from_history).
     if slot.autocompact_pct is not None and state.sessions:
         state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
@@ -3901,10 +3906,10 @@ def _save_slot_to_history(
                 # Clearable like memory_store: a name-only pick after a template
                 # pick must not keep advertising the template namespace.
                 fields["agent_kind"] = slot.agent_kind
-                # Written even when EMPTY: the merge is an upsert that cannot delete a key, so
-                # omitting a cleared project leaves the previous directory on disk to be read
-                # back as though the clear never happened.
+                # Both written even when EMPTY/False: the merge is an upsert that cannot delete
+                # a key, so either one retained would outlive the change that replaced it.
                 fields["project"] = slot.project
+                fields["project_cleared"] = bool(getattr(slot, "project_cleared", False))
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
@@ -4295,6 +4300,9 @@ def _save_slot_to_history(
                 meta_line["agent_kind"] = slot.agent_kind
             if slot.project:
                 meta_line["project"] = slot.project
+            # Unconditional, matching the merge above: a reader that reconciles this line against
+            # a retained key must see a False rather than an absence it can interpret either way.
+            meta_line["project_cleared"] = bool(getattr(slot, "project_cleared", False))
             # Remote-execution binding. All three are written together or not at
             # all: a half-restored binding (executor="remote" with no peer slot)
             # is the fail-closed refusal case, so persisting the marker without
