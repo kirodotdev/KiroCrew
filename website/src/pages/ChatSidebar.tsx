@@ -1892,7 +1892,7 @@ const SessionRow = memo(function SessionRow({
   // memo() bails out of the provider-level repaint, so the row subscribes to
   // catalog loads directly (same contract as the ChatSidebar shell) — its
   // i18nT strings must re-translate even when no prop moves.
-  useLanguageGeneration()
+  const langGen = useLanguageGeneration()
   const dispatch = useAppDispatch()
   // The peer's display name for the runs-elsewhere chip. Read from the SHARED
   // ['instances'] cache and enabled only for a row that is actually bound, so a
@@ -2572,12 +2572,55 @@ const SessionRow = memo(function SessionRow({
     // straight from the store keyed on slotKey (Tags opens the shared popover via
     // the TagPopover context). This row only supplies the one genuinely
     // surface-specific bit — Rename drives this component's inline row-edit state.
-    const rowMenuProps = {
-      slotKey: s.key,
+    //
+    // The menus are built once per change of what they read, not per render. A
+    // row re-renders every time its paint position moves (`orderStamp`, which
+    // drives the layout spring), so a pin or a new chat re-renders the ~45 rows
+    // below it. Building the ⋯ dropdown and the context-menu content on each of
+    // those renders costs ~200 Radix fibers per row, about 90% of a pin's
+    // render work, and none of it depends on position. An unchanged element is
+    // skipped by React, and each menu still re-renders from its own store and
+    // context subscriptions.
+    const rowKey = s.key
+    const rowTitle = s.title
+    const rowMenuProps = useMemo(() => ({
+      slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', true),
-      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
-    }
+      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
+    }), [rowKey, mode, onRenameStart, scope, rowTitle, onOpenSlotInNewTab])
+    const rowActions = useMemo(() => (void langGen, !renamingHere && !peerId ? (isMobile ? (
+      <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    ) : (
+      <IconButtonGroup reveal className="absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Copy size={12} /></IconButton>
+        <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
+      </IconButtonGroup>
+    )) : null
+    // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
+    ), [renamingHere, peerId, isMobile, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, rowKey, langGen])
+    const rowContextMenuContent = useMemo(() => (void langGen, !peerId ? (
+      <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+        <SessionActionsMenu variant="context" {...rowMenuProps} />
+      </ContextMenuContent>
+    ) : null), [peerId, onMenuCloseAutoFocus, rowMenuProps, langGen])
     return (
       <DndDroppable
         id={`pinned-session:${scope}:${rowIdentity}`}
@@ -3076,36 +3119,10 @@ const SessionRow = memo(function SessionRow({
            *  Omitting beats disabling — the same call `historyRow` makes for its
            *  delete button. A remote-EXECUTED local slot keeps the whole group:
            *  its slot is local, so every one of those operations still applies. */}
-          {!renamingHere && !peerId && (isMobile ? (
-            <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className="text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                  <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : (
-            <IconButtonGroup reveal className="absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                  <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(s.key) }}><Copy size={12} /></IconButton>
-              <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(s.key) }}><X size={12} /></IconButton>
-            </IconButtonGroup>
-          ))}
+          {rowActions}
         </div>
           </ContextMenuTrigger>
-          {!peerId && <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="context" {...rowMenuProps} />
-          </ContextMenuContent>}
+          {rowContextMenuContent}
         </ContextMenu>
           )}
         </DndDraggable>
