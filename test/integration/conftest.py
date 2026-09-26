@@ -441,7 +441,15 @@ def _path_matches(canonical: str, concrete: str) -> bool:
     return re.fullmatch(pattern, concrete) is not None
 
 
-def _record_registered_routes(app: Any) -> None:
+def registered_routes(app: Any) -> frozenset[tuple[str, str]]:
+    """Every ``(METHOD, canonical path)`` the live router serves.
+
+    The same reading the coverage metric is measured against, so a test that
+    sweeps "every route of a kind" and the ratchet that counts it agree on what
+    a route is: static prefix mounts carry no path and are not routes; HEAD and
+    OPTIONS are aiohttp's own and not contracts of this layer.
+    """
+    routes: set[tuple[str, str]] = set()
     for resource in app.router.resources():
         canonical = _canonical_path(resource)
         if not canonical:
@@ -449,7 +457,12 @@ def _record_registered_routes(app: Any) -> None:
         for route in resource:
             if route.method in ("HEAD", "OPTIONS"):
                 continue
-            _REGISTERED_ROUTES.add((route.method, canonical))
+            routes.add((route.method, canonical))
+    return frozenset(routes)
+
+
+def _record_registered_routes(app: Any) -> None:
+    _REGISTERED_ROUTES.update(registered_routes(app))
 
 
 @dataclass
@@ -483,6 +496,10 @@ class IntegrationGateway:
         """The real ``web.Application`` the orchestrator built."""
         runner = self.orchestrator._dashboard_runner
         return runner.app if runner is not None else None
+
+    def registered_routes(self) -> frozenset[tuple[str, str]]:
+        """``(METHOD, canonical path)`` for every route this boot serves."""
+        return registered_routes(self.app)
 
     def _note_hit(self, method: str, path: str) -> None:
         # "Hit" means REQUESTED, whatever the status came back: the metric
