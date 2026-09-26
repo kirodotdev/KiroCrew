@@ -41,7 +41,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import hooks, model_registry
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps import teardown
+from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -72,6 +73,10 @@ from sage_lib import (  # noqa: E402,E501
 )
 
 # In-memory run registry, most-recent first. Bounded so it can't grow unbounded.
+# The manifest name, which is also the key both lifecycle registries are keyed on
+# (the disable-hook registry and the per-app lifecycle lock). One spelling, so an
+# admission check and a teardown hook can never end up naming different apps.
+_APP_NAME = "code-review-sage"
 # Holds lightweight run descriptors the page polls; on-disk result records carry
 # per-change detail.
 _RUNS: list[dict[str, Any]] = []
@@ -242,6 +247,59 @@ def _is_live(run: dict) -> bool:
     One predicate so the two callers cannot drift apart again.
     """
     return str(run.get("status") or "") == "running" or bool(run.get("posting"))
+
+
+def _admission_closed() -> web.Response:
+    """The refusal both review entry points return when :func:`_admit` says no.
+
+    403 rather than 409: this is withdrawn authority, the same answer
+    ``_require_enabled`` gives the chat surface, and the code is deliberately
+    the one the frontend already knows.
+    """
+    return web.json_response(
+        {"code": "app_disabled", "error": "code-review-sage is disabled"},
+        status=403,
+    )
+
+
+async def _admit(run: dict) -> bool:
+    """The app's ONE admission boundary for a new review. True when registered.
+
+    ``_CANCELLED`` cannot speak for a run that does not exist yet.
+    ``_retire_pool_on_disable`` marks the runs that are live when it fires; a
+    review submitted after that scan was never in ``_RUNS`` to be marked, so it
+    carries an uncancelled id straight past the ``_RUN_LOCK`` recheck and into
+    ``get_pool()`` — review authority rebuilt after the operator withdrew it.
+    Closing that means refusing the request, not cancelling it afterwards.
+
+    The enabled read and the ``_RUNS`` insert are taken under ONE hold of
+    ``app_lifecycle_lock(_APP_NAME)`` — the same lock ``handle_disable_app``
+    holds across BOTH ``teardown_app_runtime`` (which fires the disable hook)
+    and ``disable_app`` (which writes the ``enabled`` flag). Serializing on it is
+    what makes the admission decision and the disable transition mutually
+    exclusive, in either order: a disable that gets there first has finished and
+    persisted ``enabled=False`` before this read happens, so the request is
+    refused; a review that gets there first is in ``_RUNS`` before the hook's
+    scan runs, so it is marked cancelled like any other live run.
+
+    Reading the flag first and then consulting a separate signal cannot close
+    this, however that signal is written. The read is off-loop, so a disable can
+    acquire the lock, tear the app down, write ``enabled=False`` and release,
+    entirely inside that one ``to_thread`` round-trip — after which a sample of
+    the lock finds it free and admits a run the operator has already revoked.
+    The interleaving has to be removed, not detected.
+
+    The blocking read stays in ``to_thread`` INSIDE the lock, which is the shape
+    ``notifications_push`` already uses for the same enablement-then-mutate pair.
+    Lock order is ``app_lifecycle_lock`` → ``_LOCK``, matching the outermost-lock
+    convention in ``apps/routes.py``; nothing takes them the other way round, and
+    the disable hook touches ``_RUNS`` without ``_LOCK`` at all.
+    """
+    async with app_lifecycle_lock(_APP_NAME):
+        if not await asyncio.to_thread(is_app_enabled, _APP_NAME):
+            return False
+        await _record(run)
+    return True
 
 
 async def _record(run: dict) -> None:
@@ -442,6 +500,31 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
             # Inner guard, still worth holding: two runs reviewing the same PR, and
             # re-reviewing a head a just-finished run already delivered.
             changes = await asyncio.to_thread(_claim_changes_under_lock, run, changes)
+            # Authority is re-checked HERE, after every suspension on the way to
+            # the pool seam — the wait on `_RUN_LOCK` above AND the off-loop
+            # claim read — because each is a window where it can be withdrawn.
+            # A run resuming from either would call `get_pool()` below, which
+            # rebuilds the singleton `_retire_pool_on_disable` had just torn
+            # down -- standing a fresh runtime back up, and posting a review,
+            # after permission was withdrawn. Between this check and the pool
+            # build there is no await, so a disable is either visible here or
+            # has not happened yet. Claims taken by the line above are released
+            # by this function's `finally` like every other terminal path.
+            #
+            # `_CANCELLED` is the check and not `is_app_enabled`: the disable hook
+            # runs BEFORE `disable_app` writes the `enabled` flag (apps/teardown.py
+            # says so, and says a hook must not wait on that flag), and before the
+            # app's own third-party `onDisable` script, which can take real time.
+            # So for the whole window that matters the flag still reads enabled,
+            # while `_CANCELLED` is already correct.
+            if run_id in _CANCELLED:
+                run["summary"] = {
+                    "ok": True,
+                    "changes": 0,
+                    "note": "cancelled before this run started",
+                }
+                run["status"] = "cancelled"
+                return
             if not changes:
                 run["summary"] = {"ok": True, "changes": 0,
                                   "note": "all PRs already reviewed or in flight "
@@ -702,7 +785,8 @@ async def _handle_review(request: web.Request) -> web.Response:
         "started_at": _now(),
         "progress": {},
     }
-    await _record(run)
+    if not await _admit(run):
+        return _admission_closed()
 
     task = asyncio.create_task(_run_review_bg(run, changes))
     _TASKS.add(task)
@@ -847,6 +931,15 @@ async def _handle_review_repo(request: web.Request) -> web.Response:
     force = body.get("force") is True
     if not repo:
         return web.json_response({"code": "repo_required", "error": "missing 'repo' (a github repo url)"}, status=400)
+    # Deny before touching the provider. `_admit` below atomically gates run
+    # REGISTRATION, but the PR listing is provider contact on the app's
+    # authority, and an already-reviewed repository answers 200 `noop` before
+    # any run exists for `_admit` to refuse — so a disabled app must refuse
+    # HERE, ahead of `_list_repo_prs`. This read is deny-by-default and
+    # advisory: a disable landing after it is caught by `_admit`, which stays
+    # the atomic gate for the run itself.
+    if not await asyncio.to_thread(is_app_enabled, _APP_NAME):
+        return _admission_closed()
     try:
         slug, prs = await _list_repo_prs(repo)
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
@@ -899,7 +992,8 @@ async def _handle_review_repo(request: web.Request) -> web.Response:
         "started_at": _now(),
         "progress": {},
     }
-    await _record(run)
+    if not await _admit(run):
+        return _admission_closed()
     task = asyncio.create_task(_run_review_bg(run, changes))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
@@ -1058,6 +1152,20 @@ async def _post_comments_bg(run_id: str, run: dict,
     comment text.
     """
     try:
+        if run_id in _CANCELLED:
+            # Authority is re-checked HERE because this is the last stop before
+            # `get_pool()` rebuilds the singleton the disable hook tears down.
+            # An admitted post is `posting`, which makes the run `_is_live`, so
+            # a disable landing after admission marks it — and the hook's marks
+            # land with no await in the way, so this read decides before the
+            # pool seam, never after. The mark is consumed: it spoke for this
+            # posting cycle, and a post after a later re-enable starts clean.
+            _CANCELLED.discard(run_id)
+            async with _LOCK:
+                run["posting"] = False
+                run["post_error"] = "cancelled: the app was disabled before posting started"
+                await _save_runs()
+            return
         loop = asyncio.get_running_loop()
         pool = review_pool.get_pool()
         dispatch = review_pool.make_sync_dispatch(loop, pool)
@@ -1203,72 +1311,102 @@ async def _handle_run_post(request: web.Request) -> web.Response:
             parsed[cid] = ([str(k) for k in gk if isinstance(k, (str, int))]
                            if isinstance(gk, list) else None)
         groups = parsed or None
-    async with _LOCK:
-        run = _find_run(run_id)
-        if run is None:
-            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
-        if run.get("status") == "running":
-            return web.json_response(
-                {"code": "run_still_running", "error": "this review is still running; wait for it to finish"},
-                status=409)
-        if run.get("posting"):
-            return web.json_response(
-                {"code": "already_posting", "error": "already posting this review"}, status=409)
-        # A selection is always allowed through: "already posted" is now a
-        # per-comment fact, and post_recorded drops the keys that already landed.
-        if run.get("posted_at") and keys is None and not force:
-            return web.json_response({
-                "code": "already_posted", "error": "this review was already posted",
-                "posted_at": run.get("posted_at"),
-                "posted_comments": run.get("posted_comments"),
-            }, status=409)
-        if groups:
-            counts = [
-                await asyncio.to_thread(
-                    _pending_comment_count, run_id, run, gk, cid)
-                for cid, gk in groups.items()
-            ]
-            pending = sum(counts)
-        else:
-            pending = await asyncio.to_thread(
-                _pending_comment_count, run_id, run, keys, change_id)
-        if pending == 0:
-            return web.json_response({
-                "code": "nothing_to_post",
-                "error": "nothing to post — those comments are already on the "
-                         "pull request, this review recorded no findings, or its "
-                         "records were cleared when the report was archived",
-            }, status=409)
-        # Posting round-trips the record through the SHARED staging dir
-        # (publish_to_shared -> poster turn -> adopt_from_shared). The run is
-        # terminal, so its review-time claims are long released — a forced
-        # re-review of the same change could be staging there right now, and the
-        # two would trade records. Hold the same claim posting needs, refusing
-        # rather than interleaving; released in `_post_comments_bg`'s finally.
-        posting_cids = [
-            cid for cid in (run.get("change_ids") or [])
-            if cid in groups
-        ] if groups else [
-            cid for cid in (run.get("change_ids") or [])
-            if not change_id or cid == change_id
-        ]
-        async with _RUN_LOCK:
-            blocked = [
-                cid for cid in posting_cids
-                if (_INFLIGHT.get(_stage_key(cid)) or run_id) != run_id
-            ]
-            if blocked:
-                return web.json_response(
-                    {"code": "change_review_in_flight",
-                     "error": "a review of this change is in flight; posting now "
-                              "would collide with it — try again when it "
-                              "finishes"},
-                    status=409)
-            for cid in posting_cids:
-                _INFLIGHT[_stage_key(cid)] = run_id
-        run["posting"] = True
-        run["post_error"] = None
-        await _save_runs()
+    # The claim wait must not happen while the lifecycle lock is held: an
+    # unrelated review serializes its WHOLE run under `_RUN_LOCK`, and a /post
+    # waiting behind it with the lifecycle lock in hand would queue the
+    # operator's disable behind that entire review — the reviewer keeping its
+    # authority for exactly the span the disable exists to end. So `_RUN_LOCK`
+    # is taken FIRST, with nothing else held, and the lifecycle hold inside is
+    # brief: the enabled read, the run-state checks, the claim write and the
+    # `posting` write. Lock order here is `_RUN_LOCK` → `app_lifecycle_lock` →
+    # `_LOCK`; no other path takes any pair of these locks the other way
+    # round, so the ordering stays acyclic.
+    async with _RUN_LOCK:
+        async with app_lifecycle_lock(_APP_NAME):
+            # Posting writes to the pull request on the app's authority, and it
+            # rebuilds the review pool to do it, so it is admitted exactly the way
+            # a new review is: the enabled read and the `posting` write are taken
+            # under ONE hold of the same lifecycle lock `handle_disable_app` holds
+            # across the teardown and the `enabled` write (see `_admit` for why a
+            # flag read outside that hold cannot close the interleaving). A
+            # finished run is not `_is_live`, so the disable hook's cancellation
+            # scan never marks it — this read is the only gate a disabled app's
+            # /post meets.
+            if not await asyncio.to_thread(is_app_enabled, _APP_NAME):
+                return _admission_closed()
+            async with _LOCK:
+                run = _find_run(run_id)
+                if run is None:
+                    return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+                if run.get("status") == "running":
+                    return web.json_response(
+                        {"code": "run_still_running", "error": "this review is still running; wait for it to finish"},
+                        status=409)
+                if run.get("posting"):
+                    return web.json_response(
+                        {"code": "already_posting", "error": "already posting this review"}, status=409)
+                # The run is terminal and not posting here, and this section is
+                # mutually exclusive with any disable, so a leftover mark for it —
+                # a cancelled posting cycle that a disable interrupted — is stale
+                # by construction. Consume it, or it would cancel THIS admission's
+                # posting cycle at the recheck in `_post_comments_bg`.
+                _CANCELLED.discard(run_id)
+                # A selection is always allowed through: "already posted" is now a
+                # per-comment fact, and post_recorded drops the keys that already landed.
+                if run.get("posted_at") and keys is None and not force:
+                    return web.json_response({
+                        "code": "already_posted", "error": "this review was already posted",
+                        "posted_at": run.get("posted_at"),
+                        "posted_comments": run.get("posted_comments"),
+                    }, status=409)
+                if groups:
+                    counts = [
+                        await asyncio.to_thread(
+                            _pending_comment_count, run_id, run, gk, cid)
+                        for cid, gk in groups.items()
+                    ]
+                    pending = sum(counts)
+                else:
+                    pending = await asyncio.to_thread(
+                        _pending_comment_count, run_id, run, keys, change_id)
+                if pending == 0:
+                    return web.json_response({
+                        "code": "nothing_to_post",
+                        "error": "nothing to post — those comments are already on the "
+                                 "pull request, this review recorded no findings, or its "
+                                 "records were cleared when the report was archived",
+                    }, status=409)
+                # Posting round-trips the record through the SHARED staging dir
+                # (publish_to_shared -> poster turn -> adopt_from_shared). The run is
+                # terminal, so its review-time claims are long released — a forced
+                # re-review of the same change could be staging there right now, and the
+                # two would trade records. Hold the same claim posting needs, refusing
+                # rather than interleaving; released in `_post_comments_bg`'s finally.
+                # `_RUN_LOCK` is already held by this admission, which is what makes
+                # the read-and-claim below atomic against a starting review.
+                posting_cids = [
+                    cid for cid in (run.get("change_ids") or [])
+                    if cid in groups
+                ] if groups else [
+                    cid for cid in (run.get("change_ids") or [])
+                    if not change_id or cid == change_id
+                ]
+                blocked = [
+                    cid for cid in posting_cids
+                    if (_INFLIGHT.get(_stage_key(cid)) or run_id) != run_id
+                ]
+                if blocked:
+                    return web.json_response(
+                        {"code": "change_review_in_flight",
+                         "error": "a review of this change is in flight; posting now "
+                                  "would collide with it — try again when it "
+                                  "finishes"},
+                        status=409)
+                for cid in posting_cids:
+                    _INFLIGHT[_stage_key(cid)] = run_id
+                run["posting"] = True
+                run["post_error"] = None
+                await _save_runs()
 
     # Keep a strong ref like the review path does, so the poster cannot be
     # garbage-collected mid-flight and leave `posting` set with nothing to clear
@@ -1905,6 +2043,14 @@ _MERGE_MAX_BYTES = 256 * 1024
 
 _CONSOLIDATING: set[str] = set()
 
+# Namespaces whose in-flight merge a disable has cancelled. Plays the role
+# `_CANCELLED` plays for runs: a consolidation has no run id for the disable
+# hook's `_RUNS` scan to mark, so the hook marks the namespace claims in
+# `_CONSOLIDATING` here instead, and `_consolidate_bg` honours the mark before
+# `get_pool()`. Marks are consumed — at that recheck, or as stale at the next
+# enabled admission — so the set never outlives the cycles it speaks for.
+_CANCELLED_NS: set[str] = set()
+
 # Last outcome per namespace, so a merge that finished while the page was closed
 # still reports itself instead of looking like it never ran.
 _CONSOLIDATE_STATE: dict[str, dict] = {}
@@ -1945,6 +2091,19 @@ async def _consolidate_bg(ns: str) -> None:
             Path(out_path).unlink()
         except OSError:
             pass
+
+        if ns in _CANCELLED_NS:
+            # Same recheck the review and post workers make, at the same place:
+            # the last stop before `get_pool()` rebuilds the singleton the
+            # disable hook tears down. The hook's marks land with no await in
+            # the way, so a disable that beats this task's first step is always
+            # visible here. The mark is consumed — it spoke for this merge.
+            _CANCELLED_NS.discard(ns)
+            _CONSOLIDATE_STATE[ns] = {
+                "running": False,
+                "error": "cancelled: the app was disabled before the merge started",
+            }
+            return
 
         loop = asyncio.get_running_loop()
         pool = review_pool.get_pool()
@@ -2018,6 +2177,24 @@ async def _consolidate_bg(ns: str) -> None:
             }
             return
 
+        if ns in _CANCELLED_NS:
+            # Re-read on the near side of the APPLY, not just before the pool:
+            # the worker turn above is minutes of off-loop time a disable can
+            # land inside, and the apply is the persisted-state mutation — it
+            # rewrites the ruleset and clears the staged candidates, the only
+            # copy of the pending learnings. Refusing here leaves both intact
+            # for a later re-enable; the mark is consumed, as at every other
+            # seam. A disable landing after this read races only the local
+            # deterministic file op below, which owns its own guards.
+            _CANCELLED_NS.discard(ns)
+            _CONSOLIDATE_STATE[ns] = {
+                "running": False,
+                "error": "cancelled: the app was disabled while the merge was "
+                         "in flight; the ruleset and the staged candidates are "
+                         "unchanged",
+            }
+            return
+
         # No existence re-check here on purpose. Every learning writer mkdirs its
         # parents, so a late apply WOULD resurrect a deleted namespace -- but the
         # `_CONSOLIDATING` claim already brackets this worker's entire lifetime: the
@@ -2072,16 +2249,29 @@ async def _handle_consolidate(request: web.Request) -> web.Response:
     # output. The check-and-add below has no await between its two halves, so on
     # the single event loop it is atomic; the claim is given back on every early
     # return.
-    async with _NS_OPS_LOCK:
-        if ns in _CONSOLIDATING:
-            return web.json_response(
-                {"code": "consolidation_in_progress",
-                 "error": "a consolidation is already running for this namespace"},
-                status=409)
-        # Taken under the lock so an in-flight DELETE cannot land between this
-        # check and the claim; the delete handler holds the same lock across its
-        # whole check + prune + rmtree.
-        _CONSOLIDATING.add(ns)
+    async with app_lifecycle_lock(_APP_NAME):
+        # The merge runs a worker turn on the same pool reviews use, so it is
+        # admitted the way a review or a post is: the enabled read and the
+        # claim that makes this work visible to the disable hook's scan are
+        # taken under ONE hold of the lifecycle lock (see `_admit` for why a
+        # flag read outside that hold cannot close the interleaving).
+        if not await asyncio.to_thread(is_app_enabled, _APP_NAME):
+            return _admission_closed()
+        async with _NS_OPS_LOCK:
+            if ns in _CONSOLIDATING:
+                return web.json_response(
+                    {"code": "consolidation_in_progress",
+                     "error": "a consolidation is already running for this namespace"},
+                    status=409)
+            # Taken under the lock so an in-flight DELETE cannot land between this
+            # check and the claim; the delete handler holds the same lock across its
+            # whole check + prune + rmtree.
+            _CONSOLIDATING.add(ns)
+        # This section is mutually exclusive with any disable, so a leftover
+        # mark for the namespace — a merge a disable interrupted — is stale by
+        # construction. Consume it, or it would cancel THIS admission's merge
+        # at the recheck in `_consolidate_bg`.
+        _CANCELLED_NS.discard(ns)
     try:
         staged = await asyncio.to_thread(learning.candidate_count, None, ns)
     except Exception:
@@ -2494,11 +2684,55 @@ def register_routes(app: web.Application) -> None:
         except Exception:  # pragma: no cover - defensive
             logger.warning("failed to shut down review pool", exc_info=True)
 
+    async def _retire_pool_on_disable(_app: str) -> None:
+        """Retire the same workers when the OPERATOR switches the app off.
+
+        ``on_cleanup`` fires at gateway shutdown and nowhere else, so a disable
+        leaves the pool's worker sessions alive: they keep an agent runtime up and
+        keep running review turns the operator has already withdrawn permission
+        for. :func:`~kiro_crew.apps.teardown.notify_app_disabled` fires inside the
+        disable request, and before the ``enabled`` flag is written, so the pool is
+        retired at the click rather than at whatever the next sweep would be.
+
+        ``shutdown_pool`` is idempotent (a no-op when no pool has started) and
+        drops the singleton, so a later re-enable builds a fresh one.
+        """
+        # Mark first, tear down second, and mark SYNCHRONOUSLY: there is no
+        # await between here and the marks landing, so a run waiting on
+        # `_RUN_LOCK` cannot slip through in between. Retiring the pool alone
+        # is not enough -- `get_pool()` rebuilds it on the next call, so a
+        # queued run would simply create a new one and carry on.
+        #
+        # `_is_live` is the existing predicate for "this run still owns work",
+        # and it covers the posting phase too, which reports a terminal status
+        # while still writing to the pull request.
+        for _run in _RUNS:
+            if _is_live(_run):
+                _CANCELLED.add(str(_run.get("run_id") or ""))
+        # A consolidation is live work on the same pool but has no run in
+        # `_RUNS`; its claim in `_CONSOLIDATING` is the registration this scan
+        # can see, and `_CANCELLED_NS` is its cancellation channel.
+        for _ns in _CONSOLIDATING:
+            _CANCELLED_NS.add(_ns)
+        try:
+            await review_pool.shutdown_pool()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("failed to retire review pool on disable", exc_info=True)
+
     # register_app_routes runs before runner.setup() freezes the signal lists,
     # so this append is safe; guarded anyway so it can never break startup.
     try:
         app.on_cleanup.append(_shutdown_pool)
     except Exception:  # pragma: no cover - defensive
         logger.warning("could not register review-pool cleanup hook", exc_info=True)
+
+    # Same teardown, the other trigger. `register_app_disable_hook` is part of
+    # the teardown module's unconditional surface, so it is called directly;
+    # the guard matches the cleanup-hook registration above, keeping startup
+    # alive if either registration raises.
+    try:
+        teardown.register_app_disable_hook(_APP_NAME, _retire_pool_on_disable)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("could not register the app-disable hook", exc_info=True)
 
     logger.info("code-review-sage backend routes registered (deterministic review kickoff)")

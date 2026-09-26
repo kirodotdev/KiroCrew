@@ -80,8 +80,15 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         os.environ["KIROCREW_HOME"] = self.tmp
         self.root = Path(self.tmp) / "app"
         store.ensure_layout(self.root)
+        # Posting is gated on the app being enabled, the same way starting a
+        # review is. These cases are about what an ENABLED app posts, so they
+        # state that precondition rather than depending on a real
+        # installed.json -- mirroring the handler class in test_backend_routes.
+        self._old_enabled = routes.is_app_enabled
+        routes.is_app_enabled = lambda name: True
 
     def tearDown(self):
+        routes.is_app_enabled = self._old_enabled
         if self._old is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
