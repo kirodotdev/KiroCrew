@@ -4293,15 +4293,44 @@ class TestALostRunWriteDoesNotReUploadForever:
         assert not backup._run_is_newer({**earlier, "at": later["at"]}, later)
 
     def test_run_identity_concurrent_failure_then_recovery(self, monkeypatch):
+        """Two runs in flight, the first one's state write lost, and the second
+        write carries it.
+
+        The last assertion reads :func:`_merge_pending`'s recovery, and that can only
+        carry a run the in-memory hold ALREADY holds. Registration happens in
+        ``_record_run_locked``'s ``except OSError``, which is OUTSIDE the sidecar
+        lock: :func:`_locked_state_update` releases it the moment ``write_state``
+        raises, and the handler runs after. So a contender can take the lock and
+        publish in the window before the hold exists, and then only its own key
+        reaches the document.
+
+        ``held`` is the handshake that positions the second write after that
+        registration, which is the ordering this test's final assertion depends on.
+        Gating instead on the second thread's own start states only that the thread
+        is running, which leaves the ordering to the machine: idle it lands one way,
+        on a loaded parallel shard the other. The window itself is
+        :meth:`test_a_contender_that_wins_the_hold_window_still_loses_nothing`'s
+        subject; here it is excluded.
+
+        The two runs are still genuinely concurrent -- the contender is submitted
+        while the failed writer is parked, and both take their sequence from
+        ``_run_lock`` -- but nothing here asserts anything about the two contending
+        for the file lock, which is why gating the second one costs no coverage. That
+        contention is
+        :meth:`TestSessionsArchiveLayerBGate.test_a_long_holder_does_not_refuse_a_waiting_contender`'s
+        subject, and single-threaded recovery ordering is
+        :meth:`test_a_later_successful_write_takes_over_from_memory`'s.
+        """
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
 
-        entered, release, contender = Event(), Event(), Event()
+        entered, release, held = Event(), Event(), Event()
         now = dt.datetime(2026, 9, 19, tzinfo=dt.timezone.utc)
         clock = mock.Mock(wraps=dt.datetime)
         clock.now.return_value = now
         monkeypatch.setattr(backup, "dt", mock.Mock(datetime=clock, timezone=dt.timezone))
         real_write = backup.write_state
+        real_remember = backup._remember_unpersisted
 
         def writer(state):
             if not entered.is_set():
@@ -4310,11 +4339,19 @@ class TestALostRunWriteDoesNotReUploadForever:
                 raise OSError(errno.EIO, "injected")
             real_write(state)
 
+        def remember(account, kind, record):
+            # Delegates first, so the event states the hold EXISTS rather than that
+            # the handler is entered -- the contender's `_merge_pending` reads the
+            # map, not the call.
+            real_remember(account, kind, record)
+            held.set()
+
         def second_run():
-            contender.set()
+            assert held.wait(10), "the failed run was never held in memory"
             return backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
 
         monkeypatch.setattr(backup, "write_state", writer)
+        monkeypatch.setattr(backup, "_remember_unpersisted", remember)
         with ThreadPoolExecutor(max_workers=2) as pool:
             first_future = pool.submit(
                 backup._record_run, ACCOUNT, backup.KIND_SNAPSHOT, "first.tar.gz", 1, "a"
@@ -4322,7 +4359,6 @@ class TestALostRunWriteDoesNotReUploadForever:
             try:
                 assert entered.wait(10)
                 second_future = pool.submit(second_run)
-                assert contender.wait(10)
             finally:
                 release.set()
             first = first_future.result(timeout=10)
@@ -4334,6 +4370,109 @@ class TestALostRunWriteDoesNotReUploadForever:
             "first.tar.gz": "a",
             "second.tar.gz": "b",
         }
+
+    def test_a_contender_that_wins_the_hold_window_still_loses_nothing(self, monkeypatch):
+        """The window the sibling test excludes, asserted instead of sampled.
+
+        Registration of a lost run is outside the sidecar lock, so a contender can
+        publish between the failed write and the hold that recovers it. Nothing in
+        the module orders those two, and nothing has to: the archive is in the
+        bucket, the run reaches the hold either way, and recovery is promised
+        against the NEXT successful state update rather than a simultaneous one.
+
+        Forcing the contender to win makes that window deterministic rather than a
+        property of how loaded the machine is. What must hold is that the run is
+        never LOST -- ``last_runs`` and ``uploaded_keys`` read it through the
+        overlay and the next update persists it -- and that the run record's own
+        slot goes to the newer run, not to the recovered one. Due-ness is asserted
+        here only as the loop's state after the window, not as a pin on the hold:
+        the contender's stamp is on disk, so it settles the answer on its own.
+        :meth:`test_a_lost_write_does_not_leave_the_nightly_loop_due` is where the
+        held run carries that pin, because there nothing reaches disk at all.
+
+        MUTATION: drop the ``_merge_pending`` recovery, or the overlay merge in
+        ``uploaded_keys``, and this reddens. It is also the test to change, rather
+        than to work around, if the hold ever moves inside the lock: the loss
+        asserted below is this design's, not a requirement on it.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        entered, release, published = Event(), Event(), Event()
+        now = dt.datetime(2026, 9, 19, tzinfo=dt.timezone.utc)
+        clock = mock.Mock(wraps=dt.datetime)
+        clock.now.return_value = now
+        monkeypatch.setattr(backup, "dt", mock.Mock(datetime=clock, timezone=dt.timezone))
+        real_write = backup.write_state
+        real_remember = backup._remember_unpersisted
+        # Granted BEFORE `write_state` is patched, so this write lands for real and is
+        # not the one the injection fails. Without it `due_for_nightly` returns at its
+        # own first statement on absent consent and never reaches the stamp reader,
+        # which would make the assertion below pass for a reason that has nothing to
+        # do with any run.
+        backup.set_nightly(ACCOUNT, True)
+
+        def writer(state):
+            if not entered.is_set():
+                entered.set()
+                assert release.wait(10), "test did not release the failed writer"
+                raise OSError(errno.EIO, "injected")
+            real_write(state)
+            published.set()
+
+        def remember(account, kind, record):
+            # Hold the registration until the contender's write has landed. This is
+            # the losing order, pinned: on an idle machine the handler wins this
+            # race, on a loaded shard it does not.
+            assert published.wait(10), "the contender never published"
+            real_remember(account, kind, record)
+
+        monkeypatch.setattr(backup, "write_state", writer)
+        monkeypatch.setattr(backup, "_remember_unpersisted", remember)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(
+                backup._record_run, ACCOUNT, backup.KIND_SNAPSHOT, "first.tar.gz", 1, "a"
+            )
+            try:
+                assert entered.wait(10)
+                second_future = pool.submit(
+                    backup._record_run, ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b"
+                )
+            finally:
+                release.set()
+            first = first_future.result(timeout=10)
+            second = second_future.result(timeout=10)
+
+        # The contender's own document cannot carry a hold that does not exist yet.
+        # This is the map that window produces, and it is not a lost upload.
+        assert self._on_disk()["accounts"][ACCOUNT]["uploads"] == {"second.tar.gz": "b"}
+
+        # Held, and so still answered to every reader that merges the overlay.
+        assert backup._unpersisted_runs[(backup._state_key(), ACCOUNT, backup.KIND_SNAPSHOT)] == (
+            first
+        )
+        assert backup.uploaded_keys(ACCOUNT) == {"first.tar.gz", "second.tar.gz"}
+        # The newer run owns the slot; recovery does not hand it to the older one.
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT] == second
+        # Consent is granted and the contender's stamp is on disk at `now`, so this
+        # reaches the stamp reader and answers not-due. It does NOT isolate the held
+        # run's contribution -- the persisted run alone settles due-ness here. The
+        # held run's own pin is
+        # `test_a_lost_write_does_not_leave_the_nightly_loop_due`, where nothing
+        # reaches disk and the overlay is the only possible answer.
+        assert backup.due_for_nightly(ACCOUNT, now=now) is False
+
+        # The promise is the NEXT successful update, and this is it.
+        backup.set_nightly(ACCOUNT, True)
+        assert self._on_disk()["accounts"][ACCOUNT]["uploads"] == {
+            "first.tar.gz": "a",
+            "second.tar.gz": "b",
+        }
+        assert (
+            backup._state_key(),
+            ACCOUNT,
+            backup.KIND_SNAPSHOT,
+        ) not in backup._unpersisted_runs
 
 
 @pytest.mark.parametrize("basename", ["backup.tar.gz", "备份.tar.gz", "x" * 255])
