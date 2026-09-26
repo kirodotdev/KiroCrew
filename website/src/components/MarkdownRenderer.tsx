@@ -5195,10 +5195,28 @@ export function Lightbox() {
   // held. Window-level up/cancel listeners for that specific pointerId are
   // the one place the terminal event can still be heard — the same
   // acquisition-side fallback the shared usePointerDrag hook arms.
-  const panFallbackRef = useRef<{ pointerId: number; dispose: () => void } | null>(null)
-  const disarmPanFallback = useCallback(() => {
-    panFallbackRef.current?.dispose()
-    panFallbackRef.current = null
+  //
+  // Keyed by pointerId, NOT a single slot: two uncaptured contacts can be live
+  // at once (a pan pointer whose capture threw, then a second image press that
+  // seats a pinch), and each must keep its own window listeners until ITS OWN
+  // up/cancel. A single slot let a second arm — or any disarm — evict a live
+  // pointer's listeners, stranding that contact in the pinch tracker so the
+  // next touch seated a ghost pinch. Each entry disposes on its pointer's own
+  // terminal event, on a same-pointer re-press, and on unmount.
+  const panFallbacksRef = useRef<Map<number, () => void>>(new Map())
+  const armPanFallback = useCallback((pointerId: number, dispose: () => void) => {
+    // A stale entry for this same pointerId (id reuse across gestures) is
+    // replaced; sibling pointers' fallbacks are left untouched.
+    panFallbacksRef.current.get(pointerId)?.()
+    panFallbacksRef.current.set(pointerId, dispose)
+  }, [])
+  const disposePanFallback = useCallback((pointerId: number) => {
+    const dispose = panFallbacksRef.current.get(pointerId)
+    if (dispose) { dispose(); panFallbacksRef.current.delete(pointerId) }
+  }, [])
+  const disposeAllPanFallbacks = useCallback(() => {
+    panFallbacksRef.current.forEach(dispose => dispose())
+    panFallbacksRef.current.clear()
   }, [])
   // Zoom (enlarge) factor and pan offset for the current image, plus the pinch
   // gesture that drives them. 1 = fit-to-screen; larger values scale the fit box
@@ -5234,7 +5252,15 @@ export function Lightbox() {
       lastTapRef.current = { t: 0, x: 0, y: 0 }
       const d = dragRef.current
       if (d.active) { d.active = false; d.dragging = false; setDragging(false) }
-      disarmPanFallback()
+      // Tear down the PAN, but do NOT disarm the window fallback here. When the
+      // pan pointer was uncaptured its release only reaches the window listener,
+      // and that listener is the sole place its contact gets dropped from the
+      // pinch hook. Disarming it now — while that pointer is still down — would
+      // strand the contact if the finger then lifts outside the overlay, seating
+      // a ghost pinch on the next single touch. Each pointer's fallback lives in
+      // the per-pointer registry and self-disposes on that pointer's own
+      // up/cancel (onWindowEnd -> terminatePan(pointerId)), a same-pointer
+      // re-press, or unmount.
     },
     // A finished pinch is not a tap. Without this the click synthesised after the
     // last finger lifts reaches the backdrop handler and closes the viewer the
@@ -5252,20 +5278,24 @@ export function Lightbox() {
   // capture lost) so `active`/`dragging` never latch on with no contact held.
   // Shared by the element handlers and the window fallback below, so an
   // uncaptured drag terminates down the same path.
-  const terminatePan = useCallback(() => {
+  //
+  // `pointerId` disposes only THAT pointer's window fallback (a sibling
+  // uncaptured contact keeps its own until its own terminal event). Omitted =
+  // no fallback to drop (e.g. a captured drag, whose element handler ends it).
+  const terminatePan = useCallback((pointerId?: number) => {
     const d = dragRef.current
     d.active = false
-    disarmPanFallback()
+    if (pointerId !== undefined) disposePanFallback(pointerId)
     if (d.dragging) { d.dragging = false; setDragging(false) }
-  }, [disarmPanFallback])
+  }, [disposePanFallback])
   const endDrag = useCallback((e: React.PointerEvent<HTMLImageElement>) => {
     const d = dragRef.current
     if (d.active) { try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* no capture */ } }
-    terminatePan()
+    terminatePan(e.pointerId)
   }, [terminatePan])
-  // If the component unmounts mid-uncaptured-drag, the window listeners must
-  // not outlive it.
-  useEffect(() => disarmPanFallback, [disarmPanFallback])
+  // If the component unmounts mid-uncaptured-drag, no window listener may
+  // outlive it — drop every armed fallback.
+  useEffect(() => disposeAllPanFallbacks, [disposeAllPanFallbacks])
   // ── one-finger overlay drag: dismiss down, page sideways ─────────────────
   // A touch drag anywhere over the overlay locks an AXIS once it crosses the
   // slop, then either pulls the image down to dismiss or sideways to page
@@ -5322,7 +5352,9 @@ export function Lightbox() {
     abortSwipe()
     const d = dragRef.current
     if (d.active) { d.active = false; d.dragging = false; setDragging(false) }
-    disarmPanFallback()
+    // A double-tap resets the whole gesture (zoom snaps), so every uncaptured
+    // contact's fallback goes with it.
+    disposeAllPanFallbacks()
     if (zoomRef.current > LIGHTBOX_ZOOM_MIN) {
       setZoom(LIGHTBOX_ZOOM_MIN)
       setPan({ x: 0, y: 0 })
@@ -5334,7 +5366,7 @@ export function Lightbox() {
     setZoom(z)
     setPan(clampPan((e.clientX - cx) * (1 - z), (e.clientY - cy) * (1 - z), z))
     return true
-  }, [abortSwipe, clampPan, setPan, setZoom, zoomRef, disarmPanFallback])
+  }, [abortSwipe, clampPan, setPan, setZoom, zoomRef, disposeAllPanFallbacks])
   // ── pinch-to-zoom (touch, two fingers) ───────────────────────────────────
   // Browser page zoom is off on touch across the shell (viewport meta in
   // index.html, root `touch-action` in index.css, `gesturestart` suppression in
@@ -5577,9 +5609,11 @@ export function Lightbox() {
           onPointerDown={e => {
             if (zoom <= LIGHTBOX_ZOOM_MIN) return // nothing to pan at fit
             e.preventDefault()
-            // A new press replaces whatever gesture dragRef held, so a
-            // fallback armed for the outgoing pointer goes with it.
-            disarmPanFallback()
+            // A re-press of THIS pointerId replaces its own stale fallback; a
+            // sibling uncaptured contact keeps its listeners (it ends on its
+            // own up/cancel), so a second image press no longer strands the
+            // first contact.
+            disposePanFallback(e.pointerId)
             let captured = true
             try { e.currentTarget.setPointerCapture(e.pointerId) } catch { captured = false }
             if (!captured) {
@@ -5589,17 +5623,22 @@ export function Lightbox() {
               const pointerId = e.pointerId
               const onWindowEnd = (ev: PointerEvent) => {
                 if (ev.pointerId !== pointerId) return
-                terminatePan()
+                // The pan pointer-down bubbles to `onOverlayPointerDown`, which
+                // records this contact in the pinch hook. On the captured path
+                // `endSwipe` drops it via `trackPointerUp`; on this uncaptured
+                // path the overlay never hears the release, so without this the
+                // contact latches forever and the next single touch seats a
+                // spurious pinch against the stale point. Drop it first, then
+                // terminate the pan for this pointer only.
+                trackPointerUp(ev)
+                terminatePan(pointerId)
               }
               window.addEventListener('pointerup', onWindowEnd)
               window.addEventListener('pointercancel', onWindowEnd)
-              panFallbackRef.current = {
-                pointerId,
-                dispose: () => {
-                  window.removeEventListener('pointerup', onWindowEnd)
-                  window.removeEventListener('pointercancel', onWindowEnd)
-                },
-              }
+              armPanFallback(pointerId, () => {
+                window.removeEventListener('pointerup', onWindowEnd)
+                window.removeEventListener('pointercancel', onWindowEnd)
+              })
             }
             dragRef.current = { startX: e.clientX, startY: e.clientY, baseX: pan.x, baseY: pan.y, moved: 0, active: true, dragging: false }
           }}
