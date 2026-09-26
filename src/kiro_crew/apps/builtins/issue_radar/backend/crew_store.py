@@ -978,10 +978,10 @@ def _recorded_unit_order(owner: str, repo: str, crew_id: str, root: Path | None)
         path = _unit_order_path(owner, repo, crew_id, root)
     except (OSError, ValueError):
         return ()
-    return _read_unit_order_held(path)
+    return _read_unit_order_held(path, max_depth=_chain_depth_bound(root))
 
 
-def _read_unit_order_held(path: Path) -> tuple[str, ...]:
+def _read_unit_order_held(path: Path, *, max_depth: int) -> tuple[str, ...]:
     """:func:`_recorded_unit_order_at` with *path*'s parent chain held while it reads.
 
     The read names the whole path, so where the write cannot go through a descriptor its
@@ -994,11 +994,14 @@ def _read_unit_order_held(path: Path) -> tuple[str, ...]:
     means no order file can exist, and a read must not create the store it reads.
 
     An absent or unholdable component answers ``()``, as an unreadable file does: the
-    caller falls back to header order.
+    caller falls back to header order. A chain the walk REFUSES to chase -- a relative
+    path, or one past its *max_depth* -- answers the same way, because a read
+    that cannot hold its ancestors has nothing to say about the order file under them,
+    and header order is the fold's answer for a crew whose order cannot be read.
     """
     try:
-        held = _hold_chain_for_by_name_use(path.parent)
-    except OSError:
+        held = _hold_chain_for_by_name_use(path.parent, max_depth=max_depth)
+    except (OSError, ValueError):
         return ()
     try:
         return _recorded_unit_order_at(path)
@@ -1086,22 +1089,23 @@ def _record_unit_order(
     """
     if not session_id:
         return
+    bound = _chain_depth_bound(root)
     try:
         path = _unit_order_path(owner, repo, crew_id, root)
-        held = _hold_chain_for_by_name_use(path.parent)
+        held = _hold_chain_for_by_name_use(path.parent, max_depth=bound)
         try:
             known = _recorded_unit_order_at(path)
             if known and known[-1] == session_id:
                 return
             ordered = tuple(u for u in known if u != session_id) + (session_id,)
-            _write_unit_order(path, ordered[-_MAX_ORDERED_UNITS:])
+            _write_unit_order(path, ordered[-_MAX_ORDERED_UNITS:], max_depth=bound)
         finally:
             _release_held(held)
     except (OSError, ValueError):
         logger.warning("crew ledger: could not record crew %s's unit order", crew_id, exc_info=True)
 
 
-def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
+def _write_unit_order(path: Path, lines: tuple[str, ...], *, max_depth: int) -> None:
     """Replace *path* with *lines*: a reader sees the old file or the new, and no link
     is followed on the way.
 
@@ -1135,7 +1139,7 @@ def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
         finally:
             os.close(parent_fd)
         return
-    held = _hold_chain_no_follow(path.parent)
+    held = _hold_chain_no_follow(path.parent, max_depth=max_depth)
     try:
         if platform_compat.is_link_or_junction(path) or platform_compat.first_linked_ancestor(path):
             raise OSError(
@@ -1146,7 +1150,41 @@ def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
         _release_held(held)
 
 
-def _hold_chain_no_follow(directory: Path) -> list[int]:
+#: How many components BELOW the store's base :func:`_hold_chain_no_follow` may hold.
+#:
+#: The walk costs one open per component, so an unbounded depth is a stall INSIDE the
+#: hold, before any of the work the hold protects begins. What must be bounded is the
+#: part a caller's INPUT can grow, not the whole absolute path: everything above the
+#: base is the operator's own data root, and spending one budget on both makes a deep
+#: but legitimate data home refuse every write for that home -- which drops the unit
+#: order permanently and leaves the header-clock fallback in force, the exact failure
+#: the order file exists to prevent (see :data:`_UNIT_ORDER_SUFFIX`).
+#:
+#: Below the base the layout is ``repos/<owner>/<repo>/crews``: three fixed components
+#: plus ``owner``, which is a provider NAMESPACE carrying one component per level of
+#: nesting. GitLab caps its own nesting at twenty levels, so the deepest legitimate
+#: suffix is twenty-three, and this leaves nine components of headroom above that while
+#: still refusing a namespace no provider will produce.
+_MAX_SUFFIX_DEPTH = 32
+
+
+def _chain_depth_bound(root: Path | None) -> int:
+    """The absolute-component bound for a chain under *root*, for the walk's ``max_depth``.
+
+    The bound is the caller's DECLARED intent, computed where the base is known, rather
+    than something the walk infers from the path it is handed. A walk that derived it
+    would read policy out of data and change what it refuses when the data home moves;
+    computed here it is checkable at each call, and a call that cannot state a bound
+    cannot walk at all.
+
+    *root* is resolved exactly as :func:`_crews_path` resolves it, so the bound and the
+    path it bounds cannot disagree about where the store's base is.
+    """
+    base = root if root is not None else store.app_data_dir(store.APP_NAME)
+    return len(base.parts) + _MAX_SUFFIX_DEPTH
+
+
+def _hold_chain_no_follow(directory: Path, *, max_depth: int) -> list[int]:
     """Open every component of *directory* without following a link, and keep them open.
 
     Returns the descriptors, outermost first, and the CALLER closes them. Holding
@@ -1197,12 +1235,35 @@ def _hold_chain_no_follow(directory: Path) -> list[int]:
     path -- the first open would then be the outbound authentication this exists to
     prevent. :func:`_unit_order_path` builds from :func:`data_home`, which is local.
 
+    Two refusals come before the first open, both ``ValueError``, because neither is a
+    fact about the filesystem and neither is worth one open to discover:
+
+    * A path that is not ABSOLUTE is refused. Its components resolve against a current
+      directory this walk never inspects, so the chain it would hold is not the chain
+      the caller named. ``Path.is_absolute`` is the test, which on Windows also refuses
+      a rooted path carrying no drive -- that one is anchored to whichever drive is
+      current, which is the same unexamined base under a different spelling.
+    * A path deeper than *max_depth* components is refused. One open per component is
+      the walk's whole cost, so depth is the one input that turns this guard into the
+      delay it exists to prevent. The bound is REQUIRED and arrives from the call site,
+      which knows the store's base and can therefore bound the part a caller's input
+      grows rather than the operator's data root as well; see
+      :func:`_chain_depth_bound`. A walk with no bound to state does not run.
+
     Root-first also decides the failure shape: a failure part-way releases what it took,
     because a half-held chain protects nothing and its descriptors would leak.
     """
+    if not directory.is_absolute():
+        raise ValueError(f"refusing to hold a chain under a relative path: {directory}")
+    components = [*reversed(directory.parents), directory]
+    if len(components) > max_depth:
+        raise ValueError(
+            f"refusing to hold a chain {len(components)} components deep, "
+            f"over a bound of {max_depth}: {directory}"
+        )
     held: list[int] = []
     try:
-        for component in [*reversed(directory.parents), directory]:
+        for component in components:
             held.append(_pin_held(component))
     except BaseException:
         _release_held(held)
@@ -1210,7 +1271,7 @@ def _hold_chain_no_follow(directory: Path) -> list[int]:
     return held
 
 
-def _hold_chain_for_by_name_use(directory: Path) -> list[int]:
+def _hold_chain_for_by_name_use(directory: Path, *, max_depth: int) -> list[int]:
     """The hold a BY-NAME read or write of the unit order needs under *directory*.
 
     ``[]`` where :func:`atomic_write.pinned_parent_replace_supported` answers yes: the
@@ -1223,7 +1284,7 @@ def _hold_chain_for_by_name_use(directory: Path) -> list[int]:
     """
     if atomic_write_module.pinned_parent_replace_supported():
         return []
-    return _hold_chain_no_follow(directory)
+    return _hold_chain_no_follow(directory, max_depth=max_depth)
 
 
 def _pin_held(component: Path) -> int:
