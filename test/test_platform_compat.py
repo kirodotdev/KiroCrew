@@ -4219,14 +4219,14 @@ class TestFindListeningPidsErrors:
                     local_address=bytes([127, 0, 0, 1]),
                     local_scope_id=0,
                     local_port=7777,
-                    pid=4242,
+                    pid=99_999_999_991,
                 ),
                 types.SimpleNamespace(
                     state=2,
                     local_address=bytes([0, 0, 0, 0]),
                     local_scope_id=0,
                     local_port=7777,
-                    pid=7777,
+                    pid=99_999_999_992,
                 ),
             ],
             True: [
@@ -4235,7 +4235,7 @@ class TestFindListeningPidsErrors:
                     local_address=bytes(16),
                     local_scope_id=0,
                     local_port=7777,
-                    pid=8888,
+                    pid=99_999_999_993,
                 )
             ],
         }
@@ -4248,7 +4248,7 @@ class TestFindListeningPidsErrors:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_tcp_owner_rows", _rows, raising=False)
 
-        assert pc._windows_loopback_listener_owner_pids(7777) == {4242}
+        assert pc._windows_loopback_listener_owner_pids(7777) == {99_999_999_991}
         assert calls == [(False, 3), (True, 3)]
 
         rows[True] = None
