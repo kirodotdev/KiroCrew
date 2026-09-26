@@ -513,13 +513,16 @@ class _PeerUnavailable(Exception):
     ``test_error_code_contract.py``, and a reader grepping for one of them must
     land on the site that returns it.
 
-    ``kind`` is ``"not_connected"`` or ``"no_credential"``; ``message`` is the
-    caller-facing text, identical across the three families.
+    ``kind`` is ``"not_connected"``, ``"no_credential"`` or
+    ``"exchange_failed"``; ``message`` is the caller-facing text, identical
+    across the three families. The last two share one code per family: both
+    mean the manager holds no session it can present to the peer.
     """
 
     _MESSAGES = {
         "not_connected": "instance is not connected",
         "no_credential": "no live credential for this instance; reconnect it",
+        "exchange_failed": "could not exchange the credential with the peer",
     }
 
     def __init__(self, kind: str) -> None:
@@ -1462,6 +1465,9 @@ class SshTunnelManager:
         self._tunnel_factory = tunnel_factory or _SshTunnel
         self._tunnels: dict[str, _SshTunnel] = {}
         self._tokens: dict[str, str] = {}
+        #: instance_id -> (link token it was exchanged from, session cookie value).
+        #: Keyed on the link so a re-mint silently retires the old session.
+        self._peer_sessions: dict[str, tuple[str, str]] = {}
         # Last connect/reconnect failure reason per instance, retained after the
         # failed tunnel is popped so a sticky tab whose tunnel is down can still
         # report *why* (e.g. a startup auto-revive that couldn't reach the host).
@@ -2178,6 +2184,7 @@ class SshTunnelManager:
                     return self._error_status(inst, f"token mint failed: {e}")
                 self._store_token(instance_id, token, inst.ttl)
                 self._schedule_token_refresh(instance_id)
+                await self._prime_peer_session(instance_id)
 
             # Persist hints: the forwarder identity record built by
             # _forwarder_identity_hints (port, pid, start time, signature,
@@ -2248,6 +2255,7 @@ class SshTunnelManager:
             await tunnel.stop()
         self._tunnels.pop(instance_id, None)
         self._tokens.pop(instance_id, None)
+        self._peer_sessions.pop(instance_id, None)
         self._recover_attempts.pop(instance_id, None)
         self._last_error.pop(instance_id, None)
         # A teardown ends the generation: a slow unlocked mint or rebuild in
@@ -2420,6 +2428,7 @@ class SshTunnelManager:
             for instance_id in ids:
                 tunnel = self._tunnels.pop(instance_id, None)
                 self._tokens.pop(instance_id, None)
+                self._peer_sessions.pop(instance_id, None)
                 if tunnel is not None:
                     with contextlib.suppress(Exception):
                         await tunnel.stop()
@@ -2709,6 +2718,8 @@ class SshTunnelManager:
             # epoch + 2: tier 1's failed install and this rebuild's own are
             # the two bumps this recovery made itself.
             await self._mark_recovered(instance_id, rebuilt, epoch + 2)
+            if params.method != "fargate":
+                await self._prime_peer_session(instance_id)
             logger.info("Self-heal tier 2 finished for %s", instance_id)
         else:
             logger.warning("Self-heal failed for %s even after re-mint", instance_id)
@@ -2925,23 +2936,90 @@ class SshTunnelManager:
         url = f"http://{_LOOPBACK}:{int(local_port)}/{path.lstrip('/')}"
         return url, f"mc_token_{int(local_port)}"
 
-    def _peer_cookie_header(self, instance_id: str, cookie_name: str) -> dict[str, str]:
-        """Build the ``Cookie`` header carrying this peer's credential.
+    async def _exchange_link(self, url: str, link: str, cookie_name: str) -> str:
+        """Trade a one-time *link* for the peer's session cookie.
+
+        The peer refuses a link presented as a cookie, so the manager does what a
+        browser does: one ``GET /api/status?token=`` through the tunnel, keeping
+        the ``Set-Cookie`` value. Redirects are not followed and nothing is
+        logged.
+
+        Only a peer that answered 401 or 403 (the peer's ``_deny`` answers 403
+        to a bad link) returns ``""``: that is the one failure a re-mint fixes,
+        so the caller sends no cookie and lets the peer's 401/403 drive it.
+        Every other outcome raises :class:`_PeerUnavailable`
+        ``("exchange_failed")``: a peer that could not be reached, one that
+        accepted the link (2xx) without setting a session cookie, and one that
+        answered any other status (a 3xx, another 4xx, a 5xx). A fresh link
+        would meet the same wall, and spending the single re-mint on it would
+        report a peer error as "peer rejected the credential".
+        """
+        base = url.split("/", 3)
+        status_url = "/".join(base[:3]) + "/api/status"
+        timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    status_url, params={"token": link}, allow_redirects=False
+                ) as resp:
+                    status = resp.status
+                    morsel = resp.cookies.get(cookie_name)
+        except Exception as e:  # timeout, connection refused, etc.
+            logger.info("Peer link exchange failed (%s)", type(e).__name__)
+            raise _PeerUnavailable("exchange_failed") from None
+        if status in (401, 403):
+            return ""
+        if not 200 <= status < 300 or morsel is None:
+            raise _PeerUnavailable("exchange_failed")
+        return morsel.value
+
+    async def _peer_cookie_header(
+        self, instance_id: str, url: str, cookie_name: str
+    ) -> dict[str, str]:
+        """Build the ``Cookie`` header carrying this peer's session credential.
 
         Must be re-read per attempt, not hoisted out of a retry loop: a re-mint
         replaces the credential mid-call and the retry exists to use the fresh
-        one.
+        one. The minted token is a one-time link, so it is exchanged for the
+        peer's session cookie first and the result cached against that link.
+        An exchange the peer refused sends no cookie; the peer's 401/403 then
+        drives the caller's single re-mint. An exchange that could not complete
+        raises :class:`_PeerUnavailable` (see :meth:`_exchange_link`).
 
-        **The token never leaves this object.** It travels as a cookie rather
-        than a query parameter so it cannot land in the peer's HTTP access log,
-        it is never logged here, and issuing the request from the manager is what
-        keeps ``connect``/``refresh-token`` the only two routes where a minted
-        token crosses the API boundary (instances.md §14.4).
+        **The session never leaves this object.** It travels as a cookie
+        rather than a query parameter so it cannot land in the peer's HTTP access
+        log, and it is never logged here. The minted link itself reaches the peer
+        once, as ``GET /api/status?token=``, the same exchange a browser makes.
         """
-        token = self._tokens.get(instance_id, "")
-        if not token:
+        link = self._tokens.get(instance_id, "")
+        if not link:
             raise _PeerUnavailable("no_credential")
-        return {"Cookie": f"{cookie_name}={token}"}
+        cached = self._peer_sessions.get(instance_id)
+        if cached is not None and cached[0] == link:
+            return {"Cookie": f"{cookie_name}={cached[1]}"}
+        session_value = await self._exchange_link(url, link, cookie_name)
+        if not session_value:
+            return {}
+        # A re-mint that landed during the exchange owns the cache: storing this
+        # pair would displace the session of the link that replaced it.
+        if self._tokens.get(instance_id) == link:
+            self._peer_sessions[instance_id] = (link, session_value)
+        return {"Cookie": f"{cookie_name}={session_value}"}
+
+    async def _prime_peer_session(self, instance_id: str) -> None:
+        """Exchange a just-stored link for the peer's session while it is fresh.
+
+        A minted link's click window is minutes, while the proactive refresh
+        re-mints hours apart. Exchanging only on the first peer request would
+        leave a link that has aged past that window by then, so every site that
+        stores a link calls this right away. A failure here changes nothing:
+        the request path still exchanges lazily and re-mints on a refusal.
+        """
+        try:
+            url, cookie_name = self._peer_target(instance_id, "api/status")
+            await self._peer_cookie_header(instance_id, url, cookie_name)
+        except _PeerUnavailable:
+            return
 
     @contextlib.asynccontextmanager
     async def proxy_request(
@@ -2993,7 +3071,7 @@ class SshTunnelManager:
         reminted = False
         while True:
             try:
-                headers = self._peer_cookie_header(instance_id, cookie_name)
+                headers = await self._peer_cookie_header(instance_id, url, cookie_name)
             except _PeerUnavailable as e:
                 raise _unavailable(e) from None
             if content_type:
@@ -3084,7 +3162,7 @@ class SshTunnelManager:
         downgraded = False
         for _attempt in range(3):
             try:
-                headers = self._peer_cookie_header(instance_id, cookie_name)
+                headers = await self._peer_cookie_header(instance_id, url, cookie_name)
             except _PeerUnavailable as e:
                 return False, {"error": e.message, "code": "transfer_no_credential"}
             try:
@@ -3223,7 +3301,7 @@ class SshTunnelManager:
         reminted = False
         for _attempt in range(2):
             try:
-                headers = self._peer_cookie_header(instance_id, cookie_name)
+                headers = await self._peer_cookie_header(instance_id, url, cookie_name)
             except _PeerUnavailable as e:
                 return False, {"error": e.message, "code": "capability_no_credential"}
             try:
@@ -3342,7 +3420,7 @@ class SshTunnelManager:
         reminted = False
         for _attempt in range(2):
             try:
-                headers = self._peer_cookie_header(instance_id, cookie_name)
+                headers = await self._peer_cookie_header(instance_id, url, cookie_name)
             except _PeerUnavailable as e:
                 return False, {"error": e.message, "code": "search_no_credential"}
             try:
@@ -3550,6 +3628,7 @@ class SshTunnelManager:
                 logger.info("Discarding a superseded mint for %s", instance_id)
                 return False
             self._store_token(instance_id, token, inst.ttl)
+        await self._prime_peer_session(instance_id)
         logger.info("Proactively refreshed token for %s", instance_id)  # no token in logs
         return True
 

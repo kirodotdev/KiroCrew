@@ -224,8 +224,8 @@ _CREDENTIAL_PATTERNS = re.compile(
     # digest, instead of letting redaction silently stop matching.
     #
     # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
-    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
-    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
+    # `gen`), with a 16-hex-char nonce and float timestamps; `kind`, `app`, `prompt`
+    # and `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
     # `json.dumps` writes each float timestamp at its own repr width, which base64
     # then quantises into 4-char steps. So the floor is derived, not sampled: a
     # 1-char `sub` (the narrowest a caller passes: the app validator requires at

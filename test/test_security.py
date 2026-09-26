@@ -758,7 +758,7 @@ class TestRedactCredentials:
         assert len(floors) == 1, f"expected one bounded eyJ floor, got {floors}"
         floor = int(floors[0])
 
-        payload = generate_token("local-app", 300, register_nonce=False).split(".")[0]
+        payload = generate_token("local-app", 300).split(".")[0]
         assert payload.startswith("eyJ")
         assert len(payload) - 3 > floor, "a real mint no longer clears the floor"
 
