@@ -980,7 +980,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "When off, a double-click on your message selects a word as in any text.",
     "tab": "chat",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
   },
   {
     "id": "chat.fallback-model",
