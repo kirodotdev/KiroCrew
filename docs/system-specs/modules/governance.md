@@ -1941,6 +1941,25 @@ real arguments** the ACP event carries:
 - `tool_kind == "fetch"` + `raw_params["url"]` → `network.egress` (the host is
   extracted from the URL so the `host` matcher applies).
 
+Because the item under test is that extracted host, a `host`-matcher pattern
+carrying a `/` (a scheme, a path or a CIDR mask), an `@` (userinfo), or a port or
+IPv6 brackets can never match. The entry is dead: in deny mode the scope permits
+exactly what the operator wrote it to block, and in allow mode it refuses it.
+`ScopedRuleset.from_dict` therefore logs a warning (beside the Rule-1 dead-deny
+one) naming the scope and the entry's position, such as `deny[0]`. It never logs
+the pattern itself, because a pasted URL can carry userinfo, a signature or an
+`?api_key=` query, and the warning fires on every boot. Only the list the mode
+reads is checked: `allow` in allow mode, `deny` in deny mode.
+
+The warning suggests a replacement only when one is safe. It names the host
+`_url_host` would have produced, which can carry no credential, path or query, so
+`https://skills.sh/api` gets `Write 'skills.sh' instead`. There is no suggestion
+for a hostless pattern such as `/api/v1`, for a glob-only host such as the `*`
+that `https://*` yields (pasting it would allow every host), or for a CIDR mask
+such as `10.0.0.0/8` (the `host` matcher cannot express a range). Those entries
+still warn. It warns rather than raising: refusing the document would turn one
+stale entry into a boot failure on upgrade for a policy that loads today.
+
 `on_tool_call(..., tool_kind=, raw_params=)` carries these from the ACP event
 (`AcpEvent.tool_kind` / `.raw_tool_params`); the call sites thread them
 (`llm_helpers`, `subagent`, `task_executor`, `task_planner`, dashboard

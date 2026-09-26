@@ -1145,6 +1145,153 @@ class TestSchemaStrictness:
             ScopedRuleset.from_dict({"mode": "allow", "allow": ["read"], "deny": ["grep"]})
         assert any("Rule 1" in r.message or "allow beats deny" in r.message for r in caplog.records)
 
+    @staticmethod
+    def _host_warnings(caplog, body, *, matcher="host"):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.platform.governance"):
+            ScopedRuleset.from_dict(body, matcher=matcher, scope="network.egress")
+        return [r.getMessage() for r in caplog.records if "matcher=host" in r.getMessage()]
+
+    @pytest.mark.parametrize("matcher", sorted(governance._MATCHERS))
+    def test_only_the_host_matcher_warns_on_a_url_shaped_item(self, matcher, caplog):
+        """A URL-shaped entry is dead ONLY under `host`, so only `host` may warn.
+
+        Every other matcher tests an item that legitimately carries a `/`, a
+        path, a command line, an `@server/tool` reference, so warning there
+        would be noise on correct config.
+        """
+        warned = self._host_warnings(
+            caplog, {"mode": MODE_DENY, "deny": ["https://skills.sh/api"]}, matcher=matcher
+        )
+        assert bool(warned) is (matcher == "host"), f"{matcher} warned: {bool(warned)}"
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "skills.sh",
+            "*.skills.sh",
+            "*",
+            "**",
+            "*.*",
+            "localhost",
+            "skills.*",
+            "sub.*.skills.sh",
+            # urlparse reads `?` as a query and finds no host, yet the glob works.
+            "?.skills.sh",
+            "foo_bar",
+            "127.0.0.1",
+            "UPPER.CASE.COM",
+            "xn--80ak6aa92e.com",
+            "skills.sh.",
+            # `_match_host` strips, so padding is not a dead entry either.
+            " skills.sh ",
+        ],
+    )
+    def test_a_pattern_that_can_match_a_host_does_not_warn(self, pattern, caplog):
+        """The form that WORKS must stay silent, or the warning trains operators to ignore it.
+
+        A known-dead sibling rides along so the case fails if the guard is gone,
+        not only if it over-fires.
+        """
+        warned = self._host_warnings(
+            caplog, {"mode": MODE_DENY, "deny": [pattern, "https://dead.example/x"]}
+        )
+        assert len(warned) == 1 and "deny[1]" in warned[0], warned
+
+    @pytest.mark.parametrize(
+        "pattern,corrected",
+        [
+            ("https://skills.sh/api", "skills.sh"),
+            ("skills.sh/api", "skills.sh"),
+            ("//skills.sh/api", "skills.sh"),
+            ("http://skills.sh", "skills.sh"),
+            ("skills.sh:8080", "skills.sh"),
+            ("localhost:3000", "localhost"),
+            ("[::1]", "::1"),
+            ("[::1]:443", "::1"),
+            ("https://*.skills.sh/api", "*.skills.sh"),
+        ],
+    )
+    def test_a_dead_entry_is_named_by_position_with_its_corrected_host(
+        self, pattern, corrected, caplog
+    ):
+        warned = self._host_warnings(caplog, {"mode": MODE_DENY, "deny": ["ok.example", pattern]})
+        assert len(warned) == 1, warned
+        assert "'network.egress'" in warned[0]
+        assert "deny[1]" in warned[0]
+        # The paste-able correction, not just a complaint.
+        assert f"Write {corrected!r} instead" in warned[0]
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            # No host to recover, so `Write ''` would be the advice.
+            "/api/v1",
+            "file:///etc/passwd",
+            "http://",
+            "user:pass@skills.sh",
+            "*://skills.sh",
+            # A glob-only host: pasting `*` back grants every host.
+            "https://*",
+            "http://*",
+            # A range the host matcher cannot express: `10.0.0.0` drops the intent.
+            "10.0.0.0/8",
+            "192.168.0.0/16",
+        ],
+    )
+    def test_a_dead_entry_without_safe_advice_still_warns_but_suggests_nothing(
+        self, pattern, caplog
+    ):
+        warned = self._host_warnings(caplog, {"mode": MODE_DENY, "deny": [pattern]})
+        assert len(warned) == 1, warned
+        assert "deny[0]" in warned[0]
+        assert "Write" not in warned[0]
+
+    @pytest.mark.parametrize(
+        "pattern,secret,host",
+        [
+            ("https://user:pass@skills.sh/api", "pass", "skills.sh"),
+            ("https://skills.sh/api?api_key=SECRET123", "SECRET123", "skills.sh"),
+            (
+                "https://hooks.slack.com/services/T0/B0/XXSECRETXX",
+                "XXSECRETXX",
+                "hooks.slack.com",
+            ),
+        ],
+    )
+    def test_the_warning_never_carries_the_pasted_url(self, pattern, secret, host, caplog):
+        """A pasted URL carries credentials, and this logs on every boot unredacted."""
+        warned = self._host_warnings(caplog, {"mode": MODE_DENY, "deny": [pattern]})
+        assert len(warned) == 1, warned
+        # The handler's formatted text, so a secret smuggled via `%s` args is caught too.
+        assert secret not in caplog.text
+        assert host in caplog.text
+
+    @pytest.mark.parametrize(
+        "mode,listed,host,effect",
+        [
+            (MODE_DENY, "deny", "denied.example", "permits"),
+            (MODE_ALLOW, "allow", "allowed.example", "refuses"),
+        ],
+    )
+    def test_only_the_list_the_mode_reads_is_walked(self, mode, listed, host, effect, caplog):
+        """The engine never reads the other list, so a warning about it is noise.
+
+        The consequence must match the mode: a dead allow refuses what it names,
+        and saying "permits" misdirects an operator debugging an egress outage.
+        """
+        warned = self._host_warnings(
+            caplog,
+            {
+                "mode": mode,
+                "allow": ["https://allowed.example/a"],
+                "deny": ["https://denied.example/a"],
+            },
+        )
+        assert len(warned) == 1, warned
+        assert f"{listed}[0]" in warned[0]
+        assert f"Write {host!r} instead" in warned[0]
+        assert f"the scope {effect} the host it names" in warned[0]
+
     def test_posture_key_must_be_admitted_member(self):
         # posture for a member not in the members allow-set is rejected.
         with pytest.raises(PlatformCompositionError):
@@ -1951,3 +2098,27 @@ class TestValidateReportsUngovernedCapabilities:
         ceiling = parse_policy(_policy_body(commands={"mode": MODE_DENY, "deny": ["nc *"]}))
         out = self._validate(capsys, ceiling)
         assert "UNGOVERNED" not in out
+
+    def test_validate_run_surfaces_a_url_shaped_network_egress_deny_entry(self, capsys, caplog):
+        """The operator's own `policy validate` run must surface the dead entry.
+
+        `validate` reports on the ceiling boot ALREADY resolved, so the finding
+        reaches that run as the parse-time warning, not as stdout: validate
+        re-reads a parsed object and cannot see a pattern that never matched.
+        The line matters because this policy reports OK while denying nothing.
+        """
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.platform.governance"):
+            ceiling = parse_policy(
+                _policy_body(
+                    network={"egress": {"mode": MODE_DENY, "deny": ["https://skills.sh/api"]}}
+                )
+            )
+            out = self._validate(capsys, ceiling)
+        assert "governed scopes" in out
+        # The entry the operator wrote to block skills.sh does not block it.
+        assert resolve(ceiling, None, "network.egress", "skills.sh").permitted
+        line = next(r.getMessage() for r in caplog.records if "matcher=host" in r.getMessage())
+        assert "'network.egress'" in line
+        assert "deny[0]" in line
+        assert "https://skills.sh/api" not in line
+        assert "Write 'skills.sh' instead" in line
