@@ -574,6 +574,18 @@ class TestRepoUrlSegmentsAreBoundedInWidth:
     down, so the bound has exactly one home.
     """
 
+    def test_the_two_limits_are_githubs_own_published_maximums(self):
+        """The widths below are all derived from these two constants, so the
+        constants themselves are the one thing a derived width cannot check:
+        loosening either would leave every other case in this class green. A
+        github.com account login -- user or organization -- is 1-39 characters, and
+        a repository name is at most 100. Both parsers are pinned to the
+        github.com host, so these are the ceilings for every value that reaches
+        them.
+        """
+        assert runner.GITHUB_MAX_OWNER_CHARS == 39
+        assert runner.GITHUB_MAX_REPO_CHARS == 100
+
     def test_an_owner_at_githubs_login_limit_is_accepted(self):
         owner = "o" * runner.GITHUB_MAX_OWNER_CHARS
         parsed_owner, _ = runner.parse_github_repo_url(f"https://github.com/{owner}/repo")
