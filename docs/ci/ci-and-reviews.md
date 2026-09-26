@@ -2329,11 +2329,30 @@ Two subtleties:
   whose lane is failing at that moment. `requested` is the type that carries nothing: it
   fires at run CREATION, when no lane can have a verdict yet and readiness has already
   published `checking` from the `pull_request_target` path. Since every type fires once per
-  monitored workflow per revision, listing all three dispatched up to 57 readiness runs per
+  monitored workflow per revision, listing all three dispatched up to 36 readiness runs per
   head update and made readiness ~67% of every workflow run this repository created; two
-  types put the ceiling at 38. The `pr+sha` concurrency group collapses the burst for
+  types put the ceiling at 24. The `pr+sha` concurrency group collapses the burst for
   execution, but a collapsed run has already consumed its dispatch slot, so the group does
   not bound that cost.
+- **A lane that is itself `workflow_run`-triggered cannot be monitored.** GitHub runs such
+  a workflow from the default branch, so the `workflow_run` payload its completion hands
+  readiness names the default branch as `head_branch` and the default branch's tip as
+  `head_sha` — never the pull request's head. `Resolve current pull request revision` then
+  asks which open pull request has `<this repo>:<default branch>` as its head, an answer
+  that is empty by construction, and the run exits `SKIP` having published nothing and
+  spent one request from the shared hourly REST pool. The seven stage-2 fork reviewers
+  (`Fork * Review`, `Fork Internal Content Scan`) all key on Fast Gate this way and were
+  listed for years on the stated intent that their completion refreshed a fork verdict; it
+  never could. Measured 2026-09-26: 700/700 runs across those seven lanes carried the
+  default branch, and because their dispatches all keyed on ONE concurrency group (the
+  default branch's tip) rather than per head update, they accumulated across every open
+  pull request at once — 158 no-op readiness runs on a single default-branch SHA, 96% of
+  readiness's run creation, ~5,100 wasted requests an hour against a 15,000/hour
+  installation pool. A fork verdict is refreshed instead by the lanes that do run on the
+  PR head (Fast Gate, CI, Build, Code Review) plus the 15-minute
+  `pr-readiness-sweep.yml` backstop, which re-fires by PR number. Two fences hold the rule
+  — the trigger allowlist and the job gate's event check — and
+  `test_ai_review_workflows.py` pins both.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so
@@ -2437,13 +2456,15 @@ directly without Fast Gate re-running, so the trigger-bound id stays identical
 between the stale failed attempt and the fresh rerun -- readiness resolves that by
 collapsing every check-run sharing an id to the newest by check-run id (distinct per
 POST, monotonically increasing), so the fresh rerun always wins. `pr-readiness.yml`
-also triggers on that same rerun's own `workflow_run: in_progress` event, which
-fires the instant the rerun starts and can race the rerun's own "Open check-run"
-step -- reading check-runs at that exact moment would still see only the OLD
-completed verdict. Readiness recognizes when its own evaluation was triggered by
-that lane's `in_progress` event (by name and status on the triggering
-`workflow_run`) and reads pending directly, without querying check-runs at all;
-the rerun's own completion re-triggers a real evaluation. CodeQL is
+does NOT see that rerun's own `workflow_run: in_progress` event: a `Fork <lane>` run
+is `workflow_run`-triggered, so it is barred from the trigger allowlist and its
+payload could not resolve a pull request anyway. The evaluation therefore reads
+check-runs at whatever state the triggering lane's event found them in, and a rerun
+whose fresh "Open check-run" row lands after that read still shows its OLD completed
+verdict until the next event. `pr-readiness-sweep.yml` mode 2 closes that within 15
+minutes on the check evidence. The `WR_NAME = "Fork $cname"` branch in the evaluate
+step was written for this race and has never been reachable; its comment records that.
+CodeQL is
 the single ineligible lane, reported as a non-blocking "Not eligible" note rather
 than a blocker. Readiness therefore says the same thing on a fork as anywhere else: the
 eligible automated validation passed for this revision. Human approval and branch

@@ -34,25 +34,35 @@ on:
       # it, and so does a run that measured nothing.
       - Security Scope Review
       - CodeQL
-      # Stage-2 fork AI reviewers. They run from the default branch via
-      # `workflow_run` (on CI's completion), so their own completion must
-      # re-trigger this job to publish the fork PR's real verdict once the
-      # reviews land -- otherwise the fork verdict freezes at `checking`.
-      - Fork Opus 5 Review
-      - Fork GPT 5.6 Review
-      - Fork Design Review
-      - Fork UX Review
-      - Fork First Principles Review
-      - Fork Security Scope Review
-      # Without these two, a finished scan never re-triggers readiness and the
-      # lane sits at "(not started)" with no event able to clear it.
+      # A workflow that is itself `workflow_run`-triggered CANNOT be listed here.
+      # GitHub runs such a workflow from the default branch, so the
+      # `workflow_run` payload its completion hands this job carries the default
+      # branch as head_branch and the default branch's tip as head_sha -- never
+      # the pull request's head. `Resolve current pull request revision` then
+      # asks which open pull request has `<this repo>:<default branch>` as its
+      # head, an answer that is empty by construction, and exits SKIP without
+      # publishing anything. The stage-2 fork reviewers (`Fork * Review`,
+      # `Fork Internal Content Scan`) all key on Fast Gate this way, so each of
+      # their completions dispatches a readiness run that can only no-op: 96% of
+      # this workflow's run creation and one wasted REST request each against the
+      # shared hourly pool (see docs/ci/ci-and-reviews.md).
+      #
+      # A fork pull request's verdict is refreshed by the lanes that DO run on
+      # its head -- CI, Fast Gate, Build, Code Review -- plus the 15-minute
+      # `pr-readiness-sweep.yml` backstop, which re-fires the recompute by PR
+      # number and is therefore immune to this payload problem.
+      # `test_ai_review_workflows.py` pins the rule so a future lane cannot be
+      # added back here without the same silent no-op.
+      #
+      # Without this one, a finished scan never re-triggers readiness and the
+      # lane sits at "(not started)" with no event able to clear it. It runs on
+      # `pull_request`, so its payload does carry the PR head.
       - Internal Content Scan Gate
-      - Fork Internal Content Scan
     # `completed` publishes the real verdict. `in_progress` is kept as a merge
     # guard, and `requested` is deliberately absent.
     #
     # Why `requested` carries nothing: it fires when a run is CREATED, which on
-    # a head update happens for all 14 workflows above before any of them can
+    # a head update happens for all 12 workflows above before any of them can
     # have a verdict -- and readiness has already published `checking` for that
     # revision via the `pull_request_target: synchronize` path. Its only other
     # occasion is a brand-new run, whose eventual `completed` is the fire that
@@ -70,11 +80,21 @@ on:
     # trade a merge-safety guard for dispatch, which is the wrong direction.
     #
     # The dispatch problem this addresses: every type fires once per monitored
-    # workflow per revision, so all three dispatched up to 42 readiness runs per
-    # head update and made this workflow the majority of the repository's run
-    # creation. Two types put the ceiling at 28. The per-revision concurrency
-    # group below collapses the burst for EXECUTION, but a collapsed run has
-    # already consumed its dispatch slot, so the group never bounded this cost.
+    # workflow per revision, so all three dispatched up to 36 readiness runs per
+    # head update (12 x 3) and made this workflow the majority of the
+    # repository's run creation. Two types put the ceiling at 24. The
+    # per-revision concurrency group below collapses the burst for EXECUTION,
+    # but a collapsed run has already consumed its dispatch slot, so the group
+    # never bounded this cost.
+    #
+    # That per-head ceiling only holds for a monitored workflow whose payload
+    # names the pull request's own head. A `workflow_run`-triggered lane names
+    # the default branch instead, so its dispatches key on ONE shared group
+    # (the default branch's tip) and accumulate across every open pull request
+    # rather than per head update -- measured at 158 readiness runs on a single
+    # default-branch SHA, 96% of this workflow's run creation, none of which
+    # can resolve a pull request. Such a lane is barred from the allowlist
+    # above for that reason.
     # Measurements and the queue-saturation mechanism: docs/ci/ci-and-reviews.md.
     types: [in_progress, completed]
   workflow_dispatch:
@@ -146,16 +166,18 @@ jobs:
     # open PR owns it), so admitting every pull_request run is correct and the
     # non-PR events are already excluded by the event check.
     #
-    # `workflow_run.event == 'workflow_run'` is admitted so the Stage-2 fork AI
-    # reviewers (fork-*-review.yml, themselves triggered by CI's workflow_run)
-    # re-trigger this job when they complete -- that is how a fork PR's verdict
-    # refreshes to "passed" once its reviews land. Which workflows can fire this
-    # is already fenced by the `on.workflow_run.workflows` allowlist above.
+    # A `workflow_run.event == 'workflow_run'` upstream is NOT admitted. Such a
+    # run was dispatched from the default branch, so its payload names the
+    # default branch's tip as the head and can never resolve to a pull request
+    # (see the allowlist note above). Admitting it only reached the resolve
+    # step's empty lookup. The allowlist is the primary fence -- no monitored
+    # workflow is `workflow_run`-triggered any more -- and this is the second:
+    # re-adding such a lane has to clear both, which `test_ci_surface_tests.py`
+    # refuses.
     if: >-
       github.event_name != 'workflow_run'
       || github.event.workflow_run.event == 'pull_request'
       || github.event.workflow_run.event == 'dynamic'
-      || github.event.workflow_run.event == 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -751,14 +773,21 @@ jobs:
               # an absent/unbound row (the real review has not posted yet) ->
               # pending.
               cname="${file#checkrun:}"
-              # Close the human-override-rerun race: this evaluation can BE the
-              # `in_progress` event a lane's own rerun fires the instant it
-              # starts (workflow_run is wired at both in_progress and completed
-              # -- see the trigger list above), before that rerun's "Open
-              # check-run" step has posted a fresh row. Reading check-runs right
-              # now would still see the OLD completed verdict and publish a
-              # stale success. Force pending without a read: the rerun's own
-              # completion re-triggers this evaluation with a real verdict.
+              # A human-override-rerun race this branch does NOT currently
+              # close, kept here so the intent is not lost with the wiring.
+              # It fires only when readiness was itself triggered by a
+              # `Fork <lane>` run's `workflow_run: in_progress`, and such a
+              # trigger can never reach this step: a `workflow_run`-triggered
+              # lane runs from the default branch, so `Resolve current pull
+              # request revision` finds no open pull request for that head and
+              # exits SKIP long before the evaluation (see the trigger
+              # allowlist). The branch was therefore unreachable while those
+              # lanes were listed, and stays unreachable now that they are not.
+              # The race it names is real and unguarded: a rerun's fresh "Open
+              # check-run" step can land after this read, so the read sees the
+              # OLD completed verdict. The sweep's mode-2 check evidence catches
+              # it within 15 minutes. Tracked in issue #14166 rather than fixed
+              # here, which is a trigger change only.
               if [ "$FORK" = "true" ] && [ "${WR_STATUS:-}" = "in_progress" ] \
                 && [ "${WR_NAME:-}" = "Fork $cname" ]; then
                 pending+=("$label (rerun starting)")
