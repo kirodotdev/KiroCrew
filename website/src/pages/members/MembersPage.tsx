@@ -3154,6 +3154,7 @@ export default function MembersPage() {
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
                     threads={threadHooks}
+                    onFileOpen={openFile}
                   />
                 </ErrorBoundary>
               </div>

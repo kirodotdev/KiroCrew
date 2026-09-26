@@ -42,6 +42,7 @@ export default function SessionGridView({
   seedSlot,
   openSideChat,
   leading,
+  onFileOpen,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -57,6 +58,8 @@ export default function SessionGridView({
    *  geometric top-left pane either reserves its column (`inset`, desktop) or
    *  renders it inline (`control`, mobile) — see ChatPane's `leading`. */
   leading?: PaneLeading
+  /** Open a file in the host's file viewer for every pane (#9487). */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
 }) {
   const grid = useSessionGrid(seedSlot)
 
@@ -150,6 +153,7 @@ export default function SessionGridView({
           onOpenFull={onCollapse}
           openSideChat={openSideChat}
           leading={paneLeading}
+          onFileOpen={onFileOpen}
         />
       )
     }
