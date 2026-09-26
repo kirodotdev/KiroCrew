@@ -1,6 +1,7 @@
+import { WorkspaceFullscreenContext } from './WorkspacePanelContext'
 import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { hasCommandModifier } from '../utils/commandModifier'
-import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
+import { memo, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
@@ -1063,6 +1064,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // Unified vs side-by-side diff rendering — persisted, and shares its key
   // with SidePanel's diff tabs so the preference is app-wide.
   const [diffSplit, setDiffSplit] = useDiffSplit()
+  const workspaceFullscreen = useContext(WorkspaceFullscreenContext)
   const diffInitFileRef = useRef<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(() => savedBaseline != null && content !== savedBaseline)
@@ -2108,7 +2110,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       if (confirmOpen) return
       // An open annotation box owns Escape: the toolbar closes it (and hands the
       // selection back) on its own; the panel must not ALSO close or prompt.
-      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else guardedClose() }
+      if (e.key === 'Escape' && !e.defaultPrevented) { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else if (!workspaceFullscreen?.fullscreen) guardedClose() }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
       // its lazy chunk resolves and only sees keydowns targeting its own
@@ -2126,7 +2128,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
+  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen, workspaceFullscreen?.fullscreen])
 
   const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
 
@@ -2226,7 +2228,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
-              onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
+              onFullscreen={workspaceFullscreen ? undefined : () => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
               onSnapshot={artifactState.existing && !showBinaryCard ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
               wordWrap={wordWrap} onToggleWordWrap={() => setWordWrap(!wordWrap)}
               lineNums={lineNums} onToggleLineNums={() => setLineNums(!lineNums)}

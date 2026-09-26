@@ -105,6 +105,15 @@ describe('side panel browser-tab strip', () => {
       // Bottom edge is transparent, not width-0: a border-b-0 box is 1px
       // asymmetric and sits the glyphs half a pixel low.
       expect(t.className).toContain('border-b-transparent')
+      // 32px chip inside the 40px strip: 8px of strip stays visible above the
+      // tab so it keeps its tab silhouette. The content is centered in the chip
+      // with no offset; the adjacent `+` follows the chip (pinned below), not
+      // the trailing 28px action cells.
+      expect(t.className).toContain('h-8')
+      expect(t.className).not.toContain('h-10')
+      expect(t.querySelector(':scope > span.shrink-0')?.className).not.toContain('translate-y')
+      const label = Array.from(t.querySelectorAll(':scope > span')).find(node => node.textContent?.trim() === t.getAttribute('aria-label'))
+      if (label) expect(label.className).not.toContain('translate-y')
     }
     for (const t of inactive) {
       expect(t.className).not.toContain('side-tab-active')
@@ -126,6 +135,27 @@ describe('side panel browser-tab strip', () => {
     expect(strip).not.toBeNull()
     expect(strip!.className).toContain('items-end')
     expect(strip!.className).toContain('pb-0')
+  })
+
+  it('pins the + trigger to the tab row, not to the trailing action cells', () => {
+    renderPanel()
+    act(() => {
+      openPanelView('slot-tabs', 'browser')
+    })
+    // The strip's trailing actions are 28px cells centered on the 40px row.
+    // The 32px chips are fused to the strip's bottom edge, so their center is
+    // 4px lower. The `+` belongs to the tabs: bottom-aligned with them
+    // (self-end + mb-px puts its 28px cell on the chips' center), never
+    // self-center — that would float its glyph above the tab glyphs beside it.
+    const plus = screen.getByRole('button', { name: 'Open side panel tab' })
+    expect(plus.className).toContain('self-end')
+    expect(plus.className).toContain('mb-px')
+    expect(plus.className).not.toContain('self-center')
+    // The trailing group keeps the row's center: that is what holds the Side
+    // toggle's bounding box identical to its closed-state position.
+    const trailing = document.querySelector('[data-panel-controls-host="dock"]')
+    expect(trailing).not.toBeNull()
+    expect(trailing!.className).toContain('self-center')
   })
 
   it('reserves corner room inside the scrollable tab group (px-2, no -mx)', () => {

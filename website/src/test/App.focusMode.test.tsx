@@ -177,6 +177,14 @@ describe('focus mode — shell layout', () => {
     expect(Number(header.style.zIndex)).toBeGreaterThan(Number(slot.style.zIndex))
   })
 
+  it('keeps the focus topbar above workspace fullscreen', () => {
+    const rule = cssSource().match(
+      /\[data-workspace-fullscreen\] #activity-bar-slot\s*\{[^}]*z-index:\s*(\d+)/,
+    )
+    expect(rule).not.toBeNull()
+    expect(TOPBAR_FOCUS_Z).toBeGreaterThan(Number(rule?.[1]))
+  })
+
   it('collapses both chrome tracks and mounts the peek strips when on', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTestId('focus-mode-toggle')
@@ -496,7 +504,9 @@ describe('focus mode — shell layout', () => {
     // close grace → close → regrow under the pointer → re-open). jsdom applies no
     // CSS, so the layer is the part a test can hold.
     const header = document.querySelector('header.topbar') as HTMLElement
-    expect(header.style.zIndex).toBe('62')
+    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(header.style.zIndex).toBe(String(TOPBAR_FOCUS_Z))
+    expect(rail.style.zIndex).toBe(String(TOPBAR_FOCUS_Z))
     expect(screen.getByTestId('focus-peek-top').className).toContain('z-[61]')
     expect(screen.getByTestId('focus-peek-rail').className).toContain('z-[61]')
 

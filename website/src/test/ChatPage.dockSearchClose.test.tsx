@@ -234,6 +234,21 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
     expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
   })
 
+  it('keeps the side-panel toggle available while find owns the dock', async () => {
+    const store = renderChatPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Toggle side panel' }))
+    expect(store.getState().chat.activityOpen).toBe(true)
+
+    openFind()
+    expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
+    const toggle = await screen.findByRole('button', { name: 'Toggle side panel' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull())
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
   it('opening the diff pane (diff pill) closes the find pane and shows the diff', async () => {
     const store = renderChatPage()
     seedMessage(store)

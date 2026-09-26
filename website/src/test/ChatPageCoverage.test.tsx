@@ -960,7 +960,7 @@ describe('ChatPage pinned-messages panel', () => {
    *  contract ChatPage passes it has been recorded. */
   async function openPins(messages: ChatMessage[], opts: RenderOpts = {}) {
     renderChatPage(messages, opts)
-    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByLabelText('Toggle side panel'))
     await waitFor(() => expect(pinsProps).not.toBeNull())
   }
 
