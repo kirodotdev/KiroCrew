@@ -975,34 +975,65 @@ class TestJudgeTickReportsWhetherItAsked:
             captured_receipt.update(receipt)
             return answers
 
+        started = threading.Event()
+        release = threading.Event()
+        commit: dict = {}
+
         def _late_normalizing_append(row, *, commit_event=None):
-            time.sleep(0.07)
+            # The gate's commit signal is captured so the DRIVE can fire it, on the
+            # event loop, once it has waited past the budget. That makes the commit a
+            # deterministic post-budget fact instead of a real day-file write that has
+            # to beat the production grace, which is what this case kept regressing on.
+            commit["event"] = commit_event
+            started.set()
+            release.wait(5.0)
             return original_append(dict(row), commit_event=commit_event)
 
         monkeypatch.setattr(decisions_gate, "_snapshot", lambda: _Config())
         monkeypatch.setattr(decisions_gate, "_consented_for", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_oracle", lambda *_args, **_kwargs: _InvalidOracle())
-        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.05)
+        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.005)
         monkeypatch.setattr(decisions_log, "append", _late_normalizing_append)
         monkeypatch.setattr(decisions_log, "sweep_expired", lambda: 0)
         monkeypatch.setattr(point.core, "decide", _decide)
 
         trace: dict = {}
-        verdict = asyncio.run(
-            point.judge_tick(
-                "watch it",
-                evidence=[
-                    {
-                        "source": "session:chat-1",
-                        "kind": point.KIND_TRANSCRIPT_TAIL,
-                        "age_s": 1.0,
-                        "text": "new evidence",
-                    }
-                ],
-                trace=trace,
+
+        async def drive():
+            task = asyncio.create_task(
+                point.judge_tick(
+                    "watch it",
+                    evidence=[
+                        {
+                            "source": "session:chat-1",
+                            "kind": point.KIND_TRANSCRIPT_TAIL,
+                            "age_s": 1.0,
+                            "text": "new evidence",
+                        }
+                    ],
+                    trace=trace,
+                )
             )
-        )
+            # Wait for the worker rather than sleeping a guessed interval past the
+            # budget: a sleep chosen to outlast it is what made this case depend on
+            # the runner. Once the worker is parked on ``release`` the budget can only
+            # expire, so "the append lands after the budget" is a fact.
+            deadline = time.monotonic() + 5.0
+            while not started.is_set():
+                assert time.monotonic() < deadline, "append worker never started"
+                await asyncio.sleep(0.001)
+            await asyncio.sleep(decisions_gate._LOG_BUDGET_SECS * 4)
+            # The post-budget commit, fired here on the event loop. Nothing about the
+            # receipt is left to a real write beating the PRODUCTION grace, which stays
+            # at the 0.10 s the gate ships: the signal ``gate._write`` reads is set
+            # synchronously, after the budget has provably expired, so the only thing
+            # the grace still bounds is the wait that is already parked on it.
+            commit["event"].set()
+            release.set()
+            return await task
+
+        verdict = asyncio.run(drive())
         row = judge.verdict_entry(
             verdict,
             trace["evidence_items"],
