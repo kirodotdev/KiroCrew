@@ -5248,6 +5248,16 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
+        # Re-authorize after the await above (see _slot_replaced_while_queued):
+        # ``name`` can be recreated for a different app while this request
+        # queued, and every read of ``slot`` below would be of the stale one.
+        # This path is not a reset but a DISPATCH -- _start_next_queued_turn
+        # runs the turn under ``effective_session_key``, which an unlinked
+        # replacement resolves to the same ``dashboard:<name>`` -- so the stale
+        # request's authorization would start an agent turn, running tools and
+        # writing to the repo, on the replacement's session.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_continue"):
+            return _slot_not_found()
         if slot.running:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
@@ -5299,6 +5309,22 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         denied_409 = await _subagents_attached_response(
             state, slot, effective_session_key(slot), "continue"
         )
+        # The probe above is the LAST suspension this request takes before the
+        # dispatch is committed, so the re-check has to be repeated here: the
+        # one at lock acquisition proves nothing about a replacement that lands
+        # during this await. Everything from here to the commit runs without
+        # yielding -- queue_insert, the lock release and the SEL row are
+        # synchronous, and _start_next_queued_turn takes no suspension point of
+        # its own before spawn_guarded_turn -- so this is the last boundary at
+        # which a replacement can still be noticed, and refusing here is what
+        # keeps the turn off the replacement's session.
+        #
+        # Before ``denied_409`` is acted on, not after: that 409 describes the
+        # children attached under a name this caller does not own, so answering
+        # with it tells a request the swap has unauthorized what is running on
+        # the replacement's session.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_continue"):
+            return _slot_not_found()
         if denied_409 is not None:
             return denied_409
         if not _has_conversation(slot):
@@ -10734,6 +10760,16 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # reset is awaited while holding the lock beyond what the other switch
     # handlers already hold.
     async with slot._lock:
+        # Re-authorize after the await above (see _slot_replaced_while_queued):
+        # ``name`` can be recreated for a different app while this request
+        # queued, and every read of ``slot`` below would be of the stale one.
+        # It has to precede the session-key resolve as well as the app gate: the
+        # key this request would arm ``_pending_reset_history_key`` with is the
+        # shared ``dashboard:<name>``, so a stale request lands its deferred
+        # reset on the REPLACEMENT's session and records an allowed
+        # ``chat_slot_project`` row naming it.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         # The session the deferred reset will address — ``effective_session_key``,
         # never ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
@@ -10774,6 +10810,18 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 await asyncio.to_thread(_save_recent_project, project)
             except Exception:
                 logger.warning("Failed to save recent project", exc_info=True)
+            # Second window, same class as the one at lock acquisition: the save
+            # above is a real suspension, and the effects below it are the ones
+            # that address ``session_key`` -- the deferred reset arms it and the
+            # eager respawn re-creates the session behind it -- so a replacement
+            # landing during the save would have them land on the session it
+            # answers on. Roll the commit back on the way out, identity-gated on
+            # the same ``_CommitToken`` the rebind branch below uses, so a
+            # refused request leaves no write behind on the detached object.
+            if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+                if slot.project is committed_project:
+                    slot.project = old_project
+                return _slot_not_found()
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
         # Only on an actual change — avoids a needless cold start on a no-op set.
