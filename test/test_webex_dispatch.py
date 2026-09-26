@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
 
@@ -2858,6 +2859,130 @@ class TestMidTurnAttachments:
         ], "each room answered in arrival order, and A's second message did not jump B"
 
 
+class TestAPartialDrainInASharedSpace:
+    """Two members of one space, one bubble, and a drain that answers ONE of them.
+
+    ``_route_of`` maps a space to ``space:{room_id}``, so both members share a session
+    key AND a receipt address: their messages are listed on the single bubble, and the
+    drain still collapses only the entries whose sender matches. So the drain that
+    answers the first member meets a bubble that is still listing the second member's
+    queued message -- and that entry is the only handle it has. Retiring it flipped the
+    bubble to "Now answering (1)" over a list of two, erasing an acknowledgement for a
+    message that was still queued, and the second member's own drain then found no entry
+    and recorded them nowhere at all.
+
+    Driven through the real producer and the real pump rather than the registry alone,
+    because the halves live in two modules: which entries collapse is decided here in the
+    transport, and what the bubble does about the remainder is decided in
+    ``messaging/queue_receipt.py``.
+    """
+
+    OTHER = "other@example.com"
+
+    def _dispatcher_and_key(self, client: FakeClient, sessions: FakeSessions):
+        cfg = _cfg_group()
+        cfg.messaging.queue_mode = "queue"
+        cfg.webex.allowed_emails = [_EMAIL, self.OTHER]
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=cfg)
+        return d, d._session_key(webex_dispatch._route_of(_space(email=_EMAIL)))
+
+    @staticmethod
+    def _receipt_bodies(client: FakeClient) -> list[str]:
+        """Every body the receipt bubble was rewritten to, in order."""
+        return [body for _mid, _room, body in client.edits]
+
+    @pytest.mark.asyncio
+    async def test_the_bubble_keeps_the_second_members_line_and_its_handle(self) -> None:
+        client, sessions = FakeClient(), FakeSessions(FakeProvider([]))
+        d, key = self._dispatcher_and_key(client, sessions)
+        sessions._busy = True
+        await d._enqueue_with_receipt(key, "kyle asked", _space("kyle asked", email=_EMAIL))
+        await d._enqueue_with_receipt(key, "other asked", _space("other asked", email=self.OTHER))
+        sessions._busy = False
+        seen: list[tuple[str, str]] = []
+
+        async def _replay(self, inbound, *, interpret_commands=True, drain=True):
+            seen.append((inbound.person_email, inbound.text))
+
+        with mock.patch.object(type(d), "handle_message", _replay):
+            await d._drain_queue(key, _space("kyle asked", email=_EMAIL))
+
+        bodies = self._receipt_bodies(client)
+        assert seen == [(_EMAIL, "kyle asked"), (self.OTHER, "other asked")]
+        # One bubble for the space, never a second one opened beside a stale one.
+        assert len([body for _room, body in client.sent if "Queued" in body]) == 1
+        # The partial drain re-rendered it as STILL QUEUED over what is still queued.
+        partial = bodies[1]
+        assert "Queued (1)" in partial and "other asked" in partial
+        assert "kyle asked" not in partial, "the answered line left the queued list"
+        # The second member's own drain then flips it, and that is the only record.
+        answering = [body for body in bodies if "Now answering" in body]
+        assert answering == [bodies[-1]]
+        assert "other asked" in answering[0] and "kyle asked" not in answering[0]
+        assert not d._queue.has_receipt(key), "nothing is left queued, so the key is released"
+
+    @pytest.mark.asyncio
+    async def test_the_second_member_is_recorded_exactly_once(self) -> None:
+        """No duplicate record, and no record naming the wrong member's text.
+
+        The failure this pins is subtler than a missing record: a retained entry that a
+        later transition mis-reads writes the record TWICE, or writes the first member's
+        text into the record the second member reads.
+        """
+        client, sessions = FakeClient(), FakeSessions(FakeProvider([]))
+        d, key = self._dispatcher_and_key(client, sessions)
+        sessions._busy = True
+        await d._enqueue_with_receipt(key, "kyle asked", _space("kyle asked", email=_EMAIL))
+        await d._enqueue_with_receipt(key, "other asked", _space("other asked", email=self.OTHER))
+        sessions._busy = False
+
+        async def _replay(self, inbound, *, interpret_commands=True, drain=True):
+            return None
+
+        with mock.patch.object(type(d), "handle_message", _replay):
+            await d._drain_queue(key, _space("kyle asked", email=_EMAIL))
+
+        posted = [body for _room, body in client.sent]
+        bodies = self._receipt_bodies(client)
+        assert sum("Now answering" in body for body in bodies) == 1
+        assert not any(
+            "Now answering" in body for body in posted
+        ), "the bubble was editable throughout, so no record needed posting beside it"
+        assert (
+            sum(body.count("other asked") for body in bodies) == 3
+        ), "listed on the grow, on the partial re-render, and on its own record"
+
+    @pytest.mark.asyncio
+    async def test_a_second_thread_in_the_space_does_not_hold_this_bubble(self) -> None:
+        """The other side: a line at another ADDRESS was never rendered here.
+
+        With ``reply_in_thread`` on, two threads of one space are two receipt addresses
+        while still sharing the session key. The sibling thread's line is recorded on the
+        entry but shown on no bubble, so it is owed nothing by this one -- which must
+        therefore retire normally rather than waiting for a message it never listed.
+        """
+        client, sessions = FakeClient(), FakeSessions(FakeProvider([]))
+        d, key = self._dispatcher_and_key(client, sessions)
+        sessions._busy = True
+        here = _space("kyle asked", email=_EMAIL)
+        sibling = replace(_space("other asked", email=self.OTHER), parent_id="THREAD_B")
+        await d._enqueue_with_receipt(key, "kyle asked", here)
+        await d._enqueue_with_receipt(key, "other asked", sibling)
+        sessions._busy = False
+
+        async def _replay(self, inbound, *, interpret_commands=True, drain=True):
+            return None
+
+        with mock.patch.object(type(d), "handle_message", _replay):
+            await d._drain_queue(key, here)
+
+        bodies = self._receipt_bodies(client)
+        assert any("Now answering" in body and "kyle asked" in body for body in bodies)
+        assert all(
+            "other asked" not in body for body in bodies
+        ), "a sibling thread's text is never rendered on this thread's bubble"
+
+
 class TestWebexSharesTheQueueWithOtherTransports:
     """This channel is not alone on its queue, and a foreign entry must not be answered.
 
@@ -3048,7 +3173,7 @@ class TestWebexSharesTheQueueWithOtherTransports:
         sessions.queued = [_entry("1", "mine"), self._foreign()]
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0):
+        async def _flip(session_key, surface, answered, n=0, owner=""):
             deferred.append(n)
 
         async def _replay(self, inbound, *, interpret_commands=True, drain=True):
@@ -3076,7 +3201,7 @@ class TestWebexSharesTheQueueWithOtherTransports:
         ]
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0):
+        async def _flip(session_key, surface, answered, n=0, owner=""):
             deferred.append(n)
 
         async def _replay(self, inbound, *, interpret_commands=True, drain=True):

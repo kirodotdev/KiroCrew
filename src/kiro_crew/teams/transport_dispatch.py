@@ -1164,6 +1164,11 @@ class TeamsDispatcher:
                     self._receipt_surface(replay),
                     [t or ATTACHMENT_PLACEHOLDER for t in texts],
                     own_deferred,
+                    # WHOSE messages this turn answers, through the same helper the
+                    # producer tagged them with: a group conversation shares one bubble
+                    # between members, so a drain answering one of them must leave the
+                    # other's lines -- and their entry -- alone.
+                    _entry_owner(replay),
                 )
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.

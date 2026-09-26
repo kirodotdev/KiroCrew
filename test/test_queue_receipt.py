@@ -387,6 +387,17 @@ def _dispatchers() -> list[Path]:
     return found
 
 
+#: The two names a drain reaches the flip through: the registry transition itself, and a
+#: channel's own thin wrapper around it. Both are checked, because a wrapper that forwards
+#: an owner says nothing about whether its own caller supplied one.
+_FLIP_CALLEES = frozenset({"flip_answering_locked", "_receipt_flip_locked"})
+
+#: Where the owner token sits positionally in both of them, after (session key, address,
+#: answered, deferred). Read as a position rather than as a substring anywhere in the call,
+#: so an argument that merely contains the word cannot stand in for it.
+_FLIP_OWNER_ARG = 4
+
+
 class TestRatchet:
     def test_no_channel_keeps_its_own_receipt_registry_or_lock(self) -> None:
         """A third copy of this subsystem must fail here, not in production."""
@@ -899,3 +910,215 @@ class TestReleasedRecordsAreCounted:
         chat = asyncio.run(go())
         assert all(self.OMITTED not in body for _, body in chat.edits)
         assert all(self.OMITTED not in body for body in chat.sent)
+
+
+class TestAPartialDrainKeepsWhatIsStillQueuedHere:
+    """One bubble, two members, one drain: the flip may not retire what it did not answer.
+
+    A group space routes as one session key AND one address, so every member's mid-turn
+    message lands on the SAME bubble and ``addressed_by`` is true for all of them. The
+    drain still answers ONE principal per turn -- entries collapse only when the sender
+    matches -- so at a shared address a PARTIAL drain is the ordinary case. Retiring the
+    bubble there takes away the only handle the other member's message has: their own
+    later drain finds no entry to flip, so nothing records them at all, and their
+    acknowledgement is erased while the message is still queued.
+
+    The remedy is the guard the partial stop already ships one method below, asked of the
+    bubble's own address. What remains is three different things and only one of them may
+    hold the key, which is why each is its own test here.
+    """
+
+    #: Two members of one space: different principals, ONE address.
+    ALICE = "webex\x00a@example.com\x00SPACE\x00"
+    BOB = "webex\x00b@example.com\x00SPACE\x00"
+
+    @staticmethod
+    async def _shared_bubble(surface: _Surface, lines: list[tuple[str, str]]) -> ReceiptQueue:
+        """One bubble grown over *lines*, the way a two-member burst grows it."""
+        queue = ReceiptQueue()
+        async with queue.lock:
+            for owner, text in lines:
+                await queue.create_or_grow_locked("s", surface, text, owner)
+        return queue
+
+    def test_the_bubble_is_re_rendered_as_queued_not_as_answering(self) -> None:
+        """ "Now answering" would say Bob's message went, and it is still on the queue."""
+
+        async def go() -> _Surface:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+            return s
+
+        s = asyncio.run(go())
+        assert s.edits[-1] == (7, receipt_text(["bob"]))
+        assert all("Now answering" not in body for _, body in s.edits)
+
+    def test_the_entry_survives_so_the_second_members_drain_can_flip_it(self) -> None:
+        """The half that matters: the entry is that message's only handle."""
+
+        async def go() -> ReceiptQueue:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+            return queue
+
+        queue = asyncio.run(go())
+        assert queue.has_receipt("s"), "Bob is still queued, so the bubble keeps its handle"
+        assert queue._receipts["s"].texts == ["bob"], "only the answered line was taken"
+
+    def test_the_second_members_own_drain_then_records_them_exactly_once(self) -> None:
+        """End of the sequence: one record for Bob, and no duplicate of Alice's text."""
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+                await queue.flip_answering_locked("s", s, ["bob"], 0, self.BOB)
+            return queue, s
+
+        queue, s = asyncio.run(go())
+        answering = [body for _, body in s.edits if "Now answering" in body]
+        assert answering == [receipt_text(["bob"], answering=True)]
+        assert not queue.has_receipt("s"), "nothing is left queued here, so the key is released"
+        assert all("alice asked" not in body for body in answering)
+
+    def test_a_refused_re_render_owes_no_record(self) -> None:
+        """These messages have NOT left the queue, so this transition is a grow, not a flip.
+
+        Owing a record here would publish "still queued" as a durable record and make the
+        entry terminal, which stops it being grown -- so the next mid-turn message would
+        open a second bubble beside a bubble that is still correct.
+        """
+
+        async def go() -> ReceiptQueue:
+            s = _Surface(edit_refuses=True)
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+            return queue
+
+        queue = asyncio.run(go())
+        receipt = queue._receipts["s"]
+        assert not receipt.owes_record and receipt.owed_bodies == []
+        assert queue.has_receipt("s"), "a refused re-render leaves the entry LIVE, not terminal"
+
+    def test_a_line_at_another_address_does_not_hold_the_bubble(self) -> None:
+        """The other side of the rule, or it is a mute button rather than a guard.
+
+        A unified DM scope puts two chats on one key, and the other chat's line was never
+        rendered on this bubble -- so it is owed nothing by it and the bubble retires
+        normally. That line keeps its own record through its own chat's bubble.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            here, elsewhere = _Surface(address="here"), _Surface(address="elsewhere")
+            queue = ReceiptQueue()
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", here, "alice asked", self.ALICE)
+                await queue.create_or_grow_locked("s", elsewhere, "bob elsewhere", self.BOB)
+                await queue.flip_answering_locked("s", here, ["alice asked"], 0, self.ALICE)
+            return queue, here
+
+        queue, here = asyncio.run(go())
+        assert here.edits[-1] == (7, receipt_text(["alice asked"], answering=True))
+        assert not queue.has_receipt("s"), "another chat's line is not this bubble's to keep"
+
+    def test_the_answered_principals_own_cap_remainder_still_flips(self) -> None:
+        """``+N deferred`` is the contract for one's OWN remainder, and it is left alone.
+
+        Those messages are answered by this same principal's very next drain and the flip
+        body says so, so they are not a reason to hold the bubble. Only another
+        principal's line is -- theirs is answered by a drain that needs this entry.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "first"), (self.ALICE, "second")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["first"], 1, self.ALICE)
+            return queue, s
+
+        queue, s = asyncio.run(go())
+        assert "Now answering" in s.edits[-1][1] and "+1 deferred" in s.edits[-1][1]
+        assert not queue.has_receipt("s")
+
+    def test_an_unnamed_caller_finalises_the_whole_bubble_as_before(self) -> None:
+        """No principal named, so nothing can be told apart from it. Unchanged behaviour."""
+
+        async def go() -> ReceiptQueue:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                await queue.flip_answering_locked("s", s, ["alice asked"])
+            return queue
+
+        queue = asyncio.run(go())
+        assert not queue.has_receipt("s")
+
+    def test_only_the_answered_count_is_taken_not_the_principals_whole_list(self) -> None:
+        """The record-level half, on the object that holds it.
+
+        A drain collapses in arrival order up to its cap, so what it answered is that
+        principal's EARLIEST lines here -- dropping their lines outright would take a
+        message that is still queued off the list the next re-render is built from.
+        """
+        from kiro_crew.messaging.queue_receipt import QueueReceipt, ReceiptLine
+
+        here = receipt_address_key("fake", "chat")
+        receipt = QueueReceipt(
+            msg_id=7,
+            opened_on=_Surface(),
+            lines=[
+                ReceiptLine(owner=self.ALICE, text="a1", address=here),
+                ReceiptLine(owner=self.BOB, text="b1", address=here),
+                ReceiptLine(owner=self.ALICE, text="a2", address=here),
+            ],
+        )
+        receipt.drop_answered(self.ALICE, 1)
+        assert receipt.texts == ["b1", "a2"]
+        assert receipt.others_at_address(self.ALICE) == ["b1"]
+
+    def test_every_drain_names_the_principal_it_answered(self) -> None:
+        """A source check, because the point is that NO drain is missing the argument.
+
+        A channel wired up later cannot inherit the whole-bubble retire by leaving it
+        out, and no behavioural test can be written in advance for a drain that does not
+        exist yet. Each dispatcher either passes an owner token at the flip or hands one
+        to its own ``_receipt_flip_locked`` wrapper.
+
+        Judged PER CALL, and in the owner's own ARGUMENT POSITION. Asking whether the
+        file mentions an owner somewhere lets a wrapper that forwards one to the registry
+        answer for the whole channel, while the drain call one layer above it -- the call
+        that decides what the wrapper has to forward -- goes unread. And a substring test
+        over every argument passes on any expression that merely contains the word.
+        """
+        seen = 0
+        offenders: list[str] = []
+        for path in _dispatchers():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name not in _FLIP_CALLEES:
+                    continue
+                seen += 1
+                keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                owner = keywords.get("owner")
+                if owner is None and len(node.args) > _FLIP_OWNER_ARG:
+                    owner = node.args[_FLIP_OWNER_ARG]
+                spelled = "" if owner is None else ast.unparse(owner)
+                if spelled in {"", '""', "''"}:
+                    offenders.append(f"{path.parent.name}:{node.lineno} {name}")
+        # A control on the scan itself: an empty offender list must mean the calls were
+        # read and named their principal, not that the pattern matched nothing at all.
+        assert seen >= len(_FLIP_CALLEES) * 2, f"the flip-call scan found only {seen} call(s)"
+        assert not offenders, (
+            "these flip calls do not name whose messages they answered, so the bubble is "
+            f"retired over another principal's still-queued lines: {offenders}"
+        )
