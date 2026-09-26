@@ -3509,6 +3509,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+            # Stamped WITH the binding, not with the row append below: it describes
+            # the link, not the window, and the persist site nests it inside the
+            # same completeness guard the other three fields use. Empty on the mint
+            # path (that `backfill` is the empty sentinel built above), so this is
+            # unconditional rather than a second `adopt_remote_slot` branch.
+            slot.peer_row_watermark = backfill.peer_watermark
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
