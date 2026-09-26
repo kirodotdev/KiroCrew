@@ -484,6 +484,33 @@ class TestGetOrCreatePoolIntegration:
         assert prepare_runtime("kirocrew", "", None).member == ""
         assert path.read_text(encoding="utf-8") == "{"
 
+    def test_capability_refusal_names_the_member_it_belongs_to(self):
+        """The chat card links to the member's Capabilities pane, so the
+        refusal must say whose spec failed; the code stays unchanged."""
+        from kiro_crew import session_capabilities
+        from kiro_crew.agent_capabilities import CapabilityError
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["drifted"] = KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store="default")
+        cfg.save()
+        with (
+            patch.object(
+                session_capabilities.agent_state,
+                "get_capabilities",
+                return_value={"status": "saved"},
+            ),
+            patch.object(
+                session_capabilities,
+                "reconcile_member_capabilities",
+                side_effect=CapabilityError("materialization_changed"),
+            ),
+            pytest.raises(CapabilityError) as caught,
+        ):
+            session_capabilities.prepare_runtime("kirocrew", "drifted", None)
+        assert caught.value.code == "materialization_changed"
+        assert caught.value.member == "drifted"
+
     @pytest.mark.asyncio
     async def test_skips_pool_when_resume_sid_set(self):
         """get_or_create skips pool when session has resume_sid."""

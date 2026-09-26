@@ -13,10 +13,22 @@ import CapabilityRowEditor from './CapabilityRowEditor'
 import { capabilityLabels } from './capabilityLabels'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { retentionValid, transportValue } from './capabilityTransport'
+import { parseErrorCode } from '../../utils/errorReport'
 
 const CATEGORIES = ['mcpServers', 'tools', 'autoApprove', 'skills'] as const
 type Category = typeof CATEGORIES[number]
 const CATEGORY_KEYS = { mcpServers: 'pages.agentsPage.mcp_servers', tools: 'crewCapabilities.tools', autoApprove: 'pages.agentsPage.auto_approved', skills: 'pages.agentsPage.skills' }
+
+/** The member's own agent file an `unreviewable_drift` refusal names: a
+ * basename Crew chose, never a path or a value from the file. */
+function refusedFile(body: string | undefined): string {
+  try {
+    const parsed = JSON.parse(body || '{}') as { file?: unknown }
+    return typeof parsed.file === 'string' ? parsed.file : ''
+  } catch {
+    return ''
+  }
+}
 
 /** Mounted for the entire editor opening, even when a different rail pane is
  * visible. Drafts and signed previews must not follow the active-pane lifetime. */
@@ -79,8 +91,22 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
   const changeRow = (operation: CapabilityOperation) => edit(current => ({ ...current, operations: [...current.operations.filter(op => capabilityKey(op) !== capabilityKey(operation)), operation] }))
   const discard = () => { setDraft(null); setPreview(null); setReviewedRequest(null); setReference(''); setConnectionName(''); prepare.reset(); save.reset() }
   const error = query.error || prepare.error || save.error
-  const errorKey = error instanceof ApiError && error.status === 409 ? 'crewCapabilities.stale' : error instanceof ApiError && [404, 405, 501].includes(error.status) ? 'crewCapabilities.unsupported' : 'crewCapabilities.failed'
+  // Save refuses a drifted file whose change sits in a setting this page cannot
+  // show. The refusal shares the stale save's 409, so it is told apart by the
+  // body code, not the status.
+  const errorCode = error instanceof ApiError ? parseErrorCode(error.body) : undefined
+  // After that refusal, Save cannot help: only the refusal's own instruction
+  // speaks, and the Review/Save control stays off until the draft changes or Reload.
+  const refused = errorCode === 'unreviewable_drift'
+  const errorMessage = refused && error instanceof ApiError
+    ? t('crewCapabilities.unreviewableDrift', { member, file: refusedFile(error.body) })
+    : t(error instanceof ApiError && error.status === 409 ? 'crewCapabilities.stale' : error instanceof ApiError && [404, 405, 501].includes(error.status) ? 'crewCapabilities.unsupported' : 'crewCapabilities.failed')
   const enabled = !!view && view.schema_version === 1 && view.template.available && !query.isError && (view.mode === 'inherited' || draft?.enroll === true)
+  // The member's agent file changed outside this page, so new chats refuse to
+  // start. An empty draft rebuilds the file from the saved setup; Review shows
+  // what that changes before anything is written.
+  const drifted = !!view && view.mode === 'inherited' && view.runtime.status === 'failed' && view.runtime.error_code === 'materialization_changed'
+  const request = draft ?? (drifted ? emptyDraft() : null)
   const operations = draft?.operations ?? []
   const invalidTransport = operations.some(op => {
     if (!retentionValid(op)) return true
@@ -129,8 +155,9 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4" data-testid="capability-scroll-region">
         <PanelSectionHeader label={t('crewCapabilities.title')} />
         {/* No hand-off: capability drafts and signed previews are not saved. */}
-        {error && <ErrorNotice message={t(errorKey)} variant="inline" />}
-        <Btn disabled={busy || query.isFetching} onClick={() => { setPreview(null); setReviewedRequest(null); void query.refetch() }}>{t('crewCapabilities.reload')}</Btn>
+        {error && !refused && <ErrorNotice message={errorMessage} variant="inline" />}
+        {/* Reload clears a refusal too: its copy sends the user here once the file is fixed. */}
+        <Btn disabled={busy || query.isFetching} onClick={() => { setPreview(null); setReviewedRequest(null); prepare.reset(); save.reset(); void query.refetch() }}>{t('crewCapabilities.reload')}</Btn>
         {query.isLoading && <p className="text-muted">{t('components.agentTemplateDetail.loading')}</p>}
         {view && view.schema_version !== 1 && <p className="text-muted">{t('crewCapabilities.unsupported')}</p>}
         {view?.schema_version === 1 && <>
@@ -148,7 +175,7 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
             {!view.template.available
               ? <ErrorNotice message={t('crewCapabilities.parentMissing')} variant="inline" />
               : view.runtime.status === 'failed'
-                ? <ErrorNotice message={t(view.runtime.error_code ? 'crewCapabilityEditing.sourceFailed' : 'crewCapabilities.runtime_failed')} variant="inline" />
+                ? refused ? null : <ErrorNotice message={drifted ? t('crewCapabilities.driftHint', { member }) : t(view.runtime.error_code ? 'crewCapabilityEditing.sourceFailed' : 'crewCapabilities.runtime_failed')} variant="inline" />
                 : <p role="status" className="mt-2">{t(capabilityLabels.runtime[view.runtime.status])}</p>}
             <p className="mt-1 text-muted">{t('crewCapabilities.newRuntime')}</p>
             {view.mode !== 'inherited' && <div className="mt-3">
@@ -256,10 +283,13 @@ export default function CrewCapabilitiesPane({ member, members = [], hidden, onD
       </div>
       <Dialog open={discardOpen} onOpenChange={setDiscardOpen}>
         {view?.schema_version === 1 && <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border bg-card px-5 py-3" data-testid="capability-save-footer">
+          {/* A refusal disables Save, so its reason sits beside Save, not at the top of a scrolled pane. */}
+          {/* No hand-off: the reviewed draft and signed preview are not saved. */}
+          {refused && <div className="w-full"><ErrorNotice message={errorMessage} variant="inline" /></div>}
           <DialogTrigger asChild><Btn disabled={!dirty || busy}>{t('crewCapabilities.discard')}</Btn></DialogTrigger>
-          <SendBtn disabled={!enabled || !draft || busy || invalidTransport || !!connectionName.trim() || !!reference.trim() || draft.revision !== view.revision || (draft.enroll === false && view.mode !== 'inherited')} onClick={() => {
+          <SendBtn disabled={!enabled || !request || busy || refused || invalidTransport || !!connectionName.trim() || !!reference.trim() || request.revision !== view.revision || (request.enroll === false && view.mode !== 'inherited')} onClick={() => {
             if (preview && reviewedRequest) save.mutate({ ...reviewedRequest, preview_token: preview.preview_token })
-            else if (draft) prepare.mutate(draft)
+            else if (request) prepare.mutate(request)
           }}>{busy ? t('crewCapabilities.working') : preview ? t('crewCapabilities.save') : t('crewCapabilities.review')}</SendBtn>
         </div>}
         {/* Keep this Radix layer mounted inside the crew editor's DialogContent:

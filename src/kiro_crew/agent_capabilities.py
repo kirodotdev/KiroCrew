@@ -17,8 +17,9 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
-from kiro_crew import agent_state
-from kiro_crew.agent import agents_spec_lock, kiro_agents_dir_path
+from kiro_crew import agent_state, kiro_cli
+from kiro_crew.agent import OWNED_KIRO_AGENT_FILES, agents_spec_lock, kiro_agents_dir_path
+from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     iter_agent_spec_files,
@@ -48,6 +49,12 @@ class CapabilityError(ValueError):
         super().__init__(code)
         self.code = code
         self.status = status
+        #: Crew member whose spec failed, set by the session start seam.
+        self.member = ""
+        #: Basename of the member's own agent file a refusal is about. Crew names
+        #: it (``target + ".json"``), so a hand edit cannot change it. Never a
+        #: directory: the agents folder is fixed per scope and a path is not.
+        self.file = ""
 
 
 def _digest(value: Any) -> str:
@@ -623,6 +630,77 @@ def _retain_transport(value: Any, paths: Any, original: dict) -> dict:
 
 
 ORDINARY_FIELDS = ("description", "welcomeMessage", "keyboardShortcut")
+
+#: Top-level keys the projection writes itself, so their presence on a saved spec
+#: says nothing about a hand edit (``_snapshot`` already refuses a ``name`` that
+#: disagrees with the binding).
+_STRUCTURAL_FIELDS = frozenset({"name"})
+
+#: Top-level keys outside the reviewed sections that nothing at runtime reads, so a
+#: change in one grants nothing. A positive allowlist, deliberately tiny: an
+#: unlisted key (``toolsSettings``, ``managedToolPolicy``, ``excludedTools``, or
+#: one a later kiro-cli adds) is one the Capabilities review cannot render, so a
+#: change there is refused rather than stamped as reviewed.
+_INERT_FIELDS = frozenset({"$schema"})
+
+#: Keys ``_refresh_dynamic_fields`` rewrites on every projection of a fork of a
+#: Crew-owned template. Their bytes are Crew's own output, not a hand edit, so a
+#: projection that reproduced the file (the no-op branch) has vouched for them.
+#: On any other parent they pass through untouched and stay unvouched.
+_REBUILT_FIELDS = frozenset({"hooks", "includeMcpJson"})
+
+
+def _unvouched(snap: dict, spec: dict) -> list[str]:
+    """Top-level keys of *spec* the review cannot show and this funnel cannot vouch for.
+
+    Stamping ``materialized`` declares the whole file reviewed. The review renders
+    ``SECTIONS`` and ``ORDINARY_FIELDS``; everything else it only passes through.
+    A pass-through key is still safe to stamp when its value is the parent
+    template's (inherited, not edited), when Crew itself wrote its bytes
+    (``_REBUILT_FIELDS`` on an owned-template fork; ``permissions`` equal to the
+    derivation ``_align_permissions`` would emit) or when nothing reads it
+    (``_INERT_FIELDS``). What remains is a hand edit no one has seen.
+    """
+    vouched = set(SECTIONS) | set(ORDINARY_FIELDS) | _STRUCTURAL_FIELDS | _INERT_FIELDS
+    if (
+        snap["parent"].get("scope") == "global"
+        and Path(snap["parent"].get("path", "")).name in OWNED_KIRO_AGENT_FILES
+    ):
+        vouched |= _REBUILT_FIELDS
+    if spec.get("permissions") == derived_agent_permissions(
+        spec.get("allowedTools"), str(spec.get("name", ""))
+    ):
+        vouched.add("permissions")
+    parent = snap["parent_spec"]
+    if "permissions" not in spec and "permissions" in parent:
+        # ``_write_derived_permissions`` removes the block itself on a release
+        # that refuses it, so its absence is then Crew's output, not a hand edit.
+        if not kiro_cli.spec_permissions_supported(kiro_cli.installed_kiro_cli_version()):
+            vouched.add("permissions")
+    # A deleted key is drift too: kiro-cli reads an absent key as its default
+    # (``includeMcpJson`` absent means true), so a dropped parent key can grant.
+    return sorted(
+        key
+        for key in (set(spec) | set(parent)) - vouched
+        if key not in spec or key not in parent or spec[key] != parent[key]
+    )
+
+
+def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
+    """Stamp *spec* as the reviewed bytes, refusing unvouched drift first.
+
+    The one place ``materialized`` is written by a save, so a restamp can only
+    follow the vouch check. When the file drifted since its last review and the
+    projection carries a key the review cannot show, the save fails closed
+    before anything is stamped. Returns whether the file had drifted.
+    """
+    drifted = bool(snap["intent"]) and snap["intent"].get("materialized") != _digest(snap["spec"])
+    if drifted and _unvouched(snap, spec):
+        error = CapabilityError("unreviewable_drift")
+        error.file = snap["target"] + ".json"
+        raise error
+    intent["materialized"] = _digest(spec)
+    return drifted
 
 
 def _maintain_owned(snap: dict, spec: dict) -> None:
@@ -1393,7 +1471,10 @@ class CapabilityService:
                 changed_binding = False
                 for snap, spec, intent, _ in plans:
                     if snap["intent"] and spec == snap["spec"] and intent == snap["intent"]:
-                        intent.setdefault("revision", secrets.token_hex(16))
+                        if _stamp_reviewed(snap, spec, intent):
+                            intent["revision"] = secrets.token_hex(16)
+                        else:
+                            intent.setdefault("revision", secrets.token_hex(16))
                         intent["status"] = "saved"
                         intent["governance_generation"] = snap["generation"]
                         unchanged[snap["target"]] = intent
@@ -1411,7 +1492,7 @@ class CapabilityService:
                         raise CapabilityError("governance_changed")
                     intent["revision"] = secrets.token_hex(16)
                     intent["status"] = "pending"
-                    intent["materialized"] = _digest(spec)
+                    _stamp_reviewed(snap, spec, intent)
                     intent["governance_generation"] = snap["generation"]
                     if snap["intent"]:
                         pending = copy.deepcopy(snap["intent"])

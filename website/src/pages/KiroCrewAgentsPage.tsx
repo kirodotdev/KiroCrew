@@ -1143,20 +1143,25 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   }, [embedded, sheet, params, setParams])
   const linkedCrew = params.get('crew')
   const linkedAvatar = params.get('avatar') === '1'
+  // `&pane=capabilities` lands on the Capabilities pane (a chat error row's
+  // fix link). Held in a ref because opening the editor resets the pane.
+  const linkedCapabilities = params.get('pane') === 'capabilities'
+  const linkedPaneRef = useRef<CrewPaneKey | null>(null)
   useEffect(() => {
     if (!linkedCrew || !agentsData || capabilityDirty || capabilityBusy) return
     const target = agents.find(a => a.name === linkedCrew)
     if (target) {
+      if (linkedCapabilities) linkedPaneRef.current = 'capabilities'
       openEdit(target)
       if (linkedAvatar) setAvatarBuilderOpen(true)
     }
     // An unknown name strips silently: the roster below is the honest answer.
     setParams(prev => {
       const next = new URLSearchParams(prev)
-      next.delete('crew'); next.delete('avatar')
+      next.delete('crew'); next.delete('avatar'); next.delete('pane')
       return next
     }, { replace: true })
-  }, [linkedCrew, linkedAvatar, agentsData, agents, openEdit, setParams, capabilityDirty, capabilityBusy])
+  }, [linkedCrew, linkedAvatar, linkedCapabilities, agentsData, agents, openEdit, setParams, capabilityDirty, capabilityBusy])
 
   /**
    * Deep link: `?new=1` opens the editor in create mode straight away. This is
@@ -1653,7 +1658,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  the toggle ('collapse' target). A ref, not state: it is a continuation,
    *  not something the render reads. */
   const collapseProceed = useRef<(() => void) | null>(null)
-  useEffect(() => { setPane('overview'); setSchedDraft(false); setSchedSaving(false); setDiscardAsk(null) }, [sheet])
+  useEffect(() => {
+    // The linked pane is consumed only by the opening that shows it: with cached
+    // agent data the link effect can run before `sheet` is set, and a null-sheet
+    // pass here would otherwise spend the ref on nothing and land on Overview.
+    if (sheet) { setPane(linkedPaneRef.current ?? 'overview'); linkedPaneRef.current = null } else setPane('overview')
+    setSchedDraft(false); setSchedSaving(false); setDiscardAsk(null)
+  }, [sheet])
 
   /** Which panes hold an edit not yet saved. Compared against the SAVED crew,
    *  so a value the user typed and then typed back is not reported as pending.

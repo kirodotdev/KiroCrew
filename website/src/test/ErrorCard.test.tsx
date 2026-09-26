@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isAuthRequired, isModelUnentitled, isSessionStartFailed, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
@@ -198,6 +198,33 @@ describe('ErrorCard — model entitlement rejection', () => {
  * A signed-out agent process is the other error whose fix is not a retry. Its
  * row swaps Continue for a deep link to the Kiro sign-in card in Settings.
  */
+describe('ErrorCard — member agent file changed', () => {
+  const content = 'materialization_changed: This crew member\'s agent file changed outside the Capabilities page.'
+  const meta = { code: 'materialization_changed', member: 'reviewer' }
+
+  it('offers Open Capabilities and NO Resume, with plain copy instead of the code', () => {
+    const onOpenCapabilities = vi.fn()
+    render(<ErrorCard content={content} meta={meta} onContinue={() => {}} onOpenCapabilities={onOpenCapabilities} />)
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    expect(screen.getByTestId('error-card')).toHaveTextContent(i18nT('pages.chat.errorCard.capabilities_changed'))
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('materialization_changed')
+    fireEvent.click(screen.getByTestId('error-card-open-capabilities'))
+    expect(onOpenCapabilities).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the code on a surface with no crew editor', () => {
+    render(<ErrorCard content={content} meta={meta} />)
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('materialization_changed:')
+    expect(screen.queryByTestId('error-card-open-capabilities')).toBeNull()
+  })
+
+  it('recognises the row only by its structural code', () => {
+    expect(isCapabilitiesChanged({ meta })).toBe(true)
+    expect(isCapabilitiesChanged({ meta: undefined })).toBe(false)
+    expect(isCapabilitiesChanged({ meta: { code: 'memory_unavailable' } })).toBe(false)
+  })
+})
+
 describe('ErrorCard — agent not signed in', () => {
   it('offers Sign in to Kiro and NO Continue, even when resumable', () => {
     const onContinue = vi.fn()

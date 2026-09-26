@@ -137,7 +137,9 @@
     "parentChange_changed": "O modelo principal alterou isto",
     "discardDraftTitle": "Descartar o rascunho de Capacidades?",
     "discardDraftBody": "Descartar as edições de capacidades de {{name}} mantém o editor aberto. Os valores salvos e as credenciais ocultas não mudam. Nenhum outro membro é afetado.",
-    "discardDraftConfirm": "Descartar rascunho"
+    "discardDraftConfirm": "Descartar rascunho",
+    "driftHint": "O arquivo de agente de {{member}} foi editado fora desta página. Pressione Revisar alterações para ver essa edição externa junto com o seu próprio rascunho. Depois de revisar, Salvar grava a correção ou diz por que não consegue.",
+    "unreviewableDrift": "O arquivo de agente {{file}} de {{member}} foi editado fora desta página em uma configuração que esta página não consegue mostrar, então esta página não consegue gravar a correção e Revisar alterações fica desativado. Desfaça essa edição externa em ~/.kiro/agents/{{file}} e depois pressione Recarregar do servidor."
   },
   "api": {
     "client": {
@@ -10099,7 +10101,9 @@
         "sign_in_hint": "Abra Configurações → Visão geral → Login do Kiro, entre novamente e reenvie sua mensagem.",
         "feature_request_form": "Abrir o formulário de sugestão de recurso",
         "feature_request_form_hint": "Seu uso mensal acabou — envie sua sugestão no GitHub por este formulário em vez disso. Este formulário dispensa o agente: ele abre o formulário de issue do GitHub para você preencher e não consome nada do seu uso mensal.",
-        "session_start_repeat_hint": "A sessão do agente falhou ao iniciar mais de uma vez seguida, então retomar apenas repetiria o mesmo início. Reinicie o gateway em um terminal com {{command}} e reenvie sua mensagem."
+        "session_start_repeat_hint": "A sessão do agente falhou ao iniciar mais de uma vez seguida, então retomar apenas repetiria o mesmo início. Reinicie o gateway em um terminal com {{command}} e reenvie sua mensagem.",
+        "capabilities_changed": "O arquivo de agente deste membro da crew foi alterado fora da página Capabilities, então novos chats não podem começar. Abra Capabilities, revise a alteração e salve-a; depois inicie um novo chat.",
+        "open_capabilities": "Abrir Capabilities"
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

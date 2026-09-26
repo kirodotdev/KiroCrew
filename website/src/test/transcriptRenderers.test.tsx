@@ -441,6 +441,42 @@ describe('a session start that failed twice in a row swaps Resume for the restar
   })
 })
 
+describe('a changed member agent file routes to Capabilities, never Resume', () => {
+  const row = msg('error', { content: 'materialization_changed: changed', meta: { code: 'materialization_changed', member: 'reviewer' } })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('opens the named member and withholds Continue', () => {
+    const opened: string[] = []
+    const el = render(row, { ...recoverable, onOpenCapabilities: name => { opened.push(name) } }, { index: 0, messages: [row] }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    el.props.onOpenCapabilities()
+    expect(opened).toEqual(['reviewer'])
+  })
+
+  it('still offers Capabilities when the member name is empty', () => {
+    const emptyMemberRow = msg('error', {
+      content: 'materialization_changed: changed',
+      meta: { code: 'materialization_changed', member: '' },
+    })
+    const opened: string[] = []
+    const el = render(
+      emptyMemberRow,
+      { ...recoverable, onOpenCapabilities: name => { opened.push(name) } },
+      { index: 0, messages: [emptyMemberRow] },
+    ) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.onOpenCapabilities).toBeTypeOf('function')
+    el.props.onOpenCapabilities()
+    expect(opened).toEqual([''])
+  })
+
+  it('still withholds Continue on a surface with no crew editor', () => {
+    const el = render(row, recoverable, { index: 0, messages: [row] }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.onOpenCapabilities).toBeUndefined()
+  })
+})
+
 describe('rows the defaults already draw correctly are left to them', () => {
   it('keeps the default entry for the rows this module does not claim', () => {
     expect(idFor(msg('user'))).toBe('user')
