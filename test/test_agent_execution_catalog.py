@@ -17,6 +17,9 @@ from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.dashboard.handlers import agent_catalog
+from kiro_crew.platform import build_default_context, set_context
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.defaults import DefaultProviderRegistry
 
 
 def _template(name: str, **kwargs) -> AgentInfo:
@@ -248,3 +251,48 @@ def test_lineage_stem_cannot_be_published_as_an_alias(monkeypatch):
     monkeypatch.setattr(agent_catalog, "list_agents", lambda **kwargs: [agent])
     monkeypatch.setattr(agent_catalog.agent_state, "all_fork_info", lambda: {"private-stem": {}})
     assert agent_catalog._templates(Path("project")) == []
+
+
+@pytest.mark.asyncio
+async def test_member_rows_carry_the_companion_runtime_policy(catalog):
+    policy = {"runtime": "engine-a", "model": "selectable"}
+
+    def policy_getter(name):
+        return policy if name == "reviewer" else None
+
+    provider = SimpleNamespace(agent_runtime_policy=policy_getter)
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    members = [r for r in rows if r["selection_kind"] == "member"]
+    templates = [r for r in rows if r["selection_kind"] == "template"]
+    assert members[0]["runtime_policy"] == policy
+    assert all("runtime_policy" not in r for r in members[1:])
+    assert all("runtime_policy" not in r for r in templates)
+
+
+@pytest.mark.asyncio
+async def test_catalog_rows_omit_runtime_policy_without_a_companion(catalog):
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    assert all("runtime_policy" not in r for r in rows)
+
+
+def test_public_provider_has_no_runtime_policy():
+    assert DefaultProviderRegistry().agent_runtime_policy("reviewer") is None
+
+
+@pytest.mark.parametrize("failure", [OSError, PlatformCompositionError])
+def test_runtime_policy_lookup_preserves_composition_failures(catalog, failure):
+    provider = SimpleNamespace(agent_runtime_policy=Mock(side_effect=failure("lookup failed")))
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+
+    if failure is PlatformCompositionError:
+        with pytest.raises(PlatformCompositionError, match="lookup failed"):
+            agent_catalog._agent_runtime_policy(None, "reviewer")
+    else:
+        assert agent_catalog._agent_runtime_policy(None, "reviewer") is None

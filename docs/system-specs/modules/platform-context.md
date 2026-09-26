@@ -24,6 +24,11 @@ The dependency runs one way: **the companion depends on the core; the core never
 depends on the companion.** Because the core ships a default for every
 interface, the public edition is complete standalone.
 
+The execution catalog reads `ProviderRegistry.agent_runtime_policy(engine_identity)`
+through `current_context()` and `safe_context_call`. The public adapter returns
+`None`; companion policy is advisory UI metadata. Composition failures propagate,
+while other lookup failures omit the policy.
+
 ## PlatformContext
 
 `kiro_crew.platform.context.PlatformContext` is an immutable dataclass holding the chosen adapter for every extension point, plus four carriers. Boot installs the initial context once; a validated central-governance refresh replaces the active context only to carry a new `governance` value. `policy_distribution.apply_ceiling` performs that replacement through `set_context`, and `governance_generation()` makes dependent profile snapshots refresh rather than serving a profile composed against a retired ceiling:

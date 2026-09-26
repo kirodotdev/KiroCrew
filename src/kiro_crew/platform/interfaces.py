@@ -89,6 +89,10 @@ class ProviderRegistry(Protocol):
         """
         ...
 
+    def agent_runtime_policy(self, engine_identity: str) -> dict[str, Any] | None:
+        """Return advisory catalog policy for an engine, or None in the public edition."""
+        ...
+
     def register_acp_backends(self) -> None:
         """Register any extra ACP backends (no-op in the public edition).
 
