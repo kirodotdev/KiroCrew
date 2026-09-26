@@ -36,7 +36,12 @@ from kiro_crew.hooks import (
     ScriptHookStore,
     ToolHookResult,
 )
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, LLMEvent
+from kiro_crew.providers.base import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TOOL_CALL,
+    LLMEvent,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -289,6 +294,9 @@ def _turn_state(tmp_path, backend: str):
     client = AsyncMock()
     client.capabilities = capabilities_for(backend)
     client.cwd = ""
+    # A real client records no projected batch until a KAS session registers one.
+    client.kas_auto_approved_capabilities = None
+    client.kas_projected_agent = ""
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
@@ -343,6 +351,116 @@ async def _one_shell_call(state, client) -> None:
         await _run_chat(state, slot, "hello")
         if slot.task:
             await slot.task
+
+
+async def _one_turn(state, client, events) -> None:
+    """One chat turn whose stream yields *events*, then completes."""
+
+    async def stream(*a, **k):
+        for event in events:
+            yield event
+        yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+    calls = {"n": 0}
+
+    def _stream(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return stream()
+
+        async def done():
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        return done()
+
+    client.stream = MagicMock(side_effect=_stream)
+    client.context_usage_pct = MagicMock(return_value=0.0)
+    slot = _ChatSlot("chat-1-spec-kas")
+    slot.agent = "a1"
+    with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await _run_chat(state, slot, "hello")
+        if slot.task:
+            await slot.task
+
+
+def _page_hook(state, matcher: str) -> None:
+    state._hook_store._hooks = {
+        "page": ScriptHook(id="page", event=HOOK_EVENT_PRE_TOOL_USE, matcher=matcher, command="p")
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matcher", ["@github/create_issue", "mcp__github__create_issue"])
+async def test_kas_a_hooks_page_mcp_hook_meets_the_call_by_its_server_identity(
+    tmp_path, agents_dir, monkeypatch, matcher
+):
+    ran = _blocking_runner(monkeypatch)
+    _write_spec(agents_dir, "fs_write")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_KAS)
+    _page_hook(state, matcher)
+    await _one_turn(
+        state,
+        client,
+        [
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="Create issue",
+                request_id="req-1",
+                tool_name="create_issue",
+                mcp_server_name="github",
+                harness_tool_id="create_issue",
+            )
+        ],
+    )
+    assert ran == ["page"]
+    client.reject_tool.assert_called_once()
+    client.approve_tool.assert_not_called()
+
+
+def _fetch_frames() -> list:
+    # KAS sends the tool-call frame BEFORE the permission request.
+    return [
+        LLMEvent(kind=EVENT_TOOL_CALL, title="Fetch URL", tool_call_id="t-1"),
+        LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Fetch URL",
+            request_id="req-1",
+            tool_call_id="t-1",
+            harness_tool_id="web_fetch",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kas_a_gated_chat_call_runs_its_hook_once_on_the_permission_request(
+    tmp_path, agents_dir, monkeypatch
+):
+    ran = _blocking_runner(monkeypatch)
+    _write_spec(agents_dir, "fs_write")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_KAS)
+    _page_hook(state, "web_fetch")
+    informational = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", informational)
+    await _one_turn(state, client, _fetch_frames())
+    assert ran == ["page"]
+    informational.assert_not_awaited()
+    client.reject_tool.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_kiro_cli_a_chat_tool_call_still_fires_its_informational_hook(
+    tmp_path, agents_dir, monkeypatch
+):
+    _write_spec(agents_dir, "fs_write")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_KIRO)
+    informational = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", informational)
+    await _one_turn(
+        state, client, [LLMEvent(kind=EVENT_TOOL_CALL, title="Fetch URL", tool_call_id="t-1")]
+    )
+    informational.assert_awaited_once()
+    assert informational.await_args.args[1] == "Fetch URL"
 
 
 @pytest.mark.asyncio

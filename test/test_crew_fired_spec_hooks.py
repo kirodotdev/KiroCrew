@@ -316,6 +316,11 @@ async def test_an_in_turn_agent_switch_reloads_the_new_agents_spec_hooks(tmp_pat
 
     client.stream = _stream
     client.stream_command = _stream
+    await _run_switch_turn(state, slot)
+    assert seen == ["helper", "other"]
+
+
+async def _run_switch_turn(state, slot) -> None:
     try:
         await chat_runner._run_chat(state, slot, "/agent other")
     finally:
@@ -324,4 +329,82 @@ async def test_an_in_turn_agent_switch_reloads_the_new_agents_spec_hooks(tmp_pat
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-    assert seen == ["helper", "other"]
+
+
+@pytest.mark.asyncio
+async def test_an_in_turn_switch_that_leaves_the_session_stale_stops_the_turn(
+    tmp_path, monkeypatch
+):
+    """A switch to an agent whose hooks cover what the session auto-approves ends
+    the turn before anything after it is handled: those calls would never reach the
+    permission request, so the hooks could not see them."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.agent_discovery import clear_list_agents_cache
+    from kiro_crew.agent_sdk import spec_hooks
+    from kiro_crew.config.loader import refresh_materialized_agents
+    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.providers.base import (
+        EVENT_AGENT_SWITCHED,
+        EVENT_COMPLETE,
+        EVENT_PERMISSION_REQUEST,
+        LLMEvent,
+    )
+
+    d = kiro_agents_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for name in ("helper", "other"):
+        (d / f"{name}.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+    clear_list_agents_cache()
+    refresh_materialized_agents()
+
+    async def no_hooks(state, slot, client, agent, *, is_new):
+        return [], False, None
+
+    async def stale(provider, agent_id):
+        return agent_id == "other"
+
+    monkeypatch.setattr(chat_runner, "_prepare_spec_hooks", no_hooks)
+    monkeypatch.setattr(spec_hooks, "hook_projection_stale", stale)
+    state = _make_state(tmp_path)
+    client = MagicMock()
+    client.context_usage_pct = MagicMock(return_value=50.0)
+    client.shutdown = AsyncMock()
+    client.cancel = AsyncMock()
+    client.approve_tool = AsyncMock()
+    client.reject_tool = AsyncMock()
+    state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+    state.sessions.release = MagicMock()
+    state.sessions.reset = AsyncMock()
+    state.sessions.set_approval_policy = MagicMock()
+    state.sessions.check_context_usage = MagicMock()
+    state.sessions.record_success = MagicMock()
+    state.sessions.record_failure = AsyncMock()
+    state.sessions.get_slack_link = MagicMock(return_value=(None, None))
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state.is_yolo_active = MagicMock(return_value=False)
+    state._background_tasks = set()
+    slot = state.get_or_create_slot("spec-hooks-stale-switch-slot")
+    slot.agent = "helper"
+
+    async def _stream(msg):
+        yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text="other")
+        yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="Fetch URL", request_id="r-1")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    client.stream = _stream
+    client.stream_command = _stream
+    recorded: list = []
+    monkeypatch.setattr(
+        chat_runner, "record_provider_agent_switch", lambda *a, **k: recorded.append(a) or None
+    )
+    await _run_switch_turn(state, slot)
+    client.cancel.assert_awaited()
+    client.approve_tool.assert_not_awaited()
+    client.reject_tool.assert_not_awaited()
+    # Refused BEFORE the switch is recorded: the slot keeps its agent.
+    assert recorded == []
+    assert slot.agent == "helper"

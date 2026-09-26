@@ -22,6 +22,13 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
 )
+from kiro_crew.agent_sdk.spec_hooks import (
+    invalidate_stale_kas_session,
+    refuse_stale_switch,
+    reproject_claimed_session,
+    running_agent,
+    turn_spec_hooks,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
@@ -30,12 +37,14 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     get_global_hook_store,
     hook_gate_kwargs,
+    permission_pre_tool_block,
 )
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.base import (
+    EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -411,6 +420,10 @@ async def execute_task(
     stop_recoveries = 0
     dependency_waits = 0
     attempt = 0
+    # The agent a mid-step mode switch moved the session to, carried across
+    # attempts so a retry on that same session is gated by ITS hooks. Only the
+    # hook lookup reads it; the claim still asks for the step's own agent.
+    switched_agent = ""
     previous_error = ""
     consecutive_same_error = 0
     result_prefix = ""
@@ -476,13 +489,25 @@ async def execute_task(
                 ctx, f"{SESSION_PREFIX}:{run.task_id}:runtime", session_key
             )
             await check_context(session_key, sessions)
-            client, is_new, _resumed = await sessions.open_task_session(
-                f"{SESSION_PREFIX}:{run.task_id}:runtime",
-                session_key,
-                agent=agent or None,
-                cwd=str(work_dir) if work_dir else None,
-            )
+            # A reused KAS session whose registered batch auto-approves what a
+            # PreToolUse hook now covers is reset, so the claim re-projects it.
+            await invalidate_stale_kas_session(sessions, session_key, agent or "kirocrew")
+
+            def _claim():
+                return sessions.open_task_session(
+                    f"{SESSION_PREFIX}:{run.task_id}:runtime",
+                    session_key,
+                    agent=agent or None,
+                    cwd=str(work_dir) if work_dir else None,
+                )
+
+            client, is_new, _resumed = await _claim()
             _acquired = True
+            # Decided again under the lease: the pre-claim reset is declined for a
+            # session another turn holds, and this claim may have waited for it.
+            client, is_new, _resumed = await reproject_claimed_session(
+                sessions, session_key, agent or "kirocrew", (client, is_new, _resumed), _claim
+            )
             _turn_provider = client
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
@@ -510,6 +535,18 @@ async def execute_task(
             else:
                 full_prompt = task_prompt
 
+            # The step's agent spec hooks, when its backend never receives them
+            # (none on kiro-cli, whose harness runs the field itself). On such a
+            # backend PreToolUse hooks gate each permission request; the KAS
+            # projection turns every call they cover into one.
+            # A step with no agent runs the runtime's default one, and that is
+            # the spec the session's projection gated.
+            # The agent this session runs NOW: a retry on a session an earlier
+            # attempt switched runs the switched-to agent, so its hooks gate.
+            _spec = await turn_spec_hooks(
+                client, running_agent(client, switched_agent or agent or "kirocrew")
+            )
+
             result_text = ""
             _chunk_count = 0
             _complete_event: LLMEvent | None = None
@@ -530,6 +567,35 @@ async def execute_task(
                     run.last_task_time = _time.time()
                     run.tokens_used += max(1, len(event.text) // 4)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
+                    _spec_block = None
+                    if _spec.gated:
+                        _spec_block = (
+                            "the agent spec's hooks could not be read"
+                            if _spec.unreadable
+                            else await permission_pre_tool_block(
+                                get_global_hook_store(),
+                                _spec.hooks,
+                                _spec.cwd,
+                                event.title,
+                                event.tool_input,
+                                tool_identity=event.tool_name,
+                                mcp_server=event.mcp_server_name,
+                                harness_tool_id=event.harness_tool_id,
+                                parent_session_key=session_key or None,
+                                agent_role=(agent or "kirocrew"),
+                            )
+                        )
+                    if _spec_block is not None:
+                        logger.warning("task step PreToolUse hook blocked a tool: %s", _spec_block)
+                        await _reject_and_log(
+                            client,
+                            sel(),
+                            session_key,
+                            agent,
+                            event,
+                            metadata={"reason": "spec_hook_deny"},
+                        )
+                        continue
                     # Honor the user-configured auto-approve trust (hook
                     # TOOL_AUTO_APPROVE from hooks.auto_approve_tools) before the
                     # interactive prompt, so explicit trust is respected instead
@@ -701,24 +767,35 @@ async def execute_task(
                             "source": run.source,
                         },
                     )
+                elif event.kind == EVENT_AGENT_SWITCHED:
+                    # A mid-run mode switch runs a different agent, so ITS spec hooks gate
+                    # the permission requests that follow, not the previous agent's. An
+                    # unnamed switch falls back to the agent the session recorded for it.
+                    switched_agent = event.text or switched_agent
+                    _spec = await turn_spec_hooks(client, event.text or "")
+                    await refuse_stale_switch(client, event.text or "")
                 elif event.kind == EVENT_TOOL_CALL:
-                    # Fire PreToolUse hooks for auto-approved tools (informational only)
+                    # Fire PreToolUse hooks for auto-approved tools (informational only).
+                    # On a gated turn this frame precedes the call's permission request,
+                    # so nothing has approved it yet.
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=agent or "kirocrew",
                         source="taskrunner",
                         tool_name=event.title,
                         tool_kind=event.tool_kind,
-                        outcome="auto_approved",
+                        outcome="invoked" if _spec.gated else "auto_approved",
                         metadata={"task": task.index, "task_id": run.task_id},
                     )
-                    await fire_tool_hooks(
-                        get_global_hook_store(),
-                        event.title,
-                        event.tool_input,
-                        parent_session_key=session_key or None,
-                        agent_role=(agent or "kirocrew"),
-                    )
+                    # A gated turn runs them on the permission request instead.
+                    if not _spec.gated:
+                        await fire_tool_hooks(
+                            get_global_hook_store(),
+                            event.title,
+                            event.tool_input,
+                            parent_session_key=session_key or None,
+                            agent_role=(agent or "kirocrew"),
+                        )
                 elif event.kind == EVENT_COMPLETE:
                     _complete_event = event
                     break

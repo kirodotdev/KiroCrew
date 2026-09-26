@@ -70,8 +70,11 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import (
+    AUTO_APPROVABLE_CAPABILITIES,
     allowed_tools_to_permissions,
+    auto_approved_capabilities,
     merge_user_permissions,
+    withhold_hook_gated_auto_approval,
 )
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -82,7 +85,13 @@ from kiro_crew.agent_discovery import (
     spec_welcome_message,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
+from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    get_global_hook_store,
+    persisted_hook_store,
+)
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
@@ -717,6 +726,7 @@ def to_client_custom_agent(
     member_dispatch: bool = False,
     crew_panel: bool = False,
     session_key: str = "",
+    pre_tool_hook_matchers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -741,6 +751,12 @@ def to_client_custom_agent(
     capabilities are assigned per server and withdrawn by separate operator
     switches: a member may hold session control without a panel, or a panel
     without session control.
+
+    *pre_tool_hook_matchers* are the matchers of every PreToolUse hook this
+    session's calls meet on Crew's permission path (the spec's own and the Hooks
+    page's). A capability one of them covers is not auto-approved, so its calls
+    reach that path; see
+    :func:`kiro_crew.acp.kas_permissions.withhold_hook_gated_auto_approval`.
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -841,6 +857,14 @@ def to_client_custom_agent(
         allowlist_present=isinstance(allowed_tools_input, list),
         agent_id=agent_id,
     )
+    permissions = withhold_hook_gated_auto_approval(
+        permissions,
+        pre_tool_hook_matchers,
+        audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
+            refs, outcome, reason, agent_id
+        ),
+        agent_id=agent_id,
+    )
     if permissions:
         out["permissions"] = permissions
 
@@ -905,6 +929,38 @@ def to_client_custom_agent(
 _SPEC_SCAN_MEMO: AgentsDirMemo[dict[str, Any] | None] = AgentsDirMemo()
 
 
+def _declared_spec(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
+    """The spec that declares *agent_id*, memoised; the one directory scan both
+    :func:`load_agent_spec` and :func:`agent_spec_absent` read."""
+    return _SPEC_SCAN_MEMO.get(
+        agents_dir,
+        agent_id,
+        lambda: spec_by_declared_name(
+            agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
+        ),
+    )
+
+
+def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
+    """Whether *agent_id* has no spec at all in *agents_dir*.
+
+    True when no spec declares the id and neither ``<agent_id>.json`` nor
+    ``<agent_id>.md`` exists: a KAS built-in mode (``vibe``) a session switched
+    to. A spec that exists but cannot be read is NOT absent; the caller keeps
+    its own fail-closed answer for that. Raises when the directory cannot be
+    scanned, as :func:`load_agent_spec` does.
+    """
+    if any(p.is_file() for p in agent_spec_candidates(agents_dir, agent_id)):
+        return False
+    try:
+        declared = _declared_spec(agents_dir, agent_id)
+    except AmbiguousAgentSpecError:
+        return False
+    except OSError as exc:
+        raise KasAgentTranslationError(f"agents dir {agents_dir} is unreadable: {exc}") from exc
+    return declared is None
+
+
 def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     """Read a materialized agent spec.
 
@@ -961,13 +1017,7 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     candidates = agent_spec_candidates(agents_dir, agent_id)
     path = candidates[0]
     try:
-        declared = _SPEC_SCAN_MEMO.get(
-            agents_dir,
-            agent_id,
-            lambda: spec_by_declared_name(
-                agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
-            ),
-        )
+        declared = _declared_spec(agents_dir, agent_id)
     except AmbiguousAgentSpecError as exc:
         raise KasAgentTranslationError(str(exc)) from exc
     except OSError as exc:
@@ -1001,6 +1051,74 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise KasAgentTranslationError(f"agent spec {path} is not an object")
     return raw
+
+
+def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ...]:
+    """The matchers of every PreToolUse hook a KAS session's calls meet.
+
+    Two sources, both fired by Crew's permission path: the spec's own ``hooks``
+    (Crew fires them on KAS, see :mod:`kiro_crew.agent_sdk.spec_hooks`) and the
+    Hooks page's store. The projection withholds auto-approval for what they cover,
+    because an auto-approved call never reaches that path. Read at session start:
+    a Hooks-page hook added later gates auto-approved calls from the next session
+    on.
+
+    Fails toward gating. A source that cannot be read answers ``("*",)``, which
+    withholds every auto-approval, rather than an empty tuple that would let a call
+    past a hook nobody could list.
+    """
+    try:
+        # A process that registers no store (``kirocrew run``) still has the
+        # saved hooks on disk, and they still gate its calls; a saved file that
+        # cannot be read raises, which withholds every auto-approval below.
+        store = get_global_hook_store() or persisted_hook_store()
+        hooks = [*spec_script_hooks(agent_id, spec), *store.list_all()]
+    except Exception:  # noqa: BLE001 - fail toward gating, see the docstring
+        logger.warning(
+            "PreToolUse hooks for %r could not be listed; no call is auto-approved",
+            agent_id,
+            exc_info=True,
+        )
+        return ("*",)
+    return tuple(
+        h.matcher
+        for h in hooks
+        if h.enabled and h.event == HOOK_EVENT_PRE_TOOL_USE and h.command.strip()
+    )
+
+
+def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str] | None:
+    """What the projection sent for *agent_id* auto-approves, or ``None`` with no
+    projection (a host that took its agent at spawn time).
+
+    Recorded on the session when the batch is handed over, because a live session
+    keeps the batch it registered: ``set_mode`` activates, it does not re-send. The
+    turn loop compares this with what the PreToolUse hooks cover NOW (see
+    :func:`kiro_crew.agent_sdk.spec_hooks.hook_projection_stale`).
+    """
+    if not isinstance(custom_agents, list) or not custom_agents:
+        return None
+    entries = [a for a in custom_agents if isinstance(a, dict)]
+    if not entries:
+        return None
+    entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
+    return auto_approved_capabilities(entry.get("permissions"))
+
+
+def switched_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]:
+    """What the session auto-approves once a KAS mode switch moves it to *agent_id*.
+
+    ``set_mode`` activates a definition KAS already holds, so the answer is the
+    registered entry for *agent_id* when the batch carries one. A mode the batch
+    does not carry (a KAS built-in) runs permissions Crew never projected, so every
+    auto-approvable capability is assumed approved: any PreToolUse hook then reads
+    the session as stale, which is the side that re-projects.
+    """
+    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
+    entry = next((a for a in entries if a.get("id") == agent_id), None)
+    if entry is None:
+        return frozenset(AUTO_APPROVABLE_CAPABILITIES)
+    return auto_approved_capabilities(entry.get("permissions"))
 
 
 def build_kas_custom_agents(
@@ -1048,6 +1166,7 @@ def build_kas_custom_agents(
             member_dispatch=member_dispatch,
             crew_panel=crew_panel,
             session_key=session_key,
+            pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
         )
     ]
 

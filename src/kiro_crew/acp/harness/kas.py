@@ -144,6 +144,20 @@ class KasHarness(MembershipHarness):
 
     # ── Seam 3: session/new and session/load extras ──
 
+    def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
+        """Record what the batch this session registered auto-approves.
+
+        KAS keeps that batch for the session's life (``set_mode`` activates an entry
+        of it, it re-sends nothing), so the turn loop compares this with the
+        PreToolUse hooks as they stand now, and a mode switch re-reads the entry for
+        the agent it moves to.
+        """
+        handle.kas_auto_approved = kas_agents_mod.projected_auto_approved(
+            custom_agents, active_agent
+        )
+        handle.kas_projected_agent = active_agent if custom_agents else ""
+        handle.kas_registered_agents = list(custom_agents) if custom_agents else []
+
     async def session_extras(
         self,
         agent: str,

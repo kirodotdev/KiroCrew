@@ -381,6 +381,16 @@ class HarnessAdapter(abc.ABC):
         took its agent at spawn time.
         """
 
+    def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
+        """Record on a new or resumed session's *handle* what its agent batch grants.
+
+        For a host whose PreToolUse hooks Crew runs at the permission request, so
+        the turn loop can tell when that batch auto-approves a call a hook covers.
+        A host that took its agent at spawn time registers no batch and records
+        nothing, which is this default: its handle keeps the declared defaults.
+        """
+        return None
+
     @abc.abstractmethod
     def session_mcp_servers(
         self,

@@ -7051,6 +7051,9 @@ class AcpRuntime:
         # session's permission requests. Empty for a host with no mirror and for a
         # caller-supplied array, and the handle's check is a no-op on empty.
         handle.spec_denied_tools = denied_tools
+        # What the registered agent batch grants, recorded by the harness that
+        # registered one; a host that took its agent at spawn time records nothing.
+        self._harness.record_session_projection(handle, kas_agents, active_agent)
         if self._mirrored_spec_check_needed(mirrored_snapshot):
             await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
@@ -7630,6 +7633,9 @@ class AcpRuntime:
         # Mirrors create_session: the resumed session re-declares the array, so it
         # re-derives the deny set that array came with and re-checks the generation.
         handle.spec_denied_tools = denied_tools
+        # Mirrors create_session: the re-registered batch is what this session now
+        # runs.
+        self._harness.record_session_projection(handle, kas_agents, active_agent)
         if self._mirrored_spec_check_needed(mirrored_snapshot):
             await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
         handle.store_session_config(resp)

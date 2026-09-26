@@ -67,7 +67,13 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.agent_sdk.spec_hooks import crew_fired_spec_hooks, spec_hook_tool_names
+from kiro_crew.agent_sdk.spec_hooks import (
+    crew_fired_spec_hooks,
+    invalidate_stale_kas_session,
+    refuse_stale_switch,
+    reproject_claimed_session,
+    session_agent,
+)
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -266,6 +272,7 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    pre_tool_match_names,
     safe_read_file,
     safe_read_file_bytes_nolink,
     validate_file_path,
@@ -897,14 +904,20 @@ async def _prepare_spec_hooks(
     every other session gets ``([], False, None)`` without the spec being read.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
-    one notice row, so the agent does not run without it silently.
+    one notice row, and so does a spec with ``confirm: true`` hooks, which Crew
+    skips because it cannot ask for the confirmation. Neither runs silently.
     """
-    if not agent or not capabilities_of(client).crew_fires_spec_hooks:
+    if not capabilities_of(client).crew_fires_spec_hooks:
         return [], False, None
     cwd = getattr(client, "cwd", "")
     work_dir = cwd if isinstance(cwd, str) and cwd else None
+    agent = session_agent(client, agent)
+    if not agent:
+        # Whose hooks apply is unknown, so PreToolUse fails closed.
+        logger.warning("no agent is known for this KAS session; tool calls are blocked")
+        return [], True, work_dir
     try:
-        hooks, lost = await asyncio.to_thread(crew_fired_spec_hooks, agent)
+        hooks, lost, unconfirmable = await asyncio.to_thread(crew_fired_spec_hooks, agent)
     except Exception:  # noqa: BLE001 - the caller fails PreToolUse closed
         logger.warning(
             "agent spec hooks for %r could not be read; tool calls are blocked",
@@ -920,6 +933,14 @@ async def _prepare_spec_hooks(
             _redact_display_text(_spec_keys_notice(agent, lost)),
             "msg msg-info",
         )
+    if is_new and unconfirmable:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable)),
+            "msg msg-info",
+        )
     return hooks, False, work_dir
 
 
@@ -928,6 +949,15 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
     return (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
+    )
+
+
+def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
+    """The session-start notice for ``confirm: true`` spec hooks this backend skips."""
+    hooks = "hook asks" if count == 1 else "hooks ask"
+    return (
+        f"ℹ️ Agent {agent} has {count} {hooks} to be confirmed before running. "
+        "This backend cannot ask, so they do not run in this session."
     )
 
 
@@ -9884,13 +9914,19 @@ async def _run_chat(
         tool_response: dict | None = None,
         hook_continuation_count: int = 0,
         tool_id: str | None = None,
+        tool_identity: str = "",
+        mcp_server: str = "",
     ) -> list[str]:
         """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection).
 
         ``tool_id`` is the id the harness stated for the call
         (``AcpEvent.harness_tool_id``). The spec's own hooks match their tool
         matcher against it, translated by ``spec_hook_tool_names``, because their
-        matchers name tools and ``tool_name`` is the call's title.
+        matchers name tools and ``tool_name`` is the call's title. A Hooks-page
+        hook matches the title and those names both, so a ``web_fetch`` hook meets
+        KAS's "Fetch URL" too. ``tool_identity`` and ``mcp_server`` are the call's
+        canonical name and trusted MCP server, and join both, as on the subagent
+        gate (``hooks.pre_tool_match_names``).
         """
         injected: list[str] = []
         if state._hook_store is None:
@@ -9904,7 +9940,14 @@ async def _run_chat(
             return injected
         try:
             # A call KAS named no tool for keeps title matching (None).
-            _spec_tool_names = spec_hook_tool_names(tool_id or "") if _spec_hooks else None
+            _match_names, _spec_tool_names = pre_tool_match_names(
+                tool_name,
+                tool_identity=tool_identity,
+                mcp_server=mcp_server,
+                harness_tool_id=tool_id or "",
+            )
+            if not _spec_hooks:
+                _spec_tool_names = None
             results = await state._hook_store.fire(
                 event,
                 context,
@@ -9916,6 +9959,7 @@ async def _run_chat(
                 extra_hooks=_spec_hooks,
                 extra_hooks_cwd=_spec_hooks_cwd,
                 extra_hooks_tool_names=_spec_tool_names,
+                tool_match_names=_match_names,
             )
             for r in results:
                 # Anchoring rule for the bounded hook excerpts below: text the
@@ -11540,6 +11584,15 @@ async def _run_chat(
         # does not take this lock (an eager prewarm, a channel-side turn)
         # between the check and the claim, the busy refusal comes back
         # instead of a wait, and the claim is retried outside the lock.
+        #
+        # First, a live KAS session whose registered agent batch auto-approves a
+        # capability a PreToolUse hook now covers is reset: that batch withheld
+        # auto-approval only for the hooks of its day, so a hook added since would
+        # never see such a call. The claim below then resumes it with a fresh
+        # projection. A busy session is left for its next turn.
+        await invalidate_stale_kas_session(
+            state.sessions, session_key, kiro_agent or slot.agent or ""
+        )
         if state.sessions.has_session(session_key):
             _release_dispatch_lock()
             _wait_if_busy = True
@@ -11588,15 +11641,21 @@ async def _run_chat(
             undecided=_previous.undecided,
             from_mapping=_previous.from_mapping,
         )
+
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
         # a lease; a busy refusal there means a session registered underneath
-        # us, so drop the lock and claim again with the normal lease wait.
+        # us, so drop the lock and claim again with the normal lease wait. The
+        # re-projection below claims through the same site; the latch is
+        # write-once, so the store it cites stays the one this turn found.
+        async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
+            return await state.sessions.get_or_create(
+                session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+            )
+
         for _claim in (0, 1):
             try:
-                client, is_new, resumed = await state.sessions.get_or_create(
-                    session_key, wait_if_busy=_wait_if_busy, **_allocation_kwargs
-                )
+                client, is_new, resumed = await _claim_session(_wait_if_busy)
                 break
             except SessionBusyError:
                 if _wait_if_busy or _claim:
@@ -11606,6 +11665,21 @@ async def _run_chat(
         # Registered: the switch handlers' busy scan sees this session from
         # here on, so the lock has done its job and the turn must not hold it.
         _release_dispatch_lock()
+        # The pre-claim reset is declined for a session another turn holds, and
+        # this claim may have waited for exactly that turn. So the decision is made
+        # again on the session this turn now holds, under its lease, before any of
+        # its tools run.
+        try:
+            client, is_new, resumed = await reproject_claimed_session(
+                state.sessions,
+                session_key,
+                kiro_agent or slot.agent or "",
+                (client, is_new, resumed),
+                lambda: _claim_session(True),
+            )
+        except BaseException:
+            state.sessions.release(session_key)
+            raise
         if is_new and not resumed:
             # An observation this call CONSUMED, which is not the same as an
             # allocation this call made: a prewarmed session arms
@@ -13459,7 +13533,13 @@ async def _run_chat(
                         "subagent_chunk",
                         {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
                     )
-                await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
+                # Where Crew fires the spec's hooks, every call a PreToolUse hook
+                # covers comes back as a permission request (the projection
+                # withholds its auto-approval) and KAS sends this frame first, so
+                # the permission request is where the hooks run; firing here too
+                # would run each twice.
+                if not capabilities_of(client).crew_fires_spec_hooks:
+                    await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
                 # Mirror tool call to linked Slack stream. Fenced like the reply
                 # legs: a tool's purpose line is the peer's steer showing through in
                 # what the model chose to do next, published to a thread whose owner
@@ -14675,6 +14755,8 @@ async def _run_chat(
                                     tool_name=validated_tool,
                                     tool_input=_parsed_input,
                                     tool_id=event.harness_tool_id,
+                                    tool_identity=event.tool_name,
+                                    mcp_server=event.mcp_server_name,
                                 )
                             except Exception as hook_exc:
                                 await _reject_hook_error(
@@ -14766,6 +14848,8 @@ async def _run_chat(
                             tool_name=validated_tool,
                             tool_input=_parsed_input,
                             tool_id=event.harness_tool_id,
+                            tool_identity=event.tool_name,
+                            mcp_server=event.mcp_server_name,
                         )
                     except Exception as hook_exc:
                         await _reject_hook_error(
@@ -15097,6 +15181,8 @@ async def _run_chat(
                                 tool_name=validated_tool,
                                 tool_input=_parsed_input,
                                 tool_id=event.harness_tool_id,
+                                tool_identity=event.tool_name,
+                                mcp_server=event.mcp_server_name,
                             )
                         except Exception as hook_exc:
                             await _reject_hook_error(
@@ -15756,6 +15842,8 @@ async def _run_chat(
                             tool_name=validated_tool,
                             tool_input=_parsed_input,
                             tool_id=event.harness_tool_id,
+                            tool_identity=event.tool_name,
+                            mcp_server=event.mcp_server_name,
                         )
                     except Exception as hook_exc:
                         await _reject_hook_error(
@@ -16122,6 +16210,11 @@ async def _run_chat(
                     # transcript name, including a partially persisted switch.
                     needs_session_reset = True
                     _produced_visible_output = True
+                    # The switched-to agent's permissions were fixed when the
+                    # session started; if they auto-approve what its hooks cover,
+                    # stop the turn here, before the switch is recorded, so the
+                    # slot keeps its agent and the reset re-projects the next turn.
+                    await refuse_stale_switch(client, new_agent)
                     _require_current_binding()
                     switch_cfg = await asyncio.to_thread(KiroCrewConfig.load)
                     _require_current_binding()
