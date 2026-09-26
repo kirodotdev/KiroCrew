@@ -256,6 +256,13 @@ for (const theme of ['dark', 'light']) {
         box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'no box')
       const text = (await row.textContent() || '').trim()
       check(`${name}: the count is in the row's own text`, expected.test(text), JSON.stringify(text))
+      // The ACTION, on screen too. A count plus a glyph leaves a sighted reader with no
+      // pointer to guess the row is tappable -- the same hover-only gap as the count.
+      const action = (await row.locator('[data-testid="board-hidden-folders-action"]').textContent() || '').trim()
+      check(`${name}: the way back is a visible word, not only a name`, action.length > 0, JSON.stringify(action))
+      const actionBox = await row.locator('[data-testid="board-hidden-folders-action"]').boundingBox()
+      check(`${name}: that word is painted`, actionBox != null && actionBox.width > 2 && actionBox.height > 2,
+        actionBox ? `${Math.round(actionBox.width)}x${Math.round(actionBox.height)}` : 'no box')
       const label = await row.getAttribute('aria-label')
       check(`${name}: the row is named for a screen reader`, !!label && expected.test(label), String(label))
       // The funnel must agree with it: two numbers for one hide, side by side, is the

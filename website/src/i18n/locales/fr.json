@@ -11238,9 +11238,9 @@
       "sort_filter_sessions_hidden_one": "Trier et filtrer les sessions — {{count}} dossier masqué n'est pas affiché",
       "sort_filter_sessions_hidden_many": "Trier et filtrer les sessions — {{count}} dossiers masqués ne sont pas affichés",
       "sort_filter_sessions_hidden_other": "Trier et filtrer les sessions — {{count}} dossiers masqués ne sont pas affichés",
-      "show_hidden_folders_from_board_one": "{{count}} dossier masqué n'est pas affiché — utilisez Trier et filtrer pour le rétablir.",
-      "show_hidden_folders_from_board_many": "{{count}} dossiers masqués ne sont pas affichés — utilisez Trier et filtrer pour les rétablir.",
-      "show_hidden_folders_from_board_other": "{{count}} dossiers masqués ne sont pas affichés — utilisez Trier et filtrer pour les rétablir."
+      "show_hidden_folders_from_board_one": "{{count}} dossier masqué n'est pas affiché — utilise Trier et filtrer pour le rétablir.",
+      "show_hidden_folders_from_board_many": "{{count}} dossiers masqués ne sont pas affichés — utilise Trier et filtrer pour les rétablir.",
+      "show_hidden_folders_from_board_other": "{{count}} dossiers masqués ne sont pas affichés — utilise Trier et filtrer pour les rétablir."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

@@ -11404,10 +11404,10 @@
       "sort_filter_sessions_hidden_few": "Сортировка и фильтры сессий — {{count}} скрытые папки не отображаются",
       "sort_filter_sessions_hidden_many": "Сортировка и фильтры сессий — {{count}} скрытых папок не отображается",
       "sort_filter_sessions_hidden_other": "Сортировка и фильтры сессий — {{count}} скрытой папки не отображается",
-      "show_hidden_folders_from_board_one": "{{count}} скрытая папка не отображается — верните её через сортировку и фильтры.",
-      "show_hidden_folders_from_board_few": "{{count}} скрытые папки не отображаются — верните их через сортировку и фильтры.",
-      "show_hidden_folders_from_board_many": "{{count}} скрытых папок не отображается — верните их через сортировку и фильтры.",
-      "show_hidden_folders_from_board_other": "{{count}} скрытой папки не отображается — верните их через сортировку и фильтры."
+      "show_hidden_folders_from_board_one": "{{count}} скрытая папка не отображается — её вернёт «Сортировка и фильтры».",
+      "show_hidden_folders_from_board_few": "{{count}} скрытые папки не отображаются — их вернёт «Сортировка и фильтры».",
+      "show_hidden_folders_from_board_many": "{{count}} скрытых папок не отображается — их вернёт «Сортировка и фильтры».",
+      "show_hidden_folders_from_board_other": "{{count}} скрытой папки не отображается — их вернёт «Сортировка и фильтры»."
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

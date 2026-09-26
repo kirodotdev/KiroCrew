@@ -11070,10 +11070,10 @@
       "model_list_failed": "मॉडल सूची लोड नहीं हो सकी। जो दिख रहा है वह अपूर्ण या पुराना हो सकता है।",
       "hidden_folder_count_one": "{{count}} छिपा फ़ोल्डर",
       "hidden_folder_count_other": "{{count}} छिपे फ़ोल्डर",
-      "sort_filter_sessions_hidden_one": "सत्र क्रमित और फ़िल्टर करें — {{count}} छिपा फ़ोल्डर नहीं दिखाया जाता",
-      "sort_filter_sessions_hidden_other": "सत्र क्रमित और फ़िल्टर करें — {{count}} छिपे फ़ोल्डर नहीं दिखाए जाते",
-      "show_hidden_folders_from_board_one": "{{count}} छिपा फ़ोल्डर नहीं दिखाया जाता — इसे वापस लाने के लिए क्रमित और फ़िल्टर खोलें।",
-      "show_hidden_folders_from_board_other": "{{count}} छिपे फ़ोल्डर नहीं दिखाए जाते — इन्हें वापस लाने के लिए क्रमित और फ़िल्टर खोलें।"
+      "sort_filter_sessions_hidden_one": "सत्र क्रमित और फ़िल्टर करो — {{count}} छिपा फ़ोल्डर नहीं दिखाया जाता",
+      "sort_filter_sessions_hidden_other": "सत्र क्रमित और फ़िल्टर करो — {{count}} छिपे फ़ोल्डर नहीं दिखाए जाते",
+      "show_hidden_folders_from_board_one": "{{count}} छिपा फ़ोल्डर नहीं दिखाया जाता — इसे वापस लाने के लिए क्रमित और फ़िल्टर खोलो।",
+      "show_hidden_folders_from_board_other": "{{count}} छिपे फ़ोल्डर नहीं दिखाए जाते — इन्हें वापस लाने के लिए क्रमित और फ़िल्टर खोलो।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

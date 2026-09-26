@@ -9858,8 +9858,19 @@ function ChatSidebar({
               className="mx-2 mt-2 px-2 py-1.5 rounded-md bg-warn-subtle border border-warn/40 text-warn text-[11px] flex items-center gap-1.5 text-left cursor-pointer hover:bg-warn/20 transition-colors"
             >
               <EyeOff size={11} aria-hidden="true" className="shrink-0" />
-              <span className="min-w-0">
+              <span className="min-w-0 truncate" data-testid="board-hidden-folders-count">
                 {i18nT('pages.chatSidebar.hidden_folder_count', { count: hiddenFolderCount })}
+              </span>
+              {/* The action, in VISIBLE text and not only in the name. A count plus a
+                *  glyph tells a sighted pointer-less reader that rows are withheld and
+                *  leaves them to guess the row is tappable, which is the hover-only
+                *  failure this row exists to end. `show` is the catalog's own word for
+                *  this affordance, so the 13 locales already carry it. The chevron is
+                *  decorative: the word beside it already says what happens. */}
+              <span className="ml-auto shrink-0 inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2"
+                data-testid="board-hidden-folders-action">
+                {i18nT('pages.chatSidebar.show')}
+                <ChevronRight size={11} aria-hidden="true" className="shrink-0" />
               </span>
             </button>
           )}

@@ -11070,10 +11070,10 @@
       "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।",
       "hidden_folder_count_one": "{{count}}টি লুকানো ফোল্ডার",
       "hidden_folder_count_other": "{{count}}টি লুকানো ফোল্ডার",
-      "sort_filter_sessions_hidden_one": "সেশন সাজান ও ফিল্টার করুন — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
-      "sort_filter_sessions_hidden_other": "সেশন সাজান ও ফিল্টার করুন — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
-      "show_hidden_folders_from_board_one": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খুলুন।",
-      "show_hidden_folders_from_board_other": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খুলুন।"
+      "sort_filter_sessions_hidden_one": "সেশন সাজান ও ফিল্টার করো — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
+      "sort_filter_sessions_hidden_other": "সেশন সাজান ও ফিল্টার করো — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
+      "show_hidden_folders_from_board_one": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খোলো।",
+      "show_hidden_folders_from_board_other": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খোলো।"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

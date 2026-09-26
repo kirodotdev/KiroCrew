@@ -27,6 +27,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import enManual from '../i18n/locales/en.manual.json'
 import { ThemeProvider } from '../hooks/useTheme'
 
 const { boardColumns } = vi.hoisted(() => ({
@@ -157,6 +158,18 @@ function hideFolders(...ids: string[]) {
 
 /** The board lane's notice, or null. */
 const notice = (c: HTMLElement) => c.querySelector('[data-testid="board-hidden-folders"]')
+/** The notice's COUNT text alone.
+ *
+ *  The row also carries the action word, and `textContent` concatenates siblings with
+ *  no separator ("1 hidden folderShow"), so a `\b` after the noun would fail on a row
+ *  that is perfectly correct. The count is read from its own element and the action
+ *  from its own; the row-level assertion that both are on screen is a `toContain`.
+ */
+const noticeCount = (c: HTMLElement) =>
+  c.querySelector('[data-testid="board-hidden-folders-count"]')?.textContent ?? ''
+/** The notice's ACTION text alone, read the same way and for the same reason. */
+const noticeAction = (c: HTMLElement) =>
+  c.querySelector('[data-testid="board-hidden-folders-action"]')?.textContent ?? ''
 
 describe('a board says on screen how many folders it is hiding', () => {
   it('names one hidden folder in the singular, as content rather than as a tooltip', () => {
@@ -164,10 +177,11 @@ describe('a board says on screen how many folders it is hiding', () => {
     const { container } = renderSidebar(true)
     const row = notice(container)
     expect(row, 'a board with a hide draws no notice at all').not.toBeNull()
-    // `textContent`, not an attribute: this is the assertion that a touch reader and a
+    // Content, not an attribute: this is the assertion that a touch reader and a
     // screen reader both get the number, since neither reaches a hover `title`.
-    expect(row?.textContent).toMatch(/1 hidden folder\b/)
-    expect(row?.textContent).not.toMatch(/folders/)
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
+    expect(row?.textContent).toContain('1 hidden folder')
+    expect(noticeCount(container)).not.toMatch(/folders/)
     expect(row?.getAttribute('data-hidden-folder-count')).toBe('1')
   })
 
@@ -177,7 +191,7 @@ describe('a board says on screen how many folders it is hiding', () => {
     // collapse both into the single number it has room for.
     hideFolders(HIDDEN_FOLDER, NESTED_FOLDER)
     const { container } = renderSidebar(true)
-    expect(notice(container)?.textContent).toMatch(/2 hidden folders/)
+    expect(noticeCount(container)).toMatch(/^2 hidden folders$/)
     expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('2')
   })
 
@@ -209,6 +223,32 @@ describe('a board says on screen how many folders it is hiding', () => {
     // points at the menu holding the undo.
     expect(name).toMatch(/1 hidden folder\b/)
     expect(name).toMatch(/sort & filter/i)
+  })
+
+  it('names the action in VISIBLE text, not only in the accessible name', () => {
+    // The hover-only failure this row exists to end, applied to the row itself: a
+    // sighted reader with no pointer gets the count and then has to GUESS the row is
+    // tappable, because "open sort & filter to bring them back" lived in `title` and
+    // `aria-label` alone. So the word for the action is on screen beside the count.
+    hideFolders(HIDDEN_FOLDER)
+    const { container } = renderSidebar(true)
+    const row = notice(container)
+    expect(noticeAction(container)).toMatch(/^Show$/)
+    expect(row?.textContent).toContain('Show')
+    // And it is content, not a decorative glyph carrying the meaning: every svg inside
+    // the row is hidden from the reader, so the name it announces comes from text.
+    for (const svg of Array.from(row?.querySelectorAll('svg') ?? [])) {
+      expect(svg.getAttribute('aria-hidden')).toBe('true')
+    }
+  })
+
+  it('takes the action word from the catalog, so all 13 locales carry it', () => {
+    // `pages.chatSidebar.show` already exists in every catalog, which is why the visible
+    // affordance costs no new translation. A literal English word here would read as
+    // English in twelve locales.
+    hideFolders(HIDDEN_FOLDER)
+    const { container } = renderSidebar(true)
+    expect(notice(container)?.textContent).toContain(enManual.pages.chatSidebar.show)
   })
 
   it('opens the filter menu, where the per-folder checkbox and Show all folders live', () => {
@@ -267,7 +307,7 @@ describe('one derived count, reported the same way everywhere', () => {
     hideFolders(HIDDEN_FOLDER)
     const { container, getByLabelText } = renderSidebar(true)
     expect(getByLabelText('Sort and filter sessions')).not.toBeNull()
-    expect(notice(container)?.textContent).toMatch(/1 hidden folder\b/)
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
   })
 
   it('counts a folder whose hidden ancestor already took the block away only once', () => {
@@ -277,7 +317,7 @@ describe('one derived count, reported the same way everywhere', () => {
     hideFolders(SHOWN_FOLDER, NESTED_FOLDER)
     const { container } = renderSidebar(true)
     expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('1')
-    expect(notice(container)?.textContent).toMatch(/1 hidden folder\b/)
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
   })
 
   it('says nothing is withheld while a search suspends the hide', () => {
