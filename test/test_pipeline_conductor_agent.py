@@ -138,10 +138,17 @@ class TestPipelineConductorInstaller:
         allowed = set(data["allowedTools"])
         assert "@kirocrew-dashboard/session_create" in allowed
         assert "@kirocrew-dashboard/session_read_message" in allowed
+        # The roster read: narrower than the transcript read above, and asked on
+        # every unattended cycle, so it is granted rather than gated.
+        assert "@kirocrew-dashboard/session_status" in allowed
         assert "@kirocrew-dashboard/chat_folder_tree" in allowed
         assert "@kirocrew-dashboard/chat_folder_create" in allowed
         for gated in (
             "@kirocrew-dashboard/session_send",
+            # The fan-out write, withheld on session_send's own reason: the
+            # fan-out changes how many sessions ingested text reaches, not
+            # whether anything bounds what is sent.
+            "@kirocrew-dashboard/session_broadcast",
             "@kirocrew-dashboard/session_stop",
             "@kirocrew-dashboard/chat_folder_move_session",
             # Deliberately NOT granted here: the pipeline procedure does not

@@ -4,7 +4,7 @@ One chat session can open, fork, seed, watch, stop and close another one, and ta
 another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 17 of its tools, written for the agent that is about to use them.
+for all 19 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -134,6 +134,115 @@ is heading the wrong way, or the thing it is grinding on is already done.
 
 The message lands in the target's transcript tagged as sent by your session, so
 the person reading it can tell it from their own typing.
+
+### `session_broadcast`
+
+One message, several sessions. Use it when the thing you have to say is true of
+every worker rather than of one: the base moved, the approach changed, stop.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `message` | yes | Becomes each target's next user-role turn |
+| `mode` | yes | `queue` or `steer`. No default |
+| `targets` | no | Session keys or titles. Omit to reach every session you created |
+
+`mode` is required because the two are different instructions, not two settings
+of one. `queue` lets every target finish what it is doing; `steer` cuts into
+every running turn. "The base moved, rebase before you push" is the first. "Stop,
+that issue is already fixed" is the second, and it is worth interrupting eight
+turns for. A default either way would silently pick one of those for a caller who
+meant the other.
+
+Each delivery goes through the same checks a single `session_send` does, so a
+broadcast can reach nothing a `session_send` could not — including the ownership
+fence, which is why the default audience (what you created) is always within
+reach.
+
+**Partial delivery is normal.** Deliveries happen one at a time, and a target
+that was closed, went incognito, or belongs to an app is one refused row while
+the rest still get the message. A target that simply never answers is one row
+too: each delivery has its own few-second bound, and on expiry the broadcast
+stops waiting for that session and moves to the next. The reply is per target:
+
+```
+📣 Queued for 2/6 session(s):
+  ✅ `chat-7` — queued until its turn ends
+  ✅ `chat-8` — started a turn on it
+  ❌ `chat-9` — no open session matches 'chat-9' (target_not_found)
+  ❌ `chat-10` — timed out; pending or queued, do not re-send (delivery_timeout)
+  ❌ `chat-11` — timed out before hand-over, safe to re-send (delivery_timeout)
+  ❌ `chat-12` — timed out and unavailable to inspect, outcome unknown (delivery_timeout)
+Some targets were not reached — the rows above say which and why. Nothing
+retries them for you.
+```
+
+Read the rows. Treating the call as all-or-nothing is how a worker silently
+misses an instruction its siblings acted on. Nothing retries a refused row, and
+at most **32** sessions are reachable in one call — an audience over that is
+refused rather than truncated, because a silently-cut broadcast is one you
+believe reached everyone.
+
+`delivery_timeout` means only that this side stopped waiting. The gateway
+records the delivery's own progress instead of reconstructing it from target state:
+
+- **Before authorization:** the steer await was never entered, so the delivery did
+  not reach hand-over. Re-sending the same text is safe.
+- **Inside or after the steer await:** the outcome is unknown. Do not re-send; the
+  instruction may already have executed.
+- **Pending or queued:** retained text is additional evidence that it may still
+  run. Do not re-send it; a duplicate could run too. Empty containers do not prove
+  the opposite because successful delivery clears them as it progresses.
+- **Target unavailable:** the gateway cannot inspect the original slot. The
+  outcome is unknown, and the row advises neither action.
+
+Every timeout row avoids claiming delivery or certain execution. Cancellation at
+the SEL and configuration prewarms remains distinguishable from cancellation in
+or after the steer await.
+
+The target's transcript tags the message as a broadcast rather than a plain send,
+so a worker can tell an instruction its siblings also received from one aimed at
+it alone. That difference changes what the worker should do: the same sentence is
+a fact about its own branch in one case and a fact about the base in the other.
+
+### `session_status`
+
+Takes no arguments. The roster of sessions you stood up, and what each is doing.
+
+| `status` | Meaning | What to do |
+|---|---|---|
+| `working` | A turn is in flight | Wait |
+| `queued` | Idle, messages waiting to run | Wait; a steer would land on nothing |
+| `idle` | Open and doing nothing | This is the one that needs a decision |
+| `gone` | The crew log has it, the dashboard does not | Re-dispatch or drop it |
+| `unknown` | History has its birth metadata, but no live slot or crew-log edge exists | Inspect or re-dispatch without assuming it finished or was lost |
+
+`gone` and `unknown` are why this tool exists rather than reading sessions one at
+a time. Live slots forget a session the moment it is closed or lost with the
+process that ran it. The crew log preserves a gateway-attested edge after a
+session starts its first turn. History metadata fills the earlier window because
+`session_create` persists `created_by` at birth. A row's `source` names exactly
+which evidence placed it: `crew_log`, `history`, `live`, or a `+`-joined
+combination. A history-only row stays `unknown` because editable transcript
+metadata proves the creator but cannot prove why the live slot is absent.
+
+The ownership fence applies to all three sources. A history row is shown only
+when its persisted `created_by` exactly names you and its workspace matches
+yours, so another caller's archived session and title do not appear.
+
+The two quality fields describe the durable sources independently:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `tree` | `readable` | The crew-log fold was read completely |
+| `tree` | `incomplete` | Crew-log rows may be missing; its contribution is a floor |
+| `tree` | `unreadable` | No crew-log roster was available |
+| `history` | `readable` | The transcript metadata catalog was read completely |
+| `history` | `incomplete` | History rows may be missing; its contribution is a floor |
+| `history` | `unreadable` | No transcript metadata roster was available |
+
+Neither field alone says the combined count is exact. A short list under an
+`incomplete` or `unreadable` value is not evidence that you created nothing.
+Read-only: it sends nothing and changes nothing.
 
 ### `session_read_message`
 
@@ -302,6 +411,10 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `linked_session_target` / `mirrored_target` | A channel-linked or channel-mirrored session is out of scope — reaching it would cross into a thread other people read |
 | `session_control_disabled` | `agent.session_control` is off in config |
 | `create_rate_limited` | Per-caller creation budget spent — a fork spends the same budget |
+| `invalid_broadcast_mode` | `session_broadcast` needs `mode` to be `queue` or `steer`; there is no default |
+| `too_many_targets` | A broadcast reaches at most 32 sessions. Refused, never truncated — name a subset |
+| `target_required` | A broadcast was given a target list that names no session. Omit the list to reach everything you created |
+| `delivery_timeout` | One target exceeded its per-delivery bound, so the broadcast cancelled that call and continued. The row reflects the exact text's observed state: pending or queued means it may still run and must not be re-sent; absent from both means the hand-over was not reached and re-sending is safe; an unavailable original slot means the outcome is unknown and the row advises neither action. No case claims delivery or certain execution |
 
 `target` resolves three ways, all of them checked before any answer: the slot
 key (`chat-7`), the transcript name `list_sessions` prints
@@ -316,10 +429,13 @@ session-control tool refuses it: its identity would resolve to its parent slot,
 handing it the parent's authority. Drive sessions from a real session, not from
 inside a subagent.
 
-A **channel agent** (Slack, Telegram, and the rest) is blocked from all eight
-session tools by `CHANNEL_AGENT_BLOCKED_TOOLS` in `src/kiro_crew/channel.py`.
+A **channel agent** (Slack, Telegram, and the rest) is blocked from every
+session tool by `CHANNEL_AGENT_BLOCKED_TOOLS` in `src/kiro_crew/channel.py`.
 Reading a dashboard transcript would pull a private conversation into a channel
 other humans can see, and sending would run channel text as a turn inside it.
+`session_broadcast` is blocked for that reason multiplied by the fleet, and
+`session_status` because its rows carry other sessions' titles — the names of the
+user's private work, in front of whoever is in the thread.
 
 ### Switches and ceilings
 

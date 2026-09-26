@@ -549,6 +549,8 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/stop",
         "/api/session-control/close",
         "/api/session-control/send",
+        "/api/session-control/broadcast",
+        "/api/session-control/status",
         "/api/session-control/adopt",
         "/api/session-control/release",
         "/api/session-control/read",
@@ -1886,6 +1888,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/send", _deferred("session_control", "api_session_control_send")
+    )
+    app.router.add_post(
+        "/api/session-control/broadcast",
+        _deferred("session_control", "api_session_control_broadcast"),
+    )
+    app.router.add_get(
+        "/api/session-control/status",
+        _deferred("session_control", "api_session_control_status"),
     )
     app.router.add_post(
         "/api/session-control/adopt", _deferred("session_control", "api_session_control_adopt")

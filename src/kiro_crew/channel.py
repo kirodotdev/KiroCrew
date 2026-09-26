@@ -66,6 +66,16 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "session_stop",
     "session_send",
     "session_read_message",
+    # The fan-out verb, blocked for the reason `session_send` is and then some: one
+    # call reaches every session the caller created, so a channel agent acting on
+    # words from a thread other people are in would relay them into the user's
+    # whole worker fleet at once.
+    "session_broadcast",
+    # The roster verb. It returns other sessions' keys and TITLES, so a channel
+    # agent calling it puts the names of the user's private work in front of
+    # whoever is in that thread -- the same exfiltration `session_read_message` is
+    # blocked for, one step shallower.
+    "session_status",
     "session_create",
     "session_fork",
     "session_close",

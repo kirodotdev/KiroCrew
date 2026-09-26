@@ -250,6 +250,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/members.py", "api_members"),
                 ("handlers/messaging.py", "api_send_message"),
                 ("session_control.py", "create_session"),
+                # The roster verb. Reservation state, like `read_messages` beside
+                # it and for the same reason: it reports whether a session is
+                # working so a patrol knows whether to wait, and a slot between a
+                # plan's stages is still working even though no task is assigned.
+                ("session_control.py", "created_session_status"),
                 ("session_control.py", "read_messages"),
                 ("session_control.py", "send_to_target"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),

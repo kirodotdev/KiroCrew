@@ -372,6 +372,70 @@ async def api_session_control_send(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_broadcast(request: web.Request) -> web.Response:
+    """POST /api/session-control/broadcast — deliver one message to several sessions."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise sc.SessionControlError("message is required", code="message_required")
+        # The MODE is required and typed, never inferred. A missing or misspelled
+        # mode must not fall back to either delivery: defaulting to the queue would
+        # silently swallow a caller's request to interrupt, and defaulting to the
+        # steer would interrupt sessions a caller only meant to leave a note for.
+        mode = body.get("mode")
+        if not isinstance(mode, str) or mode not in sc.BROADCAST_MODES:
+            raise sc.SessionControlError(
+                f"mode must be one of {', '.join(sc.BROADCAST_MODES)}",
+                code="invalid_broadcast_mode",
+            )
+        targets = body.get("targets")
+        if targets is not None:
+            # Strictly typed for the reason `fork`'s index is: this body is
+            # model-controlled. A bare string would iterate as its characters and
+            # broadcast to one session per letter.
+            if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+                raise sc.SessionControlError(
+                    "targets must be an array of strings", code="invalid_field_type"
+                )
+        result = await sc.broadcast_to_targets(
+            state,
+            caller_session_key=_read_session_key(request),
+            message=message,
+            mode=mode,
+            targets=targets,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_status(request: web.Request) -> web.Response:
+    """GET /api/session-control/status — the sessions this caller stood up, and their state."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # At the top like `read`: there is no body to parse. The awaited coroutine's
+    # synchronous gate runs before its first suspension, so nothing yields between
+    # this prewarm and that gate; its history scan suspends only after the gate.
+    await sc.prewarm_enabled_check()
+    state: DashboardState = request.app["state"]
+    try:
+        result = await sc.created_session_status(
+            state,
+            caller_session_key=_read_session_key(request),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_adopt(request: web.Request) -> web.Response:
     """POST /api/session-control/adopt — take another session under this one."""
     refused = await _require_internal(request)
