@@ -71,8 +71,11 @@ jobs:
       # MUST be first: block egress except the endpoints the reviewer needs, so
       # an injection-driven exfil attempt fails at the network layer. Opus runs
       # on Bedrock in us-west-2 (mirrors claude-review.yml's aws-region).
-      # VERIFY before merge that this SHA resolves to the intended harden-runner
-      # release (authoring host had no network to confirm it).
+      # SHA verified against the upstream tag: `git/ref/tags/v2.21.1` on
+      # step-security/harden-runner resolves to e14015d583714f6e62063499dc959a02595150a1,
+      # the commit pinned below. Recorded here because a wrong pin reds every fork
+      # PR on the security surface fail-closed, so the next reader should not have
+      # to re-open the question -- re-verify only when the version comment moves.
       #
       # The three ubuntu archive hosts are NOT optional and NOT this lane's own
       # dependency: setting `allowed_non_write_users` on the discovery/validation
