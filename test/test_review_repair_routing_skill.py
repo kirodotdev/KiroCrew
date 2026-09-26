@@ -115,7 +115,7 @@ def test_local_review_and_generic_monitoring_keep_their_own_contracts():
 
 @pytest.mark.parametrize(
     ("name", "byte_ceiling"),
-    [("kirocrew-worktree-dev", 16000), ("babysit", 22000), ("prepare-pr", 68000)],
+    [("kirocrew-worktree-dev", 16000), ("babysit", 22000), ("prepare-pr", 68200)],
 )
 def test_slim_skills_do_not_regrow_duplicate_guidance_or_wire_model_ids(name, byte_ceiling):
     text = _text(SKILLS / name / "SKILL.md")

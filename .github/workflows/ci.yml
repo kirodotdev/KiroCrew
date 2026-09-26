@@ -611,8 +611,7 @@ jobs:
       # picture across the suite, not just the first shard to break.
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
-        # Eight runners reduce per-shard work at the cost of more runner slots.
+        python-version: ["3.12", "3.14"]
         # Whole files are assigned before import; -n auto parallelizes within
         # each shard. To change the count, update this list and SHARD_COUNT.
         group: [1, 2, 3, 4, 5, 6, 7, 8]
