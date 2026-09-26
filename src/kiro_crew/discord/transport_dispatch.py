@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import _clamp_pct
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.discord.attachments import (
     append_attachment_context,
@@ -119,6 +120,7 @@ from kiro_crew.messaging.session_resume import (
     persisted_session_agent,
     refused_resume_is_restricted,
 )
+from kiro_crew.messaging.spawn_approval_delivery import unpressed_wait_answer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
@@ -2183,9 +2185,13 @@ class DiscordDispatcher:
         the recomputed key does not match the armed one, the press resolves
         nothing, and the prompt deny-by-defaults at its timeout (the user sees
         "already expired"). This mirrors how a mid-run tool prompt behaves across a
-        rotation. An elapsed wait is a DENY and NOT a fall-through: the prompt WAS
-        surfaced, so ``False`` is a real decision and the gate refuses the spawn on
-        it rather than re-offering it on Slack/dashboard.
+        rotation, and it stays a DENY: the prompt WAS surfaced, so ``False`` is a
+        real decision and the gate refuses the spawn on it rather than re-offering
+        it on Slack/dashboard. An elapsed wait falls through in one case only, when
+        AUTHORIZATION ended during it and no press could have answered: the
+        destination rosters are re-read here (``_spawn_prompt_destination_permitted``,
+        the pair that gated the post), and the channels ceiling is read by the seam
+        (``unpressed_wait_answer``), which owns that reading for every channel.
         """
         client = self.client
         if client is None:
@@ -2305,7 +2311,27 @@ class DiscordDispatcher:
             return None
 
         decider = DiscordApprovalDecider(session_key=session_key)
-        return bool(await decider(SimpleNamespace(request_id=rid)))
+        approved = bool(await decider(SimpleNamespace(request_id=rid)))
+        if not approved and decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT:
+            # Nobody pressed. The checks above spoke for the moment of the post;
+            # the wait outlives them by minutes, and ``on_interaction`` drops
+            # every press once this peer (or thread) leaves its roster, and every
+            # press but an explicit reject once the channels ceiling closes. A
+            # wait that elapsed after either could not have been answered, so
+            # ``False`` would refuse the spawn in the operator's name. Re-read the
+            # rosters here -- the same check that gated the post -- and leave the
+            # ceiling's reading to the seam, which owns it for every channel. A
+            # press, reject included, returns its own answer below.
+            if not self._spawn_prompt_destination_permitted(channel_id, thread_id, user_id):
+                logger.info(
+                    "Discord: the spawn-approval prompt for %s went unanswered and "
+                    "its destination is no longer authorized, so no press could have "
+                    "resolved it; falling through to the Slack/dashboard path",
+                    rid,
+                )
+                return None
+            return await unpressed_wait_answer(_CHANNEL, rid)
+        return approved
 
     async def _spawn_prompt_channel_permitted(self, request_id: str) -> bool:
         """Is the operator's channels ceiling open for this channel RIGHT NOW?
