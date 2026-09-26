@@ -53,6 +53,16 @@ await page.routeWebSocket(/\/api\/ws/, () => {})
 const fixedApi = makeFixedApi(PROJECT)
 await page.route('**/api/**', route => {
   const path = new URL(route.request().url()).pathname
+  if (path === '/api/config/schema') {
+    // The effort + pool-size rows' shared SchemaRestartBadge fetches this;
+    // without it the badge honestly renders nothing instead of the pill.
+    return json(route, {
+      entries: [
+        { path: 'knowledge.extraction_effort', type: 'string', requiresRestart: true },
+        { path: 'knowledge.extraction_pool_size', type: 'integer', requiresRestart: true },
+      ],
+    })
+  }
   if (path === '/api/config/kirocrew') {
     // PATCH: apply the dotted key into the fixture so the refetch shows the
     // picked values (the real handler's semantics).
