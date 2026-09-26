@@ -7113,12 +7113,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "설정에서 관리",
       "manage_visible_models": "표시할 모델 관리",
-      "default_for_agent": "<agent/>의 기본 모델",
+      "default_for_agent": "<agent/> 에이전트에 고정됨",
       "filter_models": "모델 필터",
       "model_list": "모델 목록",
       "models_failed": "인스턴스의 모델을 불러오지 못했습니다.",
       "pin_model_unavailable": "<model/>은(는) 현재 제공되지 않습니다",
-      "set_default_for_agent": "<model/>을(를) <agent/>의 기본 모델로 설정",
+      "set_default_for_agent": "<model/>을(를) <agent/> 에이전트에 고정 (전역 기본값보다 우선)",
       "set_default_for_new_sessions": "새 세션의 전역 기본값…",
       "type_to_filter": "입력하여 필터…"
     },
@@ -13925,6 +13925,8 @@
       },
       "chatPanel": {
         "advanced": "고급",
+        "agent_model_pin_overrides_default": "<agent/> 에이전트의 새 채팅은 이 설정이 아니라 고정된 모델 <model/>을(를) 사용합니다.",
+        "agent_template_pin_overrides_default": "<agent/> 에이전트의 새 채팅은 이 설정이 아니라 템플릿에서 고정한 모델 <model/>을(를) 사용합니다.",
         "discovery": "알아보기",
         "rail_label": "채팅 설정",
         "side_panel": "사이드 패널",
@@ -14148,7 +14150,9 @@
         "minimap_location": "미니맵 위치",
         "minimap_location_desc": "오른쪽 가장자리에 있으면 미니맵이 스크롤바를 대체합니다.",
         "message_font_size": "메시지 글꼴 크기",
-        "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다."
+        "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다.",
+        "remove_the_agents_pin": "에이전트의 고정 해제",
+        "failed_to_clear_agent_model_pin": "에이전트의 고정 모델을 해제할 수 없습니다"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

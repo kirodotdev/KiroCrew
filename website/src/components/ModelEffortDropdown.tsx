@@ -44,7 +44,8 @@ interface Props {
   /** Pin the currently-active model as this agent's own default, in place. Omit
    *  to hide the row (e.g. surfaces with no agent in scope). */
   onPinToAgent?: () => void
-  /** KiroCrew agent the pin row acts on; shown in its label. */
+  /** Label of the agent the pin row acts on (its display name when set);
+   *  shown in the row. */
   agentName?: string
   /** Model the pin row would WRITE, named in its label. This is the slot's real
    *  model, which is not always the one the composer displays: when a pin is

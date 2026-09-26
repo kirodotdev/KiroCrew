@@ -4792,12 +4792,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Manage in Settings",
       "manage_visible_models": "Manage visible models",
-      "default_for_agent": "Default model for <agent/>",
+      "default_for_agent": "Pinned to the <agent/> agent",
       "filter_models": "Filter models",
       "model_list": "Model list",
       "models_failed": "Couldn't load the remote crew's models.",
       "pin_model_unavailable": "<model/> isn't offered right now",
-      "set_default_for_agent": "Set <model/> as default model for <agent/>",
+      "set_default_for_agent": "Pin <model/> to the <agent/> agent (overrides the global default)",
       "set_default_for_new_sessions": "Global default for new sessions…",
       "type_to_filter": "Type to filter…"
     },
@@ -8422,6 +8422,8 @@
       "chatPanel": {
         "about_you": "About You",
         "advanced": "Advanced",
+        "agent_model_pin_overrides_default": "New chats on the <agent/> agent use its own pinned model <model/>, not this setting.",
+        "agent_template_pin_overrides_default": "New chats on the <agent/> agent use <model/>, pinned by the agent's template, not this setting.",
         "discovery": "Discovery",
         "rail_label": "Chat settings",
         "side_panel": "Side panel",
@@ -8539,7 +8541,9 @@
         "widget_density": "Widget Density",
         "your_role": "Your Role",
         "minimap_location": "Minimap location",
-        "minimap_location_desc": "When located on the right edge, the minimap replaces the scroll bar."
+        "minimap_location_desc": "When located on the right edge, the minimap replaces the scroll bar.",
+        "remove_the_agents_pin": "Remove the agent's pin",
+        "failed_to_clear_agent_model_pin": "Couldn't clear the agent's pinned model."
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",

@@ -7327,12 +7327,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Gestionar en Ajustes",
       "manage_visible_models": "Gestionar modelos visibles",
-      "default_for_agent": "Modelo predeterminado para <agent/>",
+      "default_for_agent": "Fijado en el agente <agent/>",
       "filter_models": "Filtrar modelos",
       "model_list": "Lista de modelos",
       "models_failed": "No se pudieron cargar los modelos de la instancia.",
       "pin_model_unavailable": "<model/> no se ofrece en este momento",
-      "set_default_for_agent": "Establecer <model/> como modelo predeterminado para <agent/>",
+      "set_default_for_agent": "Fijar <model/> en el agente <agent/> (anula el valor predeterminado global)",
       "set_default_for_new_sessions": "Valor predeterminado global para las nuevas sesiones…",
       "type_to_filter": "Escribe para filtrar…"
     },
@@ -14349,6 +14349,8 @@
       },
       "chatPanel": {
         "advanced": "Avanzado",
+        "agent_model_pin_overrides_default": "Los chats nuevos en el agente <agent/> usan su propio modelo fijado <model/>, no este ajuste.",
+        "agent_template_pin_overrides_default": "Los chats nuevos en el agente <agent/> usan <model/>, fijado por la plantilla del agente, no este ajuste.",
         "discovery": "Descubrir",
         "rail_label": "Ajustes del chat",
         "side_panel": "Panel lateral",
@@ -14572,7 +14574,9 @@
         "minimap_location": "Ubicación del minimapa",
         "minimap_location_desc": "Cuando está en el borde derecho, el minimapa reemplaza la barra de desplazamiento.",
         "message_font_size": "Tamaño de fuente de los mensajes",
-        "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados."
+        "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados.",
+        "remove_the_agents_pin": "Quitar la fijación del agente",
+        "failed_to_clear_agent_model_pin": "No se pudo quitar el modelo fijado del agente"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

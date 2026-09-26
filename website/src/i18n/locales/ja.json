@@ -7113,12 +7113,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "設定で管理",
       "manage_visible_models": "表示するモデルを管理",
-      "default_for_agent": "<agent/> のデフォルトモデル",
+      "default_for_agent": "エージェント <agent/> に固定済み",
       "filter_models": "モデルをフィルター",
       "model_list": "モデルリスト",
       "models_failed": "インスタンスのモデルを読み込めませんでした。",
       "pin_model_unavailable": "<model/> は現在提供されていません",
-      "set_default_for_agent": "<model/> を <agent/> のデフォルトモデルに設定",
+      "set_default_for_agent": "<model/> をエージェント <agent/> に固定（グローバルデフォルトより優先）",
       "set_default_for_new_sessions": "新規セッションのグローバルデフォルト…",
       "type_to_filter": "フィルターするには入力…"
     },
@@ -13925,6 +13925,8 @@
       },
       "chatPanel": {
         "advanced": "詳細設定",
+        "agent_model_pin_overrides_default": "エージェント <agent/> の新しいチャットは、この設定ではなく固定されたモデル <model/> を使います。",
+        "agent_template_pin_overrides_default": "エージェント <agent/> の新しいチャットは、この設定ではなくテンプレートで固定されたモデル <model/> を使います。",
         "discovery": "発見",
         "rail_label": "チャット設定",
         "side_panel": "サイドパネル",
@@ -14148,7 +14150,9 @@
         "minimap_location": "ミニマップの位置",
         "minimap_location_desc": "右端に配置すると、ミニマップがスクロールバーを置き換えます。",
         "message_font_size": "メッセージのフォントサイズ",
-        "message_font_size_desc": "会話のフォントサイズ（すべてのセッションに適用）：メッセージのテキスト、コード、表、返信候補、メッセージ入力欄。コンパクトなコンテンツ幅もそれに合わせて広がります。サイドバー、セッション一覧、その他のUIには影響しません。"
+        "message_font_size_desc": "会話のフォントサイズ（すべてのセッションに適用）：メッセージのテキスト、コード、表、返信候補、メッセージ入力欄。コンパクトなコンテンツ幅もそれに合わせて広がります。サイドバー、セッション一覧、その他のUIには影響しません。",
+        "remove_the_agents_pin": "エージェントの固定を解除",
+        "failed_to_clear_agent_model_pin": "エージェントの固定モデルを解除できませんでした"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

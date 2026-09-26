@@ -7327,12 +7327,12 @@
     "modelEffortDropdown": {
       "manage_in_settings": "Gestisci nelle impostazioni",
       "manage_visible_models": "Gestisci modelli visibili",
-      "default_for_agent": "Modello predefinito per <agent/>",
+      "default_for_agent": "Fissato sull'agente <agent/>",
       "filter_models": "Filtra i modelli",
       "model_list": "Elenco dei modelli",
       "models_failed": "Impossibile caricare i modelli dell'istanza.",
       "pin_model_unavailable": "<model/> non è offerto al momento",
-      "set_default_for_agent": "Imposta <model/> come modello predefinito per <agent/>",
+      "set_default_for_agent": "Fissa <model/> sull'agente <agent/> (sostituisce il predefinito globale)",
       "set_default_for_new_sessions": "Predefinito globale per le nuove sessioni…",
       "type_to_filter": "Digita per filtrare…"
     },
@@ -14349,6 +14349,8 @@
       },
       "chatPanel": {
         "advanced": "Avanzate",
+        "agent_model_pin_overrides_default": "Le nuove chat sull'agente <agent/> usano il suo modello fissato <model/>, non questa impostazione.",
+        "agent_template_pin_overrides_default": "Le nuove chat sull'agente <agent/> usano <model/>, fissato dal modello di agente, non questa impostazione.",
         "discovery": "Scoperta",
         "rail_label": "Impostazioni chat",
         "side_panel": "Pannello laterale",
@@ -14572,7 +14574,9 @@
         "minimap_location": "Posizione della minimappa",
         "minimap_location_desc": "Sul bordo destro, la minimappa sostituisce la barra di scorrimento.",
         "message_font_size": "Dimensione del carattere dei messaggi",
-        "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati."
+        "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati.",
+        "remove_the_agents_pin": "Rimuovi il fissaggio dell'agente",
+        "failed_to_clear_agent_model_pin": "Impossibile rimuovere il modello fissato dell'agente"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",
