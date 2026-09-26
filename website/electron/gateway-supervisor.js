@@ -30,6 +30,7 @@ const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
   forceStopPort,
   classifyPortOwner,
+  probePortBinding,
   isKirocrewCommand,
 } = require("./gateway-stop");
 const {
@@ -664,6 +665,18 @@ function createGatewaySupervisor({
     });
   }
 
+  // Whether the port is occupied, with no judgement about who occupies it. The
+  // waiting paths below need exactly this, and asking it here keeps them off the
+  // identity predicate: they would otherwise pay for a command-line judgement
+  // whose answer they discard, and inherit its trust in what a process claims
+  // to be.
+  function probeGatewayPortBinding(probePort) {
+    return probePortBinding(probePort, {
+      getListenPids: IS_WIN ? winListenPids : lsofListenPids,
+      log: glog,
+    });
+  }
+
   // Host-capability IPC may verify only this launch's primary gateway. Keep the
   // port out of the public call shape so an untrusted renderer cannot turn the
   // supervisor's process inspection into an arbitrary-port probe.
@@ -712,9 +725,9 @@ function createGatewaySupervisor({
   async function waitForPortFree(maxWaitMs = 30000) {
     const start = Date.now();
     for (;;) {
-      const owner = await probeGatewayPortOwner(PORT);
-      if (owner === "none") return true;
-      if (owner === "unknown") {
+      const binding = await probeGatewayPortBinding(PORT);
+      if (binding === "free") return true;
+      if (binding === "unknown") {
         glog(`port-free: listener probe unavailable on :${PORT} — falling back to an HTTP probe`);
         try { await checkBackend(); } catch { return true; }
       }
@@ -822,7 +835,7 @@ function createGatewaySupervisor({
             // classify as service, so wait a bounded grace and then spawn.
             sendStatus("Waiting for the gateway to restart…");
             const verdict = await waitForServiceRebind({
-              isPortBound: async () => (await probeGatewayPortOwner(PORT)) !== "none",
+              isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
               sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
             });
             if (verdict === "rebound") {
@@ -837,7 +850,7 @@ function createGatewaySupervisor({
               glog(`service rebind: :${PORT} stayed free past the grace window (no manager respawned it) — spawning fresh`);
             }
           }
-          if (localOwner !== "service" || (await probeGatewayPortOwner(PORT)) === "none") {
+          if (localOwner !== "service" || (await probeGatewayPortBinding(PORT)) === "free") {
             await waitForIncumbentExit(drainingPids, "drain");
             glog(`drain complete: :${PORT} released — spawning a fresh gateway`);
             return "spawn";
@@ -2033,7 +2046,7 @@ function createGatewaySupervisor({
       glog("liveness: adopted gateway was service-managed — waiting a bounded grace for its manager to respawn it before spawning our own");
       sendStatus("Waiting for the gateway to restart…");
       const verdict = await waitForServiceRebind({
-        isPortBound: async () => (await probeGatewayPortOwner(PORT)) !== "none",
+        isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       });
       if (window.isDestroyed() || quitting()) return;

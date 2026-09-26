@@ -493,7 +493,49 @@ async function forceStopPort(
 }
 
 /**
+ * Is anything holding the LISTEN socket on `port`?
+ *
+ * Most callers need only that, not the holder's identity: they are waiting for a
+ * port to clear, or watching for a service manager to rebind one. The kernel's
+ * pid list answers the question on its own, so this reads no process command
+ * line and consults no identity predicate. A same-user process is therefore
+ * unable to move the verdict by choosing what argv it presents, because nothing
+ * here looks at argv.
+ *
+ *   "bound"   — at least one local pid holds the LISTEN socket.
+ *   "free"    — nothing is listening locally.
+ *   "unknown" — the probe itself could not run (no lsof / EACCES). Distinct from
+ *               "free" so a caller can refuse to act on a port it cannot see,
+ *               exactly as classifyPortOwner's own "unknown" does.
+ *
+ * @param {number} port
+ * @param {object} deps
+ * @param {(port:number)=>Promise<number[]>} deps.getListenPids  lsof -t
+ * @returns {Promise<"bound"|"free"|"unknown">}
+ */
+async function probePortBinding(port, { getListenPids, log = () => {} }) {
+  let pids;
+  try {
+    pids = await getListenPids(port);
+  } catch (e) {
+    log(`port-binding: could not probe :${port} (${e && e.message}) — binding unknown`);
+    return "unknown";
+  }
+  if (!pids.length) {
+    log(`port-binding: :${port} is free`);
+    return "free";
+  }
+  log(`port-binding: :${port} is held by pid ${pids.join(", ")}`);
+  return "bound";
+}
+
+/**
  * Classify who LOCALLY owns the LISTEN socket on `port`.
+ *
+ * Callers that only need to know whether the port is occupied must use
+ * probePortBinding instead: the identity judgement below rests on the holder's
+ * own command line, which a same-user process controls, so spending it on a
+ * question the pid list already answers widens that weakness for no gain.
  *
  * This exists because an HTTP identity probe CANNOT distinguish a local rival
  * gateway from a remote one reached through a port-forward: `ssh -L 5476:...`
@@ -577,6 +619,7 @@ module.exports = {
   stopGatewayGracefully,
   forceStopPort,
   classifyPortOwner,
+  probePortBinding,
   isServiceManaged,
   isKirocrewCommand,
   INIT_PPID,
