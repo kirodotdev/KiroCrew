@@ -967,7 +967,17 @@ export interface McpSessionReport {
 export interface SessionLink {
   channel: string
   label: string
+  /** Redacted display tail of the conversation id — never the id, never a key. */
   target: string
+  /**
+   * Opaque identity of the whole binding (channel, full conversation id, thread),
+   * minted server-side. An unlink names it, and the server refuses a row whose
+   * binding has since been replaced — `target` alone cannot tell a Slack thread
+   * from its same-channel replacement. Optional for the same reason as `paused`:
+   * a cached `slots` payload from before this field shipped has none, and a
+   * row sent without it is refused as stale rather than unlinking anything.
+   */
+  binding?: string
   /**
    * `origin` — the conversation the session started on.
    * `out`    — dashboard replies are mirrored there (one-way, from `!link`).
@@ -980,6 +990,21 @@ export interface SessionLink {
    * `channel` alone does not identify a row; pair it with origin-ness.
    */
   direction: 'origin' | 'out' | 'both'
+  /**
+   * Messages sent in that conversation land in THIS session. The server's
+   * statement of inbound routing, per row, because it is not readable from the
+   * other fields: a Slack thread is `out` (Slack routes replies through its own
+   * thread index, not the mirror's inbound marker) yet a reply there resumes
+   * this session; a `both` mirror routes inbound by that marker; a one-way
+   * `out` mirror only receives replies; the conversation a session was born in
+   * is where its turns come from. What a sever destroys differs between a row
+   * that drives the session and one that does not, so the menu's sub-lines
+   * read this rather than inferring it from `direction` or the channel name —
+   * the inference is wrong for a paused Slack row. Optional for the same
+   * reason as `binding`: a cached `slots` payload from before this field
+   * shipped has none, and such a row reads as not driving until the next push.
+   */
+  drives_session?: boolean
   live: boolean
   /**
    * The user disconnected this channel: turn output stops flowing there, but the

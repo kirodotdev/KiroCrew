@@ -6627,7 +6627,9 @@
       "worktree_disabled_no_project_directory": "„Zu dieser Sitzung hinzufügen“ füllt das Eingabefeld vor — es wird nichts gesendet, bis Sie auf Senden drücken. Worktrees sind hier nicht verfügbar: Diese Sitzung hat kein Projektverzeichnis (wählen Sie eines über den Projekt-Chip des Eingabefelds)."
     },
     "inboundLinkChip": {
-      "driven_from": "Gesteuert von {{label}}"
+      "driven_from": "Gesteuert von {{label}}",
+      "driven_from_paused": "Gesteuert von {{label}} · Antworten pausiert",
+      "driven_from_paused_hint": "Setze {{label}} fort oder hebe die Verknüpfung auf."
     },
     "infoTip": {
       "more_information": "Weitere Informationen"
@@ -6975,6 +6977,15 @@
       "connect_to": "Mit {{label}} verbinden",
       "disconnect_failed": "Verbindung mit {{label}} konnte nicht getrennt werden: {{reason}}",
       "disconnect_from": "Verbindung mit {{label}} trennen",
+      "disconnect_outcome": "Pausiert Antworten — die Verknüpfung bleibt",
+      "resume_replies_to": "Antworten an {{label}} fortsetzen",
+      "still_linked": "Antworten pausiert — die Verknüpfung bleibt; Nachrichten von dort erreichen diese Sitzung weiterhin.",
+      "still_linked_out": "Antworten pausiert — die Verknüpfung bleibt; Nachrichten von dort erreichen diese Sitzung nicht.",
+      "unlink_failed": "Verknüpfung mit {{label}} konnte nicht aufgehoben werden: {{reason}}",
+      "unlink_from": "Verknüpfung mit {{label}} aufheben",
+      "unlink_outcome": "Hebt die Verknüpfung auf — {{label}} steuert diese Sitzung nicht mehr. Du kannst jederzeit über das Sitzungsmenü neu verbinden.",
+      "unlink_outcome_out": "Hebt die Verknüpfung auf — keine Antworten mehr an {{label}}. Du kannst jederzeit über das Sitzungsmenü neu verbinden.",
+      "unlink_stale": "{{label}} ist nicht mehr mit dieser Sitzung verknüpft; das Menü war veraltet. Es wurde nichts aufgehoben.",
       "held_elsewhere": "{{label}} wird von einer anderen Sitzung verwendet.",
       "unavailable": "Dieses Ziel ist nicht verfügbar.",
       "unknown_error": "unbekannter Fehler",

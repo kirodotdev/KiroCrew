@@ -38,9 +38,14 @@ from kiro_crew.dashboard.chat_runner import (
     _resolve_channel_target,
     _resolve_mirror_target,
 )
-from kiro_crew.dashboard.chat_slack import list_slack_channels
+from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_unlink, list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    DashboardState,
+    _binding_matches,
+    _expected_binding,
+    _mirror_link_nonce,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -833,17 +838,67 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
     with no mirror returns ``{ok, was_linked: false}``. Unlike Slack links, a
     mirror link is set on the slot's own session key — the channel key for a
     conversation that started on a channel, ``dashboard:<slot>`` otherwise — and
-    is never copied onto a second spelling, so a single clear on that key
-    suffices. Legacy bindings written under the pre-unification derived key are
-    reached by ``SessionMap``'s own compat fallback.
+    a single clear on that key suffices: ``SessionMap.clear_mirror_link`` drops
+    the canonical binding and, in the same save, any pre-unification derived-key
+    row it superseded. Dropping the winner alone would hand the map's read
+    fallback to that older row, and the session this request just reported
+    unlinked would redraw as mirrored to its previous target.
+
+    Body (optional): ``{channel_type, binding}`` — the binding the caller believes
+    it is severing, spelled as the slots projection spells its link row: the
+    channel and the row's opaque ``binding`` token, a digest of the whole binding
+    (thread id included). The session menu sends it, because the row it renders
+    can be stale: a tab that missed a slots push (a reconnecting socket) still
+    shows the Discord row after another tab has rebound the slot to Telegram,
+    and a key-only clear would then delete the Telegram binding the clicker
+    never saw. When the body names one, the current mirror must match on both;
+    otherwise the answer is 409 ``mirror_changed`` and nothing is cleared — and
+    nothing is pushed either, so it is the menu's own slots refetch on that
+    answer that corrects the stale row. An empty
+    body keeps the unconditional clear for callers that have no row in hand.
+
+    A body naming a ``slack`` binding is the slot's Slack THREAD, and this
+    handler hands it to ``slack-unlink``'s, which owns that teardown (both key
+    spellings, the slot's own fields, the thread's reverse index, the courtesy
+    note). The menu therefore posts every row's Unlink here and carries no
+    transport assumption of its own; the assumption lives beside the code that
+    enforces it: ``mirror-link`` refuses Slack on channel type
+    (``use_slack_link``), so no slack-typed mirror binding is creatable, and
+    ``SessionMap.get_mirror_link`` already reads the thread as the session's
+    mirror. The delegate re-reads the body; aiohttp serves it from the cache
+    the first read filled.
     """
     state: DashboardState = request.app["state"]
+    expected = await _expected_binding(request)
+    if expected is not None and expected[0] == SLACK_NAMESPACE:
+        return await api_chat_slot_slack_unlink(request)
     name = request.match_info.get("name") or request.match_info.get("slot", "")
     slot = state.get_slot(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
     session_key = effective_session_key(slot)
+    if expected is not None:
+        current = state.sessions.get_mirror_link(session_key)
+        # The binding's own nonce, so a binding recreated to the same target
+        # after an unlink does not read like the row drawn from the old one.
+        nonce = _mirror_link_nonce(state, session_key)
+        if not _binding_matches(current, expected, nonce):
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.mirror_unlink",
+                outcome="denied",
+                source="dashboard",
+                resources=f"{slot.key} reason=mirror_changed",
+            )
+            logger.info("mirror-unlink: %s refused, the binding changed under the menu", slot.key)
+            return web.json_response(
+                {
+                    "error": "the session's linked channel changed; nothing was unlinked",
+                    "code": "mirror_changed",
+                },
+                status=409,
+            )
     cleared = state.sessions.clear_mirror_link(session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK)
     state.push_slots_update()
     sel().log_api_access(

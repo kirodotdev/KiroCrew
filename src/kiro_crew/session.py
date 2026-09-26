@@ -3146,6 +3146,14 @@ class SessionManager:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
 
+    def mirror_link_nonce(self, key: str) -> str:
+        """The per-binding nonce of the mirror ``get_mirror_link`` returns (``""`` for none)."""
+        return self._session_map.mirror_link_nonce(key)
+
+    def slack_link_nonce(self, key: str) -> str:
+        """The per-binding nonce of the Slack thread ``get_slack_link`` returns (``""`` for none)."""
+        return self._session_map.slack_link_nonce(key)
+
     def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
         """Record (or withdraw) a refusal of AUTOMATIC origin mirroring.
 

@@ -6732,7 +6732,9 @@
       "worktree_disabled_no_project_directory": "« Ajouter à cette session » pré-remplit le champ de saisie — rien n'est envoyé avant que vous appuyiez sur Envoyer. Les worktrees ne sont pas disponibles ici : cette session n'a pas de répertoire de projet (choisissez-en un via la puce Projet du champ de saisie)."
     },
     "inboundLinkChip": {
-      "driven_from": "Pilotée depuis {{label}}"
+      "driven_from": "Pilotée depuis {{label}}",
+      "driven_from_paused": "Pilotée depuis {{label}} · réponses en pause",
+      "driven_from_paused_hint": "Reprends ou dissocie {{label}}."
     },
     "infoTip": {
       "more_information": "Plus d’informations"
@@ -7082,6 +7084,15 @@
       "connect_to": "Se connecter à {{label}}",
       "disconnect_failed": "Impossible de se déconnecter de {{label}} : {{reason}}",
       "disconnect_from": "Se déconnecter de {{label}}",
+      "disconnect_outcome": "Met les réponses en pause — le lien reste",
+      "resume_replies_to": "Reprendre les réponses vers {{label}}",
+      "still_linked": "Réponses en pause — le lien reste ; les messages envoyés là-bas atteignent toujours cette session.",
+      "still_linked_out": "Réponses en pause — le lien reste ; les messages envoyés là-bas n'atteignent pas cette session.",
+      "unlink_failed": "Impossible de dissocier de {{label}} : {{reason}}",
+      "unlink_from": "Dissocier de {{label}}",
+      "unlink_outcome": "Supprime le lien — {{label}} ne pilote plus cette session. Tu peux te reconnecter à tout moment depuis le menu de la session.",
+      "unlink_outcome_out": "Supprime le lien — les réponses ne vont plus vers {{label}}. Tu peux te reconnecter à tout moment depuis le menu de la session.",
+      "unlink_stale": "{{label}} n’est plus lié à cette session ; le menu n’était plus à jour. Rien n’a été dissocié.",
       "held_elsewhere": "{{label}} est utilisé par une autre session.",
       "unavailable": "Cette destination est indisponible.",
       "unknown_error": "erreur inconnue",

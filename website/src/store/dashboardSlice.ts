@@ -942,6 +942,41 @@ const dashboardSlice = createSlice({
         Object.assign(row, action.payload.patch)
       })
     },
+    /**
+     * Drop the link rows that describe ONE binding from a slot, in place. The
+     * write counterpart of `patchSlotLink` for an unlink: the binding is gone
+     * server-side, so the rows that described it go too, and nothing else in
+     * `links` is rebuilt (a whole-array rewrite from a captured snapshot is what
+     * made two concurrent toggles unsafe). An `origin` row stays: the conversation
+     * a session was born in is not a binding an unlink can sever.
+     *
+     * Keyed on the `binding` the completed request named, never on the channel
+     * alone: between the click and the response another tab can unlink A and
+     * link B on the same channel, and the slots push for B can land here first.
+     * The server deleted exactly A (it refuses anything else with 409), so this
+     * removes exactly A's rows — a B row, same channel, different token, stays,
+     * and the tab does not read as disconnected from a binding the server still
+     * holds. The slot's `slack_*` fields describe the Slack THREAD row, so they
+     * clear in the same write as that row and only then: a Slack row that
+     * survives the compare keeps its fields.
+     */
+    dropSlotLinks(state, action: PayloadAction<{ key: string; channel: string; binding: string }>) {
+      patchSlotRow(state, action.payload.key, slot => {
+        if (!slot.links) return false
+        const before = slot.links.length
+        slot.links = slot.links.filter(candidate => !(
+          candidate.channel === action.payload.channel
+          && candidate.direction !== 'origin'
+          && candidate.binding === action.payload.binding
+        ))
+        if (slot.links.length === before) return false
+        if (action.payload.channel === 'slack') {
+          slot.slack_linked = false
+          slot.slack_channel = undefined
+          slot.slack_thread_ts = undefined
+        }
+      })
+    },
     updateSlotFolder(state, action: PayloadAction<{ key: string; folderId: string }>) {
       patchSlotRow(state, action.payload.key, slot => { slot.folder_id = action.payload.folderId || undefined })
     },
@@ -1256,7 +1291,7 @@ const dashboardSlice = createSlice({
 })
 
 export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
-  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
+  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks } = dashboardSlice.actions
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today

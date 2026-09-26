@@ -63,7 +63,14 @@ const dashboardState = {
 
 /** A wire link row, with the fields a caller does not care about defaulted. */
 function link(over: Partial<SessionLink> & { channel: string }): SessionLink {
-  return { label: over.channel, target: '…1234', direction: 'out', live: true, ...over }
+  const base: SessionLink = { label: over.channel, target: '…1234', direction: 'out', live: true, ...over }
+  // `drives_session` as the projection emits it: a Slack thread, a `both`
+  // mirror and the born-in conversation drive the session; a one-way mirror
+  // does not.
+  return {
+    drives_session: base.channel === 'slack' || base.direction === 'both' || base.direction === 'origin',
+    ...base,
+  }
 }
 
 function renderMenu(slot: Partial<ChatSlot> & { key: string }) {
@@ -94,7 +101,7 @@ const rowOf = (slot: { links?: SessionLink[] }, channel: string) => (
 beforeEach(() => vi.clearAllMocks())
 
 describe('Session menu — one row per channel, two states', () => {
-  it('a connected channel offers only Disconnect, and none of the old vocabulary', async () => {
+  it('a connected channel offers Disconnect and Unlink, and none of the old vocabulary', async () => {
     renderMenu({
       key: 'chat-1-100',
       slack_linked: true,
@@ -103,23 +110,37 @@ describe('Session menu — one row per channel, two states', () => {
 
     expect(await screen.findByText('Disconnect from Slack')).toBeInTheDocument()
     expect(screen.queryByText('Connect to Slack')).not.toBeInTheDocument()
-    // The whole point of the change: no badge, no header, no secondary action.
+    // The sever action is back on purpose (#14068): Disconnect only pauses, and
+    // a binding nobody can sever locks the session out of session control. The
+    // two items define each other under their labels so neither is read as the
+    // other: Disconnect pauses and keeps the link, Unlink removes it and says,
+    // in its own sentence, that reconnecting is possible and where — the
+    // session menu. A Slack thread is two-way (a reply in it resumes this
+    // session), so its Unlink line is about driving, not about replies.
+    expect(screen.getByText('Pauses replies — the link stays')).toBeInTheDocument()
+    expect(screen.getByText('Unlink from Slack')).toBeInTheDocument()
+    expect(screen.getByText('Removes the link — Slack stops driving this session. Reconnect anytime from the session menu.')).toBeInTheDocument()
+    // The rest of #3006's cleanup holds: no badge, no header, no reminder, no
+    // machinery vocabulary.
     for (const gone of [
       /^Origin$/, /^Mirror$/, /^Two-way$/, /^Offline$/, /Connected:/,
-      /Post reminder/, /Unlink from Slack/, /Stop mirroring/, /^Release/,
+      /Post reminder/, /Stop mirroring/, /^Release/,
     ]) {
       expect(screen.queryByText(gone)).not.toBeInTheDocument()
     }
   })
 
-  it('a disconnected channel offers Connect on the same single row', async () => {
+  it('a disconnected channel offers Resume replies on the same single row', async () => {
     renderMenu({
       key: 'chat-1-100',
       slack_linked: true,
       links: [link({ channel: 'slack', label: 'Slack', paused: true })],
     })
 
-    expect(await screen.findByText('Connect to Slack')).toBeInTheDocument()
+    // The verb names the state: the thread is still linked (its sub-line says
+    // so), so the click resumes replies rather than connecting anew.
+    expect(await screen.findByText('Resume replies to Slack')).toBeInTheDocument()
+    expect(screen.queryByText('Connect to Slack')).not.toBeInTheDocument()
     expect(screen.queryByText('Disconnect from Slack')).not.toBeInTheDocument()
   })
 
@@ -140,7 +161,7 @@ describe('Session menu — one row per channel, two states', () => {
       expect(slot?.links).toHaveLength(1)
     })
     // Menu stays open so the verb flip is visible: the row IS the state display.
-    expect(await screen.findByText('Connect to Slack')).toBeInTheDocument()
+    expect(await screen.findByText('Resume replies to Slack')).toBeInTheDocument()
   })
 
   it('reconnecting a disconnected channel sets delivery back on', async () => {
@@ -150,7 +171,7 @@ describe('Session menu — one row per channel, two states', () => {
       links: [link({ channel: 'slack', label: 'Slack', paused: true })],
     })
 
-    fireEvent.click(await screen.findByText('Connect to Slack'))
+    fireEvent.click(await screen.findByText('Resume replies to Slack'))
 
     await waitFor(() => expect(api.pauseSlack).toHaveBeenCalledWith('chat-1-100', false))
     await waitFor(() => {
@@ -369,6 +390,14 @@ describe('Session menu — independence and offers', () => {
       label: 'Discord DM · 99',
       available: true,
       unavailable_reason: '',
+    }, {
+      // A sibling offer on another channel: its arrival proves the offers
+      // rendered before the Discord offer is asserted absent.
+      channel_type: 'telegram',
+      target_id: 'user:7',
+      label: 'Telegram DM · 7',
+      available: true,
+      unavailable_reason: '',
     }])
     renderMenu({
       key: 'chat-1-100',
@@ -376,9 +405,14 @@ describe('Session menu — independence and offers', () => {
       links: [link({ channel: 'discord', label: 'Discord DM' })],
     })
 
-    // One Discord row, and it is the binding's — not an offer for another.
-    await waitFor(() => expect(screen.getAllByText(/Discord/)).toHaveLength(1))
+    // One Discord row, and it is the binding's — not an offer for another. The
+    // binding's row is a Disconnect toggle plus its Unlink item; the offer for
+    // the held channel would read `Connect to Discord DM · 99`, and never appears.
+    expect(await screen.findByText('Connect to Telegram DM · 7')).toBeInTheDocument()
     expect(screen.getByText('Disconnect from Discord')).toBeInTheDocument()
+    expect(screen.getByText('Unlink from Discord')).toBeInTheDocument()
+    expect(screen.queryByText(/Connect to Discord/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/^(Disconnect from|Connect to) Discord/)).toHaveLength(1)
   })
 
   it('keeps an unconnectable channel focusable and explains why, without a badge', async () => {

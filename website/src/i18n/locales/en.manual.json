@@ -2209,7 +2209,9 @@
       "worktree_disabled_no_project_directory": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session has no project directory (pick one with the composer's Project chip)."
     },
     "inboundLinkChip": {
-      "driven_from": "Driven from {{label}}"
+      "driven_from": "Driven from {{label}}",
+      "driven_from_paused": "Driven from {{label}} · replies paused",
+      "driven_from_paused_hint": "Resume or unlink {{label}}."
     },
     "instancesViewport": {
       "connecting": "Connecting…",
@@ -2446,6 +2448,15 @@
       "connect_to": "Connect to {{label}}",
       "disconnect_failed": "Could not disconnect from {{label}}: {{reason}}",
       "disconnect_from": "Disconnect from {{label}}",
+      "disconnect_outcome": "Pauses replies — the link stays",
+      "resume_replies_to": "Resume replies to {{label}}",
+      "still_linked": "Replies paused — the link stays; messages there still reach this session.",
+      "still_linked_out": "Replies paused — the link stays; messages there don't reach this session.",
+      "unlink_failed": "Could not unlink from {{label}}: {{reason}}",
+      "unlink_from": "Unlink from {{label}}",
+      "unlink_outcome": "Removes the link — {{label}} stops driving this session. Reconnect anytime from the session menu.",
+      "unlink_outcome_out": "Removes the link — replies stop going to {{label}}. Reconnect anytime from the session menu.",
+      "unlink_stale": "{{label}} is no longer linked to this session; the menu was out of date. Nothing was unlinked.",
       "held_elsewhere": "{{label}} is in use by another session.",
       "unavailable": "This destination is unavailable.",
       "unknown_error": "unknown error",

@@ -12,6 +12,7 @@ import functools
 import json
 import logging
 import os
+import secrets
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
@@ -1010,6 +1011,21 @@ class SessionMap:
         except (TypeError, ValueError):
             return None
 
+    # Per-binding identity, persisted BESIDE each binding (``mirror_nonce`` next to
+    # ``mirror``, ``slack_link_nonce`` next to the Slack fields). Minted when a
+    # binding is created or its target changes, kept across an identical rewrite
+    # (the inbound paths re-write the same coordinates on every turn), dropped
+    # with the binding. The dashboard's slots row digests it into the row's
+    # opaque ``binding`` token (``dashboard.state._link_binding_token``), so a
+    # binding recreated to the SAME target after an unlink never spells the token
+    # a row drawn from the old one carried: a delayed unlink that names the old
+    # row is refused instead of deleting the new binding. Not a secret -- it only
+    # ever leaves as part of a digest -- but random rather than a counter, so a
+    # deleted-and-recreated entry cannot restart the sequence and collide.
+    @staticmethod
+    def _new_binding_nonce() -> str:
+        return secrets.token_hex(8)
+
     def _note_bind(self, key: str) -> None:
         """Announce one COMMITTED channel binding. The choke point both bind paths use.
 
@@ -1388,6 +1404,14 @@ class SessionMap:
                 "slack_thread_ts": thread_ts,
                 "slack_channel_id": channel_id,
             }
+            entry = self._data[key]
+        # A NEW binding (this branch is only reached when the coordinates changed
+        # or the entry is new) gets its own identity; the clear sentinel carries
+        # none. See ``_new_binding_nonce``.
+        if thread_ts:
+            entry["slack_link_nonce"] = self._new_binding_nonce()
+        else:
+            entry.pop("slack_link_nonce", None)
         if thread_ts:
             # Same policy as the tie-break: a self-derived claim never
             # displaces a live owner from the reverse index — it routes the
@@ -1432,6 +1456,7 @@ class SessionMap:
             del self._thread_to_session[old_ts]
         entry.pop("slack_thread_ts", None)
         entry.pop("slack_channel_id", None)
+        entry.pop("slack_link_nonce", None)
         # The mute dies with the binding it muted. A marker left behind would
         # silently re-mute whatever link the user establishes next.
         was_paused = entry.pop("slack_paused", None) is not None
@@ -1538,7 +1563,14 @@ class SessionMap:
             )
         entry = self._ensure_entry(key)
         displaced = self._inbound_binding(entry)
-        entry["mirror"] = link.to_dict()
+        stored = link.to_dict()
+        # Identity travels with the TARGET: a rewrite of the same coordinates
+        # (the dispatcher rebinds a channel-born session's own conversation on
+        # every inbound turn) is the same binding and keeps its nonce; a new
+        # target, or a binding where none stood, is a new binding.
+        if entry.get("mirror") != stored or not entry.get("mirror_nonce"):
+            entry["mirror_nonce"] = self._new_binding_nonce()
+        entry["mirror"] = stored
         if accepts_inbound:
             entry["mirror_accepts_inbound"] = True
         else:
@@ -1691,6 +1723,37 @@ class SessionMap:
         return bool(entry and entry.get("mirror_accepts_inbound"))
 
     @_guarded
+    def mirror_link_nonce(self, key: str) -> str:
+        """The per-binding nonce of the mirror :meth:`get_mirror_link` returns.
+
+        Resolved exactly as ``get_mirror_link`` resolves the binding, so the two
+        always describe the same row: the explicit ``mirror`` carries
+        ``mirror_nonce``; a legacy Slack session whose mirror is synthesized from
+        the Slack fields carries that link's ``slack_link_nonce``. ``""`` for no
+        binding, and for a binding written before nonces existed -- whose token
+        then digests the coordinates alone, as it always did.
+        """
+        entry = self._data.get(self._mirror_key(key))
+        if not entry:
+            return ""
+        if entry.get("mirror"):
+            return str(entry.get("mirror_nonce") or "")
+        if entry.get("slack_thread_ts"):
+            return str(entry.get("slack_link_nonce") or "")
+        return ""
+
+    @_guarded
+    def slack_link_nonce(self, key: str) -> str:
+        """The per-binding nonce of the Slack thread :meth:`get_slack_link` returns.
+
+        ``""`` for no link and for a link written before nonces existed.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry or not entry.get("slack_thread_ts"):
+            return ""
+        return str(entry.get("slack_link_nonce") or "")
+
+    @_guarded
     def find_mirror_sessions(
         self,
         link: ChannelLink,
@@ -1747,6 +1810,7 @@ class SessionMap:
                 continue
             inbound = self._inbound_binding(entry)
             entry.pop("mirror", None)
+            entry.pop("mirror_nonce", None)
             entry.pop("mirror_accepts_inbound", None)
             entry.pop("mirror_paused", None)
             cleared.append(key)
@@ -1769,21 +1833,45 @@ class SessionMap:
         Resolves through :meth:`_mirror_key` so an unlink reaches a binding still
         held under the legacy spelling — otherwise a mirror that reads as live
         could not be turned off.
+
+        Both spellings go in ONE clear. A channel session that rebound from the
+        dashboard can hold two rows -- the canonical binding every read prefers
+        and the pre-unification ``dashboard:`` row it superseded -- and
+        ``_mirror_key`` falls back to the older row the moment the canonical one
+        is gone. Clearing the winner alone therefore does not unlink the session:
+        the next read answers the OLD target, the dashboard redraws the row it
+        just reported removed, and that mirror keeps delivering. Every row that
+        held a binding is popped before the single save, so no reader can
+        observe the fallback in between.
         """
-        mkey = self._mirror_key(key)
-        entry = self._data.get(mkey)
-        if not entry:
-            return False
-        if entry.get("mirror") is not None:
+        canon = canonical_key(key)
+        rows = [canon]
+        if is_channel_session_key(canon):
+            rows.append(legacy_dashboard_mirror_key(canon))
+        lost: list[tuple[str, ChannelLink]] = []
+        cleared = False
+        for row_key in rows:
+            entry = self._data.get(row_key)
+            if not entry or entry.get("mirror") is None:
+                continue
             inbound = self._inbound_binding(entry)
             entry.pop("mirror", None)
+            entry.pop("mirror_nonce", None)
             entry.pop("mirror_accepts_inbound", None)
             entry.pop("mirror_paused", None)
-            self._save()
+            cleared = True
             if inbound is not None:
-                self._note_inbound_unbind(mkey, inbound, reason)
+                lost.append((row_key, inbound))
+        if cleared:
+            self._save()
+            for row_key, inbound in lost:
+                self._note_inbound_unbind(row_key, inbound, reason)
             return True
-        if entry.get("slack_thread_ts") or entry.get("slack_channel_id"):
+        # No explicit ``mirror`` on either spelling: the only mirror left to clear
+        # is the one ``get_mirror_link`` synthesizes from the legacy Slack fields.
+        mkey = self._mirror_key(key)
+        entry = self._data.get(mkey)
+        if entry and (entry.get("slack_thread_ts") or entry.get("slack_channel_id")):
             return self.clear_slack_link(mkey)
         return False
 

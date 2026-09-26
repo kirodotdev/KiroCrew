@@ -6522,7 +6522,9 @@
       "worktree_disabled_no_project_directory": "“添加到此会话”只是预填输入框 — 在你按下发送前不会发送任何内容。此处无法使用工作树：此会话没有项目目录（可通过输入框的“项目”按钮选择一个）。"
     },
     "inboundLinkChip": {
-      "driven_from": "由 {{label}} 驱动"
+      "driven_from": "由 {{label}} 驱动",
+      "driven_from_paused": "由 {{label}} 驱动 · 回复已暂停",
+      "driven_from_paused_hint": "恢复或取消关联 {{label}}。"
     },
     "infoTip": {
       "more_information": "更多信息"
@@ -6868,6 +6870,15 @@
       "connect_to": "连接到 {{label}}",
       "disconnect_failed": "无法断开与 {{label}} 的连接：{{reason}}",
       "disconnect_from": "断开与 {{label}} 的连接",
+      "disconnect_outcome": "暂停回复 — 关联保留",
+      "resume_replies_to": "恢复回复到 {{label}}",
+      "still_linked": "回复已暂停 — 关联仍在；那里的消息仍会到达此会话。",
+      "still_linked_out": "回复已暂停 — 关联仍在；那里的消息不会到达此会话。",
+      "unlink_failed": "无法取消与 {{label}} 的关联：{{reason}}",
+      "unlink_from": "取消与 {{label}} 的关联",
+      "unlink_outcome": "移除关联 — {{label}} 不再驱动此会话。可随时在会话菜单中重新连接。",
+      "unlink_outcome_out": "移除关联 — 回复不再发送到 {{label}}。可随时在会话菜单中重新连接。",
+      "unlink_stale": "{{label}} 已不再与此会话关联；菜单内容已过期。未取消任何关联。",
       "held_elsewhere": "{{label}} 正在被另一个会话使用。",
       "unavailable": "此目标当前不可用。",
       "unknown_error": "未知错误",

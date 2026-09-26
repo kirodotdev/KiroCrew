@@ -9,6 +9,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, drain_background_tasks
 
+from kiro_crew.dashboard.state import _link_binding_token
+from kiro_crew.messaging.link import ChannelLink
+
 
 def _make_slack_app(state):
     from kiro_crew.dashboard.chat_slack import (
@@ -143,6 +146,97 @@ class TestSlackUnlink:
         assert slot._slack_linked is False
         assert slot._slack_channel == ""
         assert slot._slack_thread_ts == ""
+
+    @pytest.mark.asyncio
+    async def test_a_stale_row_cannot_unlink_a_relinked_thread(self, tmp_path, monkeypatch):
+        """Same guard as mirror-unlink, on the Slack fields the row is drawn from.
+
+        The thread id is the only discriminator a Slack link has: a re-link after
+        an unlink (or a Slack-side resume) lands in the SAME owner DM channel on
+        a fresh thread. A tab still showing the old thread's row must not tear
+        down the replacement: the old row's token is a 409 ``mirror_changed``
+        that clears nothing, the current row's token unlinks, and no body keeps
+        the unconditional clear.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._slack_linked = True
+        slot._slack_channel = "D-owner-dm"
+        slot._slack_thread_ts = "ts-new"
+        state.sessions.set_slack_link("dashboard:s1", "ts-new", "D-owner-dm")
+        state.slack_client = MagicMock()
+        state.slack_client.post_message = AsyncMock()
+        state.sessions.clear_slack_link = MagicMock(return_value=True)
+        state.push_slots_update = MagicMock()
+        old_row = ChannelLink("slack", channel_id="D-owner-dm", thread_id="ts-old")
+        current_row = ChannelLink("slack", channel_id="D-owner-dm", thread_id="ts-new")
+        current_token = _link_binding_token(
+            current_row, state.sessions.slack_link_nonce("dashboard:s1")
+        )
+        assert _link_binding_token(old_row) != current_token
+        async with TestClient(TestServer(_make_slack_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/slack-unlink",
+                json={"channel_type": "slack", "binding": _link_binding_token(old_row)},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "mirror_changed"
+            state.sessions.clear_slack_link.assert_not_called()
+            assert slot._slack_linked is True
+            resp = await client.post(
+                "/api/chat/slots/s1/slack-unlink",
+                json={"channel_type": "slack", "binding": current_token},
+            )
+            assert resp.status == 200
+            assert (await resp.json()) == {"ok": True, "was_linked": True}
+        assert slot._slack_linked is False
+
+    @pytest.mark.asyncio
+    async def test_a_row_from_before_an_unlink_cannot_unlink_the_same_thread_relinked(
+        self, tmp_path, monkeypatch
+    ):
+        """A thread re-linked to the SAME coordinates after an unlink is a new binding.
+
+        Same ABA as the mirror side: the coordinates alone cannot tell the old
+        binding from its byte-identical recreation, so the row's token digests
+        the link's own persisted nonce -- minted by ``set_slack_link`` on every
+        create or rebind, dropped by ``clear_slack_link`` -- and a delayed unlink
+        naming the old row is refused instead of tearing down the new link.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._slack_linked = True
+        slot._slack_channel = "D-owner-dm"
+        slot._slack_thread_ts = "ts-same"
+        state.sessions.set_slack_link("dashboard:s1", "ts-same", "D-owner-dm")
+        state.slack_client = MagicMock()
+        state.slack_client.post_message = AsyncMock()
+        state.push_slots_update = MagicMock()
+        row = ChannelLink("slack", channel_id="D-owner-dm", thread_id="ts-same")
+        old_token = _link_binding_token(row, state.sessions.slack_link_nonce("dashboard:s1"))
+        # Another tab: unlink, then re-link the same thread.
+        assert state.sessions.clear_slack_link("dashboard:s1") is True
+        state.sessions.set_slack_link("dashboard:s1", "ts-same", "D-owner-dm")
+        new_token = _link_binding_token(row, state.sessions.slack_link_nonce("dashboard:s1"))
+        assert new_token != old_token
+        async with TestClient(TestServer(_make_slack_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/slack-unlink",
+                json={"channel_type": "slack", "binding": old_token},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "mirror_changed"
+            assert state.sessions.get_slack_link("dashboard:s1") == ("ts-same", "D-owner-dm")
+            assert slot._slack_linked is True
+            resp = await client.post(
+                "/api/chat/slots/s1/slack-unlink",
+                json={"channel_type": "slack", "binding": new_token},
+            )
+            assert resp.status == 200
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
+        assert slot._slack_linked is False
 
     @pytest.mark.asyncio
     async def test_unlink_posts_courtesy_note(self, tmp_path, monkeypatch):
