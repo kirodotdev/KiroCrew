@@ -283,6 +283,9 @@ _SUBAGENT_BATCH_ITEM_KEY = {
 _OWNER_ONLY_EVENTS = frozenset({
     "member_projection",   # types.WS_MEMBER_PROJECTION
     "members_subscribed",  # types.WS_MEMBERS_SUBSCRIBED
+    # Per-row slot metadata edits. Sent only to dashboard-user sockets that
+    # declared the capability; an app token gets its filtered full list.
+    "slot_patch",
 })
 
 

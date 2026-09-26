@@ -5039,7 +5039,7 @@ class TestSessionRename:
             assert data["title"] == "My Chat"
             assert slot.title == "My Chat"
             assert slot._titled is True
-            state.push_slot_title.assert_called_once_with("s1", "My Chat")
+            state.push_slot_title.assert_called_once_with("s1", "My Chat", full=False)
 
     @pytest.mark.asyncio
     async def test_rename_not_found(self, tmp_path, monkeypatch):
@@ -5088,7 +5088,7 @@ class TestSessionRename:
             assert resp.status == 200
             assert len(data["title"]) == 200
             assert state._slots["s1"].title == "x" * 200
-            state.push_slot_title.assert_called_once_with("s1", "x" * 200)
+            state.push_slot_title.assert_called_once_with("s1", "x" * 200, full=False)
 
     @pytest.mark.asyncio
     async def test_resumed_session_preserves_title(self, tmp_path, monkeypatch):
@@ -24877,6 +24877,9 @@ class TestCloseBroadcastDurability:
                 frames.append(set(state._slots))
 
         state.push_slots_update = MagicMock(side_effect=_push)
+        # A successful close announces the removal through push_slot_removed,
+        # which is the same slot-list broadcast for this test's purpose.
+        state.push_slot_removed = MagicMock(side_effect=lambda _key: _push())
 
         real_sync = chat_handlers._sync_dashboard_slots
 
@@ -24995,6 +24998,9 @@ class TestCloseBroadcastDurability:
         seen = asyncio.Event()
         state.push_slots_update = MagicMock(
             side_effect=lambda: (calls.append("broadcast"), seen.set())
+        )
+        state.push_slot_removed = MagicMock(
+            side_effect=lambda _key: (calls.append("broadcast"), seen.set())
         )
 
         async def _hang(*args, **kwargs):

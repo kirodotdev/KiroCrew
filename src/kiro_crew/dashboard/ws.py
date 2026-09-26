@@ -21,6 +21,7 @@ from kiro_crew.dashboard.state import (
     _slots_serialization_note,
 )
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
 from kiro_crew.dashboard.ws_event_scope import (
     _audit_allow,
     _audit_deny,
@@ -519,6 +520,16 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
     ws["_allowed_events"] = allowed_events
+    # A tab whose bundle applies ``slot_patch`` frames says so in ``?caps=``;
+    # without the declaration (an older bundle, a companion window, an app
+    # token) the socket keeps receiving the full ``slots`` list for every
+    # metadata edit. Dashboard users only: the frame bypasses the app scope gate.
+    # ``getattr``: request doubles in the suite are plain dicts with no query.
+    query = getattr(request, "query", None) or {}
+    declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
+    ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
+        SLOT_PATCH_CAPABILITY in declared_caps
+    )
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.

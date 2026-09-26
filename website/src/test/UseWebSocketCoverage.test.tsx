@@ -28,7 +28,7 @@ import {
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseSlots, addSlotOptimistic, armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
 import { recentErrors } from '../utils/errorReport'
@@ -324,6 +324,69 @@ describe('useWebSocket frame router', () => {
     // A slot-less TODO delta is dropped rather than dispatched.
     act(() => { ws.simulateMessage({ type: 'todo_update', data: { todo: null } }) })
     expect(dash().slots[0].todo).toEqual(todo)
+  })
+
+  it('refreshes slots once when a slot patch names an absent row', async () => {
+    globalStore.dispatch(sseSlots([slotFixture(ACTIVE)]))
+    try {
+      const { ws } = mount()
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      vi.mocked(api.chatSlots).mockClear()
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'slot_patch',
+          data: { slots: [{ key: BACKGROUND, title: 'New session' }] },
+        })
+      })
+
+      expect(api.chatSlots).toHaveBeenCalledTimes(1)
+    } finally {
+      globalStore.dispatch(sseSlots([]))
+    }
+  })
+
+  it('does not refresh slots when a slot patch names a present row', async () => {
+    globalStore.dispatch(sseSlots([slotFixture(ACTIVE)]))
+    try {
+      const { ws } = mount()
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      vi.mocked(api.chatSlots).mockClear()
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'slot_patch',
+          data: { slots: [{ key: ACTIVE, title: 'Renamed session' }] },
+        })
+      })
+
+      expect(api.chatSlots).not.toHaveBeenCalled()
+    } finally {
+      globalStore.dispatch(sseSlots([]))
+    }
+  })
+
+  it('does not refresh slots when an absent patched row is closing', async () => {
+    globalStore.dispatch(sseSlots([slotFixture(ACTIVE), slotFixture(BACKGROUND)]))
+    globalStore.dispatch(armConfirmedCloseHold(BACKGROUND))
+    globalStore.dispatch(removeSlotOptimistic(BACKGROUND))
+    try {
+      const { ws } = mount()
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      vi.mocked(api.chatSlots).mockClear()
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'slot_patch',
+          data: { slots: [{ key: BACKGROUND, title: 'Closing session' }] },
+        })
+      })
+
+      expect(api.chatSlots).not.toHaveBeenCalled()
+    } finally {
+      globalStore.dispatch(addSlotOptimistic(slotFixture(BACKGROUND)))
+      globalStore.dispatch(sseSlots([]))
+    }
   })
 
   it('refreshes the pending-skill queues when a candidate is staged', () => {

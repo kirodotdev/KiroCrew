@@ -6842,7 +6842,7 @@ async def _close_slot(
         _resettle_restricted_key(state, name)
         # Durable, so no rollback can retract this frame — a client pruning its
         # per-slot cards on it can never be pruning a slot that comes back.
-        state.push_slots_update()
+        state.push_slot_removed(name)
         discard_closing_failure_scopes()
     # The app was already told, and compensated if the persist above failed — see
     # the notify block before the pop and the rollback in the except branch.
@@ -6856,7 +6856,7 @@ async def _close_slot(
         await state.sessions.remove(_history_key_for(name))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
-    state.push_slots_update()
+    state.push_slot_removed(name)
     state.push_refresh("history")
 
 

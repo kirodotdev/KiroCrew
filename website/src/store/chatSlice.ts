@@ -4,7 +4,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { api } from '../api/client'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseSlotPatch, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
@@ -6408,6 +6408,21 @@ const chatSlice = createSlice({
         if (action.payload.length === 0 && !seenSnapshot) return
         reconcileSlotResidue(state, action.payload)
         clearFiledFolderSuggestions(state, action.payload)
+      })
+      /** A `slot_patch` frame stands in for the full list after a metadata edit
+       *  or a close, so it drives the same cleanup the list would, limited to
+       *  the rows it names: a patched `folder_id` retires that slot's folder
+       *  suggestion, and a removed key's residue is evicted. The active slot is
+       *  never evicted, matching `reconcileSlotResidue`. */
+      .addCase(sseSlotPatch, (state, action) => {
+        const { slots: rows, removed } = action.payload
+        if (rows?.length) clearFiledFolderSuggestions(state, rows)
+        const active = state.activeSlot
+        const protectedKeys = active ? new Set([active, safeKey(active)]) : new Set<string>()
+        for (const key of removed ?? []) {
+          if (protectedKeys.has(key) || protectedKeys.has(safeKey(key))) continue
+          evictSlotState(state, key)
+        }
       })
       /** The other authoritative slot-list writer. A request's reply is
        *  authoritative even when empty — nothing to disambiguate — so this is
