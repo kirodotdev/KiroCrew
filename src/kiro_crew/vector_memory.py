@@ -1569,9 +1569,8 @@ class VectorMemoryStore:
           id map, written with no lockdown of their own.
 
         Not exhaustive for the data home as a whole -- ``memory.py``'s FTS index
-        (``memory_index.db``) and its sidecars carry the same secrets and are not
-        this class's to open. Tracked separately rather than reached across a module
-        boundary from here.
+        (``memory_index.db``) and its sidecars carry the same secrets; ``memory.py``
+        restricts those itself in ``MemoryStore._restrict_index_files``.
         """
         return (
             Path(f"{self._db_path}-wal"),

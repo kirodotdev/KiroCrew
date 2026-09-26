@@ -19,6 +19,7 @@ this module's — see docs/system-specs/modules/memory-skills-hooks.md.
 
 from __future__ import annotations
 
+import errno
 import heapq
 import logging
 import os
@@ -49,7 +50,13 @@ from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
 from kiro_crew.metrics.db_metrics import timed, timed_query
 from kiro_crew.pinned_fs import fd_real_path
-from kiro_crew.platform_compat import file_lock, first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import (
+    IS_POSIX,
+    file_lock,
+    first_linked_ancestor,
+    is_link_or_junction,
+    restrict_to_owner,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -253,6 +260,7 @@ class MemoryStore:
         self._projects_file = self._memory_dir / PROJECTS_FILE
         self._index_db = index_db or (workspace or config_dir()) / INDEX_DB_FILE
         self._vector_store: "VectorMemoryStore | None" = vector_store
+        self._index_owner_only = False  # FTS index + sidecars restricted once per store
         # TTL cache for read_recent_history, keyed by `days` so callers using
         # different windows (context build=14, suggestions=2, dashboard=30) don't
         # evict each other. Value: (monotonic_deadline, day_iso, result).
@@ -1490,9 +1498,13 @@ class MemoryStore:
             for suffix in ("", "-wal", "-shm"):
                 p = Path(str(self._index_db) + suffix)
                 p.unlink(missing_ok=True)
+            self._index_owner_only = False
             return self._try_create_db()
 
     def _try_create_db(self) -> sqlite3.Connection:
+        restrict = not self._index_owner_only
+        if restrict:  # repair an existing install's files before SQLite opens them
+            self._restrict_index_files()
         conn = sqlite3.connect(str(self._index_db), timeout=_DB_BUSY_TIMEOUT_SECS)
         # Wait out transient 'database is locked' contention instead of letting
         # it surface (where the self-heal would misread it as corruption).
@@ -1501,7 +1513,34 @@ class MemoryStore:
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("
             "path, content, tokenize='porter unicode61')"
         )
+        if restrict:  # and cover whatever SQLite just created; retry next open on failure
+            self._index_owner_only = self._restrict_index_files()
         return conn
+
+    def _restrict_index_files(self) -> bool:
+        """Owner-only the index and sidecars that exist; False if any could not be."""
+        ok = True
+        for suffix in ("", "-wal", "-shm"):
+            path = f"{self._index_db}{suffix}"
+            try:
+                if IS_POSIX:  # O_NOFOLLOW pins the file: a planted link is refused, not followed
+                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    try:
+                        os.fchmod(fd, 0o600)
+                    finally:
+                        os.close(fd)
+                elif os.path.exists(path):
+                    restrict_to_owner(path)
+            except OSError as e:
+                if isinstance(e, FileNotFoundError) or e.errno == errno.ELOOP:
+                    continue  # absent, or a link we will not chmod through
+                ok = False
+                logger.warning(
+                    "Cannot restrict %s to owner; it may be readable by other users",
+                    path,
+                    exc_info=True,
+                )
+        return ok
 
     def _index_file(self, path: Path, content: str) -> None:
         """Index a single file (incremental update)."""
