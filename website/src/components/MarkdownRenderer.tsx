@@ -2387,7 +2387,7 @@ function MarkdownTable({ node, children }: { node?: HastElement; children?: Reac
     : <Icon size={13} aria-hidden="true" />
 
   return (
-    <div className="my-3 group/table" data-testid="markdown-table">
+    <div className="markdown-table my-3 group/table" data-testid="markdown-table">
       <div className="overflow-x-auto"><table {...sp(node)} className="min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]">{children}</table></div>
       <div className={`mt-0.5 flex items-center justify-end gap-1 select-none opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
         <button type="button" data-testid="table-copy-markdown" className={TABLE_ACTION_BTN_CLS} onClick={() => copy('markdown')} title={label('markdown')} aria-label={label('markdown')}>

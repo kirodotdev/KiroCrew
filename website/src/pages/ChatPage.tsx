@@ -1254,16 +1254,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useScrollManager()
 
   // Width bucket for the height cache's scope (see heightScopeKey below).
-  // Quantized to 16px; capped at 944 because the content column maxes out at
-  // 900px + 32px row padding, so all wider scrollers share one bucket.
-  // Initialized from innerWidth (the scroller is not mounted yet on first
-  // render) and corrected from the real clientWidth in the layout effect.
+  // Quantized to 16px across the full pane width because breakout tables can
+  // reflow beyond the reading-column cap. Initialized from innerWidth (the
+  // scroller is not mounted yet on first render) and corrected from the real
+  // clientWidth in the layout effect.
   const [scrollerWidthBucket, setScrollerWidthBucket] = useState(() =>
-    Math.min(typeof window !== 'undefined' ? Math.round(window.innerWidth / 16) * 16 : 944, 944))
+    typeof window !== 'undefined' ? Math.round(window.innerWidth / 16) * 16 : 944)
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const compute = () => setScrollerWidthBucket(Math.min(Math.round(el.clientWidth / 16) * 16, 944))
+    const compute = () => setScrollerWidthBucket(Math.round(el.clientWidth / 16) * 16)
     compute()
     if (typeof ResizeObserver === 'undefined') return
     // Debounced: mid-drag resize storms must not thrash the height index.
@@ -4958,12 +4958,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     prefetchStartIndex,
     sessionId: activeSlot ?? '__no_slot__',
     // Width-bucketed height scope: measured row heights are only valid for
-    // the width they were measured at. The content column is capped at 900px
-    // (+32px row padding), so every scroller wider than the cap shares ONE
-    // bucket (desktop sidebar toggles do not re-measure); below the cap the
-    // bucket quantizes to 16px so a phone, a rotated phone, and a narrow
-    // desktop window each keep their own measured geometry.
-    heightScopeKey: `${activeSlot ?? '__no_slot__'}@w${scrollerWidthBucket}`,
+    // the width they were measured at. Breakout tables use the full pane, so
+    // the uncapped 16px buckets re-measure desktop resizes as well as phones.
+    // The layout revision keeps pre-breakout cached heights out of this scope.
+    // Colon-delimited, because the persisted key is `vc_heights_<scope>` and
+    // storageGc reads the owning session as the segment before the first ':'
+    // (and deletes a session's keys at that delimiter): a scope joined with
+    // any other separator is orphaned on every boot and missed on delete.
+    heightScopeKey: `${activeSlot ?? '__no_slot__'}:tables1:w${scrollerWidthBucket}`,
     estimatedHeight: 100,
     // Overscan tradeoff (experimental):
     //   smaller (3)   → least memory, frequent widget remounts on small scrolls
@@ -5846,7 +5848,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
-        <div className={`flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
+        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
           {isUser ? (
             <UserMessage
               content={m.content}

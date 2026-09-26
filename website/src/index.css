@@ -3135,3 +3135,34 @@ html[data-font-family="opendyslexic"] .nav-item {
      to read at a glance. 0.4 was chosen by eye on the dogfood build. */
   --pane-dim-opacity: 0.4;
 }
+
+/* Tables borrow the transcript's unused gutters, not the viewport's width.
+   The pane width arrives as the inherited `--chat-pane-width` property that
+   TranscriptScrollShell publishes on `.chat-container` (PANE_WIDTH_PROPERTY),
+   so the scroller never becomes a containing block that could trap
+   McpAppFrame's in-place `position: fixed` full-screen sheet. The measure
+   farm lives inside this same scroller, so off-screen rows inherit identical
+   column widths and heights. Hosts that do
+   not publish the property fall back to ordinary markdown sizing. */
+/* Only top-level assistant tables may escape the reading column. The
+   intervening div is rehypeStableRootKeys' display:contents wrapper;
+   quoted/list tables and formatted code cards retain their own bounds. */
+.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table),
+.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+  overflow: visible;
+}
+.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+  /* Preserve the bubble's margin containment and raw-view height measurement
+     while allowing its table to paint into the surrounding gutters. */
+  display: flow-root;
+}
+.chat-container [data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table {
+  /* Match the row's px-4 on both sides; clamp to the reading column on
+     narrow panes. The table's inner wrapper still owns horizontal scroll. */
+  width: max(100%, calc(var(--chat-pane-width, 100%) - 2rem));
+  margin-inline: min(0px, calc((100% - (var(--chat-pane-width, 100%) - 2rem)) / 2));
+}
+.chat-container [data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table code {
+  overflow-wrap: normal;
+  word-break: normal;
+}

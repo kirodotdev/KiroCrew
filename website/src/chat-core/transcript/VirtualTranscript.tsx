@@ -124,23 +124,20 @@ export interface VirtualTranscriptProps {
 /** Virtualizer tuning shared with the main chat page. */
 const ESTIMATED_ROW_HEIGHT = 100
 const OVERSCAN = 6
-/** Widest bucket: the 900px column plus its row padding, so every wider
- *  scroller shares one height scope. */
-const WIDTH_BUCKET_MAX = 944
 const WIDTH_BUCKET_STEP = 16
 const WIDTH_SETTLE_MS = 200
 
 function bucketWidth(px: number): number {
-  return Math.min(Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP, WIDTH_BUCKET_MAX)
+  return Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP
 }
 
-/** Row heights depend on the column width, so the height cache is scoped by a
- *  width bucket: a pane dragged narrower re-measures instead of trusting
- *  heights recorded at the old width. Debounced — a resize drag must not thrash
- *  the height index. */
+/** Row heights depend on the full pane width because tables may outgrow the
+ *  reading column. Scope the height cache to an uncapped width bucket so a pane
+ *  resize re-measures instead of trusting heights recorded at the old width.
+ *  Debounced — a resize drag must not thrash the height index. */
 function useScrollerWidthBucket(scrollerRef: React.RefObject<HTMLDivElement | null>): number {
   const [bucket, setBucket] = useState(() =>
-    bucketWidth(typeof window !== 'undefined' ? window.innerWidth : WIDTH_BUCKET_MAX))
+    bucketWidth(typeof window !== 'undefined' ? window.innerWidth : 944))
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
@@ -202,13 +199,19 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       [msgKey],
     )
 
+    // Only the shipped host prefixes encode a raw slot after one colon.
+    // Put that slot first for storageGc, retaining the host as a height-only
+    // partition. Other caller IDs stay opaque; sessionId still owns anchors.
+    const hostedSession = /^(pane|side|embed):([^:]+)$/.exec(sessionId)
     const virt = useVirtualChat<DisplayItem>({
       items: items as DisplayItem[],
       getKey,
       getStableId,
       getAltId,
       sessionId,
-      heightScopeKey: `${sessionId}@w${widthBucket}`,
+      heightScopeKey: hostedSession
+        ? `${hostedSession[2]}:tables1:${hostedSession[1]}:w${widthBucket}`
+        : `${sessionId}:tables1:w${widthBucket}`,
       estimatedHeight: ESTIMATED_ROW_HEIGHT,
       overscan: OVERSCAN,
       eagerFirstMeasure: true,
