@@ -11,7 +11,7 @@ export function providerUsageQuery(provider: ProviderAdapter) {
     enabled: provider.capabilities.usageBilling,
     staleTime: USAGE_REFRESH_MS,
     gcTime: Infinity,
-    refetchInterval: USAGE_REFRESH_MS,
+    refetchInterval: query => query.state.data?.refreshing && !query.state.error ? 1_000 : USAGE_REFRESH_MS,
     refetchIntervalInBackground: true,
   })
 }

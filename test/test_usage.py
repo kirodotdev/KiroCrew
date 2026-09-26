@@ -453,9 +453,15 @@ class TestApiKiroUsage:
     def _reset_cache(self):
         usage_mod._CACHE = {}
         usage_mod._CACHE_TS = 0.0
+        usage_mod._SESSIONS_CACHE = None
+        usage_mod._SESSIONS_CACHE_TS = 0.0
+        usage_mod._USAGE_SESSION_REFRESH_TASK = None
         yield
         usage_mod._CACHE = {}
         usage_mod._CACHE_TS = 0.0
+        usage_mod._SESSIONS_CACHE = None
+        usage_mod._SESSIONS_CACHE_TS = 0.0
+        usage_mod._USAGE_SESSION_REFRESH_TASK = None
 
     @pytest.mark.asyncio
     async def test_returns_cached(self):
@@ -499,6 +505,51 @@ class TestApiKiroUsage:
                 assert "billing" in data
                 assert data["billing"]["credits_used"] == 10
                 assert data["sessions"]["total_sessions"] == 1
+                assert data["refreshing"] is False
+
+    @pytest.mark.asyncio
+    async def test_slow_session_scan_returns_billing_then_refreshes(self):
+        release = usage_mod.asyncio.Event()
+        finished = usage_mod._empty_session_summary()
+        finished["total_sessions"] = 2
+
+        async def _slow_parse():
+            await release.wait()
+            return finished
+
+        billing = {"credits_used": 25, "credits_plan": 100, "plan": "Pro"}
+        with (
+            patch.object(usage_mod, "_cached_parse_sessions", _slow_parse),
+            patch.object(usage_mod, "_USAGE_SESSION_WAIT_SECONDS", 0.001),
+            patch.object(usage_mod, "get_usage_cache", return_value=billing),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/usage/kiro", api_kiro_usage)
+            async with TestClient(TestServer(app)) as client:
+                first = await client.get("/api/usage/kiro")
+                assert first.status == 200
+                partial = await first.json()
+                assert partial["refreshing"] is True
+                assert partial["billing"]["plan"] == "Pro"
+                assert partial["billing"]["credits_used"] == 25
+                assert partial["sessions"]["today"] == {
+                    "sessions": 0,
+                    "messages": 0,
+                    "tool_calls": 0,
+                }
+                # The placeholder must not hide the finished scan for two minutes.
+                assert usage_mod._CACHE == {}
+
+                release.set()
+                task = usage_mod._USAGE_SESSION_REFRESH_TASK
+                assert task is not None
+                await task
+
+                second = await client.get("/api/usage/kiro")
+                complete = await second.json()
+                assert complete["refreshing"] is False
+                assert complete["sessions"]["total_sessions"] == 2
+                assert usage_mod._CACHE == complete
 
     @pytest.mark.asyncio
     async def test_missing_directory_preserves_billing_and_refreshes(self, tmp_path):
@@ -531,6 +582,7 @@ class TestApiKiroUsage:
                 sessions_dir.mkdir()
                 _write_session(session_file, [{"kind": "Prompt"}])
                 usage_mod._CACHE_TS = time.time() - usage_mod._CACHE_TTL - 1
+                usage_mod._SESSIONS_CACHE_TS = time.time() - usage_mod._CACHE_TTL - 1
                 refreshed = await client.get("/api/usage/kiro")
                 assert refreshed.status == 200
                 updated = await refreshed.json()
@@ -944,6 +996,7 @@ class TestPersistTokenRecord:
 def _reset_sessions_cache():
     usage_mod._SESSIONS_CACHE = None
     usage_mod._SESSIONS_CACHE_TS = 0.0
+    usage_mod._USAGE_SESSION_REFRESH_TASK = None
 
 
 class TestPersistTokenRecordAsync:
@@ -980,10 +1033,13 @@ class TestPersistTokenRecordAsync:
 
 class TestCachedParseSessions:
     @pytest.mark.asyncio
-    async def test_returns_empty_without_dir(self, tmp_path, monkeypatch):
+    async def test_returns_complete_zero_shape_without_dir(self, tmp_path, monkeypatch):
         _reset_sessions_cache()
         monkeypatch.setattr(usage_mod, "_SESSIONS_DIR", tmp_path / "nope")
-        assert await _cached_parse_sessions() == {}
+        result = await _cached_parse_sessions()
+        assert result["total_sessions"] == 0
+        assert result["today"] == {"sessions": 0, "messages": 0, "tool_calls": 0}
+        assert result["daily_history"] == []
 
     @pytest.mark.asyncio
     async def test_offloads_and_caches(self, tmp_path, monkeypatch):
@@ -1005,6 +1061,30 @@ class TestCachedParseSessions:
         assert second == first
         # Second call served from the TTL cache — parse ran once.
         assert calls["n"] == 1
+        _reset_sessions_cache()
+
+    @pytest.mark.asyncio
+    async def test_completed_refresh_task_is_not_reused_after_cache_expiry(self, monkeypatch):
+        _reset_sessions_cache()
+        calls = {"n": 0}
+
+        async def _fake_cached_parse():
+            calls["n"] += 1
+            return {"total_sessions": calls["n"], "daily_history": []}
+
+        monkeypatch.setattr(usage_mod, "_cached_parse_sessions", _fake_cached_parse)
+        first = usage_mod.asyncio.create_task(_fake_cached_parse())
+        assert await first == {"total_sessions": 1, "daily_history": []}
+        usage_mod._USAGE_SESSION_REFRESH_TASK = first
+        usage_mod._SESSIONS_CACHE = {"total_sessions": 1, "daily_history": []}
+        usage_mod._SESSIONS_CACHE_TS = time.time() - usage_mod._CACHE_TTL - 1
+
+        result, refreshing = await usage_mod._usage_sessions_snapshot()
+
+        assert result == {"total_sessions": 2, "daily_history": []}
+        assert refreshing is False
+        assert calls["n"] == 2
+        assert usage_mod._USAGE_SESSION_REFRESH_TASK is None
         _reset_sessions_cache()
 
     @pytest.mark.asyncio

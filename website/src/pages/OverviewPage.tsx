@@ -89,11 +89,15 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
         !isError && <div className="skeleton h-14 rounded" />
       ) : (
         <div className="flex flex-col gap-2">
-          <div className="text-[13px] text-muted">
-            {i18nT('pages.overviewPage.today')} {fmtNum(today?.sessions)} {i18nT('pages.overviewPage.sessions')} {fmtNum(today?.messages)} {i18nT('pages.overviewPage.messages')}
-            {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} {i18nT('pages.overviewPage.tokens')}</>}
-            {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
-          </div>
+          {data.refreshing ? (
+            <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
+          ) : (
+            <div className="text-[13px] text-muted">
+              {i18nT('pages.overviewPage.today')} {fmtNum(today?.sessions)} {i18nT('pages.overviewPage.sessions')} {fmtNum(today?.messages)} {i18nT('pages.overviewPage.messages')}
+              {data.tokens?.total != null && <> · {fmtNum(data.tokens.total)} {i18nT('pages.overviewPage.tokens')}</>}
+              {data.costUsd != null && <> · ${data.costUsd.toFixed(2)}</>}
+            </div>
+          )}
           {b?.plan && (
             <div className="flex items-center gap-2 text-[12px] text-muted">
               <span>{b.plan}</span>
