@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -104,9 +106,14 @@ def test_approve_promotes_and_marks_scripts_executable(loader):
 
 def test_approve_refuses_when_live_exists(loader):
     _stage(loader, "dup")
-    loader.create_auto_skill(
-        "dup", description="x", triggers="x", procedure_md="body", provenance=_prov()
-    )
+    # Write the live skill straight to disk: the publish path declines a slug
+    # that is awaiting review, so approval's own guard is exercised against a
+    # live skill that arrives by another route (hand-authored, restored from
+    # the archive, synced in).
+    live = loader._dir / "auto" / "dup"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("---\nname: auto/dup\n---\nbody\n", encoding="utf-8")
+    loader._invalidate_iter_cache()
     assert loader.approve_pending_skill("dup") is None
     # Candidate remains pending for the user to resolve.
     assert [p["slug"] for p in loader.list_pending_skills()] == ["dup"]
@@ -393,6 +400,338 @@ def test_restage_does_not_clobber_candidate_under_review(loader):
     distinct = loader.get_pending_skill("race-cand-2")
     assert "DIFFERENT" in distinct["content"]
     assert {s["filename"] for s in distinct["scripts"]} == {"b.py"}
+
+
+def _stage_distinct(loader, slug, **kw):
+    """Stage a candidate under ``slug`` without the ``_stage`` mtime handling."""
+    return loader.stage_skill_candidate(
+        slug,
+        description=kw.pop("description", f"desc {slug}"),
+        triggers=kw.pop("triggers", slug),
+        procedure_md=kw.pop("procedure_md", "## Steps\n\nrun it"),
+        provenance=_prov(),
+        **kw,
+    )
+
+
+def test_publish_cannot_occupy_a_queued_candidates_destination(loader):
+    """A live auto-publish must not take the slug a queued candidate will be
+    promoted to. Occupying it makes approval refuse that candidate for as long
+    as the live directory stands, and TTL pruning then deletes unreviewed work."""
+    assert _stage(loader, "sib") == "auto/sib"
+    # A distinct skill slugifying the same is queued as a sibling.
+    assert _stage_distinct(loader, "sib", description="OTHER") == "auto/sib-2"
+    # An auto-publish (approval off, prose-only) proposing that literal sibling
+    # slug is refused rather than served.
+    assert (
+        loader.create_auto_skill(
+            "sib-2",
+            description="publisher",
+            triggers="sib-2",
+            procedure_md="body",
+            provenance=_prov(),
+        )
+        is None
+    )
+    assert not (loader._dir / "auto" / "sib-2").exists()
+    # The queued candidate keeps its destination and stays approvable.
+    assert loader.approve_pending_skill("sib-2") == "auto/sib-2"
+
+
+def test_staging_skips_a_sibling_whose_live_name_is_taken(loader):
+    """The queue must not hand out a NEW-candidate slug whose live counterpart
+    exists: approval refuses such a candidate, so it is queued unapprovable."""
+    assert _stage(loader, "coord") == "auto/coord"
+    assert (
+        loader.create_auto_skill(
+            "coord-2",
+            description="live sibling",
+            triggers="coord-2",
+            procedure_md="body",
+            provenance=_prov(),
+        )
+        == "auto/coord-2"
+    )
+    # -2 is live, so the distinct candidate lands on the next free name.
+    assert _stage_distinct(loader, "coord", description="OTHER") == "auto/coord-3"
+    assert loader.approve_pending_skill("coord-3") == "auto/coord-3"
+
+
+def test_exhausted_pending_slugs_report_failure_not_success(loader):
+    """With every sibling slug taken, staging must return ``None`` so the caller
+    takes its rejection branch. A name returned without a write is recorded as a
+    staged candidate that does not exist, and consolidation's offset advance
+    makes that loss permanent."""
+    root = loader._pending_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "full").mkdir()
+    for n in range(2, 51):
+        (root / f"full-{n}").mkdir()
+    assert _stage_distinct(loader, "full") is None
+    # Nothing was written under any of the occupied claims.
+    assert not any((root / d.name / "SKILL.md").exists() for d in root.iterdir())
+
+
+def test_overlong_sibling_slug_is_refused_not_orphaned(loader):
+    """A sibling suffix that pushes the slug past the canonical length must not
+    be claimed. ``list_pending_skills`` skips a non-canonical directory and
+    ``prune_pending`` walks that list, so such a claim is invisible to the queue,
+    the dashboard and pruning alike."""
+    slug = "a" * 63  # canonical; "-2" would exceed the pattern's length
+    assert _stage(loader, slug) == f"auto/{slug}"
+    assert _stage_distinct(loader, slug, description="OTHER") is None
+    # Exactly one pending directory, and it is listable.
+    assert [d.name for d in loader._pending_root().iterdir()] == [slug]
+    assert {p["slug"] for p in loader.list_pending_skills()} == {slug}
+
+
+def test_update_candidate_may_share_its_live_targets_slug(loader):
+    """An UPDATE candidate is promoted over the live ``target`` in its metadata
+    by a path that never consults ``auto/<candidate-slug>``, so a live skill of
+    that name must not divert it to a sibling."""
+    assert (
+        loader.create_auto_skill(
+            "shared",
+            description="live",
+            triggers="shared",
+            procedure_md="OLD",
+            provenance=_prov(),
+        )
+        == "auto/shared"
+    )
+    assert (
+        _stage_distinct(loader, "shared", kind="update", target="auto/shared", base_version=1)
+        == "auto/shared"
+    )
+
+
+def test_pending_update_does_not_reserve_a_live_name(loader):
+    """An UPDATE candidate is queued under a name derived from its target and is
+    promoted to the target named in its metadata, so its own queue slug is never
+    a live destination. Holding that name against a live create would refuse an
+    unrelated skill and drop it, because consolidation advances its message
+    offset whatever one candidate's outcome."""
+    assert (
+        _stage_distinct(
+            loader, "topic-update", kind="update", target="auto/topic", base_version=1
+        )
+        == "auto/topic-update"
+    )
+    # A genuinely different skill slugifying to the queued update's name publishes.
+    assert (
+        loader.create_auto_skill(
+            "topic-update",
+            description="how to update a topic",
+            triggers="topic-update",
+            procedure_md="DISTINCT",
+            provenance=_prov(),
+        )
+        == "auto/topic-update"
+    )
+    assert "DISTINCT" in (loader._dir / "auto" / "topic-update" / "SKILL.md").read_text()
+    # The queued update is untouched and still promotes to its own target.
+    assert loader._read_pending_meta("topic-update")["target"] == "auto/topic"
+
+
+def test_pending_candidate_of_unknown_kind_still_reserves_its_slug(loader):
+    """The kind test fails closed. A pending directory whose metadata is missing,
+    unreadable or silent about ``kind`` keeps its slug reserved, so a candidate
+    that may yet be promoted to ``auto/<slug>`` cannot be stranded."""
+    pdir = loader._pending_root() / "opaque"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "SKILL.md").write_text("---\nname: auto/opaque\n---\n# x\n", encoding="utf-8")
+    for meta in (None, "{ not json", '{"kind": "new"}', "[]"):
+        if meta is None:
+            (pdir / ".meta.json").unlink(missing_ok=True)
+        else:
+            (pdir / ".meta.json").write_text(meta, encoding="utf-8")
+        assert not loader._auto_slug_available("opaque", claim="live")
+        assert (
+            loader.create_auto_skill(
+                "opaque",
+                description="d",
+                triggers="opaque",
+                procedure_md="P",
+                provenance=_prov(),
+            )
+            is None
+        )
+
+
+def test_both_claim_paths_hold_the_shared_slug_lock(loader, monkeypatch):
+    """The two paths allocate in different directories, so an atomic ``mkdir``
+    cannot make the cross-namespace pair safe on its own. Both must test and
+    claim inside the one shared lock."""
+    held: list[str] = []
+    depth = {"n": 0}
+    real = SkillsLoader._auto_slug_claim_lock
+
+    @contextlib.contextmanager
+    def counting(self):
+        depth["n"] += 1
+        with real(self) as locked:
+            yield locked
+        depth["n"] -= 1
+
+    def record(self, slug, *, claim="live"):
+        held.append(f"{claim}:{depth['n']}")
+        return True
+
+    monkeypatch.setattr(SkillsLoader, "_auto_slug_claim_lock", counting)
+    monkeypatch.setattr(SkillsLoader, "_auto_slug_available", record)
+    assert _stage_distinct(loader, "locked") == "auto/locked"
+    assert loader.create_auto_skill(
+        "live-locked",
+        description="d",
+        triggers="t",
+        procedure_md="P",
+        provenance=_prov(),
+    ) == "auto/live-locked"
+    # Each availability test ran with the lock held (depth 1), one per path.
+    assert held == ["pending-new:1", "live:1"]
+    assert (loader._dir / ".auto-slug-claim.lock").exists()
+
+
+def test_live_claim_refuses_a_directory_that_appears_under_it(loader):
+    """The lock is advisory, so the live ``mkdir`` is the claim. A directory that
+    appears in the window belongs to the other writer, and overwriting it would
+    destroy their content, so this side refuses."""
+    real_mkdir = Path.mkdir
+
+    def racing(self, *a, **kw):
+        if self.name == "raced" and not self.exists():
+            real_mkdir(self, parents=True, exist_ok=True)
+            (self / "SKILL.md").write_text("THEIRS", encoding="utf-8")
+        return real_mkdir(self, *a, **kw)
+
+    # Scoped context, not a shared-fixture patch plus undo: the patch is reverted
+    # at the end of the with block and touches nothing the fixtures installed.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "mkdir", racing)
+        assert (
+            loader.create_auto_skill(
+                "raced",
+                description="d",
+                triggers="t",
+                procedure_md="MINE",
+                provenance=_prov(),
+            )
+            is None
+        )
+    assert (loader._dir / "auto" / "raced" / "SKILL.md").read_text() == "THEIRS"
+
+
+def test_claim_without_the_lock_is_refused_not_attempted(loader, monkeypatch):
+    """The two claim paths allocate in different directories, so the atomic
+    ``mkdir`` cannot make the cross-namespace pair safe. Without the lock a
+    concurrent stage and publish can each pass the other half's test, which strands
+    the queued candidate, so an unacquired lock refuses the claim. It returns
+    ``None`` rather than raising, because the callers audit ``None`` as a rejection
+    while an exception would abort the consolidation pass."""
+    def refusing(fd, **kw):
+        raise OSError("lock held by another process")
+
+    monkeypatch.setattr("kiro_crew.skills.file_lock", refusing)
+    assert _stage_distinct(loader, "unlocked") is None
+    assert not (loader._pending_root() / "unlocked").exists()
+    assert (
+        loader.create_auto_skill(
+            "live-unlocked",
+            description="d",
+            triggers="t",
+            procedure_md="P",
+            provenance=_prov(),
+        )
+        is None
+    )
+    assert not (loader._dir / "auto" / "live-unlocked").exists()
+
+
+def test_claim_lock_that_cannot_be_opened_refuses_without_raising(loader, monkeypatch):
+    """A lock file that cannot be opened is the other acquire failure, and it takes
+    the same refusal path: a home this process cannot write a lock into is one it
+    cannot coordinate in."""
+    real_open = os.open
+
+    def no_open(path, *a, **kw):
+        if str(path).endswith(".auto-slug-claim.lock"):
+            raise OSError("read-only home")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(os, "open", no_open)
+    assert _stage_distinct(loader, "unopenable") is None
+    assert (
+        loader.create_auto_skill(
+            "live-unopenable",
+            description="d",
+            triggers="t",
+            procedure_md="P",
+            provenance=_prov(),
+        )
+        is None
+    )
+
+
+def test_restore_cannot_occupy_a_queued_candidates_destination(loader):
+    """A restore is a third claim on the live half of the slug space. Moving an
+    archived skill onto a queued NEW candidate's promotion destination strands that
+    candidate exactly as a publish would, so it runs the same test under the same
+    lock."""
+    assert _stage(loader, "revived") == "auto/revived"
+    archived = loader._archive_root() / "revived"
+    archived.mkdir(parents=True, exist_ok=True)
+    (archived / "SKILL.md").write_text("---\nname: auto/revived\n---\n# old\n", encoding="utf-8")
+    assert loader.restore_auto_skill("revived") is None
+    # The archive keeps its copy and the queued candidate still approves.
+    assert (archived / "SKILL.md").exists()
+    assert not (loader._dir / "auto" / "revived").exists()
+    assert loader.approve_pending_skill("revived") == "auto/revived"
+
+
+def test_pending_metadata_is_committed_under_the_claim_lock(loader):
+    """A live publish reads the queued candidate's ``kind`` to decide whether the
+    claim reserves its name, so the metadata carrying ``kind`` must land before the
+    lock is released. A publish observing the claimed directory without it fails
+    closed and refuses a name an UPDATE candidate never reserves."""
+    seen: list[bool] = []
+    real = SkillsLoader._auto_slug_claim_lock
+
+    @contextlib.contextmanager
+    def observing(self):
+        with real(self) as locked:
+            yield locked
+        # At release, the claim and its metadata are both on disk.
+        pdir = self._pending_root() / "committed-update"
+        seen.append(pdir.is_dir() and (pdir / ".meta.json").exists())
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SkillsLoader, "_auto_slug_claim_lock", observing)
+        assert (
+            _stage_distinct(
+                loader,
+                "committed-update",
+                kind="update",
+                target="auto/committed",
+                base_version=1,
+            )
+            == "auto/committed-update"
+        )
+    assert seen == [True]
+    assert loader._read_pending_meta("committed-update")["kind"] == "update"
+
+
+def test_claim_is_the_mkdir_not_the_availability_test(loader, monkeypatch):
+    """The availability test only picks a name; the ``mkdir`` is what claims it.
+    When a directory appears in the window between the two, the walk moves to the
+    next name rather than overwriting a candidate or failing the stage."""
+    assert _stage(loader, "toctou") == "auto/toctou"
+    before = loader.get_pending_skill("toctou")["content"]
+    # Approve an occupied name, leaving mkdir as the only thing between two claims.
+    monkeypatch.setattr(SkillsLoader, "_auto_slug_available", lambda self, slug, **kw: True)
+    assert _stage_distinct(loader, "toctou", description="OTHER") == "auto/toctou-2"
+    # The candidate under review keeps its bytes; the distinct one is queued.
+    assert loader.get_pending_skill("toctou")["content"] == before
+    assert "OTHER" in loader.get_pending_skill("toctou-2")["content"]
 
 
 def test_meta_credentials_are_redacted_in_list_and_detail(loader):

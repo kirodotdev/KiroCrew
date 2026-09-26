@@ -18,13 +18,13 @@ import stat
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import batched, islice, zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterable, Iterator, NamedTuple
+from typing import Callable, Iterable, Iterator, Literal, NamedTuple
 
 from kiro_crew import hooks as hooks_module
 from kiro_crew import pinned_fs, skill_trust
@@ -47,6 +47,7 @@ from kiro_crew.memory_recall import recall_terms
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.platform_compat import (
     ensure_owner_rwx_dirs,
+    file_lock,
     is_link_or_junction,
     rmtree_force,
 )
@@ -324,6 +325,20 @@ AUTO_ARCHIVE_DIRNAME = ".archive"
 # from discovery — pending candidates never trigger. Layout:
 # ``auto/.pending/<slug>/{SKILL.md, scripts/, .meta.json}``.
 AUTO_PENDING_DIRNAME = ".pending"
+
+# One lock file for the whole auto slug space, held across an availability test
+# and the claim it authorizes. Dot-prefixed and a plain file, so discovery skips
+# it (``_iter_skill_files`` skips dot-dirs and reads only ``<name>/SKILL.md``).
+# It lives at the skills root rather than inside ``auto/`` so taking it does not
+# create the auto namespace as a side effect of a refused claim.
+AUTO_SLUG_CLAIM_LOCK_NAME = ".auto-slug-claim.lock"
+
+# The critical section is one directory test plus a small write, so a holder that
+# has not released within seconds is stuck rather than busy. This overrides
+# ``file_lock``'s own default ceiling downward, because the default suits a caller
+# whose work may legitimately run long and a claim path's does not: refusing early
+# and letting the next consolidation pass retry beats waiting on a dead holder.
+AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS = 5.0
 
 # Per-skill version history. A dot-prefixed dir *inside* a live auto-skill
 # (``auto/<slug>/.versions/v<N>-SKILL.md``) so it is pruned from skill discovery
@@ -4526,8 +4541,12 @@ class SkillsLoader:
     ) -> str | None:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
 
-        Returns the full skill name (``auto/<slug>``) on success, or
-        ``None`` if the slug is invalid or the skill already exists.
+        Returns the full skill name (``auto/<slug>``) on success, or ``None`` if
+        the slug is invalid, a live skill of that name exists, or a NEW candidate
+        of that slug is awaiting review in the pending queue (publishing over a
+        queued candidate's promotion destination would strand it). A pending
+        UPDATE candidate does not hold the slug, since it is promoted over the
+        live target named in its metadata.
 
         Caller is responsible for:
         - Running ``find_similar()`` first to avoid near-duplicates.
@@ -4548,9 +4567,6 @@ class SkillsLoader:
             return None
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         skill_dir = self._dir / name
-        if skill_dir.exists():
-            logger.info("Auto skill %s already exists, skipping", name)
-            return None
         content = _build_auto_skill_content(
             slug=slug,
             description=description,
@@ -4558,7 +4574,41 @@ class SkillsLoader:
             procedure_md=procedure_md,
             provenance=provenance,
         )
-        skill_dir.mkdir(parents=True, exist_ok=True)
+        # Test and claim under ONE lock, shared with ``stage_skill_candidate``:
+        # the two paths allocate in different directories, so nothing an atomic
+        # mkdir can do makes the cross-namespace pair safe on its own.
+        with self._auto_slug_claim_lock() as locked:
+            if not locked:
+                logger.info("Auto skill %s not created: the slug claim lock is unavailable", name)
+                return None
+            if skill_dir.exists():
+                logger.info("Auto skill %s already exists, skipping", name)
+                return None
+            if not self._auto_slug_available(slug, claim="live"):
+                # The pending queue holds this slug for a NEW candidate, so
+                # ``auto/<slug>`` is that candidate's promotion destination.
+                # Publishing over it strands it for good: ``approve_pending_skill``
+                # refuses it while the live directory stands, and TTL pruning then
+                # deletes it unreviewed. One side of the collision has to lose, and
+                # the publish is the cheaper loss: it goes back to the caller as a
+                # ``None`` the caller audits as a rejection, whereas the queued
+                # candidate is immutable, human-gated work that would disappear with
+                # no record at all. Consolidation advances its message offset
+                # whatever one candidate's outcome, so neither side is retried from
+                # the same sessions; the choice is which loss leaves a trail.
+                logger.info(
+                    "Auto skill %s not created: that slug is awaiting review in the pending queue",
+                    name,
+                )
+                return None
+            try:
+                skill_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                # A concurrent writer holding no lock owns this directory (the
+                # lock is advisory, so the mkdir is the real claim). Refusing is
+                # the safe side: overwriting destroys their content.
+                logger.info("Auto skill %s claimed concurrently, skipping", name)
+                return None
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
         self._invalidate_iter_cache()  # new skill visible to trigger matching now
         logger.info("Created auto skill: %s", name)
@@ -4868,6 +4918,12 @@ class SkillsLoader:
         """Restore an archived auto-skill back to ``auto/<slug>``.
 
         Returns the restored skill name, or None if not found / name clash.
+
+        A restore is a THIRD claim on the live half of the slug space, so it runs
+        the same availability test under the same lock as a publish and a staging
+        walk: moving an archived skill onto a queued NEW candidate's promotion
+        destination strands that candidate exactly as a publish would, and an
+        unacquired lock is a refusal rather than a licence to claim uncoordinated.
         """
         if not self._is_pending_slug_safe(slug):
             return None
@@ -4876,11 +4932,20 @@ class SkillsLoader:
             return None
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
-        if dest.exists():
-            logger.warning("Cannot restore %s: a live skill already exists", name)
-            return None
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        with self._auto_slug_claim_lock() as locked:
+            if not locked:
+                logger.warning("Cannot restore %s: the slug claim lock is unavailable", name)
+                return None
+            if dest.exists():
+                logger.warning("Cannot restore %s: a live skill already exists", name)
+                return None
+            if not self._auto_slug_available(slug, claim="live"):
+                logger.warning(
+                    "Cannot restore %s: that slug is awaiting review in the pending queue", name
+                )
+                return None
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
         self._invalidate_iter_cache()
         logger.info("Restored auto skill: %s", name)
         return name
@@ -4981,6 +5046,126 @@ class SkillsLoader:
     def _pending_root(self) -> Path:
         return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PENDING_DIRNAME
 
+    @contextmanager
+    def _auto_slug_claim_lock(self) -> Iterator[bool]:
+        """Hold one exclusive lock across an availability test and its claim.
+
+        Yields whether the lock was ACQUIRED. Every claim path must refuse when it
+        was not: the two paths allocate in DIFFERENT directories, ``auto/<slug>``
+        and ``auto/.pending/<slug>``, so an atomic ``mkdir`` makes each half safe
+        on its own but cannot make the CROSS-namespace pair safe. Two processes
+        sharing one skills home can each pass the other half's test and then create
+        their own directory, which strands the queued candidate:
+        ``approve_pending_skill`` refuses it while the live directory stands and TTL
+        pruning then deletes it unreviewed. Proceeding unlocked would reopen exactly
+        that window, so an unacquired lock is a refusal, not a licence.
+
+        A refusal is cheap and leaves a record, which is why this never raises:
+        both claim paths return ``None``, which their callers audit as a rejection,
+        and the next consolidation pass reaches the same code with the lock free.
+        An escaping error would instead abort the caller mid-pass. Acquisition fails
+        in two ways, and both yield ``False``: the lock file cannot be opened (a
+        read-only or full home, which would fail the skill write too) and the
+        acquire does not win within the ceiling. The body's own errors still
+        propagate, so a failed write is never mistaken for a failed acquire.
+        """
+        lock_path = self._dir / AUTO_SLUG_CLAIM_LOCK_NAME
+        fd: int | None = None
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError:
+            fd = None
+        if fd is None:
+            logger.warning("Auto slug claim lock cannot be opened at %s", lock_path)
+            yield False
+            return
+        try:
+            # ``file_lock`` owns the platform matrix, the bounded wait and the
+            # single-shot refusal for an on-loop caller, and it fails closed by
+            # raising. Enter it EXPLICITLY so the acquire is the only failure that
+            # means "unlocked": wrapping the whole block in one ``except OSError``
+            # would read a failed write as a failed acquire and run the body twice.
+            guard = None
+            try:
+                guard = file_lock(fd, exclusive=True, timeout=AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS)
+                guard.__enter__()
+            except OSError:
+                logger.warning(
+                    "Auto slug claim lock not acquired within %.0fs; refusing the claim",
+                    AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS,
+                )
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                guard.__exit__(None, None, None)
+        finally:
+            os.close(fd)
+
+    def _auto_slug_available(
+        self,
+        slug: str,
+        *,
+        claim: Literal["live", "pending-new", "pending-update"] = "live",
+    ) -> bool:
+        """True when ``slug`` is free for the allocation named by ``claim``.
+
+        The live tree and the pending queue are two halves of ONE slug space: a
+        queued NEW candidate's promotion destination is ``auto/<slug>``, so a
+        claim that consults only its own half can take a name the other half
+        depends on, and the losing side goes silently. ``approve_pending_skill``
+        refuses a candidate whose live name is occupied (``live_exists``) for as
+        long as that directory stands, and TTL pruning then deletes the candidate
+        unreviewed. Both claim paths test a name here, under
+        :meth:`_auto_slug_claim_lock`, before allocating it.
+
+        The halves are not symmetric, so ``claim`` names which allocation is
+        under test:
+
+        - ``"live"`` — creating ``auto/<slug>``. Free when no live directory
+          stands there and no pending NEW candidate is queued under that slug.
+        - ``"pending-new"`` — queueing a new candidate at
+          ``auto/.pending/<slug>``. Free when that pending directory is absent
+          and ``auto/<slug>`` is unoccupied, since a queued candidate whose live
+          name is taken is unapprovable.
+        - ``"pending-update"`` — queueing an UPDATE candidate. Free when the
+          pending directory is absent; the live tree does not constrain it,
+          because ``approve_pending_update`` promotes over the live ``target``
+          named in the candidate's metadata and never consults
+          ``auto/<candidate-slug>``.
+
+        A pending UPDATE candidate reserves NOTHING in the live tree, which is
+        why the ``"live"`` test reads the queued candidate's ``kind``. An update
+        is queued under a name derived from its target (``<target-slug>-update``)
+        and promotes to ``auto/<target-slug>``, so treating it as a reservation
+        would hold ``auto/<target-slug>-update`` against an unrelated skill that
+        slugifies to that name and drop it for good, since consolidation advances
+        its message offset whatever one candidate's outcome. The kind test FAILS
+        CLOSED: a pending directory whose metadata is missing, unreadable, or
+        silent about ``kind`` keeps its slug reserved.
+
+        The slug pattern is re-checked because a caller may DERIVE the name by
+        suffixing (``<slug>-2``), which can push a long slug past the length the
+        pattern allows. ``list_pending_skills`` skips a pending directory whose
+        name is not canonical and ``prune_pending`` walks that same list, so a
+        non-canonical claim is invisible to the queue, to the dashboard, and to
+        pruning alike — a candidate written there can never be reviewed and is
+        never cleaned up.
+        """
+        if not _AUTO_NAME_PATTERN.match(slug):
+            return False
+        pending_dir = self._pending_root() / slug
+        live_dir = self._dir / AUTO_SKILL_NAMESPACE / slug
+        if claim != "live":
+            if pending_dir.exists():
+                return False
+            return claim == "pending-update" or not live_dir.exists()
+        if live_dir.exists():
+            return False
+        return not pending_dir.exists() or self._read_pending_meta(slug).get("kind") == "update"
+
     def stage_skill_candidate(
         self,
         slug: str,
@@ -4999,8 +5184,12 @@ class SkillsLoader:
 
         Layout: ``auto/.pending/<slug>/{SKILL.md, scripts/*, .meta.json}``.
         Scripts are written **non-executable** — the executable bit is only set
-        on approval. Returns ``auto/<slug>`` on success, else ``None`` (invalid
-        slug, oversized procedure). Caller passes already-redacted content.
+        on approval. Returns the queued name on success, which is ``auto/<slug>``
+        or a sibling ``auto/<slug>-N`` when the natural slug is taken. Returns
+        ``None`` when nothing is queued: an invalid slug, an oversized procedure,
+        or no free name across the live and pending namespaces. A ``None`` means
+        the candidate is NOT staged and the caller must take its rejection
+        branch. Caller passes already-redacted content.
 
         ``kind`` distinguishes a brand-new candidate (``"new"``, the default,
         approved via ``approve_pending_skill``) from an UPDATE proposal against
@@ -5021,8 +5210,8 @@ class SkillsLoader:
         root = self._pending_root()
         root.mkdir(parents=True, exist_ok=True)
         # Atomically CLAIM a pending dir. mkdir(exist_ok=False) closes the TOCTOU
-        # between an exists() check and the create. If the natural slug is already
-        # awaiting review we must NOT overwrite it (the queued candidate is
+        # between the availability test and the create. If the natural slug is
+        # already awaiting review we must NOT overwrite it (the queued candidate is
         # immutable until approved/dismissed) — but we also must NOT silently drop
         # THIS candidate: consolidation advances its message offset regardless of
         # per-candidate outcome, so a distinct skill that merely slugifies the
@@ -5030,70 +5219,94 @@ class SkillsLoader:
         # slug (<slug>-2, -3, …) so it still gets queued. Genuine re-detections of
         # the SAME skill are suppressed upstream by the metadata dedupe before
         # staging, so this does not flood the queue with duplicates.
-        pdir = root / slug
-        try:
-            pdir.mkdir(exist_ok=False)
-        except FileExistsError:
-            claimed: "Path | None" = None
-            for _n in range(2, 51):
-                cand_dir = root / f"{slug}-{_n}"
+        #
+        # Every name on the walk is tested against BOTH namespaces and the slug
+        # pattern, so the queue only ever accepts a claim it can serve: a NEW
+        # candidate whose live name is occupied is unapprovable, and an over-long
+        # suffixed name is dropped from ``list_pending_skills`` and with it from
+        # the dashboard and from pruning.
+        _claim: Literal["pending-new", "pending-update"] = (
+            "pending-update" if (kind or "new") == "update" else "pending-new"
+        )
+        pdir: Path | None = None
+        # Same lock the live publish takes, for the same reason: the pending
+        # mkdir is atomic within this namespace, but only a shared lock keeps a
+        # live create from claiming the name this walk just accepted. The lock is
+        # held until ``.meta.json`` is committed, because ``kind`` is the field a
+        # live publish reads to decide whether this claim reserves its name: a
+        # publish seeing the claimed directory without that file fails closed and
+        # refuses a name an UPDATE candidate never reserves.
+        with self._auto_slug_claim_lock() as locked:
+            if not locked:
+                logger.warning(
+                    "Pending skill %s not staged: the slug claim lock is unavailable", slug
+                )
+                return None
+            for _cand in (slug, *(f"{slug}-{_n}" for _n in range(2, 51))):
+                if not self._auto_slug_available(_cand, claim=_claim):
+                    continue
+                _cand_dir = root / _cand
                 try:
-                    cand_dir.mkdir(exist_ok=False)
+                    _cand_dir.mkdir(exist_ok=False)
                 except FileExistsError:
                     continue
-                claimed = cand_dir
+                pdir = _cand_dir
                 break
-            if claimed is None:
-                logger.warning("Too many pending candidates for slug %s; deferring re-stage", slug)
-                return name
-            pdir = claimed
-            slug = claimed.name
-            name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
-            logger.info("Slug in use; staging distinct candidate as %s", name)
-        try:
-            content = _build_auto_skill_content(
-                slug=slug,
-                description=description,
-                triggers=triggers,
-                procedure_md=procedure_md,
-                provenance=provenance,
-            )
-            (pdir / "SKILL.md").write_text(content, encoding="utf-8")
-            script_names: list[str] = []
-            clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
-            if clean_scripts:
-                sdir = pdir / "scripts"
-                sdir.mkdir(exist_ok=True)
-                for s in clean_scripts:
-                    fn = str(s.get("filename", "")).strip()
-                    # Guard the script filename against traversal / nesting.
-                    if not fn or "/" in fn or "\\" in fn or ".." in fn:
-                        continue
-                    (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
-                    script_names.append(fn)
-            meta = {
-                "slug": slug,
-                "name": name,
-                "source": source,
-                "created_at": provenance.created_at or AutoSkillProvenance.now_iso(),
-                "description": description,
-                "triggers": triggers,
-                "has_scripts": bool(script_names),
-                "scripts": script_names,
-                "kind": kind or "new",
-            }
-            if target is not None:
-                meta["target"] = target
-            if base_version is not None:
-                meta["base_version"] = base_version
-            (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        except Exception:
-            # A partial write (e.g. disk full) must not leave a CLAIMED but empty
-            # dir behind: a later stage would see it exists and report the slug as
-            # "already awaiting review" while no reviewable candidate exists.
-            # Roll back the atomic claim so the slug can be re-staged cleanly.
-            shutil.rmtree(pdir, ignore_errors=True)
-            raise
+            if pdir is None:
+                # Nothing is written, so the caller MUST take its rejection branch: a
+                # name returned from here is recorded as a staged candidate that does
+                # not exist, and consolidation's offset advance makes that loss
+                # permanent and invisible.
+                logger.warning("No free pending slug for %s; candidate not staged", slug)
+                return None
+            if pdir.name != slug:
+                slug = pdir.name
+                name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+                logger.info("Slug in use; staging distinct candidate as %s", name)
+            try:
+                content = _build_auto_skill_content(
+                    slug=slug,
+                    description=description,
+                    triggers=triggers,
+                    procedure_md=procedure_md,
+                    provenance=provenance,
+                )
+                (pdir / "SKILL.md").write_text(content, encoding="utf-8")
+                script_names: list[str] = []
+                clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
+                if clean_scripts:
+                    sdir = pdir / "scripts"
+                    sdir.mkdir(exist_ok=True)
+                    for s in clean_scripts:
+                        fn = str(s.get("filename", "")).strip()
+                        # Guard the script filename against traversal / nesting.
+                        if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                            continue
+                        (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
+                        script_names.append(fn)
+                meta = {
+                    "slug": slug,
+                    "name": name,
+                    "source": source,
+                    "created_at": provenance.created_at or AutoSkillProvenance.now_iso(),
+                    "description": description,
+                    "triggers": triggers,
+                    "has_scripts": bool(script_names),
+                    "scripts": script_names,
+                    "kind": kind or "new",
+                }
+                if target is not None:
+                    meta["target"] = target
+                if base_version is not None:
+                    meta["base_version"] = base_version
+                (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            except Exception:
+                # A partial write (e.g. disk full) must not leave a CLAIMED but empty
+                # dir behind: a later stage would see it exists and report the slug as
+                # "already awaiting review" while no reviewable candidate exists.
+                # Roll back the atomic claim so the slug can be re-staged cleanly.
+                shutil.rmtree(pdir, ignore_errors=True)
+                raise
         logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
         # Notify any registered observer (the gateway wires a bell-feed
         # notification + a ``skills.pending_changed`` WS event) so a candidate

@@ -4349,6 +4349,31 @@ Auto-generated skills live under `~/.kiro/crew/skills/auto/<slug>/SKILL.md`. Slu
 - Makes provenance visible without parsing frontmatter (`list_auto_skills()`)
 - Prevents accidental overwrite of hand-authored skills via the refine path (`update_auto_skill()` explicitly refuses names outside `auto/`)
 
+### One slug space, one allocator
+
+The live tree `auto/<slug>` and the pending queue `auto/.pending/<slug>` are two halves of ONE name space, because a queued NEW candidate's promotion destination IS `auto/<slug>`. A claim that consults only its own half can take a name the other half depends on, and the losing side goes silently: `approve_pending_skill` refuses a candidate whose live name is occupied (`live_exists`) for as long as that directory stands, TTL pruning then deletes it unreviewed, and consolidation advances its message offset whatever one candidate's outcome, so nothing is retried from the same sessions.
+
+**The invariant: the three AUTO-SKILL allocators test availability with `_auto_slug_available` while holding `_auto_slug_claim_lock`.** They are `create_auto_skill` (live publish), `stage_skill_candidate` (queue a candidate), and `restore_auto_skill` (move an archived skill back live). A new allocator in this pipeline MUST route through the same pair rather than checking a directory itself.
+
+Two writers reach `auto/` WITHOUT that coordination, and both are known gaps rather than covered cases:
+
+- The `crystallize` builtin skill stages `auto/.pending/<slug>` with raw file tools instead of calling `stage_skill_candidate`, so it can write a pending directory after a live claim already stands. Approval then refuses that candidate for `live_exists` and TTL pruning deletes it unarchived. Closing this means giving crystallize a host path that calls `stage_skill_candidate`, not adding another direct-write guard.
+- `create_skill` accepts any name, including an `auto/`-prefixed one, from the dashboard prompt and discover handlers (`READONLY_SKILL_KEY_PREFIXES` does not exclude `auto/`), so a hand-created `auto/<slug>` can strand a queued candidate through the same `live_exists` refusal. Closing this means refusing or routing `auto/`-prefixed names at those call sites.
+
+`_auto_slug_available(slug, claim=...)` answers for the claim actually being made, because the halves are not symmetric:
+
+| `claim` | Free when |
+|---|---|
+| `live` | `auto/<slug>` absent AND no pending NEW candidate under that slug |
+| `pending-new` | `auto/.pending/<slug>` absent AND `auto/<slug>` unoccupied (a queued candidate whose live name is taken is unapprovable) |
+| `pending-update` | `auto/.pending/<slug>` absent; the live tree does not constrain it |
+
+An UPDATE candidate is queued under `<target-slug>-update` and `approve_pending_update` promotes it over the live `target` in its metadata, never consulting `auto/<candidate-slug>`, so it reserves nothing in the live tree. The `live` test reads the queued candidate's `kind` to tell the two apart and FAILS CLOSED: metadata that is missing, unreadable, or silent about `kind` keeps the slug reserved. Staging therefore holds the lock until `.meta.json` is committed, since `kind` is the field a concurrent publish reads.
+
+`_auto_slug_claim_lock` is an advisory exclusive lock on `skills/.auto-slug-claim.lock` — a dot-prefixed plain file at the skills root, skipped by discovery, placed outside `auto/` so taking it does not create the auto namespace as a side effect of a refused claim. It yields whether the lock was ACQUIRED, and an unacquired lock is a REFUSAL: opening the file can fail on a read-only home, and the acquire can lose within its seconds-long ceiling. Each namespace's claim is additionally an atomic `mkdir(exist_ok=False)`, so a claim lost to a concurrent writer refuses instead of overwriting, but `mkdir` alone cannot make the cross-namespace pair safe because the two paths create different directories.
+
+**Both claim paths return `None` rather than raising or half-succeeding.** `stage_skill_candidate` returns `None` when nothing is queued: an invalid slug, an oversized procedure, an unacquired lock, or no free name across `<slug>` and siblings `<slug>-2..-50`. A `None` means the candidate is NOT on disk and the caller MUST take its rejection branch, because a name returned from a path that wrote nothing is recorded as a staged candidate that does not exist, and the offset advance makes that loss permanent and invisible. `create_auto_skill` and `restore_auto_skill` likewise answer `None` on refusal, which their callers audit as a rejection.
+
 ### Provenance (`AutoSkillProvenance`)
 
 Serialized into SKILL.md YAML frontmatter on every create/refine:
