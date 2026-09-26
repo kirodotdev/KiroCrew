@@ -1946,7 +1946,10 @@ def apply_log_level(level_name: str, *, source: str) -> bool:
 
     The one place the runtime level changes, shared by the dashboard endpoint
     and the ``agent.log_level`` config applier so a ``kirocrew config set`` or
-    an ``$EDITOR`` edit takes effect exactly like the Logs page toggle.
+    an ``$EDITOR`` edit takes effect exactly like the Logs page toggle. The
+    logger is the single level gate for every sink, ``gateway.log`` included:
+    the file handler and the queue handler ``cli._setup_cli_logging`` installs
+    carry no level of their own, so this one change reaches the file too.
     """
     name = str(level_name or "").upper()
     if name not in _LOG_LEVELS:

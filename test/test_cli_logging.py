@@ -62,7 +62,16 @@ def _pristine_logging():
     root.handlers[:] = []
     kc.handlers[:] = []
     yield
+    listener = cli_mod._LOG_QUEUE_LISTENER
     _stop_log_queue_listener()
+    if listener is not None:
+        # The drain returns before closing the file handler when a test left
+        # the listener stopped (``QueueListener.stop`` raises on a listener
+        # whose thread is gone). Close the listener's handlers here regardless:
+        # ``Handler.close`` is idempotent, and the tmpdir cleanup on Windows
+        # needs the gateway.log fd released whether or not the drain got there.
+        for handler in listener.handlers:
+            handler.close()
     for logger, (handlers, _) in ((root, saved_root), (kc, saved_kc)):
         for handler in logger.handlers[:]:
             if handler not in handlers:
@@ -299,23 +308,32 @@ class TestSetupCliLoggingDetached:
         assert not (config_dir() / "gateway.log.prev").exists()
         self.redirect.assert_not_called()
 
-    def test_handler_level_capped_at_warning_for_third_party(self, monkeypatch):
-        """A stricter persisted kiro_crew level must not gag third-party
-        WARNINGs on the shared root handler (kiro_crew records stay filtered
-        at the kiro_crew logger itself)."""
+    def test_handlers_carry_no_level_third_party_warning_still_lands(self, monkeypatch):
+        """The ``kiro_crew`` logger is the SINGLE level gate. Neither the file
+        handler nor the queue handler carries a level of its own: a stricter
+        persisted kiro_crew level gates kiro_crew records at the kiro_crew
+        logger, third-party records are gated at the root logger's WARNING,
+        and nothing is re-judged on the way to the file. A level on either
+        handler would be a boot-time copy that a runtime ``agent.log_level``
+        change does not reach."""
         from kiro_crew.config import KiroCrewConfig
 
-        cfg = KiroCrewConfig.load()
+        cfg = KiroCrewConfig()
         cfg.agent.log_level = "ERROR"
         monkeypatch.setattr("kiro_crew.cli.KiroCrewConfig.load", staticmethod(lambda: cfg))
         _setup_cli_logging("gateway", 0)
         (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
-        assert fh.level == logging.WARNING
-        # The producer-side gate mirrors the file handler's level, so records
-        # the handler would drop never transit the queue.
         (qh,) = [h for h in logging.getLogger().handlers if isinstance(h, _CliLogQueueHandler)]
-        assert qh.level == logging.WARNING
+        assert fh.level == logging.NOTSET
+        assert qh.level == logging.NOTSET
+        assert cli_mod._LOG_QUEUE_LISTENER.respect_handler_level is False
         assert logging.getLogger("kiro_crew").level == logging.ERROR
+        logging.getLogger("somelib.test_single_gate").warning("thirdparty-still-flows")
+        logging.getLogger("kiro_crew.test_single_gate").warning("kiro-crew-gated")
+        _stop_log_queue_listener()  # deterministic drain to disk
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "thirdparty-still-flows" in text
+        assert "kiro-crew-gated" not in text
 
 
 class TestSetupCliLoggingForeground:
@@ -335,7 +353,11 @@ class TestSetupCliLoggingForeground:
             if isinstance(h, _CliLogQueueHandler)
         ]
         assert len(kc_qhs) == 1
-        assert kc_qhs[0].level == logging.INFO
+        # The level lives on the kiro_crew logger alone; the queue handler and
+        # the file handler carry none (a copy here is one a runtime change
+        # does not reach).
+        assert kc_qhs[0].level == logging.NOTSET
+        assert logging.getLogger("kiro_crew").level == logging.INFO
         assert not any(
             isinstance(h, _CliLogQueueHandler) for h in logging.getLogger().handlers
         )
@@ -346,7 +368,7 @@ class TestSetupCliLoggingForeground:
         # Foreground keeps the plain handler: no fds were redirected, so
         # there is nothing to re-point on rollover.
         assert type(fh) is RotatingFileHandler
-        assert fh.level == logging.INFO
+        assert fh.level == logging.NOTSET
 
     def test_record_written_once_to_file(self):
         _setup_cli_logging("gateway", 1)
@@ -362,6 +384,124 @@ class TestSetupCliLoggingForeground:
         assert (config_dir() / "gateway.log.prev").exists()
         # … but a foreground console must never be dup2'd into the log file.
         self.redirect.assert_not_called()
+
+
+class TestRuntimeLevelReachesFileLog:
+    """A runtime ``agent.log_level`` change reaches ``gateway.log`` without a restart.
+
+    ``apply_log_level`` -- the Logs-page toggle and the ``agent.log_level``
+    config applier -- moves the ``kiro_crew`` logger, and that logger is the
+    single level gate: neither the file handler nor the producer-side queue
+    handler pins a boot-time level of its own. A gateway booted at WARNING and
+    raised to INFO writes its INFO records to the file ``kirocrew logs`` reads,
+    not only to the live Logs stream (its own handler on the logger). These
+    tests fail if either handler carries a level.
+    """
+
+    @staticmethod
+    def _boot(monkeypatch, *, detached: bool, persisted: str = "WARNING") -> None:
+        """Build the chain the way an installed gateway boots it: persisted
+        level from config (no ``--verbose``), foreground or detach-spawned.
+        The config handed to boot is a fresh default object, never the one a
+        real ``load()`` returned, so no cached document is mutated."""
+        from kiro_crew.config import KiroCrewConfig
+
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: detached)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        cfg = KiroCrewConfig()
+        cfg.agent.log_level = persisted
+        monkeypatch.setattr("kiro_crew.cli.KiroCrewConfig.load", staticmethod(lambda: cfg))
+        _setup_cli_logging("gateway", 0)
+
+    @staticmethod
+    def _sinks(detached: bool):
+        producer = logging.getLogger() if detached else logging.getLogger("kiro_crew")
+        (qh,) = [h for h in producer.handlers if isinstance(h, _CliLogQueueHandler)]
+        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        return fh, qh
+
+    def test_raised_info_record_reaches_gateway_log(self, monkeypatch):
+        from kiro_crew.dashboard.handlers.updates import apply_log_level
+
+        self._boot(monkeypatch, detached=False)
+        fh, qh = self._sinks(detached=False)
+        assert logging.getLogger("kiro_crew").level == logging.WARNING
+
+        assert apply_log_level("INFO", source="dashboard") is True
+
+        assert logging.getLogger("kiro_crew").level == logging.INFO
+        logging.getLogger("kiro_crew.test_runtime_level").info("raised-info-record")
+        _stop_log_queue_listener()  # deterministic drain to disk
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "raised-info-record" in text, "raised INFO record never reached gateway.log"
+        # The applier's own confirmation is the first raised record; the
+        # reporter saw it on the desktop's stdout capture and never in the file.
+        assert "Log level changed to INFO via dashboard" in text
+        # The handlers never held a level to move: the logger was the whole gate.
+        assert fh.level == qh.level == logging.NOTSET
+
+    def test_detached_tightening_keeps_third_party_warnings_flowing(self, monkeypatch):
+        """A stricter kiro_crew level gates kiro_crew records at the kiro_crew
+        logger; third-party records on the shared root handler stay gated at
+        the root logger's WARNING. Neither handler holds a level to do it."""
+        from kiro_crew.dashboard.handlers.updates import apply_log_level
+
+        self._boot(monkeypatch, detached=True)
+        fh, qh = self._sinks(detached=True)
+
+        assert apply_log_level("ERROR", source="config") is True
+
+        assert logging.getLogger("kiro_crew").level == logging.ERROR
+        assert fh.level == qh.level == logging.NOTSET
+        logging.getLogger("somelib.test_runtime_level").warning("thirdparty-still-flows")
+        logging.getLogger("kiro_crew.test_runtime_level").warning("kiro-crew-gagged")
+        _stop_log_queue_listener()
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "thirdparty-still-flows" in text
+        assert "kiro-crew-gagged" not in text
+
+    def test_detached_raise_does_not_open_the_root_to_third_party_info(self, monkeypatch):
+        """Raising kiro_crew to INFO admits kiro_crew INFO; third-party INFO
+        stays gated at the root logger's WARNING, exactly as a boot at INFO."""
+        from kiro_crew.dashboard.handlers.updates import apply_log_level
+
+        self._boot(monkeypatch, detached=True)
+
+        assert apply_log_level("INFO", source="dashboard") is True
+
+        logging.getLogger("kiro_crew.test_runtime_level").info("kiro-crew-info")
+        logging.getLogger("somelib.test_runtime_level").info("thirdparty-info")
+        _stop_log_queue_listener()
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "kiro-crew-info" in text
+        assert "thirdparty-info" not in text
+
+    def test_tightening_keeps_records_already_queued(self, monkeypatch):
+        """A record logged while INFO was in force must still reach the file
+        after a runtime tightening: with no level on the handlers and no
+        handler-level re-check at dequeue, nothing judges a queued record by a
+        level set after it was logged -- a queue backed up behind a rollover
+        on a slow disk holds hundreds of them."""
+        from kiro_crew.dashboard.handlers.updates import apply_log_level
+
+        self._boot(monkeypatch, detached=False, persisted="INFO")
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        assert listener is not None
+        listener.stop()  # park the consumer: records now sit in the queue
+        try:
+            logging.getLogger("kiro_crew.test_runtime_level").info("queued-before-tightening")
+
+            assert apply_log_level("ERROR", source="dashboard") is True
+        finally:
+            # Teardown drains through ``listener.stop()``, which raises on a
+            # listener whose thread is already gone and then skips the file
+            # handler's close -- a failed assertion inside this window must
+            # not hand it a stopped listener (an open gateway.log fd blocks
+            # the tmpdir cleanup on Windows).
+            listener.start()  # the consumer resumes with the new level in force
+        _stop_log_queue_listener()
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "queued-before-tightening" in text, "tightening dropped a record already queued"
 
 
 class TestQueueOffLoop:
