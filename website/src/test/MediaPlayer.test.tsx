@@ -23,6 +23,7 @@ describe('detectFileType media routing', () => {
     expect(detectFileType('lossless.flac')).toBe('audio')
     expect(detectFileType('stream.ogg')).toBe('audio')
     expect(detectFileType('alt.oga')).toBe('audio')
+    expect(detectFileType('voice.opus')).toBe('audio')
   })
 
   it('does not disturb neighboring types', () => {

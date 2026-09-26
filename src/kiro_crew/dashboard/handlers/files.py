@@ -1502,6 +1502,23 @@ _VIDEO_EXT_MIME: dict[str, str] = {
     ".mov": "video/mp4",
     ".webm": "video/webm",
 }
+#: Audio containers accepted at the upload boundary. Every entry must be
+#: verifiable by :func:`_sniff_media_type` and playable by ``<audio>``.
+_ALLOWED_AUDIO_EXT = {".mp3", ".m4a", ".wav", ".ogg", ".oga", ".opus", ".flac"}
+#: Media type :func:`_sniff_media_type` must report for each audio extension.
+#: Ogg carries Vorbis and Opus alike. ``.m4a`` shares the BMFF ``ftyp`` family
+#: with MP4, which the sniffer reports as ``video/mp4`` regardless of track type.
+_AUDIO_EXT_MIME: dict[str, str] = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "video/mp4",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+}
+#: Every media extension whose bytes are gated by :func:`_sniff_media_type`.
+_MEDIA_EXT_MIME: dict[str, str] = {**_VIDEO_EXT_MIME, **_AUDIO_EXT_MIME}
 
 
 def _write_file_restricted(path: Path, data: bytes) -> None:
@@ -1587,7 +1604,7 @@ def _content_matches_ext(ext: str, data: bytes) -> bool:
         # OOXML / ODF / zip all begin with a local-file-header, empty-archive,
         # or spanned-archive PK signature.
         return data[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
-    expected_media = _VIDEO_EXT_MIME.get(ext)
+    expected_media = _MEDIA_EXT_MIME.get(ext)
     if expected_media is not None:
         # Reuses the read path's container sniffer so the upload boundary and
         # /api/file-stream agree on what each signature means. ``data`` may be
@@ -1665,50 +1682,45 @@ def _content_mismatch_message(ext: str, data: bytes) -> str:
     return f"File content does not match its type: {ext}"
 
 
-async def _stream_video_part(
+async def _stream_media_part(
     part: BodyPartReader,
     dest: Path,
+    *,
+    max_bytes: int,
+    accepted_exts: set[str],
+    media_name: str,
 ) -> tuple[int, tuple[str, str, str] | None]:
-    """Stream a video *part* to *dest*, gating on its container signature.
+    """Stream a media *part* to *dest*, gating on its container signature.
 
     Returns ``(bytes_written, None)`` on success, or ``(bytes_written,
-    (audit_reason, error_code, user_message))`` on refusal. The code is a
-    machine-readable id the caller maps to a CONSTANT HTTP status: returning a
-    status from here would make the response's `status=` an expression at the
-    call site, which the error-code contract rejects because it defeats static
-    analysis of what the endpoint can return.
+    (audit_reason, refusal_kind, user_message))`` on refusal. The caller maps
+    the refusal kind to constant response codes and statuses, preserving the
+    endpoint's statically readable error contract.
 
-    All the file handling lives in :func:`~kiro_crew.dashboard.part_stream.
-    stream_part_to_file`, which owns the temp through a synchronous context
-    manager. This function is only the translation between that helper's
-    exceptions and this endpoint's audit reasons and error codes: a cancellable
-    coroutine cannot own a file safely, so ownership stays in that module,
-    whose docstring carries the invariant.
+    :func:`~kiro_crew.dashboard.part_stream.stream_part_to_file` owns the temp
+    through a synchronous context manager. A cancellable coroutine cannot own a
+    file safely, so this function only translates the helper's exceptions.
     """
     ext = dest.suffix.lower()
     try:
         total = await part_stream.stream_part_to_file(
             part,
             dest,
-            max_bytes=_MAX_VIDEO_UPLOAD_BYTES,
+            max_bytes=max_bytes,
             accepts=lambda head: _content_matches_ext(ext, head),
         )
     except part_stream.PartTooLarge as too_large:
-        cap_mb = _MAX_VIDEO_UPLOAD_BYTES // 1024 // 1024
+        cap_mb = max_bytes // 1024 // 1024
         return too_large.total, (
             f"too_large:{too_large.total}",
-            "video_too_large",
-            f"Video too large (max {cap_mb}MB)",
+            "too_large",
+            f"{media_name.title()} too large (max {cap_mb}MB)",
         )
     except part_stream.PartContentMismatch:
-        accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
+        accepted = ", ".join(sorted(accepted_exts))
         return 0, (
             f"content_signature_mismatch:{ext}",
-            "video_content_mismatch",
-            # Names the remedy for the same reason the unsupported-container
-            # refusal does: "does not match its type" tells the user their file
-            # is wrong without telling them what to do about it, and the fix
-            # (re-export) is not guessable from the sentence.
+            "content_mismatch",
             f"This file is not really a {ext} — re-export it as one of: {accepted}",
         )
     return total, None
@@ -1726,7 +1738,13 @@ async def api_upload_file(request: web.Request) -> web.Response:
     upload_dir.mkdir(parents=True, exist_ok=True)
     reader = await request.multipart()
     paths: list[str] = []
-    allowed = _ALLOWED_IMAGE_EXT | _ALLOWED_TEXT_EXT | _ALLOWED_DOC_EXT | _ALLOWED_VIDEO_EXT
+    allowed = (
+        _ALLOWED_IMAGE_EXT
+        | _ALLOWED_TEXT_EXT
+        | _ALLOWED_DOC_EXT
+        | _ALLOWED_VIDEO_EXT
+        | _ALLOWED_AUDIO_EXT
+    )
     caller = request.get("user", "dashboard")
 
     async def _cleanup(*also: Path) -> None:
@@ -1796,8 +1814,8 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     status=400,
                 )
             # UUID prefix guarantees uniqueness even within a single request.
-            # Resolved BEFORE any byte is read because the video branch streams
-            # straight to this destination rather than buffering the part first.
+            # Resolved before any byte is read because media streams straight
+            # to this destination rather than buffering the part first.
             dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
             if not dest.resolve().is_relative_to(upload_dir.resolve()):
                 await _cleanup()
@@ -1809,29 +1827,32 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     resources=f"file:{fname} reason:path_traversal",
                 )
                 return web.json_response({"error": "Invalid filename"}, status=400)
-            if ext in _ALLOWED_VIDEO_EXT:
-                # Video takes the streaming route for two reasons: a screen
-                # recording is far too large to buffer, and its CONTENT is not
-                # something the model can read anyway (ACP has no video content
-                # block). So the bytes land on disk, the PATH reaches the agent
-                # as an [attached_file N] token, and the chat renders a <video>
-                # off /api/file-stream. An agent that needs frames runs ffmpeg
-                # on the path.
+            if ext in _ALLOWED_VIDEO_EXT or ext in _ALLOWED_AUDIO_EXT:
+                is_video = ext in _ALLOWED_VIDEO_EXT
+                max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else _MAX_UPLOAD_BYTES
+                accepted_exts = _ALLOWED_VIDEO_EXT if is_video else _ALLOWED_AUDIO_EXT
+                media_name = "video" if is_video else "audio"
+                # Media streams to an unpublished temp file because neither ACP
+                # content blocks nor the player need the whole body in memory.
+                # The shared helper checks the signature before its first write
+                # and atomically publishes only a complete, accepted file.
                 try:
-                    written, refusal = await _stream_video_part(part, dest)
+                    written, refusal = await _stream_media_part(
+                        part,
+                        dest,
+                        max_bytes=max_bytes,
+                        accepted_exts=accepted_exts,
+                        media_name=media_name,
+                    )
                 except (Exception, asyncio.CancelledError):
-                    # CancelledError derives from BaseException, not Exception, so
-                    # a bare `except Exception` lets a gateway shutdown mid-stream
-                    # past every cleanup: the partial video AND the siblings this
-                    # request already wrote stay in uploads/, and the partial is
-                    # indistinguishable from a complete file to everything
-                    # downstream. Cleanup here rather than relying on the outer
-                    # handler, which has the same blind spot.
+                    # CancelledError derives from BaseException. Name it so a
+                    # disconnect or shutdown cannot leave a partial media file
+                    # or an earlier sibling from this request behind.
                     await _cleanup(dest)
                     raise
                 if refusal is not None:
                     await _cleanup(dest)
-                    reason, code, message = refusal
+                    reason, refusal_kind, message = refusal
                     _sel().log_api_access(
                         caller=caller,
                         operation="upload.file",
@@ -1839,21 +1860,30 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         source="dashboard",
                         resources=f"file:{fname} reason:{reason}",
                     )
-                    # Branched rather than parameterised: each response states a
-                    # CONSTANT status and its own `code`, which is what keeps the
-                    # endpoint's possible outcomes statically readable (and is
-                    # what the error-code contract checks for).
-                    if code == "video_too_large":
+                    # Each response states constant status and code values so
+                    # the endpoint's error contract remains statically readable.
+                    if refusal_kind == "too_large":
+                        if is_video:
+                            return web.json_response(
+                                {"error": message, "code": "video_too_large"},
+                                status=413,
+                            )
                         return web.json_response(
-                            {"error": message, "code": "video_too_large"},
+                            {"error": message, "code": "audio_too_large"},
                             status=413,
                         )
+                    if is_video:
+                        return web.json_response(
+                            {"error": message, "code": "video_content_mismatch"},
+                            status=400,
+                        )
                     return web.json_response(
-                        {"error": message, "code": "video_content_mismatch"},
+                        {"error": message, "code": "audio_content_mismatch"},
                         status=400,
                     )
                 logger.info(
-                    "upload.file video: name=%s ext=%s size=%d",
+                    "upload.file %s: name=%s ext=%s size=%d",
+                    media_name,
                     safe_name,
                     ext,
                     written,
