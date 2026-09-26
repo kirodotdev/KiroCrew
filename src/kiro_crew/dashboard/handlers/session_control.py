@@ -318,6 +318,30 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_set_model(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-model — change an idle session's model."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        model = body.get("model")
+        if not isinstance(model, str):
+            raise sc.SessionControlError("model must be a string", code="bad_request")
+        result = await sc.set_model_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            model=model,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_close(request: web.Request) -> web.Response:
     """POST /api/session-control/close — archive another session (tab ✕)."""
     refused = await _require_internal(request)

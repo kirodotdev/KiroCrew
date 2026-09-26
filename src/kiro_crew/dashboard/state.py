@@ -2507,6 +2507,7 @@ class _ChatSlot:
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
         "_pending_discard_conversation_key",
+        "_pending_model_pick",
         "_eager_spawn_task",
         "_prefetch_ttl_task",
         "_dirty_flag",
@@ -3029,6 +3030,11 @@ class _ChatSlot:
         # called from inside the turn it wants to end, and the immediate route
         # refuses a busy slot rather than tearing down a turn mid-write.
         self._pending_discard_conversation_key: str | None = None
+        # Set by session_set_model on an idle slot; consumed at the start of the
+        # next turn (session_control.apply_pending_model_pick), which re-checks
+        # the caller's authorization and commits the model in one synchronous
+        # step. Runtime only: a pick does not survive a gateway restart.
+        self._pending_model_pick: Any = None
         # Debounced speculative session-creation task (session.eager_spawn).
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.

@@ -41,9 +41,12 @@ import logging
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import model_registry
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -3751,6 +3754,295 @@ async def stop_target(
     return {"ok": True, "target": slot.key, **result}
 
 
+async def set_model_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    model: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Record *model* as *target*'s pending pick, applied when its next turn starts.
+
+    Nothing about the target changes now. The pick is committed by
+    :func:`apply_pending_model_pick` at the start of the target's next turn,
+    which re-runs this same gate and writes ``slot.model`` in one synchronous
+    step. Committing here instead would need the live model switch, whose
+    provider awaits sit after the last gate: a channel link or mirror landing
+    in that window would let the change reach a session the caller may no
+    longer touch.
+
+    Only an IDLE session takes a pick. A target with a turn or attached
+    sub-agents in flight is refused with ``target_busy``; a caller that wants
+    to force it stops the target first (``session_stop``) and retries. A later
+    pick replaces an earlier one that has not been applied yet.
+
+    Two picks the picker allows are refused here. "Auto (Jev)" arms per-turn
+    routing, which the model route keeps owner-only. A crew-bound (remote)
+    target runs its turns on the peer, where this pick would never be applied.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import (
+        _is_jev_route_pick,
+        _model_rejected_reason,
+        _normalize_model,
+        _subagents_attached_response,
+        _switch_target_busy,
+    )
+    from kiro_crew.dashboard.chat_runner import _JEV_ROUTE_AUTO_MODELS
+
+    # Validated before any gate: a malformed pick needs no target lookup, and
+    # refusing it first keeps a bad argument from reading as an access decision.
+    # Stripped once, so every check and the stored pick see the same spelling.
+    model = model.strip()
+    # "auto" is refused with the Jev sentinel: with the Jev preview on, a slot
+    # on "auto" hands each turn's model choice to Jev routing, which only the
+    # owner may arm. An empty name is the absence of a pick, not a model.
+    if _is_jev_route_pick(model) or model.lower() in _JEV_ROUTE_AUTO_MODELS:
+        raise SessionControlError(
+            "Auto and Auto (Jev) can only be picked by the owner from the model picker",
+            code="model_owner_only",
+            status=403,
+        )
+    if not model:
+        raise SessionControlError("model is required", code="model_rejected", status=400)
+    if redact(model) != model:
+        # The pick is stored on the slot and broadcast to every dashboard, so a
+        # credential-shaped argument is refused rather than persisted.
+        raise SessionControlError(
+            "model looks like it contains a credential; model not changed",
+            code="model_rejected",
+            status=400,
+        )
+    model_name = _normalize_model(model)
+    try:
+        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        provider, backend = agent_cfg.provider, agent_cfg.acp_backend
+    except Exception:  # pragma: no cover - config load is resilient
+        provider, backend = "", ""
+    rejected = _model_rejected_reason(model_name, provider=provider)
+    if rejected:
+        raise SessionControlError(rejected, code="model_rejected", status=400)
+    if (
+        not is_claude_code(provider)
+        and capabilities_for(backend).model_id_namespace == MODEL_NAMESPACE_ACP
+    ):
+        # On a kiro-cli backend an alias such as "sonnet" is not a wire id: stored
+        # as-is it would be withheld at session start and the target would stay
+        # on the default. Other backends keep their own id namespace untouched.
+        model_name = model_registry.acp_id_correction(model_name) or model_name
+
+    # Same prewarm ordering and fence-verdict handling as `close_target`: the
+    # verdict is stored with the pick so the turn-start re-check reads no config.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the switch
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="set_model",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    slot_key = slot.key
+
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="set_model", slot_key=slot_key
+    ):
+        if slot.is_remote or slot.executor == "remote":
+            raise SessionControlError(
+                "that session runs on a remote crew; changing its model from another "
+                "session is not supported yet",
+                code="remote_target_unsupported",
+                status=409,
+            )
+        session_key = effective_session_key(slot)
+        if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+            raise _target_busy_error()
+        children = await _subagents_attached_response(state, slot, session_key, "set_model")
+        if children is not None:
+            raise _target_busy_error()
+        # The await above can let a turn start, or the target be replaced,
+        # linked or mirrored; re-run the idle check and the gate synchronously
+        # right before storing the pick.
+        session_key = effective_session_key(slot)
+        if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+            raise _target_busy_error()
+        live = authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=slot_key,
+            operation="set_model",
+            skip_enabled_check=True,
+            precomputed_ownership_fenced=caller_fenced,
+        )
+        if live is not slot:
+            raise SessionControlError(
+                "the target session was replaced; model not changed",
+                code="target_replaced",
+                status=409,
+            )
+        caller_tab_id = _caller_tab_id(state, caller_session_key)
+        if not caller_tab_id:
+            raise SessionControlError(
+                "this session has no tab identity to hold a pending pick; model not changed",
+                code="caller_unidentified",
+                status=403,
+            )
+        slot._pending_model_pick = PendingModelPick(
+            model=model_name,
+            caller_session_key=caller_session_key,
+            caller_tab_id=caller_tab_id,
+            caller_fenced=caller_fenced,
+            pick_gen=slot._model_pick_gen,
+        )
+
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="set_model",
+        slot_key=slot_key,
+        outcome="allowed",
+        detail={"model": model_name or "auto", "stage": "pending"},
+    )
+    return {"ok": True, "target": slot_key, "model": model_name, "pending": True}
+
+
+@dataclass(frozen=True)
+class PendingModelPick:
+    """A ``session_set_model`` pick waiting for the target's next turn.
+
+    Carries the caller's key AND tab identity, its ownership-fence verdict at
+    call time, and the target's pick generation then, so a model the user picks
+    in the meantime wins over this one. The tab identity is what ties the pick
+    to the calling session: a slot key can be handed to a new occupant after
+    the caller closes, and that occupant must not inherit the pick.
+    """
+
+    model: str
+    caller_session_key: str
+    caller_tab_id: str
+    caller_fenced: bool
+    pick_gen: int
+
+
+def _caller_tab_id(state: "DashboardState", caller_session_key: str) -> str:
+    """The calling slot's ``_tab_id``, or ``""`` when it has none or is gone."""
+    caller_key = caller_slot_key(state, caller_session_key)
+    caller = state._slots.get(caller_key) if caller_key else None
+    return str(getattr(caller, "_tab_id", "") or "") if caller is not None else ""
+
+
+def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool:
+    """Commit *slot*'s pending ``session_set_model`` pick, if it is still allowed.
+
+    Called at the start of the slot's turn, before a session is acquired, after
+    :func:`prewarm_enabled_check` so the fence re-read below is a cache hit.
+    SYNCHRONOUS on purpose: the gate and the write to ``slot.model`` run with no
+    suspension between them, so nothing can link or mirror the target after it
+    was authorized and before the model changed. A pick the gate now refuses is
+    dropped and audited, and the turn runs on the model it already had. So is a
+    pick the user has overtaken with a newer picker choice.
+
+    The ownership fence only tightens: a caller fenced at call time stays
+    fenced, and one that was not is re-checked now, since it may have become a
+    fenced crew member while the pick waited.
+
+    Returns True when ``slot.model`` changed, meaning a live session still runs
+    the old model and must be reset before this turn uses it.
+    """
+    pick = slot._pending_model_pick
+    if pick is None:
+        return False
+    slot._pending_model_pick = None
+    if slot._model_pick_gen != pick.pick_gen:
+        _audit(
+            caller_session_key=pick.caller_session_key,
+            operation="set_model",
+            slot_key=slot.key,
+            outcome="denied",
+            detail={"code": "superseded_by_newer_pick", "stage": "turn_start"},
+        )
+        return False
+    if _caller_tab_id(state, pick.caller_session_key) != pick.caller_tab_id:
+        _audit(
+            caller_session_key=pick.caller_session_key,
+            operation="set_model",
+            slot_key=slot.key,
+            outcome="denied",
+            detail={"code": "caller_replaced", "stage": "turn_start"},
+        )
+        return False
+    caller_key = caller_slot_key(state, pick.caller_session_key)
+    fenced = pick.caller_fenced or (
+        bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+    )
+    try:
+        live = authorize_target(
+            state,
+            caller_session_key=pick.caller_session_key,
+            target=slot.key,
+            operation="set_model",
+            skip_enabled_check=True,
+            precomputed_ownership_fenced=fenced,
+        )
+    except SessionControlError as exc:
+        _audit(
+            caller_session_key=pick.caller_session_key,
+            operation="set_model",
+            slot_key=slot.key,
+            outcome="denied",
+            detail={"code": exc.code, "stage": "turn_start"},
+        )
+        return False
+    if live is not slot:
+        _audit(
+            caller_session_key=pick.caller_session_key,
+            operation="set_model",
+            slot_key=slot.key,
+            outcome="denied",
+            detail={"code": "target_replaced", "stage": "turn_start"},
+        )
+        return False
+    # A fallback serving the session means the wire model differs from the pin,
+    # so an equal pin still needs the session reset, as the picker treats it.
+    changed = (
+        (slot.model or "") != pick.model
+        or bool(slot._active_fallback_model)
+        or bool(slot._refusal_fallback_primary)
+    )
+    slot.model = pick.model
+    # A concrete pick answers the routing question, as it does from the picker.
+    slot.jev_route = False
+    # Recorded as an explicit pick so the model-fallback restore never undoes it.
+    slot._model_pick_gen += 1
+    _audit(
+        caller_session_key=pick.caller_session_key,
+        operation="set_model",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"model": pick.model or "auto", "stage": "turn_start"},
+    )
+    return changed
+
+
+def _target_busy_error() -> SessionControlError:
+    """The refusal ``set_model_target`` gives a target with work in flight."""
+    return SessionControlError(
+        "session busy, model not changed: it has a turn or sub-agents in flight. "
+        "Stop it with session_stop and retry once it is idle.",
+        code="target_busy",
+        status=409,
+    )
+
+
 async def close_target(
     state: "DashboardState",
     *,
@@ -4422,6 +4714,15 @@ def read_messages(
         # "nothing happening".
         **({"streaming": True} if durable_end < len(raw_window) else {}),
         "queue_depth": len(slot._queue),
+        # The model the target's turns use, and a session_set_model pick still
+        # waiting for its next turn, so a caller can see whether its pick took.
+        # Redacted: the owner's picker stores whatever string it is given.
+        "model": redact(slot.model or ""),
+        **(
+            {"pending_model": redact(slot._pending_model_pick.model)}
+            if slot._pending_model_pick is not None
+            else {}
+        ),
         "total": total,
         # The cursor to poll with next. This is NOT `total`: when more than
         # `limit` rows are new, the window stops short of the end, and a caller

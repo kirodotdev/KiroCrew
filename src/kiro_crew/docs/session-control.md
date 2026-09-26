@@ -1,16 +1,16 @@
 # Session Control — driving another session
 
-One chat session can open, fork, seed, watch, stop and close another one, and take
+One chat session can open, fork, seed, watch, stop and close another one, change its model, and take
 another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 17 of its tools, written for the agent that is about to use them.
+for all 18 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_stop`, `session_close`, `session_adopt`,
-  `session_release`. These reach another session.
+  `session_read_message`, `session_stop`, `session_set_model`, `session_close`,
+  `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`.
@@ -228,6 +228,32 @@ cancel is still in flight.
 be reopened — but it does discard a running turn's work. Read the session first
 when you are not sure what it is doing.
 
+### `session_set_model`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+| `model` | yes | Model to switch to: a canonical key or provider id, such as `sonnet` or `opus` |
+
+The model is recorded as a pending pick and applied when the target's next turn
+starts. At that point the same permission check runs again, in the same step
+that sets the model. If the target has become channel-linked, mirrored or
+otherwise out of reach, the pick is dropped and the turn runs on its old model.
+A later call replaces a pick that has not been applied yet, and a model the
+user picks in the meantime wins over it. The conversation is kept.
+`session_read_message` shows the target's current model and any pick still
+pending, so you can tell whether yours took. A pending pick does not survive a
+gateway restart.
+
+Only an idle session takes a pick. If the target has a turn or sub-agents in
+flight, the call is refused with `target_busy` ("session busy, model not
+changed") and the target keeps its model. The tool never stops anything itself.
+To force the change, call `session_stop`, then retry once the target is idle.
+
+Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
+preview on a slot on `auto` hands each turn's model to Jev routing, which only the
+owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
+
 ## Folders
 
 The sidebar tree the person organizes their sessions in.
@@ -302,6 +328,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `linked_session_target` / `mirrored_target` | A channel-linked or channel-mirrored session is out of scope — reaching it would cross into a thread other people read |
 | `session_control_disabled` | `agent.session_control` is off in config |
 | `create_rate_limited` | Per-caller creation budget spent — a fork spends the same budget |
+| `target_busy` | Model change only: the target has a turn or sub-agents in flight, so its model was not changed |
 
 `target` resolves three ways, all of them checked before any answer: the slot
 key (`chat-7`), the transcript name `list_sessions` prints
@@ -316,7 +343,7 @@ session-control tool refuses it: its identity would resolve to its parent slot,
 handing it the parent's authority. Drive sessions from a real session, not from
 inside a subagent.
 
-A **channel agent** (Slack, Telegram, and the rest) is blocked from all eight
+A **channel agent** (Slack, Telegram, and the rest) is blocked from all nine
 session tools by `CHANNEL_AGENT_BLOCKED_TOOLS` in `src/kiro_crew/channel.py`.
 Reading a dashboard transcript would pull a private conversation into a channel
 other humans can see, and sending would run channel text as a turn inside it.

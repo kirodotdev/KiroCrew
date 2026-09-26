@@ -252,6 +252,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("session_control.py", "create_session"),
                 ("session_control.py", "read_messages"),
                 ("session_control.py", "send_to_target"),
+                # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
+                ("session_control.py", "set_model_target"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }
