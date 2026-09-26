@@ -663,6 +663,8 @@ class TestConservativeShutdown:
         mgr._tasks = {}
         mgr._report_tasks = set()
         mgr._report_owners = {}
+        # The reap coalesces concurrent stops through this per-run map.
+        mgr._reaps_in_flight = {}
         # Fork adaptation: _force_reap pumps the spawn queue after freeing a
         # slot (a1933a4b, ported earlier in this branch); an empty queue makes
         # _drain_queue return immediately without touching other attrs.
@@ -729,6 +731,8 @@ class TestConservativeShutdown:
         mgr._tasks = {}
         mgr._report_tasks = set()
         mgr._report_owners = {}
+        # The reap coalesces concurrent stops through this per-run map.
+        mgr._reaps_in_flight = {}
         # Fork adaptation: see test_session_sharing_never_kills_runtime.
         mgr._queue = []
         mgr._running_count = 2

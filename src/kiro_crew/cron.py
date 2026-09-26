@@ -32,7 +32,7 @@ import re
 import threading
 import time
 import uuid
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,7 +45,6 @@ from typing import (
     Coroutine,
     Iterator,
     NamedTuple,
-    cast,
 )
 from zoneinfo import ZoneInfo
 
@@ -79,10 +78,16 @@ from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subproc
 from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.process_identity import (
     ProcessHandle,
+    ending_fence,
     failure_name,
+    join_failures,
+    kill_each,
+    kill_set,
     kill_verified_process,
     process_handle_of,
     process_survived_async,
+    spawn_in_flight,
+    teardown_capture,
     with_kill_failure,
 )
 from kiro_crew.resource_status import admission_check
@@ -2947,7 +2952,7 @@ class CronService:
                 f"a session registered under the key after the reset's pop ({named}); "
                 "not reset, not signalled"
             )
-        return self._join_failures(
+        return join_failures(
             failure, late_failure, self._spawn_in_flight(session_key, job_id=job_id, who=who)
         )
 
@@ -2964,7 +2969,7 @@ class CronService:
         """
         keys = self._run_session_keys(job_id, run) or [f"cron:{job_id}"]
         for key in keys:
-            fences.enter_context(self._ending_fence(key))
+            fences.enter_context(ending_fence(self._sessions, key))
         return keys
 
     async def _end_run_sessions(
@@ -3077,67 +3082,20 @@ class CronService:
                 _ENDING_ROUNDS,
             )
             for key in pending:
-                fences.enter_context(self._ending_fence(key))
-        return self._join_failures(*failures), ended
-
-    def _ending_fence(self, session_key: str) -> AbstractContextManager[None]:
-        """The key's ending fence to hold from before the first pass through the record, or a no-op for a manager without one.
-
-        ``SessionManager.ending_key`` raises the fence synchronously on entry
-        (before the holder's first await) and lifts it however the block ends.
-        ``_force_reap`` and ``cancel()`` open one per key of the run
-        (:meth:`_fence_run_keys`, and again for a key the run registers during
-        the passes) around the kill passes AND the terminal record and audit that
-        follow them, so no key of the run is ever seen neither ending nor
-        recorded. A session manager without it (a test double) is not fenced:
-        the passes and their post-pass read are then the whole answer.
-        """
-        fence = getattr(self._sessions, "ending_key", None)
-        if not callable(fence):
-            return nullcontext()
-        return cast(AbstractContextManager[None], fence(session_key))
+                fences.enter_context(ending_fence(self._sessions, key))
+        return join_failures(*failures), ended
 
     def _spawn_in_flight(self, session_key: str, *, job_id: str, who: str) -> str | None:
-        """The named failure for a cold start past its spawn door under the fenced key, or None.
+        """The named failure for a cold start past its spawn door under the fenced key, or None -- logged under the job.
 
-        Read after the passes, fence still up, through
-        ``SessionManager._spawn_in_flight``: a reservation the manager holds
-        under the key predates the fence (a caller that meets the fence is held
-        at the door and holds none), but a reservation is not yet a process -- a
-        sub-agent completion's claim waiting on the busy parent's turn
-        semaphore, or a cold start still ahead of its pre-spawn fence check, has
-        started nothing and is held or refused before it does, and naming it
-        would record a kill failure over a run whose processes the passes did
-        answer. What is named is a start past that door -- inside
-        ``provider.start()``, nothing published that any snapshot could see --
-        whose registration is refused and whose provider is hard-killed when the
-        start returns (its call then allocates again, after the lift), and a
-        start that already returned during the passes and was refused there: its
-        provider was hard-killed by the allocation path, a kill dispatched off
-        the loop whose outcome this record cannot read back. Nothing here
-        signals either, and the record must not say the run's processes were
-        answered while one is being started or was only just refused. The
-        manager's reason phrase is carried into the record. A manager without
-        the read (a test double) reports nothing.
+        The read itself, and what it names, is
+        :func:`kiro_crew.process_identity.spawn_in_flight` (the sub-agent
+        manager's reap reads it the same way); this adds the cron job to the log.
         """
-        probe = getattr(self._sessions, "_spawn_in_flight", None)
-        # Only the facade's real answer counts: a double's default return is not
-        # a reason.
-        reason = probe(session_key) if callable(probe) else None
-        if not isinstance(reason, str) or not reason:
-            return None
-        logger.error(
-            "%s: a cold start under %s was past its spawn door when cron %s was ended; "
-            "fenced (%s); not signalled",
-            who,
-            session_key,
-            job_id,
-            reason,
-        )
-        return (
-            "a cold start under the key was past its spawn door when the run was ended "
-            f"(fenced: {reason}); not signalled"
-        )
+        failure = spawn_in_flight(self._sessions, session_key)
+        if failure is not None:
+            logger.error("%s: %s -- under %s for cron %s", who, failure, session_key, job_id)
+        return failure
 
     async def _reset_and_kill_once(
         self, session_key: str, pairs: list[tuple[Any, ProcessHandle]], *, job_id: str, who: str
@@ -3152,8 +3110,9 @@ class CronService:
         up afterwards would find nothing and leave the process it names running
         (see :class:`kiro_crew.process_identity.ProcessHandle`). The snapshot is
         keyed by name, so the session the reset ACTUALLY pops is captured at the
-        pop itself (:meth:`_teardown_capture`): a cold start can register a new
-        session under the key between the snapshot and the pop, and that one is
+        pop itself (:func:`kiro_crew.process_identity.teardown_capture`): a cold
+        start can register a new session under the key between the snapshot and
+        the pop, and that one is
         what a hung reset then holds. A reset that hung or failed gets every
         handle killed; a completed one -- True, or False for a key a concurrent
         reset had already popped (the common False is the run's OWN teardown
@@ -3168,30 +3127,30 @@ class CronService:
         if not self._sessions:
             return None, []
         handles = self._handles_of(pairs)
-        scope, popped = self._teardown_capture()
+        reset_kwargs, popped = teardown_capture(self._sessions)
         failure: str | None = None
         try:
             await asyncio.wait_for(
                 # Same class for the reaper and cancel: the run is over, so its
                 # conversation is over and its sub-agent runs end with it -- not
                 # a recycle.
-                self._sessions.reset(session_key, ends_conversation=True, scope=scope),
+                self._sessions.reset(session_key, ends_conversation=True, **reset_kwargs),
                 timeout=_REAPER_RESET_TIMEOUT,
             )
         except asyncio.TimeoutError:
             logger.warning("%s: reset hung for cron %s, attempting SIGKILL", who, job_id)
-            targets, missing = self._kill_set(handles, popped)
-            failure = self._join_failures(
+            targets, missing = kill_set(handles, popped)
+            failure = join_failures(
                 await self._sigkill_sessions(session_key, targets, who=who), missing
             )
         except Exception:
             logger.exception("%s: reset failed for cron %s, attempting SIGKILL", who, job_id)
-            targets, missing = self._kill_set(handles, popped)
-            failure = self._join_failures(
+            targets, missing = kill_set(handles, popped)
+            failure = join_failures(
                 await self._sigkill_sessions(session_key, targets, who=who), missing
             )
         else:
-            targets, missing = self._kill_set(handles, popped)
+            targets, missing = kill_set(handles, popped)
             # Off the loop: the scan walks every recorded child.
             survivors = [handle for handle in targets if await process_survived_async(handle)]
             if survivors:
@@ -3199,79 +3158,16 @@ class CronService:
                     "%s: process survived the reset for cron %s, attempting SIGKILL", who, job_id
                 )
                 failure = await self._sigkill_sessions(session_key, survivors, who=who)
-            failure = self._join_failures(failure, missing)
+            failure = join_failures(failure, missing)
         return failure, [session for session, _handle in popped]
-
-    def _teardown_capture(self) -> tuple[Any, list[tuple[Any, ProcessHandle]]]:
-        """A scope for the reset that takes the handle of the exact session it pops.
-
-        The pre-reset snapshot (:meth:`_sessions_under`) is keyed by name and
-        taken before the reset: a cold start can register a new session under
-        the key between that snapshot and the reset's pop, and it is THAT session
-        the reset then pops and hangs on -- unnamed by the snapshot, so a fallback
-        fed the snapshot alone would find nothing to kill and the run would be
-        recorded reaped over a live process. The scope's ``on_pop`` runs in the
-        same registry-lock hold as the pop, so the handle is read off the popped
-        session atomically with the pop, before any await could lose it. Returns
-        the scope to hand ``reset`` and the list the hook fills with
-        ``(session, handle)`` pairs (at most one: a reset pops at most one
-        session) -- the session so the pass can count it as handled, the handle
-        for the kill. ``None`` for a session manager without scopes (test
-        doubles): the snapshot alone then applies.
-        """
-        popped: list[tuple[Any, ProcessHandle]] = []
-        factory = getattr(self._sessions, "teardown_scope", None)
-        if not callable(factory):
-            return None, popped
-        return (
-            factory(on_pop=lambda session: popped.append((session, process_handle_of(session)))),
-            popped,
-        )
-
-    @staticmethod
-    def _kill_set(
-        handles: list[ProcessHandle], popped: list[tuple[Any, ProcessHandle]]
-    ) -> tuple[list[ProcessHandle], str | None]:
-        """The snapshot handles plus the popped session's, one per process incarnation, and the failure a pid-less pop is.
-
-        Keyed by the handle -- ``(pid, start id)`` -- never by the pid: a popped
-        session whose pid is a snapshot handle's pid under another start id is a
-        different process (the number was recycled) and is killed on its own
-        handle. A popped session with no recorded pid is a session whose process
-        the run cannot name -- a cold start still spawning, or a client already
-        reset -- and nothing can verify what it leaves behind: a named kill
-        failure, never reaped.
-        """
-        targets = list(handles)
-        missing: str | None = None
-        for _session, handle in popped:
-            if handle.pid is None:
-                missing = "the session the reset popped had no process handle yet; not signalled"
-            elif handle not in targets:
-                targets.append(handle)
-        return targets, missing
-
-    @staticmethod
-    def _join_failures(*failures: str | None) -> str | None:
-        named = [failure for failure in failures if failure]
-        return "; ".join(named) if named else None
 
     async def _sigkill_sessions(
         self, session_key: str, handles: list[ProcessHandle], *, who: str = "Reaper"
     ) -> str | None:
-        """Kill every handle's process; the failures, joined, or None once all are signalled or gone.
-
-        No handle at all is one ``None`` kill: nothing to kill, logged as such.
-        ``who`` prefixes the kill path's log lines with the caller's name.
-        """
-        if not handles:
-            return await self._sigkill_session(session_key, None, who=who)
-        failures = []
-        for handle in handles:
-            failure = await self._sigkill_session(session_key, handle, who=who)
-            if failure is not None:
-                failures.append(failure)
-        return "; ".join(failures) if failures else None
+        """Kill every handle's process (:func:`kiro_crew.process_identity.kill_each`); the failures joined, or None."""
+        return await kill_each(
+            handles, lambda handle: self._sigkill_session(session_key, handle, who=who)
+        )
 
     async def _sigkill_session(
         self, session_key: str, handle: ProcessHandle | None, *, who: str = "Reaper"

@@ -70,7 +70,6 @@
 3 src/kiro_crew/slack/handler.py
 1 src/kiro_crew/slack/transport_dispatch.py
 7 src/kiro_crew/subagent.py
-1 src/kiro_crew/subagent_manager/terminal.py
 2 src/kiro_crew/subagent_persistence.py
 2 src/kiro_crew/task_executor.py
 1 src/kiro_crew/task_planner.py

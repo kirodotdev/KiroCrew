@@ -990,32 +990,55 @@ class CancellationCoordinator(ManagerComponent):
                 self._manager._report_queued_stop(queued)
                 return True
             return False
-        info.user_stopped = True
-        # Recorded BEFORE the reap so the run loop can read them when its stream
-        # dies under the session teardown ``_force_reap`` is about to do. A
-        # caller that already named the cause keeps it; a bare cancel is the
-        # user pressing Stop.
-        if not info._reap_reason:
-            info._reap_reason = "user_stop"
-        if not info._stop_origin:
-            info._stop_origin = "stopped by user"
-        # Neutral semantics live in the RECORD, not just the live event: a user
-        # stop leaves ``error`` unset so every consumer (reconnect snapshots,
-        # tombstones, /api/spawn listing, orphan reconciliation) derives the
-        # same neutral "stopped" status without having to cross-check
-        # ``user_stopped``. _force_reap is also user_stopped-aware and will not
-        # synthesize a reap error for this path.
-        # Preserve whatever streamed before the stop as a partial result.
-        if not info.result and info.streaming_text:
-            info.result = info.streaming_text
+        if not info._reap_started:
+            # The stamps below name THIS stop as the run's stopper. A reap already
+            # in flight (a deadline, a parent end) owns the record, and the record
+            # follows the FIRST stopper (``stop_is_neutral``) -- ``outcome`` reads
+            # ``user_stopped`` directly, so writing it over a claimed deadline
+            # failure would publish that failure as a neutral stop. Such a Stop
+            # stamps nothing and joins the reap in flight (``_force_reap``
+            # coalesces), returning once that reap's record is final.
+            info.user_stopped = True
+            # Recorded BEFORE the reap so the run loop can read them when its
+            # stream dies under the session teardown ``_force_reap`` is about to
+            # do. A caller that already named the cause keeps it; a bare cancel
+            # is the user pressing Stop.
+            if not info._reap_reason:
+                info._reap_reason = "user_stop"
+            if not info._stop_origin:
+                info._stop_origin = "stopped by user"
+            # Neutral semantics live in the RECORD, not just the live event: a
+            # user stop leaves ``error`` unset so every consumer (reconnect
+            # snapshots, tombstones, /api/spawn listing, orphan reconciliation)
+            # derives the same neutral "stopped" status without having to
+            # cross-check ``user_stopped``. _force_reap is also
+            # user_stopped-aware and will not synthesize a reap error for this
+            # path. Preserve whatever streamed before the stop as a partial
+            # result.
+            if not info.result and info.streaming_text:
+                info.result = info.streaming_text
         # _force_reap emits the (single) stopped-aware ``subagent_done`` event
         # and drives _on_done delivery — no second event here.
-        await self._manager._force_reap(
-            agent_id,
-            info,
-            time.time() - info.started,
-            reason=info._reap_reason,
+        #
+        # Run as a TRACKED task, awaited here: this reap lives in the caller's
+        # task (a request handler, a parent's teardown), which ``cancel_all``
+        # does not know. Tracked, a gateway shutdown cancels it beside the
+        # reaper task, so its cancellation arm finishes the record and releases
+        # the report inside the drain instead of sitting in a hanging reset
+        # until the shutdown budget hard-exits the process. Awaiting the task
+        # keeps the caller's own cancellation reaching the reap as before
+        # (cancelling an awaiter cancels the future it waits on).
+        reap = asyncio.ensure_future(
+            self._manager._force_reap(
+                agent_id,
+                info,
+                time.time() - info.started,
+                reason=info._reap_reason,
+            )
         )
+        self._manager._reap_tasks.add(reap)
+        reap.add_done_callback(self._manager._reap_tasks.discard)
+        await reap
         return True
 
     async def cancel_all_impl(self) -> None:
@@ -1044,6 +1067,20 @@ class CancellationCoordinator(ManagerComponent):
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
+        # The reaps that live outside the reaper task (a Stop, a parent-end
+        # cancel, each awaited in its caller's task) are cancelled the same way
+        # and gathered here, so each one's cancellation arm has finished the
+        # record and released its report before the run tasks are cancelled and
+        # the reports drained. Left alone, such a reap sat in its hanging reset
+        # with its report waiting on a gate nobody released, and the gateway's
+        # shutdown budget hard-exited the process before the drain could abandon
+        # it -- the tombstone its run's arm wrote then excluded the folder from
+        # orphan recovery, so the parent never received the completion.
+        inflight_reaps = [t for t in self._manager._reap_tasks if not t.done()]
+        for reap in inflight_reaps:
+            reap.cancel()
+        if inflight_reaps:
+            await asyncio.gather(*inflight_reaps, return_exceptions=True)
         # Follow-up watchers are cancelled and gathered before announcing.
         # The announce awaits — _on_done injection can be slow — and
         # a busy-retry watcher waking during that await could dispatch a

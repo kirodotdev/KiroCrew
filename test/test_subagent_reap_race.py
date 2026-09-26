@@ -80,7 +80,7 @@ def _done_events(mgr: SubagentManager) -> list:
     return [c for c in mgr._fire_event.call_args_list if c.args and c.args[0] == "subagent_done"]
 
 
-async def _noop_reset(session_key):
+async def _noop_reset(session_key, **_):
     await asyncio.sleep(0)
 
 
@@ -155,7 +155,7 @@ async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
     info = _info(_session_sharing=False)
     mgr._running_count = 1
 
-    async def _reset_then_finish(session_key):
+    async def _reset_then_finish(session_key, **_):
         # A concurrently-finishing _run_inner marking the record terminal.
         info.done = True
         await asyncio.sleep(0)
@@ -198,7 +198,7 @@ async def test_run_claiming_during_reap_teardown_yields_one_report():
     mgr._running_count = 1
     reports: list[str] = []
 
-    async def _reset_with_race(session_key):
+    async def _reset_with_race(session_key, **_):
         if mgr._claim_finalize(info):
             reports.append("run")
         await asyncio.sleep(0)
@@ -1274,7 +1274,7 @@ async def test_reap_suppression_marker_is_set_before_the_teardown_await():
     mgr._running_count = 1
     seen: dict[str, bool] = {}
 
-    async def _observing_reset(session_key):
+    async def _observing_reset(session_key, **_):
         seen["suppression_during_teardown"] = info._reap_started
         # `.cancelled()` only flips once the task runs, so assert the
         # observable that ordering guarantees: it is already de-registered
@@ -1400,7 +1400,7 @@ async def test_run_woken_by_reaper_reset_still_synthesizes_its_error():
     mgr._running_count = 1
     observed: dict[str, bool] = {}
 
-    async def _reset_wakes_the_run(session_key):
+    async def _reset_wakes_the_run(session_key, **_):
         # Exactly the window under test: the reap is in flight and suspended in
         # teardown. A run waking here must still see `reaped == False`.
         observed["reaped"] = info.reaped
