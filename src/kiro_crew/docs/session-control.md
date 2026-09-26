@@ -354,7 +354,7 @@ get corrected, and report again is a session.
 
 ## Related
 
-- [Subagents & parallel work](subagents.md) — `spawn_run` and the solo gate
+- [Subagents & parallel work](subagents.md) — `spawn_run` and when to delegate
 - [Dashboard](dashboard.md) — the sidebar, tabs and queued messages these tools write to
 - [Monitor loops](monitor-loops.md) — the `wait`-then-read shape a watcher uses
 - [Configuration](configuration.md) — where `agent.session_control` lives

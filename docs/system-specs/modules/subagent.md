@@ -1681,9 +1681,9 @@ subagent ID. `kirocrew spawn list` lists current runs.
 Exposed via `kirocrew-core` MCP server. Always fire-and-forget — results
 are delivered back to the calling session via completion event injection.
 
-**Single task** (gated -- see "The solo gate" below):
+**Single task** (bulk output the parent should not hold):
 ```python
-spawn_run(task="grep the 2 GB build log for the first traceback", solo_reason="bulk_data")
+spawn_run(task="grep the 2 GB build log for the first traceback")
 ```
 
 **Batch parallel:**
@@ -1700,33 +1700,18 @@ The startup memory floor uses native Windows/macOS readings and Linux cgroup
 headroom. Fresh stream progress can earn a bounded extra execution slot without
 waiting for a whole long task to finish; see [adaptive-concurrency.md](adaptive-concurrency.md).
 
-**Delegation policy and the solo gate.** Focused work stays in the parent by
-default. Complexity, task count, idle capacity and another model name do not
-prove a benefit. Useful parallel progress includes a parent workstream plus one
-child. Bulk-data isolation, independent verification, a needed specialist or an
-explicit user request can justify one child even when the parent must wait.
-Never forward the whole request to an equivalent worker merely to relay it.
-
-`solo_spawn.py` owns the closed reason vocabulary and schema descriptions:
-`parent_parallel`, `bulk_data`, `fresh_context`, `specialist`, `user_requested`.
-The three new reasons require nonblank `solo_details`, describing respectively
-the parent's separate ready work and ownership, the needed capability, or the
-quoted user request. Legacy `bulk_data` and `fresh_context` payloads remain
-valid without details. A reason is a **model claim**, not runtime proof of value,
-independence or permission. `fresh_context` does not itself disable inherited
-memory or project context; use the existing context-group controls as needed.
-
-A model call containing one task, no reason and no different named worker still
-gets a recoverable refusal before any spawn. The caller should do the task
-directly or supply a real reason, without asking the user for a workaround.
-The gateway retains the existing `solo=true` roster comparison, unknown-parent
-fail-open behavior and `spawn.solo` audit. Direct SDK/API clients without that
-marker keep their previous behavior. Batches retain their count compatibility,
-but neither two tasks nor a different model excuses needless delegation.
-New reasons are validated on HTTP calls too. Reasons/details are redacted and
-stored as `delegation = {reason, details, source: "model_claim"}` in the existing
-run record and durable queue payload, and inherited on retry/continuation.
-No second database or semantic classifier is introduced.
+**Delegation policy.** Focused work stays in the parent by default; one task
+is faster done there. The prompts license a spawn for two or more independent
+tasks, bulk output the parent only needs distilled, an independent review or
+reproduction whose result would be wrong if it saw this session's context, an
+explicit user request, or a different agent/model/crew. This is prompt guidance only: no runtime gate
+refuses a one-task call. The solo-spawn gate (#11710, widened in #12203) was
+removed because it validated reason shape, not value, and passed 33 of 34
+one-task calls in audit. The legacy `solo_reason` / `solo_details` fields are
+still accepted by validation and ignored, so older skills and workflows are not
+refused as unknown fields. New spawns never set the run record's
+`delegation` field. Runs persisted before the removal keep theirs, and a retry
+or continuation still inherits it.
 
 **Parent work and event delivery.** `POST /api/spawn` returns
 `parent_work_supported=true` only for a parent resolved to a dashboard-owned
@@ -1734,14 +1719,12 @@ slot (including linked channels). `spawn_run` then allows one short step of
 ready, non-overlapping parent work, at most one minute, before yielding the
 turn. This is model guidance, not a runtime timer. Without that receipt, or
 without useful parent work, yield immediately. Channel-only, nested and
-background callers retain the immediate-yield boundary. Blocking
-`spawn_sub_agents` refuses `parent_parallel`; `spawn_continue` also retains its
+background callers retain the immediate-yield boundary. `spawn_continue` also retains its
 immediate-yield guidance. Do not duplicate delegated work or poll to stay busy.
 
 | Owner | Enforced behavior and evidence |
 |---|---|
-| `solo_spawn.py`, `validation.py`, `mcp_tools/spawn.py` | Shared reason/schema checks; inline parallel refusal; backward-compatible legacy payloads. |
-| `dashboard/handlers/messaging.py::api_spawn` | Validates details and actual parent slot; reports delivery capability and stores model-declared evidence. |
+| `dashboard/handlers/messaging.py::parent_work_supported`, `::api_spawn` | Resolves the actual parent slot and reports delivery capability in the receipt. |
 | `subagent_manager/admission`, `subagent_persistence.py` | Existing capacity/queue/depth/cleanup rules remain authoritative; delegation metadata follows the run. |
 | `slack/gateway.py::_subagent_done` | Busy dashboard turns are awaited through `asyncio.shield`, then completion is injected or queued; the parent edit is not interrupted. Delivery retention starts on consumption. |
 
@@ -1756,10 +1739,8 @@ their explicitly selected coordination role; this policy does not convert them
 into implementation workers.
 
 Parameters:
-- `task` (str): single task description -- gated; see "The solo gate"
+- `task` (str): single task description
 - `tasks` (list[str]): multiple tasks for parallel execution
-- `solo_reason` (str, optional): one of the five reasons above; required for an equivalent-worker solo model call.
-- `solo_details` (str, optional for legacy reasons): concrete benefit and ownership; required by the three new reasons and retained as model-declared evidence.
 - `cwd` (str, optional): absolute path to launch subagent in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`). Validated via realpath + prefix match. Pool skipped when cwd is set. These roots are a least-privilege allowlist and are never widened automatically: a persisted list whose roots all fail to exist on the host rejects every cwd, and the operator must edit `agent.subagent_cwd_allowed_roots` (or delete the key to take the shipped default). Neither the loader nor the guard stats the configured roots.
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 1000)
 - `agent` (str, optional): one agent template applied to every task.
@@ -1817,7 +1798,6 @@ spawn_sub_agents(agents=[
 Parameters:
 - `agents` (list[dict], required): each item is `{prompt: str, agent_or_mode?: str}`. `prompt` is truncated to `MAX_MEDIUM_STRING`; `agent_or_mode` to `MAX_SHORT_STRING`. Entries with an empty prompt are skipped.
 - `cwd` (str, optional): absolute path to launch all sub-agents in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`), same validation as `spawn_run`.
-- `solo_reason` / `solo_details` (optional): the same solo-delegation evidence as `spawn_run`; `parent_parallel` is refused because this tool blocks.
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): the same batch-wide context switches as `spawn_run`.
 
 Blocking poll semantics:

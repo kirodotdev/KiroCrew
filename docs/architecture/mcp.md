@@ -4,10 +4,8 @@ How MCP (Model Context Protocol) servers are configured, merged, probed and
 loaded, plus the two invariants every new Kiro Crew MCP tool must satisfy: it
 ships as an MCP tool (not only a CLI command), and it holds no per-caller state.
 
-The spawn tools share their reason vocabulary with `solo_spawn.py` and validate
-optional `solo_details` through `validation.py`. New reasons require details;
-legacy calls remain compatible. Async receipts declare supported parent-work
-delivery, while the inline tool rejects `parent_parallel`. See the
+Async spawn receipts declare supported parent-work delivery
+(`dashboard/handlers/messaging.py::parent_work_supported`). See the
 [subagent contract](../system-specs/modules/subagent.md) for the enforced limits
 and model-only value judgments.
 

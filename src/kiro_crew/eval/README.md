@@ -39,7 +39,7 @@ kirocrew eval --judge my_scenario
 
 `kirocrew eval subagent_policy` exercises eighteen hypothetical decisions with
 the existing read-only harness. It covers direct work, parent plus one child,
-independent fan-out, dependencies, legitimate and invented solo reasons,
+independent fan-out, dependencies, legitimate and invented reasons for a single child,
 bounded parent work, terminal failures, cancellation, explicit user choices,
 blocking-tool limits and conflicting writers. No spawn tools are enabled by
 this scenario. Its response assertions test **planned decisions**, not actual
@@ -49,9 +49,8 @@ For a before/after comparison, use the same case text, provider/model and tool
 availability with each revision's orchestration prompt, repeat key cases, and
 retain raw responses. Record actual and planned agent counts separately, parent
 work, wait reasons, wall latency and provider-reported usage. Missing token
-counts are unknown. Pair the decision traces with deterministic solo-gate,
-busy-parent delivery and delayed-startup-memory tests; enum acceptance alone
-does not prove meaningful delegation.
+counts are unknown. Pair the decision traces with deterministic
+busy-parent delivery and delayed-startup-memory tests.
 
 ## Output
 
