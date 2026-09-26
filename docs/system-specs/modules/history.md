@@ -875,6 +875,63 @@ Non-blocking via `asyncio.create_task`. Requires `SessionManager` to be passed
 at construction time; consolidation is silently skipped if no session manager
 is available.
 
+**Cross-process exclusion (the consolidation lease).** `_running` is an in-memory
+set: it stops two passes over one session inside a single process and says
+nothing about another one. `kirocrew consolidate` IS another process, and it
+runs against the same transcripts while the gateway's 60s idle sweep is live.
+Both would snapshot the same span, both would spend a provider turn on it, and
+both would write the history entry, preferences and lessons that turn produced.
+Nothing catches it afterwards — `mark_consolidated` is idempotent, so the offset
+ends up correct and the damage is the duplicate spend and the doubled memory.
+
+`_consolidate` therefore takes a durable lease on the session's metadata line
+before it freezes the span, immediately after the retry-eligibility gate and
+before anything can be billed. It is claimed through
+`ConversationLog.update_metadata_if`, whose guard runs under the same
+cross-process `flock` as the write, so two processes arriving together cannot
+both pass it. The flock is held only for that compare-and-set, never across the
+LLM turn: holding it for the pass would block every append to the session and
+freeze the conversation behind a provider call.
+
+Acquisition requires an existing session under that same lock, so a deleted
+transcript cannot be recreated by the lease write. A persistence failure refuses
+the lease and returns `_CONSOLIDATION_BUSY` before any provider call.
+Acquisition, renewal and release discard the local metadata cache before their
+compare-and-set, because peer metadata writes can preserve the file's mtime.
+Unreadable metadata and transient renewal IO errors leave the heartbeat retrying.
+A confirmed token mismatch cancels the owning pass, preventing subsequent writes
+and failure accounting against a peer's span. An already running thread write
+cannot be cancelled; lease loss prevents the pass from scheduling further writes.
+
+That makes the lease a durable record rather than a held lock, so it needs its
+own answer to a holder that dies mid-pass. `_lease_holder_is_live` reads the
+recorded PID plus `platform_compat.get_process_start_id`, which is stable for a
+process's lifetime and differs across a PID reuse, so a crashed holder stops
+excluding peers on the very next attempt. `None` from that lookup means "cannot
+tell" for any unreadable process on any platform; Windows supplies a FILETIME
+identity when readable. Unknown identities use pid-exists plus the ceiling,
+never a false mismatch. Acquisition clears any previous start identity when
+the current lookup is unavailable. `_CONSOLIDATION_LEASE_CEILING_SECS` (1 h) is the last word on
+every platform: it bounds a holder that is alive but wedged, and stands in for
+liveness where the identity is unknown. It is not a timeout for the pass —
+expiry stops excluding peers; a subsequent renewal detects a replacement claim
+and cancels the old holder.
+
+The lease token identifies one ACQUISITION, not the holder. That is what makes a
+second attempt from the same process refuse, and what stops a pass that overran
+the ceiling from clearing the claim that replaced it on its way out. The lease
+fields are deliberately NOT in `_CONSOLIDATION_META_KEYS`: those are dropped when
+a span is marked consolidated, and the lease is still held at that point — the
+memory, lesson and history writes all come after it.
+
+A refused pass returns `_CONSOLIDATION_BUSY`, a second instance of the same
+sentinel class as `_CONSOLIDATION_REFUSED`. Callers test with `_no_pass_ran`
+rather than against one instance, because what they all act on is the shared
+part: no prompt was sent, nothing was billed, no window was covered — so the
+idle sweep's throttle, `maybe_consolidate`'s preference offset and the CLI's
+success flag must all stay where they are. Testing against a single instance is
+how a new refusal reason silently reads as a completed pass.
+
 **Loop safety:** the task body runs on the event loop thread, so any blocking
 work inside it must be offloaded. `_write_structured_memory` and `_save_lessons`
 both embed items via blocking in-process llama.cpp inference calls
