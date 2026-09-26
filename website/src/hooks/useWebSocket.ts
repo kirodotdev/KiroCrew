@@ -1489,6 +1489,17 @@ export function useWebSocket() {
             if (raw === lastSlotsRawRef.current
                 && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
             lastSlotsRawRef.current = raw
+            // A frame reporting the active slot NOT running stands in for a
+            // `_done` this tab may never have applied (chatSlice
+            // settleEndedActiveTurn), so it takes chat_done's ordering rule:
+            // text already received for that slot lands first. Otherwise a
+            // still-buffered tail would be dispatched after the settlement and
+            // open a second, stranded streaming row.
+            const activeKey = store.getState().chat.activeSlot
+            if (activeKey && chunkBufRef.current.has(activeKey) && Array.isArray(data)
+                && (data as ChatSlot[]).some(s => s.key === activeKey && s.running === false)) {
+              flushChunks()
+            }
             dispatch(sseSlots(data as ChatSlot[]))
             lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {
