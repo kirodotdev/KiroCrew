@@ -134,7 +134,7 @@ import { effortLabel } from '../lib/effort'
 import SlashCommandMenu from './SlashCommandMenu'
 import FilePickerMenu from './FilePickerMenu'
 import type { FileKind } from './FilePickerMenu'
-import { useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
+import { useComposerDraftText, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import SkillPickerMenu from './SkillPickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
@@ -424,7 +424,9 @@ const EMPTY_SPAWN_APPROVALS: ReturnType<typeof selectSlotPendingSpawnApprovals> 
 export type ComposerBusyMode = 'split' | 'steer-only'
 
 interface ChatInputProps {
-  value: string
+  /** The editor text. Omit it under a `<Composer draft>` root, which hands the
+   *  text over through its store so the host does not re-render per keystroke. */
+  value?: string
   onChange: (v: string) => void
   onSend: () => void
   /** Rendered inside the composer's own width wrapper, directly above the
@@ -949,7 +951,7 @@ const noopVoiceControl = () => {}
 
 function ChatInput({
   aboveComposer,
-  value,
+  value: valueProp,
   onChange,
   onSend,
   canSteer,
@@ -1043,6 +1045,10 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
+  // Under a `<Composer draft>` root the text arrives through the root's store,
+  // subscribed HERE, so a keystroke re-renders this composer and not its host.
+  const draftText = useComposerDraftText()
+  const value = draftText ?? valueProp ?? ''
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to

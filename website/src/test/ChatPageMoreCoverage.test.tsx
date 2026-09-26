@@ -104,9 +104,14 @@ vi.mock('../pages/chat', async () => {
 vi.mock('../components/ChatInput', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components/ChatInput')>()
   const React = await import('react')
+  // The page hands the text over through the Composer root's draft store, not
+  // a `value` prop; the stand-in reads it the way the real ChatInput does.
+  const { useComposerDraftText } = await import('../chat-core/composer/Composer')
   return {
     ...actual,
-    default: (props: InputProps) => {
+    default: function ChatInputStub(rawProps: InputProps) {
+      const draft = useComposerDraftText()
+      const props = draft === null ? rawProps : { ...rawProps, value: draft }
       inputProps = props
       return React.createElement('textarea', {
         'aria-label': 'Message input',

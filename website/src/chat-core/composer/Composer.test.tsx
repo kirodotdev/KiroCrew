@@ -42,6 +42,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatInput from '../../components/ChatInput'
 import { Composer, type ComposerHandle } from './Composer'
+import { createComposerDraftStore } from './draftStore'
 import { SlotProvider } from '../../providers/SlotContext'
 
 function makeStore() {
@@ -108,5 +109,32 @@ describe('Composer root + Voice atom', () => {
       )
     })
     expect(typeof ref.current?.voice()?.disarmForSend).toBe('function')
+  })
+})
+
+describe('Composer root with a draft store (P3-f)', () => {
+  it('ChatInput shows and edits the store text while the host does not re-render', async () => {
+    const draft = createComposerDraftStore('hello')
+    let hostRenders = 0
+    const onChange = (v: string) => draft.set(v)
+    function Host() {
+      hostRenders++
+      return (
+        <Composer slotKey="chat-1-x" draft={draft} onChange={onChange}>
+          <ChatInput onChange={onChange} onSend={() => {}} />
+        </Composer>
+      )
+    }
+    await act(async () => { render(<Providers><Host /></Providers>) })
+    const box = screen.getByRole('textbox', { name: 'Message input' }) as HTMLTextAreaElement
+    expect(box.value).toBe('hello')
+    const before = hostRenders
+    await act(async () => { draft.set('hello world') })
+    expect(box.value).toBe('hello world')
+    await act(async () => { fireEvent.change(box, { target: { value: 'typed by the user' } }) })
+    expect(draft.get()).toBe('typed by the user')
+    expect(box.value).toBe('typed by the user')
+    // Every text change above reached the editor; none re-rendered the host.
+    expect(hostRenders).toBe(before)
   })
 })
