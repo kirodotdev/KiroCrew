@@ -457,7 +457,11 @@ class OrphanStallMonitor(ManagerComponent):
                                 logger.debug("SEL audit failed for orphan %s", agent_id)
 
                     try:
-                        write_tombstone(
+                        # Off the loop: this writes a file and reads any existing
+                        # tombstone to preserve a recorded terminal outcome, and
+                        # this call site is a coroutine on the gateway's loop.
+                        await asyncio.to_thread(
+                            write_tombstone,
                             agent_id,
                             cause="gateway_restart",
                             recovery_action=recovery,
@@ -608,7 +612,9 @@ class OrphanStallMonitor(ManagerComponent):
                 if injected:
                     # Update tombstone recovery_action
                     try:
-                        write_tombstone(
+                        # Off the loop, same reason as the reconciliation write.
+                        await asyncio.to_thread(
+                            write_tombstone,
                             agent_id,
                             cause="gateway_restart",
                             recovery_action="delivered",

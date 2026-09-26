@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     run_to_completion,
     slack_options_owner_key,
+    subagent_event_slot,
 )
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
@@ -73,10 +74,19 @@ from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_reque
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
+    PERSISTED_SUBAGENT_REPLAY_KEEP,
+    PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
     stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.dashboard.ws_event_scope import (
+    _audit_allow,
+    _audit_deny,
+    persisted_replay_denial_reason,
+    persisted_snapshot_denial_reason,
+    slot_owner_snapshot,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.renderer import (
@@ -113,7 +123,14 @@ from kiro_crew.subagent import (
     effort_drop_reason,
     stage_boundary_owner_for_run,
 )
-from kiro_crew.subagent_persistence import _agent_dir, read_state
+from kiro_crew.subagent_persistence import (
+    PanelRecords,
+    _agent_dir,
+    classify_persisted_ending,
+    read_panel_records,
+    read_state,
+    record_panel_dismissal,
+)
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
     CHANNEL_ID_RE,
@@ -1220,7 +1237,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                     "done": True,
                     "started": disk_state.get("started"),
                 }
-                result_path = _agent_dir(agent_id) / "result.txt"
+                agent_dir = _agent_dir(agent_id)
+                result_path = agent_dir / "result.txt"
                 result = ""
                 if result_path.exists() and not is_sensitive_path(str(result_path)):
                     try:
@@ -1235,17 +1253,25 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 if view_meta:
                     disk_data["result_meta"] = view_meta
                 disk_data["result"] = _redact(view) if view else "_No result._"
-                # Check for tombstone
-                tombstone_path = _agent_dir(agent_id) / "tombstone.json"
-                if tombstone_path.exists() and not is_sensitive_path(str(tombstone_path)):
-                    try:
-                        raw = await asyncio.to_thread(tombstone_path.read_text, encoding="utf-8")
-                        ts = json.loads(raw)
-                        disk_data["error"] = _redact(f"Orphaned: {ts.get('cause', 'unknown')}")
-                    except (OSError, ValueError):
-                        disk_data["error"] = "Orphaned (unknown cause)"
-                else:
+                # One classifier, shared with the panel list. Reading the
+                # tombstone here as well let the same folder answer "completed"
+                # in a list and "Orphaned: delivered" when opened, and flattened
+                # a recorded user stop into a failure.
+                outcome, error, stopped = await asyncio.to_thread(
+                    classify_persisted_ending, agent_dir
+                )
+                if not outcome:
+                    # Nothing recorded an ending, so this run has no outcome to
+                    # report. The caller asked for this id by name, so the card
+                    # is served with what IS known and the outcome field is left
+                    # out rather than filled with a guess.
+                    disk_data.pop("outcome", None)
+                    disk_data["stopped"] = False
                     disk_data["error"] = ""
+                    return web.json_response(disk_data)
+                disk_data["outcome"] = outcome
+                disk_data["stopped"] = stopped
+                disk_data["error"] = _redact(error) if error else ""
                 return web.json_response(disk_data)
         except Exception:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
@@ -1377,7 +1403,151 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if withheld:
             entry["context_withheld"] = withheld
         agents.append(entry)
-    return web.json_response({"agents": agents})
+    # Durable half of the inventory: the runs this process never tracked, which
+    # a memory-only listing cannot name at all. Live entries win -- an id listed
+    # above is excluded rather than merged -- and the caller's own scope gate is
+    # re-applied here on the record's parent, the same field the live branch
+    # compares.
+    listed = {str(entry["id"]) for entry in agents}
+    # The audit identity is the APP, never the caller-supplied session key. The
+    # dedup registry behind ``_audit_deny`` is keyed on it and is not evicted, so a
+    # per-run session id would leave one permanent entry per subagent run. Every
+    # other call site in the tree passes a bounded app id for the same reason.
+    auditee = str(request.get("app") or "<owner>")
+
+    # An app-authenticated caller and the dashboard owner BOTH reach this route
+    # with `scope is None` -- `internal_memory_scope` answers that for a
+    # non-internal caller and for a verified session whose execution record is
+    # empty -- so scope alone cannot tell them apart. The app claim can, and it
+    # is the instrument the rest of the tree uses: `derive_caller_app` states
+    # that app-ownership checks gate on `request["app"]`. Publication is
+    # narrowing-only -- every transport sets the claim ONLY for a positively
+    # resolved app and leaves it absent for the person -- so a present non-empty
+    # claim is itself the positive signal, the same one the middleware inverts
+    # into `is_dashboard_user`. A transport flag is the wrong question here: it
+    # answers which credential arrived, and three arms publish a validated app
+    # claim without it.
+    caller_app = str(request.get("app") or "")
+    caller_is_app = bool(caller_app)
+
+    # Slot ownership is read on the LOOP, twice, and never from the worker
+    # thread. Once here as a snapshot, so the row cap is sized over the records
+    # this caller may actually see; then again after the thread returns, which is
+    # the authoritative check. A slot's owner can flip while the scan runs --
+    # keys are caller-supplied and not app-namespaced, so another app can reclaim
+    # one -- and a decision taken off-loop would be read from state the caller
+    # does not describe. The WS replay reads the same pair for the same reason.
+    owner_now = slot_owner_snapshot(state)
+
+    def _admit(record: dict) -> bool:
+        """This caller's own visibility, applied before the cap.
+
+        Two bounds with different reach. The app bound is unconditional, because
+        an app token must never read another app's run text no matter how its
+        session scope resolved. The session bound is conditional on `scope`, the
+        same condition the live branch above applies to the same field, so the
+        durable half of one listing is neither wider nor narrower than the live
+        half a caller sees beside it.
+
+        Both read only the request's own values and the record, so they are sound
+        on a worker thread. The ownership dimension is not: it answers from live
+        slot state, so here it consults the loop-taken snapshot and sizes the cap
+        only, and the record is decided again on the loop before it is listed.
+
+        Every refusal is a permission decision and leaves a SEL record under the
+        reason it actually had -- a lazily hydrated slot is `slot_missing`, not an
+        ownership breach.
+        """
+        if caller_is_app and str(record["app"] or "") != caller_app:
+            _audit_deny(auditee, "api_spawn_list", "persisted_app_mismatch")
+            return False
+        if scope is None:
+            return True
+        parent = str(record["parent_session"])
+        agent_id = str(record["id"])
+        if parent != caller and caller != f"subagent:{agent_id}":
+            _audit_deny(auditee, "api_spawn_list", "persisted_scope_mismatch")
+            return False
+        # The ownership dimension, sized off the loop snapshot. Withholding is
+        # itself the permission decision, so it audits here under the reason it
+        # had; the surviving records are decided again on the loop, and the two
+        # sets are disjoint, so no record is audited twice.
+        denial = persisted_snapshot_denial_reason(owner_now, subagent_event_slot(parent), record)
+        if denial:
+            _audit_deny(auditee, "api_spawn_list", denial)
+            return False
+        return True
+
+    try:
+        persisted = await asyncio.to_thread(
+            read_panel_records,
+            keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+            max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+            exclude_ids=listed,
+            include_result=True,
+            admit=_admit,
+        )
+    except Exception:
+        logger.debug("Persisted spawn listing failed", exc_info=True)
+        persisted = PanelRecords([], 0, False)
+    for record in persisted.records:
+        parent = str(record["parent_session"])
+        agent_id = str(record["id"])
+        if scope is not None:
+            # The authoritative gate, on the loop, against state as it is NOW
+            # rather than as the snapshot found it. A record the snapshot
+            # admitted and this rejects had its slot reclaimed mid-scan. Same
+            # reused-slot-key exposure the replay guards, reached here through the
+            # parent session rather than a frame.
+            denial = persisted_replay_denial_reason(state, subagent_event_slot(parent), record)
+            if denial:
+                _audit_deny(auditee, "api_spawn_list", denial)
+                continue
+        # The GRANT is a permission decision too, and the one an operator needs to
+        # reconstruct who was handed a persisted run's text. Recording only the
+        # refusals leaves the admissions invisible, so a review of this stream can
+        # show what was blocked and never what was released.
+        _audit_allow(auditee, "api_spawn_list")
+        error = str(record["error"])
+        agents.append(
+            {
+                "id": agent_id,
+                "task": _redact(str(record["task"])),
+                "done": True,
+                "parent": parent,
+                "agent": _redact(str(record["agent"])),
+                "started": record["started"],
+                "result": _redact(str(record.get("result") or "")),
+                "error": _redact(error) if error else "",
+                # The tombstone records the run's own outcome, so a user stop
+                # stays a stop here rather than being flattened into a failure.
+                "stopped": bool(record.get("stopped")),
+                "outcome": record["outcome"],
+            }
+        )
+    payload: dict[str, object] = {"agents": agents}
+    if persisted.overflow or persisted.overflow_is_lower_bound:
+        # Said out loud once per listing, to the operator rather than the client:
+        # a listing of 50 of 51 eligible runs otherwise reads exactly like a
+        # listing of all 50 there were. The WARNING carries the count, and it is
+        # the whole report: a truncation refuses nobody, so it is not a permission
+        # decision and does not belong in the SEL deny stream beside the ownership
+        # refusals an operator has to be able to see there. No client reads a
+        # count it cannot act on, so it stays out of the payload too.
+        # A saturated scan window reports even at a count of zero, because that
+        # is the case where the count itself cannot see what was left out.
+        logger.warning(
+            "persisted spawn listing truncated: %s%d eligible run(s) past the %d cap%s",
+            "at least " if persisted.overflow_is_lower_bound else "",
+            persisted.overflow,
+            PERSISTED_SUBAGENT_REPLAY_KEEP,
+            (
+                " (scan window saturated, older admissible runs may be uninspected)"
+                if persisted.overflow_is_lower_bound
+                else ""
+            ),
+        )
+    return web.json_response(payload)
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:
@@ -1544,7 +1714,42 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
     manager = state.subagents
     info = manager.get(agent_id) if manager is not None else None
     if manager is None or info is None:
-        return web.json_response({"error": "not found"}, status=404)
+        # A card the durable replay rebuilt has no manager entry -- after a
+        # gateway restart that is every finished run -- so a flat 404 made those
+        # cards undismissable: the delete failed, the banner showed, and the next
+        # reconnect sent the card again. The dismissal is recorded against the
+        # folder instead, which is the same record the live path writes.
+        #
+        # Dashboard owner only. That is exactly as wide as what the owner can
+        # already see -- their sockets short-circuit visibility to every live slot
+        # -- so no caller gains reach over a run it could not list. An app token
+        # is refused rather than handed a route into another app's runs, and an
+        # absent claim means the request never passed the auth middleware.
+        request_app = request.get("app", "")
+        if "app" not in request or request_app:
+            _sel().log_api_access(
+                caller=request_app or "unknown",
+                operation="spawn.dismiss",
+                outcome="denied",
+                source="app_isolation",
+                resources="dashboard-only dismissal of a persisted run",
+                error="app tokens cannot dismiss persisted subagent runs",
+            )
+            return web.json_response(
+                {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+            )
+        if not await asyncio.to_thread(record_panel_dismissal, agent_id):
+            # No folder, so nothing durable can rebuild this card and there is no
+            # run here to speak of. Same answer as before for a truly unknown id.
+            return web.json_response({"error": "not found"}, status=404)
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.dismiss",
+            outcome="allowed",
+            source="subagent",
+            resources=f"persisted run {agent_id}",
+        )
+        return web.json_response({"ok": True, "cancelled": False, "dismissed": True})
     cancelled = await manager.cancel(agent_id)
     if not cancelled:
         deleted_owner = stage_boundary_owner_for_run(info)

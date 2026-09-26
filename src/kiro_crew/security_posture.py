@@ -1886,6 +1886,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/notification_coordinator.py",
         "dashboard/slot_projection.py",
         "dashboard/websocket_hub.py",
+        # Pre-redacts a persisted subagent record's retained text at the point it
+        # is READ, because that is also the point it is clamped to its field caps
+        # and the two have a required order: a value cut at the cap first loses
+        # the tail a credential pattern needs, so a downstream scanner cannot
+        # match the fragment that survives. The outbound bytes are still redacted
+        # at the registered sinks -- `dashboard/handlers/messaging.py` for the
+        # REST listing, and the WS replay's own pre-redaction into `state.py` --
+        # so this module hands records to consumers rather than writing to a
+        # human, and is not itself an egress boundary.
+        "subagent_persistence.py",
         # Pre-redacts follow-up items before handing to state.py's WS egress
         # (the registered sink); its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.

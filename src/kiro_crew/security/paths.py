@@ -529,6 +529,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Opened only by the gateway and by the
     # operator's own ``kirocrew agent create`` / ``delete``, never by an agent tool.
     "crew-teams",
+    # Subagent panel dismissals (``subagent_persistence.record_panel_dismissal``):
+    # one file per run whose finished card the operator dismissed, which the
+    # panel's durable reader consults to keep that card hidden. It decides what
+    # the OPERATOR sees, so the run it is about -- and any other sandboxed
+    # process -- must be able to neither forge one (hiding a run nobody
+    # dismissed) nor delete one (resurrecting a card the operator cleared).
+    # Whole directory (``atomic_write`` temp sibling); the OS-sandbox counterpart
+    # is ``sandbox._CREW_HIDDEN_LEAVES``. Deliberately NOT under ``trust/``,
+    # which stays sandbox read-write for SEL. Only the gateway opens it.
+    "panel-dismissals",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

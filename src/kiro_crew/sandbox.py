@@ -502,6 +502,21 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # is SKIPPED, which on a fresh install is exactly the disposition this entry
     # exists to deny.
     "crew-panels",
+    # Subagent panel dismissals (``subagent_persistence``): one file per run whose
+    # finished card the operator dismissed. Exactly the same shape as
+    # ``crew-panels`` and here for the same reason rather than under ``trust/``:
+    # the record is an OWNER decision about what the panel hides, so a sandboxed
+    # process that built the path at runtime must not be able to forge one (hiding
+    # a run nobody dismissed) or unlink one (resurrecting a cleared card), and
+    # ``trust`` stays sandbox read-write for SEL. Masking costs no live consumer:
+    # the gateway is the only writer (the dismiss route and the manager settle) and
+    # the only reader (the panel's durable rebuild).
+    #
+    # In ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, because the directory is created
+    # on the FIRST dismissal -- so on a fresh install the ``isdir`` guard would skip
+    # it and the mask would be vacuous for the life of that sandbox, which is
+    # precisely the disposition this entry exists to deny.
+    "panel-dismissals",
     # Crewmate teams (``crew_teams.py``): which crewmates are on which team. The
     # same shape as ``crew-panels`` and for the same reason it is not under
     # ``trust/``: a team is the OWNER's grouping, so the crewmates it groups must
@@ -1625,6 +1640,14 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # gateway later reads back as authoritative. Same failure the
     # ``panel-templates`` ceiling has, one list over.
     "crew-panels",
+    # Panel dismissals, by the same rule and with a sharper version of the same
+    # timing: this directory does not exist until the operator dismisses their
+    # first card, so on every fresh install the mask loop finds the name absent
+    # and skips it. A sandbox spawned in that window can then create the
+    # directory itself and forge dismissals the gateway reads back as the
+    # operator's, hiding runs from the panel. Materialising it empty gives the
+    # bind a target from first boot.
+    "panel-dismissals",
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that
@@ -1838,7 +1861,7 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #: MASKED leaves are a different population and refuse through
 #: :func:`_refuse_aliased_masked_leaves`; this set is what the sealing loop refuses.
 #:
-#: These two are not config files and nothing has a reason to link them:
+#: These three are not config files and nothing has a reason to link them:
 #:
 #: * ``crew-panels`` -- created on demand by the GATEWAY and read by nothing else.
 #:   It is bind-MASKED, so a link means the mask attaches to the target while the
@@ -1848,10 +1871,17 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
 #: * ``panel-templates`` -- holds the human-authored TEMPLATE whose separation from
 #:   crew-published DATA is the whole containment story. Replacing that directory is
 #:   authoring markup that renders in the panel, not changing a setting.
+#: * ``panel-dismissals`` -- created on demand by the GATEWAY and read by nothing
+#:   else, and the link hazard is identical to ``crew-panels``: the mask attaches to
+#:   the target while the link NAME stays writable in the data home, so a sandboxed
+#:   process unlinks it, drops its own directory, and forges dismissals the gateway
+#:   reads back as the operator's -- hiding finished runs from the panel.
 #:
 #: So for these, a link is refused: the disposition must attach to the same name the
 #: reader uses, and following a link is exactly the gap that voids it.
-_CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset({"crew-panels", "panel-templates"})
+_CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset(
+    {"crew-panels", "panel-dismissals", "panel-templates"}
+)
 
 #: Masked leaves where a SYMLINK is tolerated, and why. Every other entry in
 #: :data:`_CREW_HIDDEN_LEAVES` refuses one through :func:`_refuse_aliased_masked_leaves`,

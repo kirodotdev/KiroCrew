@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         logger,
         mark_delivered,
         sel,
+        settle_delivered_batch,
         time,
     )
 
@@ -400,7 +401,7 @@ class WaveDigestCoordinator(ManagerComponent):
                 "Digest hold flush announce failed for wave %s", info.batch_id, exc_info=True
             )
             return
-        self._manager._settle_digest_holds(info)
+        await self._manager._settle_digest_holds(info)
 
     async def settle_queued_delivery_impl(self, agent_ids: list[str]) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
@@ -444,7 +445,7 @@ class WaveDigestCoordinator(ManagerComponent):
                     "Failed to mark drained subagent %s delivered", agent_id, exc_info=True
                 )
 
-    def _settle_digest_holds_impl(self, info: SubagentInfo) -> None:
+    async def _settle_digest_holds_impl(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
         without raising — and it is a real settle only for the routes where
@@ -458,14 +459,27 @@ class WaveDigestCoordinator(ManagerComponent):
 
         The ids are taken off ``info`` BEFORE settling, so a re-entry cannot
         write a second tombstone and a route that detached them first leaves
-        this a no-op.
+        this a no-op. That detachment is irrevocable, which is what decides the
+        shape below: the whole batch is handed to ONE worker operation rather
+        than awaited per id. A per-id await is a cancellation point, and
+        ``CancelledError`` is not an ``Exception``, so a shutdown or a dashboard
+        cancel landing mid-batch would discard the remaining ids with nothing
+        left holding them -- and a ``delivered`` tombstone is the marker that
+        EXCLUDES a folder from restart reconciliation, so each unwritten one
+        replays as a duplicate completion. Handed over as a unit, the worker
+        finishes every write whether or not the waiter is still waiting.
 
         A failing tombstone write is logged and skipped, never raised: one
         unwritable run folder must not strand the rest of the chunk.
         """
         ids, info._digest_settle_ids = info._digest_settle_ids, []
-        for _hid in ids:
-            try:
-                mark_delivered(_hid)
-            except Exception:
-                logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
+        if not ids:
+            return
+        try:
+            # Off the loop: the tombstone write reads the existing file to
+            # preserve a recorded terminal outcome, and both callers of this
+            # settlement are coroutines. The id swap above precedes the single
+            # await, so the re-entry guard still holds across the suspension.
+            await asyncio.to_thread(settle_delivered_batch, tuple(ids), writer=mark_delivered)
+        except Exception:
+            logger.debug("Failed to settle held subagents %s", ids, exc_info=True)
