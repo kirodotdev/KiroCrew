@@ -415,7 +415,7 @@ describe('settings coverage gate — Chat rail pages', () => {
   it('leaves panels without a rail untouched', () => {
     const { entries } = extractFromSource(
       `case 'x': return <SettingsToggle label="Mode" checked={x} onChange={f} />`,
-      'website/src/pages/settings/DisplayPanel.tsx',
+      'website/src/pages/settings/BrowserPanel.tsx',
     )
     expect(entries[0].params).toBeUndefined()
   })

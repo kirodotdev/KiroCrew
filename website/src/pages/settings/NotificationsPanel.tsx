@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, MonitorCog, Blocks, Check } from 'lucide-react'
+import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
+import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -284,7 +285,7 @@ function SystemNotificationsRow() {
   )
 }
 
-export function NotificationsPanel() {
+export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
@@ -349,15 +350,28 @@ export function NotificationsPanel() {
 
   const fallback = settings.perCategory.all ?? 'chime'
 
+  const railItems: SubNavItem[] = [
+    { key: 'sources', label: i18nT('pages.settings.notificationsPanel.sources'), icon: <RadioTower size={16} /> },
+    { key: 'alerts', label: i18nT('pages.settings.notificationsPanel.desktop_alerts'), icon: <Bell size={16} /> },
+    { key: 'sound', label: i18nT('pages.settings.notificationsPanel.sound'), icon: <Volume2 size={16} /> },
+    { key: 'percategory', label: i18nT('pages.settings.notificationsPanel.per_category_sounds'), icon: <ListMusic size={16} /> },
+  ]
+
   return (
-    <>
-      {/* ChannelsSection resolves its sources from a fetch, so its cards mount
-          in a later commit than the two static cards below: each group runs its
-          own stagger ladder from its own mount paint. Continuing one ladder
-          across the boundary would be wrong in the common case — delays are
-          relative to element mount, so the static cards would wait
-          sources.length steps on nothing while the fetch is still in flight. */}
-      <ChannelsSection />
+    <SettingsSubNav
+      items={railItems}
+      basePath={basePath}
+      railWidth={220}
+      listLabel={i18nT('settings.tabs.notifications.label')}
+    >
+      {active => {
+        switch (active) {
+
+        case 'sources':
+          return <ChannelsSection />
+
+        case 'alerts':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
           <SystemNotificationsRow />
@@ -381,7 +395,10 @@ export function NotificationsPanel() {
           />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'sound':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
         <SettingsCard index={1}>
           <SettingsToggle
@@ -429,7 +446,10 @@ export function NotificationsPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'percategory':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
         <SettingsCard index={2}>
           {CATEGORY_ROWS.map(cat => {
@@ -481,6 +501,12 @@ export function NotificationsPanel() {
           })}
         </SettingsCard>
       </SettingsSection>
-    </>
+          )
+
+        default:
+          return null
+        }
+      }}
+    </SettingsSubNav>
   )
 }

@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -7,6 +7,7 @@ import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
 import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox, SettingsToggle } from '../../components/settings'
+import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
@@ -70,7 +71,7 @@ function StatusIndicator({ label }: { label: string }) {
   )
 }
 
-export function DisplayPanel() {
+export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
@@ -408,8 +409,26 @@ export function DisplayPanel() {
     }
   }
 
+  const railItems: SubNavItem[] = [
+    { key: 'view', label: i18nT('pages.settings.displayPanel.view'), icon: <Eye size={16} /> },
+    { key: 'zoom', label: i18nT('pages.settings.displayPanel.zoom_font'), icon: <Type size={16} /> },
+    { key: 'terminal', label: i18nT('pages.settings.displayPanel.terminal'), icon: <SquareTerminal size={16} /> },
+    { key: 'theme', label: i18nT('pages.settings.displayPanel.theme'), icon: <Palette size={16} /> },
+    { key: 'sidebar', label: i18nT('pages.settings.displayPanel.sidebar_colors'), icon: <PanelLeft size={16} /> },
+  ]
+
   return (
-    <>
+    <SettingsSubNav
+      items={railItems}
+      basePath={basePath}
+      railWidth={220}
+      listLabel={i18nT('settings.tabs.display.label')}
+    >
+      {active => {
+        switch (active) {
+
+        case 'view':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
@@ -451,7 +470,10 @@ export function DisplayPanel() {
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'zoom':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
         <SettingsCard index={1}>
           {zoomSupported ? (
@@ -521,7 +543,10 @@ export function DisplayPanel() {
           )}
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'terminal':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.terminal')}>
         <SettingsCard index={2}>
           {/* Detected families, not free text alone: the fonts that matter are the
@@ -619,7 +644,11 @@ export function DisplayPanel() {
           />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'theme':
+          return (
+      <>
       <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
         <SettingsCard index={3}>
           <div className="flex items-center gap-2">
@@ -783,8 +812,11 @@ export function DisplayPanel() {
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
+      </>
+          )
 
-      {/* Sidebar Colors */}
+        case 'sidebar':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
         <SettingsCard index={4}>
           <SettingsButtonGroup
@@ -835,6 +867,12 @@ export function DisplayPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
-    </>
+          )
+
+        default:
+          return null
+        }
+      }}
+    </SettingsSubNav>
   )
 }
