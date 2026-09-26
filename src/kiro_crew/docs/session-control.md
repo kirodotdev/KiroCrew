@@ -44,6 +44,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | `title` | no | Short sidebar name. Say what the session is FOR |
 | `agent` | no (but always pass it) | Agent to bind the session to |
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`) |
+| `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omit for the agent's or global default |
 
 No argument is formally required. The new session **starts empty** — nothing runs
 in it until the person types, or until you send it a message. The reply carries

@@ -460,6 +460,19 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "`parent`. Omit to leave the session at the top level."
                         ),
                     },
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "Model the new session starts on, pinned exactly as if the "
+                            "person had picked it in the session's model dropdown: an id "
+                            "from that same list, or 'auto'. Omit to use the agent's or "
+                            "the global default. A well-formed id the account cannot serve "
+                            "is accepted here but withheld at the session's first turn: "
+                            "the turn succeeds on the account's default model, and the only "
+                            "signal is a notice in that session's transcript. The person "
+                            "can still change it later."
+                        ),
+                    },
                 },
                 "required": [],
             },
@@ -1641,6 +1654,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return fld_err
         if fld_id:
             payload["folder_id"] = fld_id
+        if args.get("model"):
+            payload["model"] = args["model"]
         resp = _post(
             "/api/session-control/create",
             payload,
@@ -1649,8 +1664,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if resp.get("error"):
             return redact(f"Error: could not create a session: {resp['error']}{made_note}")
         filed = f" filed in `{folder_label}`" if folder_label else ""
+        on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
         return redact(
-            f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}.{made_note} "
+            f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
             "It is empty and waiting in the user's sidebar; watch it with "
             "session_read_message."
         )

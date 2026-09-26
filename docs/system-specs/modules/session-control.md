@@ -217,6 +217,12 @@ loses nothing — existence is confirmed read-only under the folder-store lock
 only after the filing has landed, so a refused create leaves no folder-tree
 mutation behind.
 
+`session_create` also takes an optional `model` — the model the child starts
+on, pinned as the person's own pick in the model dropdown would be (same
+`_model_rejected_reason` guard, same pick-generation bump). An id the guard
+refuses fails the whole create with `model_rejected`; omitted, the child starts
+on the agent's or the global default.
+
 ### `session_fork`: a created child that carries a transcript
 
 `session_create` opens an empty session, and the case it cannot serve is the
@@ -360,10 +366,11 @@ create already in flight. Revoking mid-call yields an untrusted child.
 
 Nothing about trust is persisted at birth. The birth metadata carries
 `tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
-`memory_mode`, and `folder_id` / `created_by` when set — no trust field — so a
+`memory_mode`, and `folder_id` / `created_by` / `model` when set — no trust field — so a
 restart returns the child to interactive along with its creator.
 
-The create's SEL record carries `agent`, `folder_id`, and what the child was
+The create's SEL record carries `agent`, `folder_id`, `model` (empty when none
+was asked for), and what the child was
 born with: `inherited_trust` and `inherited_trust_reads`, present on both
 outcomes so `"false"` is positive evidence the posture did not transfer. That is
 what makes an auto-approved tool call in a dispatched session traceable to the

@@ -1663,6 +1663,36 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         get.assert_not_called()
 
 
+class TestSessionCreateModel:
+    """`session_create.model` — the model id reaches the create route verbatim."""
+
+    def test_model_rides_the_create_payload(self) -> None:
+        created = {"target": "chat-9-900", "title": "worker", "model": "claude-sonnet-4.6"}
+        with patch("kiro_crew.mcp_dashboard._post", return_value=created) as post:
+            out = _call_tool_inner(
+                "session_create", {"title": "worker", "model": "claude-sonnet-4.6"}
+            )
+        path, body = post.call_args.args
+        assert path == "/api/session-control/create"
+        assert body["model"] == "claude-sonnet-4.6"
+        assert "claude-sonnet-4.6" in out
+
+    def test_omitted_model_sends_no_key(self) -> None:
+        with patch(
+            "kiro_crew.mcp_dashboard._post", return_value={"target": "chat-9-900", "title": "w"}
+        ) as post:
+            _call_tool_inner("session_create", {"title": "w"})
+        assert "model" not in post.call_args.args[1]
+
+    def test_a_malformed_model_is_refused_before_any_call(self) -> None:
+        from kiro_crew.validation import ValidationError
+
+        with patch("kiro_crew.mcp_dashboard._post") as post:
+            with pytest.raises(ValidationError, match="model"):
+                _call_tool_inner("session_create", {"title": "w", "model": "x; rm -rf"})
+        assert post.call_count == 0
+
+
 class TestSessionCreateFolder:
     """`session_create.folder` — filing atomic with creation.
 

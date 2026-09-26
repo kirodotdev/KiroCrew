@@ -63,6 +63,7 @@ from kiro_crew.dashboard.chat_fork import (
 )
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import (
+    _normalize_model,
     drained_to_thread,
     effective_session_key,
     slot_history_key,
@@ -90,7 +91,12 @@ from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, ChannelLink, parse_sessio
 from kiro_crew.messaging.transport import DM_TARGET_PREFIX, sole_direct_target
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
-from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_LONG_STRING
+from kiro_crew.validation import (
+    _MODEL_NAME_RE,
+    MAX_ACP_SESSION_ID_LEN,
+    MAX_LONG_STRING,
+    MAX_SHORT_STRING,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -1623,6 +1629,7 @@ async def create_session(
     title: str = "",
     agent: str = "",
     folder_id: str = "",
+    model: str = "",
     caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
@@ -1661,6 +1668,13 @@ async def create_session(
     every caller class the move path's app-ownership rule exists to stop is
     already refused above it -- an app-scoped caller cannot create a session at
     all (`app_scoped_caller`).
+
+    ``model`` pins the model the child starts on, as the person's own pick in the
+    model dropdown would: same rejection guard, same pick-generation bump, and
+    recorded in the persist-at-birth metadata so an idle child keeps it across a
+    restart. Empty leaves the slot on the agent's or the global default, exactly
+    as before. It is not a privilege the caller lacks -- ``spawn_run`` already
+    takes a per-run ``model`` -- and it moves no memory boundary.
 
     ``caller_fenced`` is the ownership-fence verdict the HTTP gate already settled
     on the caller's VERIFIED scope, carried in for the same reason
@@ -1830,6 +1844,38 @@ async def create_session(
             f"{agent_name!r} does not resolve to a configured agent",
             code="agent_unresolved",
         )
+
+    # The model the child starts on. Checked by the SAME guard the dashboard's
+    # model picker runs (`_model_rejected_reason`), against the provider from the
+    # config snapshot already loaded off the loop, so an id the picker would refuse
+    # is refused here too -- before anything is allocated, where refusing loses
+    # nothing. Length and charset are bounded HERE, not left to the MCP schema:
+    # SESSION_CREATE_SCHEMA runs only in mcp_dashboard, and the HTTP route
+    # forwards the body's model string as-is, so without this bound an
+    # internal-secret caller could persist, broadcast and audit-log an
+    # arbitrarily long or arbitrarily shaped value.
+    model_name = _normalize_model(model.strip())
+    if model_name:
+        if len(model_name) > MAX_SHORT_STRING or not _MODEL_NAME_RE.fullmatch(model_name):
+            raise SessionControlError(
+                "model id is too long or contains characters outside the model-id charset",
+                code="model_rejected",
+            )
+
+        # Never persist or broadcast a value the security scrubber classifies.
+        if redact(model_name) != model_name:
+            raise SessionControlError(
+                "model id looks like a credential and was refused",
+                code="model_rejected",
+            )
+
+        # circular import: chat_handlers imports session_control lazily, and this
+        # module is imported by the dashboard package before chat_handlers loads.
+        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+        model_reason = _model_rejected_reason(model_name, provider=cfg.agent.provider or "")
+        if model_reason:
+            raise SessionControlError(model_reason, code="model_rejected")
 
     # Capture the child route once. Inherited member/store identity survives
     # renamed aliases or changed config; an explicit member selection is resolved
@@ -2253,6 +2299,14 @@ async def create_session(
             # (`is_new` in chat_runner), so the [FOLDER] line reaches the model
             # without it.
             slot.folder_id = folder_id
+        if model_name:
+            # Pinned the way a person's pick in the model dropdown pins it: the
+            # slot has no provider session yet, so there is nothing to switch --
+            # the first turn starts on this model. The pick-generation bump marks
+            # it as an explicit choice, so the fallback restore probe treats it
+            # exactly as it treats a human pick rather than as a backfilled value.
+            slot.model = model_name
+            slot._model_pick_gen += 1
         if title.strip():
             slot.title = sanitize_outbound(title.strip())[:200]
             slot._titled = True
@@ -2325,6 +2379,11 @@ async def create_session(
                     # the filing would not survive a restart: for an idle newborn
                     # THIS dict is the only record of the placement on disk.
                     **({"folder_id": slot.folder_id} if slot.folder_id else {}),
+                    # The pinned model, only when one was asked for -- the normal
+                    # save path writes `model` too, but for an idle newborn this
+                    # dict is the only record, and without it a restart would
+                    # bring the session back on the default model.
+                    **({"model": slot.model} if model_name else {}),
                     # Creator attribution, only when this entry point set it. The
                     # member ownership boundary in `authorize_target` reads it, so
                     # losing it on restart would strand every worker a member
@@ -2407,6 +2466,7 @@ async def create_session(
         detail={
             "agent": slot.agent or "",
             "folder_id": slot.folder_id or "",
+            "model": model_name,
             # What the child was BORN with, so an auto-approved tool call in it is
             # traceable to the creator's grant rather than appearing unexplained.
             # Always present: "false" is the record that the grant did not transfer.
@@ -2418,6 +2478,7 @@ async def create_session(
         "ok": True,
         "target": slot.key,
         "title": slot.title or slot.key,
+        **({"model": model_name} if model_name else {}),
     }
 
 

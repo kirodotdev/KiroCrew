@@ -30,6 +30,7 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.validation import MAX_SHORT_STRING
 
 # The autouse fixture below replaces ``sc.session_control_enabled`` so every
 # other test runs in the shipped (enabled) state without reading config. Keep a
@@ -852,6 +853,39 @@ class TestTheRoutesRequireTheInternalSecret:
         created = state.get_slot(payload["target"])
         assert created is not None, "the route reported a target it did not create"
         assert created.title == "worker"
+
+    def test_create_route_forwards_the_model(self, tmp_path):
+        """A route dropping model pins nothing while handler tests stay green."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/create")
+
+        async def _json():
+            return {"title": "worker", "model": "claude-sonnet-4.6"}
+
+        req.json = _json
+        resp = asyncio.run(handlers_sc.api_session_control_create(req))
+
+        assert resp.status == 200
+        payload = self._body(resp)
+        assert payload["model"] == "claude-sonnet-4.6"
+        created = req.app["state"].get_slot(payload["target"])
+        assert created is not None
+        assert created.model == "claude-sonnet-4.6"
+
+    def test_create_route_refuses_a_bad_charset_model(self, tmp_path):
+        """The route runs no schema, so create's own model bound must surface as a refusal."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/create")
+        before = req.app["state"].live_slot_count()
+
+        async def _json():
+            return {"title": "worker", "model": "bad id"}
+
+        req.json = _json
+        resp = asyncio.run(handlers_sc.api_session_control_create(req))
+
+        assert resp.status != 200
+        assert resp.status < 500, "a refusal must not render as a server error"
+        assert self._body(resp)["code"] == "model_rejected"
+        assert req.app["state"].live_slot_count() == before
 
     def test_create_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
         """A SessionControlError from create must come back as its own refusal."""
@@ -3517,6 +3551,103 @@ def test_create_refuses_an_unknown_folder(tmp_path):
         )
 
     assert exc.value.code == "folder_not_found"
+    assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
+
+
+def test_create_pins_the_requested_model_at_birth(tmp_path):
+    """A named model is pinned on the slot AND rides the birth metadata.
+
+    Same disk argument as the folder: an idle newborn's birth line is its only
+    durable record, so a model set only in memory would come back as the default
+    after a restart. The pick-generation bump is what makes it an explicit
+    choice the fallback restore probe will not override.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), model="claude-sonnet-4.6")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.model == "claude-sonnet-4.6"
+    assert child._model_pick_gen == 1
+    assert created["model"] == "claude-sonnet-4.6"
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert written.get("model") == "claude-sonnet-4.6"
+
+
+def test_create_without_a_model_leaves_the_default(tmp_path):
+    """Omitting `model` changes nothing: no pin, no metadata key, no pick bump."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.model == ""
+    assert child._model_pick_gen == 0
+    assert "model" not in created
+    assert "model" not in state.conversation_log.get_metadata(slot_history_key(child))
+
+
+def test_create_refuses_a_model_the_picker_refuses(tmp_path, monkeypatch):
+    """The picker's own guard decides, and a refusal allocates nothing."""
+    import kiro_crew.dashboard.chat_handlers as ch
+
+    monkeypatch.setattr(
+        ch, "_model_rejected_reason", lambda name, provider=None: f"{name} is display-only"
+    )
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), model="fable-5-1m"))
+
+    assert exc.value.code == "model_rejected"
+    assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
+
+
+def test_create_refuses_a_credential_shaped_model(tmp_path):
+    credential_shaped_id = "AKIA" + "Q" * 16
+    assert sc.redact(credential_shaped_id) != credential_shaped_id
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(
+                state,
+                caller_session_key=_key(caller),
+                model=credential_shaped_id,
+            )
+        )
+
+    assert exc.value.code == "model_rejected"
+    assert credential_shaped_id not in exc.value.message
+    assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
+
+
+@pytest.mark.parametrize(
+    "bad_model",
+    ["x y", "a" * (MAX_SHORT_STRING + 1)],
+    ids=["bad-charset", "over-length"],
+)
+def test_create_refuses_an_unbounded_or_bad_charset_model(tmp_path, bad_model):
+    """The HTTP route does not run SESSION_CREATE_SCHEMA, so create bounds model itself."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    before = state.live_slot_count()
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), model=bad_model))
+
+    assert exc.value.code == "model_rejected"
+    assert bad_model not in exc.value.message
     assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
 
 

@@ -248,6 +248,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             title=str(body.get("title") or ""),
             agent=str(body.get("agent") or ""),
             folder_id=str(body.get("folder_id") or ""),
+            model=str(body.get("model") or ""),
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as
             # `precomputed_ownership_fenced`: `create_session` consults it after
