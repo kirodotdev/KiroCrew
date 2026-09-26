@@ -664,7 +664,10 @@ function createOverlayForDisplay(display) {
     },
   });
 
-  win.setFocusable(false);
+  // Not on Windows: there a non-activatable window has every mouse button-down
+  // eaten by Chromium's WM_MOUSEACTIVATE handler (MA_NOACTIVATEANDEAT), so the pet
+  // could never be clicked or dragged. acceptFirstMouse is the macOS-only analogue.
+  if (process.platform !== "win32") win.setFocusable(false);
   win.setIgnoreMouseEvents(true, { forward: true });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows

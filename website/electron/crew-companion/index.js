@@ -35,6 +35,7 @@ const {
 } = require("./galleryWindow");
 const {
   broadcastToPets,
+  overlayMayBeNonActivatable,
   openPetWindow,
   closePetWindow,
   petWindowCount,
@@ -398,7 +399,15 @@ function initCrewCompanion(deps) {
   ipcMain.on("crew-companion:focusable", (event, focusable) => {
     const win = event.sender && require("electron").BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
-    win.setFocusable(Boolean(focusable));
+    if (overlayMayBeNonActivatable()) {
+      win.setFocusable(Boolean(focusable));
+    } else if (!focusable) {
+      // Windows keeps the overlay activatable (see overlayMayBeNonActivatable), so
+      // hand focus back the way setFocusable(false) would have. setFocusable is not
+      // called at all there: it also flips skipTaskbar, putting the overlay in the
+      // taskbar.
+      win.blur();
+    }
     // setFocusable alone does not move focus; without this the panel opens focusable
     // but still unfocused, so the first keystroke goes to the previous app.
     if (focusable) win.focus();
