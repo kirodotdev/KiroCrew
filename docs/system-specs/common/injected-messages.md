@@ -246,8 +246,9 @@ permission request. Holding the unanswered request is what makes that race-free:
 the turn is provably in flight, so the notice is queued and folded in at the next
 model-inference boundary — the one right after the rejected tool resolves — and
 the model adapts inside the SAME turn. It is opt-in by positive capability
-(`supports_steer`, i.e. `ACP_BACKENDS_STEER`), so a harness without mid-turn
-steer is unchanged.
+(`supports_refusal_steer`, i.e. `ACP_BACKENDS_STEER`), so a harness without mid-turn
+steer is unchanged, and so is codex: its user steer rides `_session/steering`, but its
+approval answer cancels the turn and drops what was injected into it.
 
 `should_queue_refusal_recovery` then suppresses the extra turn only when every
 refusal got a notice AND a `steering_consumed` echo accounted for all of them. An

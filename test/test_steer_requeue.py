@@ -1948,3 +1948,234 @@ class TestRequeuedSteerKeepsItsDecisionReceipt:
 
         await steer_into_running_turn(state, slot, self._TEXT)
         assert "decisions_strip" not in slot._queue[0]["meta"]
+
+
+class TestSteerLostToDenial:
+    """A steer codex consumed and then dropped on a denied approval is requeued."""
+
+    def test_a_lost_steer_is_requeued_with_its_attachments(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_runner import (
+            _requeue_unconsumed_steers,
+            _restore_lost_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        slot._pending_steers = ["use the other file", "and keep going"]
+        slot._steer_attachment_meta["use the other file"] = {"images": ["a.png"]}
+        echo = "<user_message>\nuse the other file\n</user_message>"
+
+        _settle_consumed_steers(slot, echo, state)
+        assert slot._pending_steers == ["and keep going"]
+        assert "use the other file" not in slot._steer_attachment_meta
+
+        _restore_lost_steers(slot, echo)
+        assert slot._pending_steers == ["and keep going", "use the other file"]
+        assert slot._steer_attachment_meta["use the other file"] == {"images": ["a.png"]}
+        _restore_lost_steers(slot, echo)  # a second report restores nothing
+        assert slot._pending_steers.count("use the other file") == 1
+
+        _requeue_unconsumed_steers(state, slot)
+        contents = [item["content"] for item in slot._queue]
+        assert contents == ["and keep going", "use the other file"]
+        assert slot._steers_settled_this_turn == []
+
+    def test_an_empty_or_unmatched_lost_echo_restores_nothing(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_runner import _restore_lost_steers, _settle_consumed_steers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        slot._pending_steers = ["one"]
+        _settle_consumed_steers(slot, "<user_message>\none\n</user_message>", state)
+        _restore_lost_steers(slot, "")
+        _restore_lost_steers(slot, "<user_message>\nother\n</user_message>")
+        assert slot._pending_steers == []
+
+    def test_the_teardown_forgets_the_turns_settles(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_runner import (
+            _requeue_unconsumed_steers,
+            _restore_lost_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        slot._pending_steers = ["one"]
+        echo = "<user_message>\none\n</user_message>"
+        _settle_consumed_steers(slot, echo, state)
+        _requeue_unconsumed_steers(state, slot)
+        # A later turn's lost report cannot resurrect an earlier turn's steer.
+        _restore_lost_steers(slot, echo)
+        assert slot._pending_steers == []
+
+    def test_a_lost_steer_keeps_its_admission_and_origin(self, tmp_path, monkeypatch):
+        """The requeue re-admits a steer through its containment snapshot and user
+        origin; both are popped once the steer is reported delivered, so the
+        restore must carry them back or the drain drops a linked-session steer."""
+        from kiro_crew.dashboard.chat_delivery import remember_settled_steer
+        from kiro_crew.dashboard.chat_runner import (
+            _requeue_unconsumed_steers,
+            _restore_lost_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        slot._pending_steers = ["fix it"]
+        slot._steer_admissions["fix it"] = {"linked": False}
+        slot._steer_user_origin["fix it"] = True
+        echo = "<user_message>\nfix it\n</user_message>"
+
+        _settle_consumed_steers(slot, echo, state)
+        # What steer_into_running_turn does once the steer reports delivered.
+        remember_settled_steer(slot, "fix it")
+        slot._steer_admissions.pop("fix it")
+        slot._steer_user_origin.pop("fix it")
+
+        _restore_lost_steers(slot, echo)
+        assert slot._steer_admissions["fix it"] == {"linked": False}
+        assert slot._steer_user_origin["fix it"] is True
+        _requeue_unconsumed_steers(state, slot)
+        (entry,) = list(slot._queue)
+        assert entry["content"] == "fix it"
+        assert "fix it" not in slot._steer_admissions  # moved onto the entry
+
+    def test_the_teardown_collects_lost_steers_the_stream_never_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """A runtime that dies after the denial never yields EVENT_STEER_LOST;
+        the teardown reads the client's held report instead."""
+        from kiro_crew.dashboard.chat_runner import (
+            _collect_lost_steers,
+            _requeue_unconsumed_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        slot._pending_steers = ["fix it"]
+        echo = "<user_message>\nfix it\n</user_message>"
+        _settle_consumed_steers(slot, echo, state)
+
+        client = MagicMock()
+        client.take_lost_steers = MagicMock(return_value=[echo])
+        _collect_lost_steers(slot, client)
+        _requeue_unconsumed_steers(state, slot)
+        assert [i["content"] for i in slot._queue] == ["fix it"]
+
+    def test_collecting_from_a_client_without_the_report_is_a_no_op(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_runner import _collect_lost_steers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=True)
+        _collect_lost_steers(slot, None)
+        _collect_lost_steers(slot, MagicMock())  # returns a mock, not a list
+        boom = MagicMock()
+        boom.take_lost_steers = MagicMock(side_effect=RuntimeError("dead"))
+        _collect_lost_steers(slot, boom)
+        assert slot._pending_steers == []
+
+    def test_a_session_that_cannot_lose_a_steer_keeps_no_log(self, tmp_path, monkeypatch):
+        """kiro-cli never reports a steer lost, so its settles are not kept."""
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = MagicMock(steer_needs_loss_recovery=False)
+        slot._pending_steers = ["one"]
+        _settle_consumed_steers(slot, "<user_message>\none\n</user_message>", state)
+        assert slot._steers_settled_this_turn == []
+
+    @pytest.mark.asyncio
+    async def test_a_lost_steer_row_stops_claiming_the_turn_read_it(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The full dashboard path: consumed during the RPC, then lost, then requeued.
+
+        The settle promotes the row to `consumed`; the loss must move it to
+        `requeued`, since the teardown's own correction only looks for `written`.
+        """
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+        from kiro_crew.dashboard.chat_runner import (
+            _requeue_unconsumed_steers,
+            _restore_lost_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        echo = "<user_message>\ngo north\n</user_message>"
+
+        async def _consume_during_rpc(_msg):
+            _settle_consumed_steers(slot, echo, state)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer_needs_loss_recovery = True
+        client_mock.steer = AsyncMock(side_effect=_consume_during_rpc)
+        slot._acp_client = client_mock
+
+        assert await steer_into_running_turn(state, slot, "go north") == STEER_STEERED
+        row = next(m for m in slot.messages if m.get("meta", {}).get("steer"))
+        assert row["meta"]["steerState"] == "consumed"
+
+        _restore_lost_steers(slot, echo, state)
+        row = next(m for m in slot.messages if m["ts"] == row["ts"])
+        assert row["meta"]["steerState"] == "requeued"
+        _requeue_unconsumed_steers(state, slot)
+        assert [i["content"] for i in slot._queue] == ["go north"]
+
+    @pytest.mark.asyncio
+    async def test_two_identical_lost_steers_both_stop_claiming_the_turn_read_them(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The second restore must not see the first restored copy as a rival."""
+        from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+        from kiro_crew.dashboard.chat_runner import (
+            _restore_lost_steers,
+            _settle_consumed_steers,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        echo = "<user_message>\ngo north\n</user_message>"
+
+        async def _consume_during_rpc(_msg):
+            _settle_consumed_steers(slot, echo, state)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer_needs_loss_recovery = True
+        client_mock.steer = AsyncMock(side_effect=_consume_during_rpc)
+        slot._acp_client = client_mock
+
+        assert await steer_into_running_turn(state, slot, "go north") == STEER_STEERED
+        assert await steer_into_running_turn(state, slot, "go north") == STEER_STEERED
+        _restore_lost_steers(slot, echo, state)
+        _restore_lost_steers(slot, echo, state)
+        rows = [m for m in slot.messages if m.get("meta", {}).get("steer")]
+        assert [r["meta"]["steerState"] for r in rows] == ["requeued", "requeued"]
+        assert slot._pending_steers == ["go north", "go north"]

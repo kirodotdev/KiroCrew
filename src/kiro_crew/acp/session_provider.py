@@ -412,8 +412,23 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def supports_steer(self) -> bool:
-        """True when the backing handle supports mid-turn steer (kiro-cli)."""
+        """True when the backing handle takes a user's mid-turn steer."""
         return self._handle.supports_steer
+
+    @property
+    def steer_needs_loss_recovery(self) -> bool:
+        """True when a delivered steer can still be lost (see the handle)."""
+        return self._handle.steer_needs_loss_recovery is True
+
+    def take_lost_steers(self) -> list[str]:
+        """Echo text of steers a denied approval discarded, each returned once."""
+        lost = self._handle.take_lost_steers()
+        return list(lost) if isinstance(lost, list) else []
+
+    @property
+    def supports_refusal_steer(self) -> bool:
+        """True when the backing handle can steer a deny notice into a refused turn."""
+        return self._handle.supports_refusal_steer
 
     async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
         """Execute a slash command natively via ``_kiro.dev/commands/execute``.

@@ -499,6 +499,8 @@ class _SteerRecordingProvider(_ScriptedProvider):
     def __init__(self, events, *, supports_steer=True, steer_exc=None):
         super().__init__(events)
         self.supports_steer = supports_steer
+        # The deny paths read the refusal answer; a steer-capable double has both.
+        self.supports_refusal_steer = supports_steer
         self.calls: list[tuple[str, str]] = []
         self._steer_exc = steer_exc
 

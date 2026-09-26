@@ -1846,6 +1846,22 @@ class TestSteerRun:
         shared.steer.assert_awaited_once_with("adjust")
 
     @pytest.mark.asyncio
+    async def test_a_session_that_can_lose_a_delivered_steer_is_refused(self) -> None:
+        """codex can drop a steer it reported delivered; a subagent run cannot
+        requeue it, so the steer is refused and the parent is told to follow up."""
+        manager = _manager()
+        shared = AsyncMock()
+        shared.steer = AsyncMock(return_value=True)
+        shared.steer_needs_loss_recovery = True
+        info = SubagentInfo(id="a1", task="t")
+        info._session_sharing = True
+        info._shared_provider = shared
+        manager._agents["a1"] = info
+        ok, detail = await manager.steer_run("a1", "adjust")
+        assert not ok and detail.startswith("steer_unsupported") and "follow_up" in detail
+        shared.steer.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_session_reachable(self) -> None:
         """A live run with no reachable session now gets the startup
         grace, then the typed ``session_starting`` refusal (retryable) —

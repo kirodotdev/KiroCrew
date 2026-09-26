@@ -107,6 +107,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -117,6 +118,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_LOST,
     EVENT_STEER_QUEUED,
     EVENT_STRUCTURED_STATUS,
     EVENT_SUBAGENT_ACTIVITY,
@@ -126,6 +128,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    MAX_STEERING_ANSWERS,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
     METHOD_PROMPT,
@@ -505,6 +508,34 @@ def _watchdog_evidence_class(evidence: str) -> str:
 # AcpClient's _CANCEL_GRACE_SECS floor without the process-kill (which is
 # impossible on a multiplexed runtime).
 _CANCEL_GRACE_SECS = 10.0
+# codex-acp's ``_session/steering`` request (``ACP_BACKENDS_STEERING_REQUEST``) and
+# the two outcomes that decide delivery.
+METHOD_SESSION_STEERING = "_session/steering"
+STEERING_INJECTED = "injected"
+STEERING_STARTED_NEW_TURN = "startedNewTurn"
+# Bounds on what a session holds for codex steers: at most ``MAX_STEERING_ANSWERS``
+# (see ``acp.types``) at once, each at most this long. A steer past either bound
+# takes the caller's queue path instead, which has its own limits.
+_MAX_STEERING_ANSWERS = MAX_STEERING_ANSWERS
+# How long a new prompt waits for codex steering answers still owed from the
+# previous turn, so an adapter-owned turn one of them started is cancelled before
+# our prompt goes out (``_settle_abandoned_steering``).
+_STEERING_SETTLE_SECS = 5.0
+_MAX_STEERING_TEXT_CHARS = 64_000
+
+
+def _steering_outcome(result: object) -> str:
+    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
+
+    The answer is adapter-authored JSON: a result that is not an object is read as
+    no outcome (undelivered) rather than trusted to have ``.get``.
+    """
+    if not isinstance(result, dict):
+        return ""
+    outcome = result.get("outcome")
+    return outcome if isinstance(outcome, str) else ""
+
+
 # Commands that must stay on the PROMPT transport even where native
 # commands/execute is available: kiro-cli 2.14.0 exits rc=0 WITHOUT a response
 # on commands/execute for these (live-probe recorded in compact()'s docstring;
@@ -838,6 +869,15 @@ class AcpRuntimeProtocol(Protocol):
 
     async def send_notification(self, method: str, params: dict[str, Any]) -> None: ...
 
+    async def send_request_for_answer(
+        self,
+        method: str,
+        params: dict[str, Any],
+        on_registered: "Callable[[asyncio.Future[dict[str, Any]]], None] | None" = None,
+    ) -> "asyncio.Future[dict[str, Any]]": ...
+
+    def forget_request(self, future: "asyncio.Future[dict[str, Any]]") -> None: ...
+
     async def send_response(self, request_id: str | int, result: dict[str, Any]) -> None: ...
 
     async def send_error(self, request_id: str | int, code: int, message: str) -> None: ...
@@ -897,6 +937,31 @@ class AcpSessionHandle:
         # Strong references to in-flight hook executions: the loop holds only a
         # weak one, and a collected task would leave its request unanswered.
         self._hook_tasks: set[asyncio.Task[None]] = set()
+        # Same reason, for the ``session/cancel`` a late ``startedNewTurn`` steering
+        # answer sends from a done-callback (see ``_steer_via_steering_request``).
+        self._steering_cancel_tasks: set[asyncio.Future[None]] = set()
+        # codex ``_session/steering`` answers awaiting settlement by the turn they
+        # were aimed at: ``(answer, prompt generation, echo text)``.
+        self._steering_answers: list[tuple[asyncio.Future[dict[str, Any]], int, str]] = []
+        # Per answer in ``_steering_answers``: resolved True when the dispatch loop
+        # settles it inside its turn, False when it is dropped unsettled. The steer
+        # call returns this, so True always means "settled before the terminal".
+        self._steering_settled: dict[asyncio.Future[dict[str, Any]], asyncio.Future[bool]] = {}
+        # Answers still awaited after their turn ended, kept only so a late
+        # ``startedNewTurn`` can be cancelled. Counted against the same bound as
+        # ``_steering_answers`` and forgotten on ``destroy``, so the runtime's
+        # registration of an answer that never comes is bounded too.
+        self._abandoned_steering: list[asyncio.Future[dict[str, Any]]] = []
+        # Echo text of every codex steer this turn settled as consumed. codex's
+        # only reject option cancels the turn and drops what was injected into
+        # it, so a denied approval moves these to ``_steers_lost_to_denial``,
+        # and the dispatch loop reports each as ``EVENT_STEER_LOST`` so the
+        # caller requeues it. Per turn.
+        self._turn_delivered_steers: list[str] = []
+        self._steers_lost_to_denial: list[str] = []
+        # Set by a denied approval on a codex turn: nothing injected after it can
+        # survive the cancel, so no later answer in the turn settles as consumed.
+        self._turn_steering_denied: bool = False
         self.native_context_documents: dict[str, str] = {}
         self._queue = queue
         self._runtime = runtime
@@ -989,6 +1054,10 @@ class AcpSessionHandle:
         self._cancel_grace_secs = _CANCEL_GRACE_SECS
         self._turn_done = asyncio.Event()
         self._turn_done.set()
+        # Count of prompts this handle has started. A codex steering answer reads
+        # it to tell "the turn the steer was aimed at" from a newer one of ours
+        # (see ``_steer_via_steering_request``).
+        self._prompt_starts = 0
         self._stale_eligible = False
         # Latched on this session's FIRST text chunk or tool_call and never
         # cleared: the registration-throttle death classification is refused
@@ -1385,10 +1454,18 @@ class AcpSessionHandle:
         # turn state and losing events. Each caller should use its own handle.
         if not self._turn_done.is_set():
             raise AcpRuntimeError("A turn is already active on this session handle")
+        # An abandoned answer leaves ``_abandoned_steering`` in its own
+        # done-callback, before the cancel it scheduled is written, so a scheduled
+        # cancel alone must still hold the prompt back until it has gone out.
+        if getattr(self, "_abandoned_steering", None) or getattr(
+            self, "_steering_cancel_tasks", None
+        ):
+            await self._settle_abandoned_steering()
 
         self._cancelled = False
         self._cancel_ts = 0.0
         self._turn_done.clear()
+        self._prompt_starts += 1
         # Reset the stored stop_reason: only a real `complete` response sets it,
         # and the synthetic-terminal paths (cancel-unacked / stale / tool-stall /
         # timeout) call _turn_done.set() WITHOUT updating it. Without this reset,
@@ -1419,6 +1496,9 @@ class AcpSessionHandle:
         self._parked_total = 0.0
         self._parked_since = None
         self._awaiting_permission = False
+        self._turn_delivered_steers = []
+        self._steers_lost_to_denial = []
+        self._turn_steering_denied = False
         self._retire_liveness_state()
         self._working_logged_ts = _WORKING_NEVER_LOGGED
         self._tool_call_inputs.clear()
@@ -1542,6 +1622,9 @@ class AcpSessionHandle:
                 _stale_owed.clear()
                 try:
                     await self.reject_tool(stale.id)
+                    # A stale request belongs to no turn of ours, so its reject
+                    # says nothing about the steers of the turn starting now.
+                    self._turn_steering_denied = False
                 except asyncio.CancelledError:
                     # The prompt was cancelled mid-drain: put the request back
                     # for the NEXT drain instead of dropping it un-answered
@@ -1923,6 +2006,7 @@ class AcpSessionHandle:
         recorded = self._permission_options.pop(request_id, None)
         # Answered (see approve_tool) — a rejection ends the human wait too.
         self._end_human_wait()
+        self._note_steering_denial()
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:
             await self._runtime.send_response(
@@ -2334,6 +2418,8 @@ class AcpSessionHandle:
         text = (message or "").strip()
         if not text or not self._session_id:
             return False
+        if self._runtime.acp_backend in ACP_BACKENDS_STEERING_REQUEST:
+            return await self._steer_via_steering_request(text)
         wrapped = f"<user_message>\n{text}\n</user_message>"
         await self._runtime.send_request(
             "_session/steer",
@@ -2346,6 +2432,320 @@ class AcpSessionHandle:
         # per-transport wiring. See ``last_steer_monotonic``.
         self._last_steer_monotonic = time.monotonic()
         return True
+
+    async def _steer_via_steering_request(self, text: str) -> bool:
+        """Deliver a user steer over codex-acp's ``_session/steering`` request.
+
+        See ``ACP_BACKENDS_STEERING_REQUEST`` for what was measured. The adapter
+        sends no ``steering_consumed`` echo, so the request's own answer is the
+        only delivery evidence. It is awaited until it arrives or the turn it was
+        aimed at ends, whichever is first; there is no other timer, because a
+        guess at "slow" is the one outcome no caller can act on correctly.
+
+        * ``injected`` -- the answer is registered with the turn it was aimed at,
+          and the turn's own dispatch loop settles it as ``EVENT_STEER_CONSUMED``
+          only when it can prove the answer was read before the turn's terminal:
+          at a non-terminal frame with nothing else buffered behind it (see
+          :meth:`_take_injected_steers`). True is returned once it settles. A steer
+          still unsettled when the turn ends -- an ``injected`` that landed near
+          the end of the turn -- returns False and the caller queues it.
+        * ``startedNewTurn`` -- no turn was running by the time the adapter looked,
+          so it began one that no ``session/prompt`` of ours owns. That turn is
+          cancelled and False is returned, which sends the caller down its queue
+          path: the text runs once, as the next turn Crew starts itself.
+        * ``failed``, an error answer, or an answer of any other shape -- False, and
+          the caller queues it.
+        * the turn ends before any answer -- False, and the caller queues it. A late
+          ``startedNewTurn`` is still cancelled.
+
+        This is at-least-once, not exactly-once. codex-acp guarantees no ordering
+        between the steering answer and the prompt's terminal, and ``injected`` is
+        an ack that the text entered the turn's input, not a consumption receipt.
+        When the terminal is read first, or is already buffered when the answer
+        is looked at, the steer is reported undelivered and the caller queues it,
+        so a steer codex did inject in that window runs a second time -- visibly,
+        as its own turn. That is the requeue path's documented cost
+        (``_requeue_unconsumed_steers``), preferred to the silent loss the
+        opposite choice produces. Settling near the end of a turn is exactly
+        where ordering cannot be read, so it is never done there. An ``injected``
+        that does not settle is logged so the window's frequency can be measured.
+
+        The ``is_turn_active`` check is what keeps ``startedNewTurn`` rare: a steer
+        is only sent while a prompt of ours is in flight, so the adapter can only
+        start a turn of its own when ours ends inside the request's round trip.
+
+        Nothing is sent while the turn is parked on an approval. codex answers that
+        request ``injected``, but its only reject option cancels the turn and drops
+        what was injected with it (see ``ACP_BACKENDS_STEER``), so a steer settled
+        there would be reported delivered and never run. Returning False sends it
+        down the queue path instead, and it runs as the next turn. The same goes
+        for a steer past ``_MAX_STEERING_TEXT_CHARS`` or while
+        ``_MAX_STEERING_ANSWERS`` are unsettled or settled in this turn (the
+        settled ones are held until the turn ends, for a denial to report lost).
+        """
+        if not self.is_turn_active or self._awaiting_permission:
+            return False
+        held = (
+            len(self._steering_answers)
+            + len(self._abandoned_steering)
+            + len(self._turn_delivered_steers)
+            + len(self._steers_lost_to_denial)
+        )
+        if len(text) > _MAX_STEERING_TEXT_CHARS or held >= _MAX_STEERING_ANSWERS:
+            return False
+        session_id = self._session_id
+        aimed_at = self._prompt_starts
+        turn_done = self._turn_done
+        # Registered from inside the write, before its drain() can suspend: the
+        # reader may resolve the answer during that suspension, and the dispatch
+        # loop must already hold it when the turn's next frame arrives.
+        entry: list[tuple[asyncio.Future[dict[str, Any]], int, str]] = []
+
+        def _register(fut: "asyncio.Future[dict[str, Any]]") -> None:
+            entry.append((fut, aimed_at, f"<user_message>\n{text}\n</user_message>"))
+            self._steering_answers.append(entry[0])
+            self._steering_settled[fut] = asyncio.get_running_loop().create_future()
+
+        def _unregister() -> None:
+            if entry and entry[0] in self._steering_answers:
+                self._steering_answers.remove(entry[0])
+            if entry:
+                self._steering_settled.pop(entry[0][0], None)
+
+        try:
+            answer = await self._runtime.send_request_for_answer(
+                METHOD_SESSION_STEERING,
+                {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
+                on_registered=_register,
+            )
+        except BaseException as exc:
+            # The request may already be registered (``_register`` runs before the
+            # write, and the write's ``drain()`` can suspend). Drop that registration
+            # on every exit, cancellation included, or its answer would later settle
+            # this steer as consumed while the caller, which never saw True, has
+            # already moved on: the text would run with no transcript row and no
+            # requeue. Unsettled, the caller's own bookkeeping queues it instead.
+            if entry:
+                self._runtime.forget_request(entry[0][0])
+            _unregister()
+            if not isinstance(exc, Exception):
+                raise
+            logger.debug("steering request not written for %s", session_id, exc_info=True)
+            return False
+
+        def _cancel_unowned_turn() -> None:
+            # The turn the adapter started runs outside any prompt of ours, so
+            # nothing would read or bound it; the caller queues the text instead.
+            # ``session/cancel`` names no turn, so once a NEWER prompt of ours is
+            # running it would cancel that one instead -- the user's queued turn.
+            # ``_settle_abandoned_steering`` resolves these answers before the next
+            # prompt starts, so this branch is a backstop, not the normal path.
+            if self._prompt_starts != aimed_at and self.is_turn_active:
+                logger.warning(
+                    "steer on %s started an adapter-owned turn after our next prompt "
+                    "began; not cancelling, it would hit ours",
+                    session_id,
+                )
+                return
+            logger.info(
+                "steer on %s started an adapter-owned turn; cancelling it and queueing",
+                session_id,
+            )
+
+            async def _send_cancel() -> None:
+                # Best-effort: a dead adapter has no turn left to cancel, and the
+                # failure must not surface as an unhandled task exception.
+                try:
+                    await self._runtime.send_notification(METHOD_CANCEL, {"sessionId": session_id})
+                except Exception as exc:
+                    logger.warning("cancel of adapter-owned turn on %s failed: %s", session_id, exc)
+
+            task = asyncio.ensure_future(_send_cancel())
+            self._steering_cancel_tasks.add(task)
+            task.add_done_callback(self._steering_cancel_tasks.discard)
+
+        def _late_answer(fut: "asyncio.Future[dict[str, Any]]") -> None:
+            if fut.cancelled() or fut.exception() is not None:
+                return
+            outcome = _steering_outcome(fut.result())
+            if outcome == STEERING_STARTED_NEW_TURN:
+                _cancel_unowned_turn()
+            elif outcome == STEERING_INJECTED:
+                logger.warning("steering answer on %s: injected after its turn ended", session_id)
+
+        def _abandon() -> None:
+            # Stop tracking this answer for settlement, but keep it awaited within
+            # the bound so a late ``startedNewTurn`` is still cancelled and the
+            # runtime's registration of it stays counted until it resolves.
+            _unregister()
+            if answer.done():
+                return
+            self._abandoned_steering.append(answer)
+
+            def _release(fut: "asyncio.Future[dict[str, Any]]") -> None:
+                if fut in self._abandoned_steering:
+                    self._abandoned_steering.remove(fut)
+
+            answer.add_done_callback(_release)
+            answer.add_done_callback(_late_answer)
+
+        ended = asyncio.ensure_future(turn_done.wait())
+        try:
+            waiters: set[asyncio.Future[Any]] = {answer, ended}
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            # A cancelled caller cannot settle this steer, but the runtime still
+            # owes its answer, so the answer moves to the abandoned set.
+            _abandon()
+            raise
+        finally:
+            ended.cancel()
+        if not answer.done():
+            # The turn ended first; the caller queues the text.
+            _abandon()
+            return False
+        if answer.cancelled() or answer.exception() is not None:
+            # An error answer: an adapter build without the method answers -32601.
+            _unregister()
+            logger.info(
+                "steering request on %s refused: %s",
+                session_id,
+                answer.exception() if not answer.cancelled() else "cancelled",
+            )
+            return False
+        outcome = _steering_outcome(answer.result())
+        if outcome == STEERING_STARTED_NEW_TURN:
+            _unregister()
+            _cancel_unowned_turn()
+            return False
+        if outcome != STEERING_INJECTED:
+            _unregister()
+            return False
+        # ``injected``: delivered only once the turn's dispatch loop settles it
+        # before the terminal. Near the end of the turn it never does, and the
+        # caller queues the text.
+        settled = self._steering_settled.get(answer)
+        delivered = False
+        if settled is not None:
+            ended = asyncio.ensure_future(turn_done.wait())
+            try:
+                both: set[asyncio.Future[Any]] = {settled, ended}
+                await asyncio.wait(both, return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                _unregister()
+                raise
+            finally:
+                ended.cancel()
+            delivered = settled.done() and not settled.cancelled() and settled.result()
+        _unregister()
+        if not delivered:
+            logger.info(
+                "steering answer on %s: injected near the end of its turn; queueing",
+                session_id,
+            )
+            return False
+        self._last_steer_monotonic = time.monotonic()
+        return True
+
+    async def _settle_abandoned_steering(self) -> None:
+        """Resolve codex steering answers owed from the last turn before a new prompt.
+
+        A steer whose turn ended before its answer can still be answered
+        ``startedNewTurn``: the adapter then runs a turn of its own on this
+        session. Its cancel is sent from the answer's callback, and
+        ``session/cancel`` names no turn, so it is only safe while no prompt of
+        ours is running. This runs before the next prompt starts, waits up to
+        ``_STEERING_SETTLE_SECS`` for those answers, and waits for the cancels
+        they schedule, so an adapter-owned turn is stopped before our prompt is
+        written and none of its updates reach that prompt's queue. An answer
+        still missing after the bound is forgotten and one ``session/cancel`` is
+        sent in its place, which stops a turn it may already have started.
+        """
+        pending = [a for a in self._abandoned_steering if not a.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=_STEERING_SETTLE_SECS)
+        # Let the answers' callbacks run and schedule their cancels.
+        await asyncio.sleep(0)
+        unanswered = [a for a in self._abandoned_steering if not a.done()]
+        for answer in unanswered:
+            self._runtime.forget_request(answer)
+        self._abandoned_steering = []
+        if unanswered:
+            logger.warning(
+                "%d steering answer(s) on %s never arrived; cancelling before the next prompt",
+                len(unanswered),
+                self._session_id,
+            )
+            try:
+                await self._runtime.send_notification(
+                    METHOD_CANCEL, {"sessionId": self._session_id}
+                )
+            except Exception as exc:
+                logger.warning("pre-prompt cancel on %s failed: %s", self._session_id, exc)
+        if self._steering_cancel_tasks:
+            await asyncio.gather(*list(self._steering_cancel_tasks), return_exceptions=True)
+
+    def _take_injected_steers(self, can_settle: bool = True) -> list[str]:
+        """Echo text for every codex steer this turn now knows was ``injected``.
+
+        Called by the prompt dispatch loop for each frame, BEFORE the frame is
+        handled. ``can_settle`` is True only at a frame that is not the turn's
+        terminal while nothing else is buffered on the session queue. Kiro's
+        reader resolves an answer inline and routes the terminal into that queue
+        inline, one stdout line at a time, so an answer that is done while the
+        terminal is neither current nor buffered was read before it. Anywhere
+        else the order cannot be read, so nothing settles: the entries stay, and
+        a turn that ends with them unsettled has its steers queued by the caller
+        (a visible duplicate at worst, never a steer marked delivered to a turn
+        that had finished). Entries aimed at an earlier prompt are dropped
+        unsettled: that turn's teardown already requeued them, and settling one
+        against a newer turn would mark a steer delivered that this turn never
+        received. Unanswered entries stay registered.
+        """
+        if not self._steering_answers or not can_settle or self._turn_steering_denied:
+            return []
+        flags = getattr(self, "_steering_settled", {})
+        settled: list[str] = []
+        waiting: list[tuple["asyncio.Future[dict[str, Any]]", int, str]] = []
+        for answer, aimed_at, wrapped in self._steering_answers:
+            flag = flags.get(answer)
+            ok = False
+            if aimed_at != self._prompt_starts:
+                pass
+            elif not answer.done():
+                waiting.append((answer, aimed_at, wrapped))
+                continue
+            elif not answer.cancelled() and answer.exception() is None:
+                ok = _steering_outcome(answer.result()) == STEERING_INJECTED
+            if ok:
+                settled.append(wrapped)
+            if flag is not None and not flag.done():
+                flag.set_result(ok)
+        self._steering_answers = waiting
+        self._turn_delivered_steers.extend(settled)
+        return settled
+
+    def _note_steering_denial(self) -> None:
+        """Record that an approval in this codex turn was denied.
+
+        codex offers no per-tool reject: its reject cancels the turn and drops
+        every steer injected into it, including ones this turn already settled
+        as consumed. Those move to ``_steers_lost_to_denial`` for the dispatch
+        loop to report as ``EVENT_STEER_LOST``, and nothing later in the turn
+        settles, so a steer still unanswered or unsettled returns False and is
+        queued. A no-op on every other backend, whose reject does not discard
+        injected text.
+        """
+        if self._runtime.acp_backend not in ACP_BACKENDS_STEERING_REQUEST:
+            return
+        self._turn_steering_denied = True
+        self._steers_lost_to_denial.extend(self._turn_delivered_steers)
+        self._turn_delivered_steers = []
+
+    def take_lost_steers(self) -> list[str]:
+        """Echo text of steers a denial discarded, each returned once."""
+        lost, self._steers_lost_to_denial = self._steers_lost_to_denial, []
+        return lost
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when this
     # session has never been steered. Read by the dashboard's keepalive route to
@@ -2366,17 +2766,44 @@ class AcpSessionHandle:
 
     @property
     def supports_steer(self) -> bool:
-        """True when this session's host implements ``_session/steer``.
+        """True when this session's host takes a user's mid-turn message.
 
-        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6), read from the
-        runtime's own backend id -- the same answer, from the same table, that
-        ``AcpClient.supports_steer`` gives. A capability is granted by opt-in
-        membership, so a host the runtime learns to drive does not inherit an
-        extension it never demonstrated: answering True for one would advertise
-        the steer affordance and then meet the user's mid-turn correction with
-        ``-32601``.
+        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6) or in
+        ``ACP_BACKENDS_STEERING_REQUEST``, read from the runtime's own backend id.
+        The first is kiro-cli's ``_session/steer``, the same answer, from the same
+        table, that ``AcpClient.supports_steer`` gives; the second is codex-acp's
+        ``_session/steering``, which only this handle speaks. A capability is
+        granted by opt-in membership, so a host the runtime learns to drive does
+        not inherit an extension it never demonstrated: answering True for one
+        would advertise the steer affordance and then meet the user's mid-turn
+        correction with ``-32601``.
+        """
+        backend = self._runtime.acp_backend
+        return backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+
+    @property
+    def supports_refusal_steer(self) -> bool:
+        """True when a deny notice steered into the refused turn reaches the model.
+
+        Narrower than :attr:`supports_steer`: only ``ACP_BACKENDS_STEER``. codex
+        takes a user's steer, but its approval answer cancels the turn and the
+        injected text goes with it, so a deny notice there keeps the recovery
+        continuation instead.
         """
         return self._runtime.acp_backend in ACP_BACKENDS_STEER
+
+    @property
+    def steer_needs_loss_recovery(self) -> bool:
+        """True when a steer reported delivered can still be lost for its turn.
+
+        codex (``ACP_BACKENDS_STEERING_REQUEST``) drops injected text when an
+        approval in the turn is denied, and this handle reports it as
+        ``EVENT_STEER_LOST`` / :meth:`take_lost_steers`. Only a caller that
+        consumes that report and requeues may steer such a session: the
+        dashboard chat runner does. The provider-wrapper surfaces (messaging
+        channels, Side Chat, ``spawn_steer``) read this and queue instead.
+        """
+        return self._runtime.acp_backend in ACP_BACKENDS_STEERING_REQUEST
 
     # ── Commands & Config ──
 
@@ -3260,6 +3687,19 @@ class AcpSessionHandle:
         # of these files, and every survivor is permanent: nothing else deletes
         # an ephemeral session's transcript.
         self._cancel_hook_tasks()
+        # Answers this session will never read again must not stay registered on a
+        # runtime that outlives it. ``getattr``: a handle can be torn down before
+        # (or without) ``__init__`` having run, and teardown must not raise then.
+        held = [a for a, _gen, _text in getattr(self, "_steering_answers", ())]
+        held += list(getattr(self, "_abandoned_steering", ()))
+        if held:
+            for _answer in held:
+                self._runtime.forget_request(_answer)
+            self._steering_answers = []
+            self._abandoned_steering = []
+        for _flag in list(getattr(self, "_steering_settled", {}).values()):
+            if not _flag.done():
+                _flag.set_result(False)
         try:
             await self._runtime.terminate_session(self._session_id)
         finally:
@@ -3834,6 +4274,20 @@ class AcpSessionHandle:
                     last_own_data_ts = last_data_ts
                     parked_at_own_data = parked_at_data
                 self.last_prompt_stats.event_count += 1
+
+                # A denied approval on a codex turn discarded steers this turn
+                # already reported consumed; report them lost first, so the
+                # caller requeues them before the turn's terminal is handled.
+                for _lost in self.take_lost_steers():
+                    yield AcpEvent(kind=EVENT_STEER_LOST, text=_lost)
+                # A codex steer the adapter answered ``injected`` settles here,
+                # ahead of this frame, but only where the answer provably preceded
+                # the terminal: not at the terminal itself and not with frames
+                # still buffered behind this one (see ``_take_injected_steers``).
+                for _injected in self._take_injected_steers(
+                    can_settle=not msg.is_response_for(req_id) and self._queue.qsize() == 0
+                ):
+                    yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
 
                 # Turn-complete response
                 if msg.is_response_for(req_id):

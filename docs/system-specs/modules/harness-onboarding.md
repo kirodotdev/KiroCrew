@@ -72,7 +72,8 @@ vocabulary.
 | Set | Grants |
 |---|---|
 | `ACP_BACKENDS_SESSION_SHARING` | One process may serve several sessions. Wrong membership hands a second session to a process that cannot hold it. |
-| `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. |
+| `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. Also the deny-notice gate (`supports_refusal_steer`). |
+| `ACP_BACKENDS_STEERING_REQUEST` | codex-acp's `_session/steering` request for a user's mid-turn steer, whose `injected` / `startedNewTurn` / `failed` answer is the delivery evidence. Spoken only by `AcpSessionHandle`; not a deny-notice channel. |
 | `ACP_BACKENDS_INTERNAL_SANDBOX` | The harness sandboxes itself, so Kiro Crew's own wrapper stands down. Security-relevant: wrong membership hands isolation to a layer that never starts (H7). |
 | `ACP_BACKENDS_POD_HOME_REMAP` | A pod-spawned child may have `$HOME` relocated onto the pod tree so home-derived OAuth artifacts remain pod-scoped. Keep this separate from internal-sandbox membership because the two claims have different security effects. |
 | `ACP_BACKENDS_ACP_RUNTIME` | Driven through `AcpRuntime` — one process demultiplexing N sessions — rather than its own per-session `AcpClient` spawn branch. Every reader takes the frozenset itself: `AcpProvider.is_acp_runtime_backend` for the FOREGROUND start path, and `session._bg_runtime_backends`, which intersects it with the set below and with selectability. Membership states the TRANSPORT and nothing more — the kiro-family `cli.json` effort and Tool Search overlay is gated on `ACP_BACKENDS_KIRO_SLASH_COMMANDS` at every site that writes, reads or clears it, so a member reading no such file never collects one. |

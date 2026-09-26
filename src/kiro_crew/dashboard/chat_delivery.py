@@ -180,9 +180,16 @@ def _queued_entry_id(slot: Any, delivery_id: str) -> str:
 
 
 def find_written_steer_row(
-    slot: Any, message: str, siblings: list[str] | None = None
+    slot: Any,
+    message: str,
+    siblings: list[str] | None = None,
+    from_states: tuple[str, ...] = (STEER_STATE_WRITTEN,),
 ) -> dict[str, Any] | None:
     """Return the persisted row for *message* still in the WRITTEN state, or None.
+
+    *from_states* widens the states a row may be in. The only caller that widens
+    it is the lost-steer restore, whose row was already promoted to ``consumed``
+    by the settle that the loss now undoes.
 
     The lifecycle transitions need the row they are correcting, and the delivery
     id cannot supply it: the successful-steer path is terminal for that id and
@@ -231,12 +238,41 @@ def find_written_steer_row(
         m
         for m in slot.messages
         if isinstance(m.get("meta"), dict)
-        and m["meta"].get("steerState") == STEER_STATE_WRITTEN
+        and m["meta"].get("steerState") in from_states
         and m.get("content") == target
     ]
     # Newest wins: an older match is a row whose own steer already died without
     # transitioning, so it cannot be this one.
     return matches[-1] if matches else None
+
+
+def remember_settled_steer(slot: Any, message: str) -> None:
+    """Keep what a requeue needs for a steer the running turn settled.
+
+    A settled steer can still be lost for this turn: codex drops injected text
+    when an approval in the turn is denied, and the chat runner then moves the
+    steer back to ``_pending_steers`` so the teardown requeues it. That requeue
+    re-admits the text through the containment snapshot and user origin
+    recorded at send time, and both are popped once the steer is reported
+    delivered. Called at the settle and again just before that pop, whichever
+    runs first records them, so the order the two coroutines resume in does
+    not matter. Only the newest unrestored entry for *message* is filled.
+    """
+    log = getattr(slot, "_steers_settled_this_turn", None)
+    if log is None:
+        return
+    for entry in reversed(log):
+        if entry["text"] != message:
+            continue
+        admission = getattr(slot, "_steer_admissions", {}).get(message)
+        if entry.get("admission") is None and admission is not None:
+            entry["admission"] = admission
+        if message in getattr(slot, "_steer_user_origin", {}):
+            entry.setdefault("user_origin", slot._steer_user_origin[message])
+        attachments = getattr(slot, "_steer_attachment_meta", {}).get(message)
+        if entry.get("attachments") is None and attachments is not None:
+            entry["attachments"] = attachments
+        return
 
 
 def _log_stop_race(slot: Any, stop_gen: int, *, preserved: bool) -> None:
@@ -591,6 +627,7 @@ async def steer_into_running_turn(
     # per successful steer for the slot's whole lifetime -- the requeue paths above
     # deliberately keep theirs because `chat_runner`'s drain still has to match it,
     # and that entry is bounded by the queue.
+    remember_settled_steer(slot, message)
     slot._steer_delivery_ids.pop(message, None)
     # Same lockstep, same reason: this delivery stamps `sendId` onto its own row a
     # few lines below, so nothing will read the map entry again and leaving it

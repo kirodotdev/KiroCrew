@@ -54,6 +54,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
@@ -108,6 +109,16 @@ EVENT_SUBAGENT_ACTIVITY = "subagent_activity"
 EVENT_STEER_QUEUED = "steer_queued"
 EVENT_STEER_CONSUMED = "steer_consumed"
 EVENT_STEER_CLEARED = "steer_cleared"
+#: A steer this turn already reported as ``EVENT_STEER_CONSUMED`` that the backend
+#: then discarded: codex drops injected text when an approval in the turn is
+#: denied. ``text`` is the same echo the consumed event carried, so a consumer
+#: can move the steer back to its pending set and requeue it at turn end.
+EVENT_STEER_LOST = "steer_lost"
+#: Most codex steers a session holds at once: sent and unanswered, answered after
+#: their turn ended, or settled in the running turn and kept so a denial can report
+#: them lost. A steer past it takes the caller's queue path. The dashboard's mirror
+#: of the settled set is held to the same count.
+MAX_STEERING_ANSWERS = 16
 #: A typed :class:`StructuredStatus` from the EXECUTION LAYER (the versioned
 #: ``kirocrew/status`` extension on a routed ``session/update`` frame, or the
 #: watchdog's own post-stall classification). Never derived from model text —
