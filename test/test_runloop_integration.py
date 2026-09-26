@@ -707,6 +707,50 @@ async def test_a_throttle_before_the_first_frame_waits_under_the_run_lease(monke
 
 
 @pytest.mark.asyncio
+async def test_a_throttle_before_the_first_frame_ends_startup_at_the_park():
+    """The same 429 on the first prompt, for a start with no runtime PID: the
+    provider has answered the prompt, so the run leaves startup at the park --
+    the step that takes its row out of ``starting`` -- and the wake it owes a
+    held spawn goes out then. Parked, it is neither in the in-startup bound nor
+    a start the watchdog may reap, however far past the startup deadline the
+    wait runs; the wait is bounded by its scope and ends in the scope's error."""
+    calls: list[str] = []
+
+    def factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                raise AcpFakeThrottle("ThrottlingException: Rate exceeded")
+            yield _text("ok")
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    mgr = await _ready_manager(_mock_sessions(factory))
+    coordinator = _fast_coordinator(mgr, backoff=backoff(_HELD_PARK_SECS, _HELD_PARK_SECS))
+    progress = MagicMock(wraps=mgr._note_startup_progress)
+    mgr._note_startup_progress = progress
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("throttled start")
+        assert info is not None
+        await _await_parked(mgr, coordinator, "provider:acp", info.id)
+        assert info._pid is None and info.turns == 0
+        assert info._first_stream_started is not None
+        assert SubagentManager._in_startup(info) is False
+        assert mgr._startup_population() == 0
+        assert info._exec_started is not None
+        assert mgr._is_startup_stalled(info, info._exec_started + 3_600.0) is False
+        progress.assert_called_once_with(info)
+        assert coordinator.recovered("provider:acp")
+        mgr._taskq_pump()
+        await asyncio.wait_for(mgr._tasks[info.id], timeout=_LOST_RUN_CEILING_SECS)
+
+    assert info.outcome == "completed" and info.result == "ok"
+    progress.assert_called_once_with(info)
+
+
+@pytest.mark.asyncio
 async def test_the_throttle_park_and_wake_cycle_never_touches_the_store_on_the_loop(monkeypatch):
     """The whole wait/wake boundary under the STRICT on-loop guard.
 

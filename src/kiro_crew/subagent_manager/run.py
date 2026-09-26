@@ -959,7 +959,7 @@ class RunEventCoordinator(ManagerComponent):
         info._exec_started = time.time()
         info._first_stream_started = None
         # The durable row stays ``starting`` until this run's OWN turn produces
-        # its first stream event (``_mark_running`` in the stream loop below):
+        # its first stream event (``ensure_running_marked`` in the stream loop below):
         # session creation, the session-start gate and a late adoption are all
         # start time, and a row that reads ``running`` while no turn exists yet
         # would let a stall be judged against a session that is still being
@@ -1639,9 +1639,19 @@ class RunEventCoordinator(ManagerComponent):
                     _withheld: LLMEvent | None = None
                     _infra: Any = None
                     async for _ev in client.stream(msg):
-                        # The run's own turn has produced its first frame: the
-                        # durable row is ``running`` from here.
-                        self.ensure_running_marked(info)
+                        if not _ev.runtime_global:
+                            # A frame addressed to THIS session: the run's own
+                            # turn exists, so the durable row is ``running`` and
+                            # the run is out of startup from here. Taken on the
+                            # raw frame, ahead of the withholding below, because
+                            # a completion withheld for recovery is an answer
+                            # too. A ``runtime_global`` frame is a co-tenant's
+                            # traffic that the shared runtime fanned out, so it
+                            # proves nothing about this start (see the
+                            # activity-clock note in the loop that consumes this
+                            # stream).
+                            self.ensure_running_marked(info)
+                            self._manager._leave_startup(info)
                         if _ev.kind == EVENT_STRUCTURED_STATUS:
                             # W4: the execution layer (or the liveness oracle)
                             # says a tool is waiting for real input. The lane
@@ -1815,13 +1825,6 @@ class RunEventCoordinator(ManagerComponent):
         # leaves TurnUsage.duration_ms at 0, so the row needs this.
         # Includes transient-retry backoff, which is real wall time the caller
         # waited for this turn.
-        info._first_stream_started = time.time()
-        # The last way out of startup that is not a PID (a provider may create
-        # its child lazily from ``stream()``, so a run can reach here with
-        # ``_pid`` still None): wake a spawn the in-startup bound is holding.
-        # Only the FIRST turn's stream is a transition; this line runs per turn.
-        if info.turns == 0:
-            self._manager._note_startup_progress(info)
         _turn_t0 = time.monotonic()
         async for event in _stream_with_transient_retry():
             # Refresh the activity clock for every event kind that BELONGS to
@@ -2678,6 +2681,13 @@ class RunEventCoordinator(ManagerComponent):
         # (the prompt itself was refused), and the session IS live -- the turn
         # was issued -- so the row must be ``running`` before the wait is
         # written or the wait is refused and the row parked instead.
+        #
+        # The same fact takes the run out of startup: the provider answered
+        # this session's prompt, so what follows is a wait for the dependency,
+        # bounded by the scope's own deadline and ending in its own error --
+        # never a start that is not starting for the startup watchdog to reap,
+        # and never a place in the in-startup bound while parked.
+        self._manager._leave_startup(info)
         verdict = await self._dependency_verdict(coordinator, info, signal)
         if verdict.outcome != "wait":
             info._resume_event = None
@@ -2824,7 +2834,8 @@ class RunEventCoordinator(ManagerComponent):
     def ensure_running_marked(self, info: "SubagentInfo") -> None:
         """Write the durable row ``running`` once the run's own turn exists.
 
-        Normally done by the first stream event; the stop-recovery path calls it
+        Normally done by the first stream event addressed to this session (a
+        ``runtime_global`` frame is a co-tenant's); the stop-recovery path calls it
         too, because a wait can only be recorded on a ``running`` row and the
         turn that failed was a real turn on a live session. The write is POSTED,
         which is what orders it ahead of the wait write ``yield_slot`` posts

@@ -186,7 +186,7 @@ loss a healthy start reaped as `Failed to start within 120s`, and every retry of
 one deepening the crowd that caused it. The bound holds further spawns in the
 EXISTING queue (`_should_stagger_queue_impl` gains a third clause; the drain
 pump holds its pick under the same test) and the queue wakes on the edges that
-free a startup slot: a runtime PID or a first stream (`_note_startup_progress`)
+free a startup slot: a runtime PID or the first answer on the run's own session (`_note_startup_progress`)
 and a terminal, including the watchdog's reap of a wedged start (the
 slot-release drain), so a wedged population cannot hold the queue past the
 reap.

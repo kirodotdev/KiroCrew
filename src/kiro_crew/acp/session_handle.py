@@ -4058,12 +4058,19 @@ class AcpSessionHandle:
                     _upd = _upd if isinstance(_upd, dict) else {}
                     _disc = str(_upd.get("sessionUpdate") or "")
                     _text = redact_text(str(_upd.get("content") or _upd.get("message") or ""))
+                    # An echo that named no session and was fanned out to
+                    # co-tenants is not this session's own (``runtime_global``).
+                    _ownerless = msg.fanout_no_owner
                     if _disc in ("steering_queued", "AgentExecutionUserMessageQueued"):
-                        yield AcpEvent(kind=EVENT_STEER_QUEUED, text=_text)
+                        yield AcpEvent(
+                            kind=EVENT_STEER_QUEUED, text=_text, runtime_global=_ownerless
+                        )
                     elif _disc in ("steering_consumed", "AgentExecutionSteeringInjected"):
-                        yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_text)
+                        yield AcpEvent(
+                            kind=EVENT_STEER_CONSUMED, text=_text, runtime_global=_ownerless
+                        )
                     elif _disc == "steering_cleared":
-                        yield AcpEvent(kind=EVENT_STEER_CLEARED)
+                        yield AcpEvent(kind=EVENT_STEER_CLEARED, runtime_global=_ownerless)
                 elif action == "metadata":
                     self._track_metadata(msg)
                 elif action == "compaction":
@@ -4087,7 +4094,9 @@ class AcpSessionHandle:
                     # the subagent roster already draws (runtime_global=).  A lone
                     # session's frame is left unmarked and genuinely is its own,
                     # so a single-session run is unaffected.  The event still
-                    # surfaces either way — only the mutations are gated.
+                    # surfaces either way, carrying that provenance
+                    # (``runtime_global``) so a consumer measuring this session's
+                    # own activity can tell; only the mutations are gated.
                     owns_frame = not msg.fanout_no_owner
                     if status_type == "completed" and owns_frame:
                         # The pre-compaction counts (and their authoritative
@@ -4110,15 +4119,27 @@ class AcpSessionHandle:
                             self._compaction_failed_at = time.monotonic()
                             self.last_compaction_transient = compaction_failure_is_transient(params)
                         summary = compaction_failure_detail(params)
-                    yield AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)
+                    yield AcpEvent(
+                        kind=EVENT_COMPACTION_STATUS,
+                        text=status_type,
+                        title=summary,
+                        runtime_global=not owns_frame,
+                    )
                 elif action == "clear":
-                    yield AcpEvent(kind=EVENT_CLEAR_STATUS)
+                    # Same provenance as the compaction notice: one that named
+                    # no session and was fanned out to co-tenants is not this
+                    # session's own.
+                    yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
                 elif action == "agent_switched":
                     saw_agent_switch = True
                     params = msg.params or {}
                     name = params.get("agentName", "")
                     self.active_agent = name if isinstance(name, str) else ""
-                    yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=params.get("agentName", ""))
+                    yield AcpEvent(
+                        kind=EVENT_AGENT_SWITCHED,
+                        text=params.get("agentName", ""),
+                        runtime_global=msg.fanout_no_owner,
+                    )
                 elif action == "subagent_list":
                     params = msg.params or {}
                     subs = params.get("subagents")
