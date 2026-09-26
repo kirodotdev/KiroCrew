@@ -389,6 +389,118 @@ class SourceRef:
         )
 
 
+# Defensive cap on a dismissed-identity key travelling in a URL path segment,
+# rejecting a hand-crafted oversized path before it is decoded/hashed. A GitHub
+# or GitLab identity's canonical JSON is far below this. The one identity that
+# could approach it is a self-hosted Jira, whose identity embeds the full
+# instance URL (its context path is load-bearing for uniqueness); a
+# pathologically long such URL would exceed the cap and its chip would then be
+# un-unlinkable (a graceful degradation — 400 on unlink, never a crash), which
+# is an accepted trade to keep the bound tight against abuse.
+_MAX_SOURCE_IDENTITY_KEY_LENGTH = 512
+
+
+def _identity_shape() -> tuple[int, frozenset[int]]:
+    """Derive the serialized-identity arity and which member slots are ints.
+
+    ``SourceRef.identity`` is ``[every field except url, in field order] +
+    [instance_context]`` (see the property). Rather than hardcode "8 members,
+    int at index 4" -- which silently rots the moment a field is added to the
+    dataclass, dropping every persisted dismissal on restore -- derive the arity
+    and the integer slots from the dataclass itself, so the validator tracks the
+    identity's true shape automatically. ``instance_context`` is a str, so it
+    adds one to the arity and no int slot.
+    """
+    members = [f for f in fields(SourceRef) if f.name != "url"]
+    int_slots = frozenset(i for i, f in enumerate(members) if f.type in ("int", int))
+    return len(members) + 1, int_slots
+
+
+_IDENTITY_ARITY, _IDENTITY_INT_SLOTS = _identity_shape()
+
+
+def source_ref_identity_key(identity: tuple) -> str:
+    """Serialize a :attr:`SourceRef.identity` tuple to a stable string key.
+
+    The dismissed-identity suppression set is persisted to disk and echoed in a
+    DELETE URL path, neither of which can carry a Python tuple. This renders the
+    identity to canonical JSON: a fixed member order (the tuple's own), no
+    incidental whitespace, and ``ensure_ascii`` so a non-ASCII owner/repo cannot
+    change the byte shape between a writer and a reader on different locales. The
+    mapping is total and deterministic, so the same object always yields the same
+    key and two distinct objects never collide.
+
+    Keyed on the identity rather than the URL for the same reason the derivation
+    dedups on identity: one change can be mentioned through more than one URL
+    shape, and a dismiss must suppress the object, not one spelling of it.
+    """
+    return json.dumps(list(identity), ensure_ascii=True, separators=(",", ":"))
+
+
+def is_valid_source_identity_key(key: object) -> bool:
+    """True when *key* is a well-formed serialized identity key.
+
+    The DELETE endpoint takes the key from an untrusted URL path segment, so it
+    is validated before it is recorded: it must be a bounded string that decodes
+    to the exact JSON shape :func:`source_ref_identity_key` emits — the 8-member
+    ``SourceRef.identity`` list ``(provider, host, owner, repo, number, project,
+    kind, instance_context)`` whose ``number`` slot is an int and whose other
+    seven members are strings — and it must re-serialize byte-for-byte to the
+    same key (rejecting any non-canonical spelling). A key that is merely a list
+    of scalars but the wrong arity/type (e.g. ``[1]``) is rejected too: it could
+    never match a real identity and would otherwise accumulate as stored junk.
+    """
+    if not isinstance(key, str) or not key or len(key) > _MAX_SOURCE_IDENTITY_KEY_LENGTH:
+        return False
+    try:
+        decoded = json.loads(key)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(decoded, list) or not decoded:
+        return False
+    # Enforce the exact ``SourceRef.identity`` arity and per-field types, not
+    # just "a list of scalars": without this a canonical-but-nonsense key such
+    # as ``[1]`` round-trips through the re-serialize check below and is stored
+    # -- inert (it can never match a real identity) but accumulating as junk.
+    # The arity and which slots are ints are DERIVED from the dataclass
+    # (``_identity_shape``) so a new field cannot silently invalidate this. Every
+    # non-int slot is a string; ``bool`` is a subclass of ``int`` so it is
+    # rejected explicitly for the int slots.
+    if len(decoded) != _IDENTITY_ARITY:
+        return False
+    for i, member in enumerate(decoded):
+        if i in _IDENTITY_INT_SLOTS:
+            if isinstance(member, bool) or not isinstance(member, int):
+                return False
+        elif not isinstance(member, str):
+            return False
+    return json.dumps(decoded, ensure_ascii=True, separators=(",", ":")) == key
+
+
+def bounded_valid_identities(raw: object, cap: int) -> set[str]:
+    """Collect at most *cap* distinct VALID identity keys from *raw*, bounding
+    retention DURING iteration.
+
+    Every reader of an on-disk ``dismissed_source_links`` line filters it through
+    :func:`is_valid_source_identity_key` and then bounds it to the per-slot
+    ceiling. Doing that as ``{k for k in raw if valid}`` first and slicing after
+    materializes the WHOLE (externally-controllable, possibly oversized/tampered)
+    list before the cap applies — the ``a-bound-bounds-every-field-it-retains``
+    hazard. This stops as soon as *cap* distinct valid keys are collected, so no
+    more than *cap* keys are ever resident regardless of how large *raw* is. A
+    non-list *raw* yields the empty set (the line records no dismissals).
+    """
+    out: set[str] = set()
+    if not isinstance(raw, list):
+        return out
+    for key in raw:
+        if len(out) >= cap:
+            break
+        if is_valid_source_identity_key(key):
+            out.add(key)
+    return out
+
+
 def source_ref_label(ref: SourceRef) -> str:
     """The provider's own short name for this object, as a chip renders it.
 
@@ -818,6 +930,64 @@ _MAX_PLUGIN_PATH_MARKERS = 8
 # Ceiling on one marker's length: markers are substring-searched against every
 # URL candidate in a transcript, so their size is part of the scanner's cost.
 _MAX_PLUGIN_PATH_MARKER_LEN = 64
+
+
+# Characters that terminate a raw ``https://`` token inside message text. Shared
+# by every transcript scanner so the token boundary cannot drift between them.
+_SOURCE_URL_STOP_CHARS = frozenset(" \t\n<>()[]{}\"'")
+
+
+def iter_source_url_candidates(
+    content: str,
+    path_markers: "tuple[str, ...]",
+    *,
+    stop_chars: "frozenset[str]" = _SOURCE_URL_STOP_CHARS,
+) -> "Iterator[str]":
+    """Yield each raw source-URL candidate in one message's text, front to back.
+
+    This is the single token-extraction step both transcript scanners share --
+    the sidebar chip derivation (:meth:`SlotProjection.source_links`) and the
+    unlink-authorization predicate (:meth:`_ChatSlot.mentions_source_identity`).
+    Each finds a ``https://`` run, extends it to the next boundary character,
+    strips trailing punctuation, and drops it unless a path marker makes it worth
+    a full :func:`parse_source_url`. Factoring only THIS out keeps the parser and
+    the boundary/punctuation rules identical for both, so a change to the token
+    grammar cannot silently diverge -- while each caller keeps its OWN traversal
+    policy, which is deliberately different: the derivation walks newest-first
+    under a parse budget and stops at ``max_links`` (it renders a bounded list on
+    the event loop), whereas the predicate must scan the WHOLE transcript with no
+    budget and no early exit (an early give-up would wrongly report a genuinely
+    mentioned identity as absent and misauthorize a durable tombstone). Yielding
+    candidates lets the derivation consume lazily and the predicate exhaustively
+    from the same source.
+
+    Each candidate's end is bounded by the NEXT ``https://`` occurrence as well as
+    by ``stop_chars``. Without the next-occurrence bound, a message made of
+    adjacent ``https://`` prefixes has no stop character until its very end, so
+    one token would extend across the whole message and the per-candidate marker
+    and parse work would go quadratic (the derivation runs synchronously during
+    ``push_slots_update``). The bound also means a ``https://`` NESTED inside
+    another URL (a redirect/tracking wrapper) is examined on its own, so a real
+    change URL carried inside a wrapper still surfaces -- the backend
+    re-validates every URL before any provider call.
+    """
+    search = 0
+    n = len(content)
+    while True:
+        idx = content.find("https://", search)
+        if idx == -1:
+            return
+        # Bound this token by the next ``https://`` as well as by a stop char, so
+        # adjacent prefixes stay linear and a nested URL is examined separately.
+        nxt = content.find("https://", idx + len("https://"))
+        token_limit = n if nxt == -1 else nxt
+        end = idx
+        while end < token_limit and content[end] not in stop_chars:
+            end += 1
+        search = idx + len("https://")
+        candidate = content[idx:end].rstrip(".,!?;:*_~`")
+        if any(marker in candidate for marker in path_markers):
+            yield candidate
 
 
 def _plugin_for_change(ref: SourceRef) -> SourceProviderPlugin | None:

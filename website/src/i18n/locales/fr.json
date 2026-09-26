@@ -11234,7 +11234,11 @@
       "opens_here_runs_on_instance": "Ouvre cette session ici — son exécution continue sur {{name}}",
       "opens_on_crew_switches_there": "S'ouvre sur {{name}} — bascule vers ce Crew, pas ici",
       "remote_instances_list_unavailable": "Impossible de lister les crews distantes, leurs sessions ne sont donc pas affichées.",
-      "model_list_failed": "Impossible de charger la liste des modèles. Ce qui est affiché peut être incomplet ou obsolète."
+      "model_list_failed": "Impossible de charger la liste des modèles. Ce qui est affiché peut être incomplet ou obsolète.",
+      "source_link_actions": "Dissocier une puce PR ou ticket",
+      "unlink_source_link": "Sélectionne une puce PR ou ticket pour la masquer définitivement dans cette session. La source et la transcription restent inchangées.",
+      "unlink_source_link_confirm": "Sélectionne à nouveau pour dissocier « {{label}} »",
+      "unlink_source_link_failed": "Échec de la dissociation. Réessaie."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

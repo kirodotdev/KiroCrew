@@ -29,6 +29,14 @@ class _FakeSlot:
         # assert the row went out exactly once, with identity.
         self._has_reader = False
         self.delivered: list[dict] = []
+        # Dismissed-source-link contract the fallback rebind now exercises: a
+        # reused fallback slot's stale set is cleared + marked unhydrated on a
+        # link change (mirrors the real _ChatSlot so the injector can call it).
+        self._dismissed_source_links: set[str] = set()
+        self._dismissed_hydrated = True
+
+    def invalidate_source_links(self) -> None:
+        pass
 
     def _on_message(self, _key, msg) -> None:
         self.delivered.append(msg)

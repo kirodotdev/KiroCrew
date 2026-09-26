@@ -1367,6 +1367,16 @@ _MAX_SOURCE_LINKS_PER_SLOT = 64
 # renders at most this many chips). Shared with the periodic check-status
 # refresh so the driver and the serializer cannot drift.
 _SERIALIZED_SOURCE_LINKS_PER_SLOT = 3
+# Hard ceiling on a slot's persisted dismissed-source-link set. Additions are
+# gated on an identity being one of the transcript's DISTINCT derived links, so
+# the set is bounded by real transcript content -- but a very long transcript
+# mentioning many distinct links keeps that implicit bound loose. This names an
+# explicit cap enforced at the add site (``dismiss_source_link``), the union
+# write in the unlink handler, and the restore site
+# (``_restore_dismissed_source_links``), so the retained set and its serialized
+# metadata cannot grow past a stated bound. 512 sits well above the 64 links a
+# slot ever RENDERS, so an ordinary session never approaches it.
+_MAX_DISMISSED_SOURCE_LINKS = 512
 
 
 def _budgeted_source_links(links: list[dict]) -> list[dict]:
@@ -2395,6 +2405,10 @@ class _ChatSlot:
         "_queue_repository",
         "_source_links_cache",
         "_source_links_revision",
+        "_dismissed_source_links",
+        "_dismissed_hydrated",
+        "_dismissed_txn_depth",
+        "_dismissed_txn_pending",
         "_closing",
         "key",
         "title",
@@ -2736,11 +2750,47 @@ class _ChatSlot:
         )
         # (content revision, links) cache for the sidebar PR chips scan.
         self._source_links_revision = 0
-        self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
+        self._source_links_cache: tuple[tuple[int, int, int], list[dict]] | None = None
         # Admission fence while slot deletion spans monitor retirement and history
         # I/O. A DEPTH: two retractions can overlap on one slot, and each must
         # release only its own acquisition (see ``begin_close``).
         self._closing = 0
+        # Serialized ``SourceRef.identity`` keys the user has explicitly unlinked
+        # from this session. The derivation in ``SlotProjection.source_links``
+        # filters against this, so a dismissed change stays gone across the
+        # transcript re-scan that every revision bump triggers. Persisted in the
+        # slot's durable metadata (``dismissed_source_links``) so a gateway
+        # restart does not resurrect a chip the user removed.
+        self._dismissed_source_links: set[str] = set()
+        # False marks a slot bound to a transcript whose dismissed set could NOT
+        # be read (a transient metadata-read failure at bind). The binding is
+        # kept for routing/continuity, but the slot's full save must then CARRY
+        # FORWARD the on-disk dismissed line rather than serialize its (empty)
+        # in-memory set, or it would erase the transcript's real tombstones. A
+        # readable restore (``_restore_dismissed_source_links``) sets it True.
+        self._dismissed_hydrated: bool = True
+        # >0 while one OR MORE unlink transactions hold an uncommitted, tentative
+        # dismissal in ``_dismissed_source_links`` (between the in-memory mutate
+        # and the guarded persist/rollback). It is a DEPTH COUNTER, not a bool,
+        # because concurrent unlink requests can touch the SAME slot object under
+        # DIFFERENT ``_source_link_txn_lock`` keys (a dirty slot rebound onto
+        # another transcript mid-flight): each transaction increments on entry and
+        # decrements on its own exit, so the slot stays in-flight while ANY
+        # transaction still holds it and one request's rollback can never clear
+        # another's guard. A periodic full-save flush that fires while this is >0
+        # carries the on-disk dismissed line forward instead of serializing the
+        # tentative set — the guarded write may still fail and roll it back.
+        self._dismissed_txn_depth: int = 0
+        # The subset of ``_dismissed_source_links`` this slot added under an
+        # in-flight (not-yet-committed) unlink transaction. The source-link
+        # projection subtracts these so a CONCURRENT ``push_slots_update`` fired
+        # during the guarded metadata write does not publish a tentative
+        # dismissal (persist-before-publish): a chip stays visible to clients
+        # until the write that removes it has durably committed, and a failed
+        # write that rolls the tentative dismissal back never leaves a client
+        # showing a chip disk still records. Cleared for the key when the
+        # transaction commits (durable) or rolls back (removed from the set).
+        self._dismissed_txn_pending: set[str] = set()
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
         # Monotonic publication history for turn ownership. ``task`` returns to
@@ -4578,6 +4628,69 @@ class _ChatSlot:
     def invalidate_source_links(self) -> None:
         """Mark cached sidebar PR/MR/issue links stale after message-content mutation."""
         self._source_links_revision += 1
+
+    def dismiss_source_link(self, identity_key: str) -> bool:
+        """Suppress one source-link identity from this session's derived chips.
+
+        Records the serialized identity into the per-slot dismissed set and
+        invalidates the cache so the next derivation re-scans without it. The
+        transcript is never touched -- the link is DERIVED, so removing it would
+        be undone by the next re-scan; suppression is the only stable removal.
+        No remote provider mutation happens: this hides a chip, it does not close
+        a pull request. Returns ``True`` when the key was newly added, ``False``
+        when it was already dismissed (an idempotent repeat).
+        """
+        if identity_key in self._dismissed_source_links:
+            return False
+        if len(self._dismissed_source_links) >= _MAX_DISMISSED_SOURCE_LINKS:
+            # At the named ceiling: refuse to grow the retained set (and the
+            # metadata it serializes) further. Additions are already gated on
+            # real transcript links, so reaching this bound is pathological; drop
+            # the add rather than let the set grow unbounded.
+            return False
+        self._dismissed_source_links.add(identity_key)
+        self.invalidate_source_links()
+        return True
+
+    def mentions_source_identity(self, identity_key: str) -> bool:
+        """Does this transcript RAW-mention the given source-link identity?
+
+        Unlike ``_pr_source_links`` (which filters the dismissed set out), this
+        asks only whether the transcript's own rows actually reference the
+        identity — so it is independent of the per-slot dismissed set, which a
+        concurrent unlink on a since-rebound slot can populate TENTATIVELY with a
+        foreign key. The unlink authorization uses it to admit a non-derived
+        identity only when the PINNED transcript genuinely carries it, closing
+        the path where a tentative foreign key would authorize a durable tombstone
+        on a transcript that never mentioned the link. Reuses the same parser and
+        identity keying as the derivation so the two cannot drift.
+        """
+        from kiro_crew.dashboard.handlers.source_providers import (
+            iter_source_url_candidates,
+            parse_source_url,
+            source_link_path_markers,
+            source_ref_identity_key,
+        )
+
+        path_markers = source_link_path_markers()
+        # No parse budget and no early stop here (unlike the bounded derivation):
+        # this predicate authorizes a durable tombstone, so it must scan the WHOLE
+        # transcript -- a budget that gave up early could report a genuinely
+        # mentioned identity as absent and misauthorize the write.
+        for msg in self.messages:
+            if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or "https://" not in content:
+                continue
+            for candidate in iter_source_url_candidates(content, path_markers):
+                try:
+                    ref = parse_source_url(candidate)
+                except ValueError:
+                    continue
+                if source_ref_identity_key(ref.identity) == identity_key:
+                    return True
+        return False
 
     def _pr_source_links(self) -> list[dict]:
         """Return cached source links ordered by their most recent mention."""

@@ -12,8 +12,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
-from itertools import islice
+from collections.abc import Iterable, Iterator, Mapping
+from itertools import chain, islice
 from pathlib import Path
 
 from kiro_crew import mcp_apps_render, model_registry
@@ -56,6 +56,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     sanitize_restored_queue,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_DISMISSED_SOURCE_LINKS,
     _TRANSIENT_ROLES,
     DashboardState,
     _ChatSlot,
@@ -395,6 +396,100 @@ def _validate_autocompact_pct(raw: object) -> float | None:
     if raw is not None:
         logger.warning("Discarding invalid persisted autocompact_pct: %r", raw)
     return None
+
+
+def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
+    """Rehydrate the per-slot dismissed source-link identity set from metadata.
+
+    History JSONL is a file an attacker with disk access could tamper, and these
+    keys feed the derivation filter that decides which chips a client sees, so
+    each entry is re-validated against the canonical serialized-identity grammar
+    before it is trusted. A malformed entry is dropped rather than aborting the
+    restore -- a corrupt suppression key can only ever fail to match a real
+    identity, so dropping it is safe and fails toward showing the chip.
+    """
+    if not isinstance(raw, list):
+        # The transcript being loaded records no dismissals, so the slot has
+        # none: clear rather than return, or a set left over from a previous
+        # binding of a reused slot object would survive a rebind and suppress
+        # unrelated links on the new transcript. Hydration is authoritative —
+        # the slot's dismissed set always reflects the transcript it now shows.
+        slot._dismissed_source_links = set()
+        slot._dismissed_hydrated = True
+        slot.invalidate_source_links()
+        return
+    # Function-local to avoid a circular import: source_providers imports from the
+    # dashboard state/handler layer this module also serves. Same lazy-import
+    # convention the handlers use for source_providers.
+    from kiro_crew.dashboard.handlers.source_providers import is_valid_source_identity_key
+
+    # Enforce the same named ceiling the add site does, DURING iteration, so a
+    # tampered or oversized on-disk line cannot make us materialize an unbounded
+    # valid-key list before slicing. Stop as soon as the cap is reached; keeping
+    # the first _MAX_DISMISSED_SOURCE_LINKS valid keys and dropping the rest only
+    # ever fails toward SHOWING a chip, never toward hiding an unrelated one.
+    bounded: set[str] = set()
+    for key in raw:
+        if len(bounded) >= _MAX_DISMISSED_SOURCE_LINKS:
+            break
+        if is_valid_source_identity_key(key):
+            bounded.add(key)
+    slot._dismissed_source_links = bounded
+    slot._dismissed_hydrated = True
+
+
+def _capped_dismissed_line(keys: Iterable[str]) -> list[str]:
+    """The bounded, sorted ``dismissed_source_links`` value for a metadata write.
+
+    A bound must be applied at the point a field is RETAINED, not only where it
+    is read back: the restore path already caps the in-memory set, but the
+    save/merge paths union the slot's set with the on-disk line and write the
+    result, so an oversized on-disk line (tampered, or grown by an older build)
+    would round-trip an unbounded set straight back to disk. Re-validate each key
+    against the canonical serialized-identity grammar (the carry-forward callers
+    pass the raw on-disk list, so a single tampered/oversized string must be
+    dropped here, matching the union paths' filter), sort for a stable line, then
+    keep only the first ``_MAX_DISMISSED_SOURCE_LINKS`` — dropping the tail only
+    ever fails toward SHOWING a chip, never toward hiding an unrelated one — and
+    log when a write is truncated so the drop is observable.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_valid_source_identity_key
+
+    # Bound RETENTION during iteration: never hold more than the cap. Keep a
+    # bounded ``kept`` set of the cap-smallest unique valid keys seen so far —
+    # once it is at capacity, a newly-seen key replaces the current largest kept
+    # key (found via ``max(kept)``) only when it sorts before it, so ``kept``
+    # converges to the cap-smallest keys. At most _MAX_DISMISSED_SOURCE_LINKS
+    # keys are ever resident regardless of how oversized/tampered the input is.
+    # The result is the deterministic sorted prefix — identical to
+    # ``sorted(unique)[:cap]`` — so the written line is stable and matches what a
+    # smaller input would produce. Dropping the tail only ever fails toward
+    # SHOWING a chip, never toward hiding an unrelated one.
+    cap = _MAX_DISMISSED_SOURCE_LINKS
+    kept: set[str] = set()
+    truncated = 0
+    for key in keys:
+        if not is_valid_source_identity_key(key) or key in kept:
+            continue
+        if len(kept) < cap:
+            kept.add(key)
+        else:
+            # At capacity: keep this key only if it sorts BEFORE the current
+            # largest kept key, so ``kept`` converges to the cap-smallest unique
+            # keys — the same set ``sorted(all_unique)[:cap]`` would select — while
+            # never holding more than cap keys resident.
+            largest = max(kept)
+            if key < largest:
+                kept.discard(largest)
+                kept.add(key)
+            truncated += 1
+    if truncated:
+        logger.warning(
+            "dismissed_source_links write truncated by %d to the %d cap",
+            truncated,
+            cap,
+        )
+    return sorted(kept)
 
 
 def save_all_slots_to_history(state: DashboardState) -> None:
@@ -1517,6 +1612,7 @@ def _rehydrate_slot_from_history(
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
         if meta.get("workspace"):
             slot.workspace = meta["workspace"]
         if meta.get("memory_store"):
@@ -2171,6 +2267,7 @@ def _apply_recent_session(
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
@@ -3813,6 +3910,39 @@ def _save_slot_to_history(
                     return False
                 merged_fields.clear()
                 merged_fields.update(_fresh_fields())
+                # Serialized dismissed source-link identities, decided under the
+                # lock from the on-disk ``meta``. When the slot's set is HYDRATED
+                # (reflects disk) write it (sorted, deterministic; empty = nothing
+                # dismissed). When it is UNHYDRATED (bound while the set could not
+                # be read) the in-memory empty set does not reflect disk, so carry
+                # the on-disk line forward rather than erase the real tombstones.
+                # And while an unlink transaction holds an uncommitted TENTATIVE
+                # dismissal (``_dismissed_txn_depth`` > 0), carry the on-disk line
+                # forward too: the tentative set may be rolled back by a failed
+                # guarded write, and this provisional flush must not outlive it.
+                if slot._dismissed_hydrated and slot._dismissed_txn_depth == 0:
+                    # UNION with the on-disk line (available here as ``meta``)
+                    # rather than replacing: a stale off-loop prefetch can bind a
+                    # hydrated set that predates a concurrent unlink's committed
+                    # tombstone, and a bare replacement would erase it. Dismissals
+                    # only grow, so the union can only ADD.
+                    _disk_prev = meta.get("dismissed_source_links")
+                    if isinstance(_disk_prev, list):
+                        # Pass the in-memory set and the raw (untrusted) on-disk
+                        # list as ONE chained iterable: _capped_dismissed_line
+                        # validates, dedups and bounds during iteration, so no
+                        # unbounded merged set is built here before the cap.
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(
+                            chain(slot._dismissed_source_links, _disk_prev)
+                        )
+                    else:
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(
+                            slot._dismissed_source_links
+                        )
+                else:
+                    _carry = meta.get("dismissed_source_links")
+                    if isinstance(_carry, list) and _carry:
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(_carry)
                 # Held /note lines: a MERGE writer, so it unions
                 # with the on-disk hold and never shrinks it. A live-state
                 # mirror here could race a turn-end flush that just delivered
@@ -4114,6 +4244,55 @@ def _save_slot_to_history(
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct
+            # Serialized dismissed source-link identities. This path rebuilds the
+            # metadata line from scratch, so an omitted key means "no dismissals"
+            # on restore -- write it only when non-empty (sorted for a
+            # deterministic line). A dismissal is permanent (there is no unlink-
+            # undo), so the set only ever grows within a session; the empty case
+            # is simply a session that has never dismissed a chip.
+            #
+            # A slot bound to a transcript whose dismissed set could NOT be read
+            # (``_dismissed_hydrated is False``) holds an EMPTY in-memory set that
+            # does NOT reflect disk, so serializing it would erase the real
+            # tombstones. Carry the on-disk line forward verbatim instead until a
+            # readable hydration replaces it.
+            #
+            # Likewise, while an unlink transaction holds an uncommitted TENTATIVE
+            # dismissal (``_dismissed_txn_depth`` > 0), the in-memory set is ahead
+            # of the authoritative guarded write and may be rolled back. Carrying
+            # the on-disk line forward keeps this provisional flush from
+            # persisting a tombstone that a failed DELETE would then be unable to
+            # take back (the 409-then-restart-hides-the-chip corruption).
+            if not slot._dismissed_hydrated or slot._dismissed_txn_depth > 0:
+                _carry = existing_meta.get("dismissed_source_links")
+                if isinstance(_carry, list) and _carry:
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(_carry)
+            elif slot._dismissed_source_links or isinstance(
+                existing_meta.get("dismissed_source_links"), list
+            ):
+                # UNION the in-memory set with the existing on-disk line rather
+                # than replacing disk with memory. ``_dismissed_hydrated`` means
+                # the set was readable AT BIND, but a stale off-loop prefetch
+                # (workflow/cron fallback) can bind a set that predates a
+                # concurrent unlink's committed tombstone; a bare replacement
+                # would then SHRINK the on-disk set and erase that tombstone
+                # (chip reappears after restart). Dismissals are permanent and
+                # only grow, so a union can only ADD — it can never drop a
+                # committed tombstone, whichever side is momentarily stale, while
+                # still persisting a genuinely new in-memory dismissal.
+                _disk_prev = existing_meta.get("dismissed_source_links")
+                if isinstance(_disk_prev, list):
+                    # Pass the in-memory set and the raw (untrusted) on-disk list
+                    # as ONE chained iterable: _capped_dismissed_line validates,
+                    # dedups and bounds during iteration, so no unbounded merged
+                    # set is built here before the cap.
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(
+                        chain(slot._dismissed_source_links, _disk_prev)
+                    )
+                elif slot._dismissed_source_links:
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(
+                        slot._dismissed_source_links
+                    )
             if slot.mode:
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":

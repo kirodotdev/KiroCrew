@@ -11,6 +11,7 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.chat_utils import redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
@@ -21,6 +22,16 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+
+# Prefetched dismissed-source-link value that says "the metadata read was
+# skipped or came back UNREADABLE" — distinct from a readable transcript that
+# simply records no dismissals (an empty list). On the unreadable case the bind
+# CLEARS the reused slot's in-memory set (so a colliding local transcript's
+# tombstones cannot fold into this cron transcript on the next union-save) and
+# marks it dismissed-unhydrated, while the durable value is PRESERVED on disk
+# and carried forward by that save until a readable restore replaces it. So this
+# sentinel routes _bind_cron_slot away from the restore call.
+_DISMISSED_UNREAD: object = object()
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
@@ -529,6 +540,7 @@ def _bind_cron_slot(
     state: DashboardState,
     job: "CronJob",
     history: list[dict[str, Any]] | None,
+    dismissed: object = _DISMISSED_UNREAD,
 ) -> Any:
     """Create-or-find the job's dashboard slot, bind its identity, publish it.
 
@@ -560,12 +572,35 @@ def _bind_cron_slot(
     if job.memory_store:
         slot.memory_store = job.memory_store
     if not slot.linked_session_key:
+        # Bind + hydrate ALWAYS, so injected results and follow-up turns route to
+        # the same ``cron:{id}`` transcript (splitting the binding on a transient
+        # read failure would corrupt conversation continuity). The dismissed set,
+        # however, is only trustworthy when it was read READABLY off-loop: on the
+        # UNREADABLE sentinel mark the slot ``_dismissed_hydrated = False`` so its
+        # full save CARRIES the on-disk dismissed line forward rather than
+        # serializing its empty in-memory set and erasing the real tombstones. A
+        # later readable restore clears the flag. Link + hydration move together.
         slot.linked_session_key = f"cron:{job.id}"
         # A cron link is exempt from the channel class, so this records nothing in
         # practice. It is here so EVERY assignment site reaches the recorder and the
         # derived pin needs no exception for this one.
         note_crew_log_class(state, slot)
         hydrate_slot_from_history(slot, history or [])
+        if dismissed is not _DISMISSED_UNREAD:
+            _restore_dismissed_source_links(slot, dismissed)
+        else:
+            # CLEAR the in-memory set first: this slot object may be a REUSED
+            # local slot whose ``_dismissed_source_links`` still holds the
+            # COLLIDING local transcript's tombstones. Leaving them in place while
+            # marking ``_dismissed_hydrated = False`` would let the next full save
+            # (which carries the on-disk line forward by UNION) fold those foreign
+            # keys into the ``cron:{id}`` transcript and suppress unrelated links
+            # there. Emptying the set means the union carries only the cron
+            # transcript's own on-disk dismissals; a later readable restore
+            # replaces it authoritatively and clears the flag.
+            slot._dismissed_source_links = set()
+            slot.invalidate_source_links()
+            slot._dismissed_hydrated = False
     # Publish the (possibly just-created) tab to the dashboard-surface registry
     # BEFORE anything routes against it. Every gate that asks "does this session
     # have a tab?" — dashboard_slot_key for sub-agent event routing and
@@ -588,6 +623,7 @@ def inject_cron_result_to_dashboard(
     *,
     include_prompt: bool = True,
     history: list[dict[str, Any]] | None,
+    dismissed: object = _DISMISSED_UNREAD,
     context_reading: dict[str, Any] | None = None,
 ) -> None:
     """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject).
@@ -635,7 +671,7 @@ def inject_cron_result_to_dashboard(
     replay path, or a run that measured nothing) records nothing and keeps
     whatever snapshot an earlier run stored.
     """
-    slot = _bind_cron_slot(state, job, history)
+    slot = _bind_cron_slot(state, job, history, dismissed)
     safe_name = _safe_job_name(job)
 
     # Rows this call owes the durable transcript, in the order they happened.
@@ -784,6 +820,60 @@ async def prefetch_cron_history(state: DashboardState, job_id: str) -> list[dict
     return await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job_id}")
 
 
+async def prefetch_cron_dismissed(state: DashboardState, job_id: str) -> object:
+    """Off-loop read of the cron transcript's dismissed source-link identities.
+
+    Companion to :func:`prefetch_cron_history`: the dismissed set is metadata on
+    the same ``cron:{id}`` transcript, and :func:`_bind_cron_slot` restores it
+    when it first links the slot. Reading it here (on a worker thread) keeps the
+    synchronous get_metadata OFF the gateway loop.
+
+    Returns the raw ``dismissed_source_links`` value (a list, possibly empty)
+    when the metadata line is READABLE — including an absent transcript, which
+    reads back as an empty, readable line (no dismissals). Returns the
+    :data:`_DISMISSED_UNREAD` sentinel only when the read genuinely FAILS
+    (raised / unreadable). ``_bind_cron_slot`` still binds on the sentinel to
+    keep transcript routing intact, and defers only the dismissed WRITE (carries
+    the on-disk line forward) so a transient read failure never erases tombstones.
+    Already-linked slots retry ONLY while dismissed-unhydrated and still bound
+    to this job. A readable retry restores that exact live binding here, before
+    returning; callers need no second apply step across another await.
+    """
+    if state.conversation_log is None:
+        return _DISMISSED_UNREAD
+    slot_name = f"cron-{job_id}"
+    history_key = f"cron:{job_id}"
+    slot = state.get_slot(slot_name)
+    binding = slot.linked_session_key if slot is not None else ""
+    if slot is not None and binding and (binding != history_key or slot._dismissed_hydrated):
+        return _DISMISSED_UNREAD
+    try:
+        meta, readable = await asyncio.to_thread(
+            state.conversation_log.get_metadata_status, history_key
+        )
+    except Exception:
+        # A raising / non-conforming metadata read is treated as UNREADABLE, so
+        # the bind CLEARS the reused slot's in-memory set and marks it
+        # dismissed-unhydrated while the DURABLE on-disk dismissals are preserved
+        # (carried forward by the next save) rather than erased — the same
+        # fail-toward-keeping-the-tombstone stance as the ``readable`` guard
+        # below.
+        return _DISMISSED_UNREAD
+    if not readable or state.get_slot(slot_name) is not slot:
+        return _DISMISSED_UNREAD
+    if slot is not None and slot.linked_session_key != binding:
+        return _DISMISSED_UNREAD
+    dismissed = meta.get("dismissed_source_links")
+    if slot is not None and binding:
+        # Another readable restore or unlink may have won while we read. Its
+        # live state is newer; never overwrite it with our prefetch snapshot.
+        if slot._dismissed_hydrated:
+            return _DISMISSED_UNREAD
+        _restore_dismissed_source_links(slot, dismissed)
+        slot.invalidate_source_links()
+    return dismissed
+
+
 async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     """Make an eligible job's tab exist — and carry its identity — at run START.
 
@@ -804,8 +894,9 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     no-tab / no-identity / no-dispatch stays the deliberate fail-closed
     contract — an ineligible job is untouched by this call.
 
-    Cheap on every run after the first: an existing linked slot returns before
-    any transcript I/O. The first bind reads the ``cron:{id}`` history via
+    Cheap on every run after a successful hydration: an existing linked slot
+    skips transcript rows, retrying only unreadable dismissal metadata. The first
+    bind reads the ``cron:{id}`` history via
     :func:`prefetch_cron_history` (off-loop) BEFORE linking, because the link
     and the hydration must move together — see :func:`_bind_cron_slot`. The
     injection's own unlink guard then no-ops, so delivery behaves identically
@@ -815,9 +906,11 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
         return
     slot = state.get_slot(f"cron-{job.id}")
     if slot is not None and slot.linked_session_key:
+        await prefetch_cron_dismissed(state, job.id)
         return
     history = await prefetch_cron_history(state, job.id)
-    _bind_cron_slot(state, job, history)
+    dismissed = await prefetch_cron_dismissed(state, job.id)
+    _bind_cron_slot(state, job, history, dismissed)
 
 
 def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None:

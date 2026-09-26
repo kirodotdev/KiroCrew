@@ -37,11 +37,13 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
     chat_folder_exists,
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
     move_cron_job_tab,
+    prefetch_cron_dismissed,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -1873,7 +1875,12 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         # that produced it is not recoverable from live config -- see
         # inject_cron_result_to_dashboard's ``include_prompt``.
         inject_cron_result_to_dashboard(
-            state, job, job.last_result or "", history=history, include_prompt=False
+            state,
+            job,
+            job.last_result or "",
+            history=history,
+            dismissed=await prefetch_cron_dismissed(state, job.id),
+            include_prompt=False,
         )
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
@@ -1892,6 +1899,34 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # recorder and the derived pin needs no exception for this one.
                 note_crew_log_class(state, slot)
                 hydrate_slot_from_history(slot, history)
+                # Mark dismissed-UNHYDRATED before the off-loop read: the slot is
+                # now bound + dirty with an empty in-memory set, and a periodic
+                # flush during the await would otherwise serialize [] over the
+                # transcript's real dismissals. With the flag False any such flush
+                # carries the on-disk line forward instead. A readable restore
+                # below then hydrates it; an unreadable read leaves it deferred.
+                #
+                # CLEAR the in-memory set here rather than trusting
+                # ``get_or_create_slot`` to have done it: this slot object may be
+                # a REUSED ``cron-{id}`` slot that still carries a PRIOR binding's
+                # dismissal. If that stale key survived and the metadata read came
+                # back UNREADABLE (so the authoritative restore below is skipped),
+                # the deferred union-carry flush would fold the foreign key into
+                # this ``session_key`` transcript and hide its matching chip. An
+                # empty set means the union carries only the transcript's own
+                # on-disk dismissals; the readable restore replaces it wholesale.
+                slot._dismissed_source_links = set()
+                slot.invalidate_source_links()
+                slot._dismissed_hydrated = False
+                if state.conversation_log is not None:
+                    try:
+                        _meta, _readable = await asyncio.to_thread(
+                            state.conversation_log.get_metadata_status, session_key
+                        )
+                    except Exception:
+                        _meta, _readable = {}, False
+                    if _readable:
+                        _restore_dismissed_source_links(slot, _meta.get("dismissed_source_links"))
         else:
             # No session log — fall back to notification body.
             notif = next(

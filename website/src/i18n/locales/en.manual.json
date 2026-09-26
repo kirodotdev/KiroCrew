@@ -4681,7 +4681,11 @@
       "open_crew_members": "Crew Members",
       "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
       "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do.",
-      "model_list_failed": "Couldn't load the model list. What's shown may be incomplete or out of date."
+      "model_list_failed": "Couldn't load the model list. What's shown may be incomplete or out of date.",
+      "source_link_actions": "Unlink a PR or Issue chip",
+      "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
+      "unlink_source_link_confirm": "Select again to unlink “{{label}}”",
+      "unlink_source_link_failed": "Could not unlink. Try again."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

@@ -10906,7 +10906,11 @@
       "opens_here_runs_on_instance": "このセッションをここで開きます — 実行は {{name}} で続きます",
       "opens_on_crew_switches_there": "{{name}} で開きます — その Crew に切り替わり、ここでは開きません",
       "remote_instances_list_unavailable": "リモートクルーを一覧取得できなかったため、それらのセッションは表示されません。",
-      "model_list_failed": "モデル一覧を読み込めませんでした。表示中の内容は不完全または古い可能性があります。"
+      "model_list_failed": "モデル一覧を読み込めませんでした。表示中の内容は不完全または古い可能性があります。",
+      "source_link_actions": "PR または Issue チップのリンクを解除",
+      "unlink_source_link": "このセッションから完全に非表示にする PR または Issue チップを選択してください。ソースと会話履歴は変更されません。",
+      "unlink_source_link_confirm": "もう一度選択して 「{{label}}」 のリンクを解除",
+      "unlink_source_link_failed": "リンク解除できませんでした。もう一度お試しください。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

@@ -11070,7 +11070,11 @@
       "opens_here_runs_on_instance": "এই সেশনটি এখানে খোলে — এর কাজ {{name}}-এ চলতে থাকে",
       "opens_on_crew_switches_there": "{{name}} এ খোলে — সেই Crew-এ চলে যায়, এখানে নয়",
       "remote_instances_list_unavailable": "রিমোট ক্রু তালিকাভুক্ত করা যায়নি, তাই সেগুলির সেশন দেখানো হজ্ছে না।",
-      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।"
+      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।",
+      "source_link_actions": "একটি PR বা Issue চিপ আনলিঙ্ক করো",
+      "unlink_source_link": "এই সেশন থেকে স্থায়ীভাবে লুকাতে একটি PR বা Issue চিপ নির্বাচন করো। উৎস ও কথোপকথনের রেকর্ড অপরিবর্তিত থাকবে।",
+      "unlink_source_link_confirm": "“{{label}}” আনলিঙ্ক করতে আবার নির্বাচন করো",
+      "unlink_source_link_failed": "আনলিঙ্ক করা যায়নি। আবার চেষ্টা করো।"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

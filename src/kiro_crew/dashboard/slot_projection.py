@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -50,14 +51,42 @@ class SlotProjection:
         """Return source links ordered by their most recent mention."""
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
+            iter_source_url_candidates,
             parse_source_url,
             source_link_path_markers,
+            source_ref_identity_key,
             source_ref_label,
         )
 
+        # Identities the user has explicitly unlinked from this session. The set
+        # is keyed on the serialized identity, so a dismissed change stays gone
+        # no matter which URL shape re-mentions it. Snapshotting it as a frozenset
+        # keeps the loop's membership test cheap and immune to a concurrent mutate.
+        # Read defensively: this scanner is a staticmethod designed to run against
+        # a bare ``object.__new__``-built slot that supplies only the fields the
+        # walk reaches, so a slot that never ran ``__init__`` (and thus has no
+        # dismissed set) must read as "nothing dismissed" rather than raise.
+        dismissed = frozenset(getattr(slot, "_dismissed_source_links", ()) or ())
+        # Keys added under an in-flight (uncommitted) unlink transaction are NOT
+        # yet suppressed: publishing them here would let a concurrent broadcast
+        # show a chip removed before its guarded write commits (and possibly
+        # rolled back). Subtract them so the chip stays visible until commit.
+        # Read defensively for the same bare-slot reason as ``dismissed`` above.
+        _txn_pending = frozenset(getattr(slot, "_dismissed_txn_pending", ()) or ())
+        if _txn_pending:
+            dismissed = dismissed - _txn_pending
+
         # The allowlist generation belongs in the cache key: a cold self-managed
-        # GitLab miss must be retried after the allowlist finishes loading.
-        cache_key = (slot._source_links_revision, gitlab_hosts_generation())
+        # GitLab miss must be retried after the allowlist finishes loading. The
+        # dismissed-set revision belongs there too: unlinking a chip bumps it via
+        # ``invalidate_source_links``, but a set that gained and then lost the
+        # same key across two edits would leave the revision unmoved, so its
+        # current contents are folded in directly rather than trusting the count.
+        cache_key = (
+            slot._source_links_revision,
+            gitlab_hosts_generation(),
+            hash(dismissed),
+        )
         if slot._source_links_cache and slot._source_links_cache[0] == cache_key:
             return slot._source_links_cache[1]
 
@@ -65,7 +94,6 @@ class SlotProjection:
         # registered provider's own path marker is honoured by the pre-parse
         # filter instead of being dropped before ``parse_source_url`` sees it.
         path_markers = source_link_path_markers()
-        stop_chars = set(" \t\n<>()[]{}\"'")
         # Keyed on the ref's identity, not on ``ref.url``: a registered
         # provider whose URL grammar accepts more than one shape for the same
         # change (e.g. an optional revision pin kept in the canonical URL)
@@ -87,21 +115,23 @@ class SlotProjection:
             if not isinstance(content, str) or "https://" not in content:
                 continue
 
-            # Bound each candidate by the next occurrence.  Without that bound,
-            # repeated ``https://`` prefixes make the backwards scan quadratic.
-            search_end = len(content)
-            while len(found) < max_links and parse_budget > 0:
-                idx = content.rfind("https://", 0, search_end)
-                if idx == -1:
+            # ``iter_source_url_candidates`` is the shared token grammar (the
+            # unlink-authorization predicate ``_ChatSlot.mentions_source_identity``
+            # walks the same one, so the two cannot drift). It yields front to
+            # back; we need newest-first (reversed) to keep this scanner's "newest
+            # mention wins" contract -- combined with the outer
+            # ``reversed(messages)`` walk, the first writer into ``found`` is the
+            # most recent mention, so the chip links to the newest URL. Collect
+            # into a ``deque(maxlen=parse_budget)`` rather than an unbounded
+            # ``list``: at most ``parse_budget`` candidates are ever resident, so
+            # a message dense in marker-carrying URLs cannot allocate an unbounded
+            # candidate list before the budget check stops the scan. maxlen keeps
+            # the LAST budget candidates (the message tail = its most recent
+            # content), and reversing them yields newest-first within the cap.
+            recent = deque(iter_source_url_candidates(content, path_markers), maxlen=parse_budget)
+            for candidate in reversed(recent):
+                if len(found) >= max_links or parse_budget <= 0:
                     break
-                token_limit = search_end
-                search_end = idx
-                end = idx
-                while end < token_limit and content[end] not in stop_chars:
-                    end += 1
-                candidate = content[idx:end].rstrip(".,!?;:*_~`")
-                if not any(marker in candidate for marker in path_markers):
-                    continue
                 parse_budget -= 1
                 try:
                     ref = parse_source_url(candidate)
@@ -109,6 +139,13 @@ class SlotProjection:
                     continue
                 identity = ref.identity
                 if identity in found:
+                    continue
+                # Budget is already charged above, so an unlinked chip costs the
+                # same parse work it did before dismissal -- cost accounting is
+                # unchanged, only the surfaced result set shrinks. Keyed on the
+                # serialized identity so the suppression matches the object, not
+                # the particular URL that re-mentioned it.
+                if source_ref_identity_key(identity) in dismissed:
                     continue
                 # First writer wins, and because the walk is backwards the
                 # first writer IS the most recent mention -- so the newest
@@ -120,6 +157,13 @@ class SlotProjection:
                     "url": ref.url,
                     "kind": ref.kind,
                     "label": source_ref_label(ref),
+                    # The serialized identity travels to the client so an unlink
+                    # affordance can name this exact object back to the DELETE
+                    # endpoint without the client having to re-parse the URL. It
+                    # is the SAME key the dismissed-set filter above tests, so a
+                    # round-trip through the wire cannot drift from what the
+                    # backend suppresses.
+                    "identity": source_ref_identity_key(identity),
                 }
 
         links = list(found.values())

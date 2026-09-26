@@ -443,6 +443,7 @@ def test_sidebar_source_links_include_the_plugin_chip(plugin) -> None:
             "url": CR_URL,
             "kind": "change",
             "label": "CR-123",
+            "identity": '["acme","review.acme.example","","acme",123,"","change",""]',
         }
     ]
 
@@ -501,6 +502,7 @@ def test_sidebar_dedups_on_ref_identity_not_canonical_url(plugin) -> None:
             "url": f"{CR_URL}/revisions/2",
             "kind": "change",
             "label": "CR-123",
+            "identity": '["acme","review.acme.example","","acme",123,"","change",""]',
         }
     ]
 

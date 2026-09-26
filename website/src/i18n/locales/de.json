@@ -11070,7 +11070,11 @@
       "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
       "opens_on_crew_switches_there": "Öffnet auf {{name}} — wechselt zu dieser Crew, nicht hier",
       "remote_instances_list_unavailable": "Remote-Crews konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt.",
-      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet."
+      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet.",
+      "source_link_actions": "Einen PR- oder Issue-Chip lösen",
+      "unlink_source_link": "Wähle einen PR- oder Issue-Chip, um ihn dauerhaft aus dieser Sitzung auszublenden. Quelle und Gesprächsverlauf bleiben unverändert.",
+      "unlink_source_link_confirm": "Zum Lösen von „{{label}}“ erneut auswählen",
+      "unlink_source_link_failed": "Trennen fehlgeschlagen. Erneut versuchen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

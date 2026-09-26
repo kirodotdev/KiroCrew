@@ -11234,7 +11234,11 @@
       "opens_here_runs_on_instance": "Abre esta sesión aquí — su ejecución sigue en {{name}}",
       "opens_on_crew_switches_there": "Se abre en {{name}} — cambia a ese Crew, no aquí",
       "remote_instances_list_unavailable": "No se pudieron enumerar los crews remotos, por lo que sus sesiones no se muestran.",
-      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado."
+      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado.",
+      "source_link_actions": "Desvincular un chip de PR o incidencia",
+      "unlink_source_link": "Selecciona un chip de PR o incidencia para ocultarlo permanentemente en esta sesión. El origen y la transcripción no cambian.",
+      "unlink_source_link_confirm": "Selecciona de nuevo para desvincular “{{label}}”",
+      "unlink_source_link_failed": "No se pudo desvincular. Inténtalo de nuevo."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
