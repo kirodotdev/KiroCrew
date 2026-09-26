@@ -22,6 +22,7 @@ import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
   Ellipsis, RotateCw, FileText, GitCommit, Rocket, Undo2, Info, AlertTriangle, ShieldAlert,
+  Eye,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 import { ApiError } from '../api/client'
@@ -748,11 +749,15 @@ interface TicketRef { id: string; url?: string | null }
 interface PrInfo { number?: number; state?: string; url?: string; isDraft?: boolean; title?: string }
 interface Worktree {
   name: string; branch?: string; is_main?: boolean; running?: boolean
-  has_dist?: boolean; dirty?: boolean; port?: number; health?: number; behind?: number
+  // `null` is UNKNOWN, not false. A checkout Dev Fleet may only read answers null
+  // for every field only this product's own build and cutover chain can know, and
+  // JavaScript makes null falsy — so each read below tests for it explicitly
+  // rather than letting "unknown" render as "no".
+  has_dist?: boolean | null; dirty?: boolean | null; port?: number; health?: number; behind?: number
   last_updated_at?: number
   pr?: PrInfo | null; shipped?: boolean
   issues?: IssueRef[]; tickets?: TicketRef[]; summary?: string | null
-  own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
+  own_commits?: number; real_dirty?: boolean; is_live?: boolean | null; is_staged?: boolean | null; legacy?: boolean
   // Breakdown of what makes the tree dirty, from the detail payload. A tree
   // whose only dirt is untracked files (dirty_tracked === false) is removable
   // by discarding them; one with modified tracked files is not.
@@ -763,7 +768,7 @@ interface Worktree {
   pod_resources?: PodResources | null
 }
 interface UndoTarget { name: string; path: string }
-interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean | null; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; manual_restart?: string; fleet_totals?: FleetTotals; read_only_reason?: string | null }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -776,7 +781,7 @@ interface RebaseResult { kind: 'ok' | 'conflict' | 'error'; text: string }
 
 /* ─── Detail Panel (expanded row) ─── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { w: Worktree; d: any; busy: Record<string, boolean>; onRemove: () => void; onLoadLogs: () => void; logs?: string; logsLoading?: boolean }) {
+function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading, readOnlyReason }: { w: Worktree; d: any; busy: Record<string, boolean>; onRemove: () => void; onLoadLogs: () => void; logs?: string; logsLoading?: boolean; readOnlyReason?: string | null }) {
   const mono: CSSProperties = { fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 11.5 }
   const mutedSm: CSSProperties = { fontSize: 11, color: 'var(--muted)', lineHeight: 1.6 }
   const [logsOpen, setLogsOpen] = useState(false)
@@ -875,7 +880,7 @@ function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoading }: { 
             {iconLabel(<FileText size={12} className="lucide-inline" />, logsLoading ? i18nT('pages.devFleetPage.loading') : logsOpen ? i18nT('pages.devFleetPage.hide_logs') : i18nT('pages.devFleetPage.load_pod_logs'))}
           </Btn>
         ) : null}
-        {!w.is_main ? (
+        {!w.is_main && !readOnlyReason ? (
           <Btn danger onClick={onRemove} disabled={!!busy[w.name + ':remove']}>
             {iconLabel(<Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.remove'))}
           </Btn>
@@ -1064,6 +1069,12 @@ export default function DevFleetPage() {
   // against a state nobody knows. Make live is disabled for the whole outage; the
   // notice's Ask-the-agent hand-off is the recovery path.
   const liveStateUnknown = fleet?.live_state_known === false
+  // A checkout Dev Fleet may only read. The backend refuses EVERY non-GET route on
+  // one, in a single gate on the method rather than a list of routes, so the page
+  // answers it the same way: one predicate, and no control that posts is offered.
+  // Offering one would promise an action that answers 409, and the reason names the
+  // path the operator can correct — which is the actual remedy.
+  const readOnlyReason = fleet?.read_only_reason || null
   // The worktree a cutover is staged onto (live-target pointer written, gateway
   // not yet restarted into it), but only while the backend would ACCEPT the
   // pointer-only cancel: on a drivable host /make-live refuses it
@@ -1781,7 +1792,10 @@ export default function DevFleetPage() {
   /* ─── Render ─── */
   const wts = fleet?.worktrees || []
   const running = wts.filter((w) => w.running).length
-  const needsProv = wts.filter((w) => !w.is_main && !w.has_dist).length
+  // `=== false`, not `!w.has_dist`: a read-only checkout answers null for a build
+  // only this product's provision chain performs, and provision is refused there, so
+  // counting unknown as unbuilt would advertise work that cannot be started.
+  const needsProv = wts.filter((w) => !w.is_main && w.has_dist === false).length
   const undoTarget = fleet?.undo_target?.path ? fleet.undo_target : null
   const undoCurrent = undoTarget ? wts.find((w) => w.is_live && w.path) || null : null
   const undoKey = undoCurrent && undoTarget
@@ -1883,6 +1897,7 @@ export default function DevFleetPage() {
       label = healthy ? i18nT('pages.devFleetPage.pod_up') : i18nT('pages.devFleetPage.pod_sick')
       title = healthy ? i18nT('pages.devFleetPage.qa_pod_is_running_click_open_to_use_it') : i18nT('pages.devFleetPage.qa_pod_is_running_but_failing_its_health_check')
     }
+    else if (w.has_dist == null) { variant = 'muted'; label = i18nT('pages.devFleetPage.build_unknown'); title = i18nT('pages.devFleetPage.build_state_unknown_read_only_checkout') }
     else if (!w.has_dist) { variant = 'muted'; label = i18nT('pages.devFleetPage.not_built'); title = i18nT('pages.devFleetPage.no_venv_ui_build_yet_provision_builds_this_workt') }
     else if (!podsAvailable) { variant = 'muted'; label = i18nT('pages.devFleetPage.built'); title = i18nT('pages.devFleetPage.built_but_pods_cannot_run_on_this_host_preview_i') }
     else { variant = 'muted'; label = 'ready'; title = i18nT('pages.devFleetPage.built_and_ready_spin_up_a_pod_from_the_row_menu') }
@@ -1891,7 +1906,11 @@ export default function DevFleetPage() {
 
   function rowButtons(w: Worktree): ReactNode[] {
     if (w.is_main) {
-      const out: ReactNode[] = [
+      // Pull+Build posts to a route a read-only checkout refuses, so it is not
+      // offered there. Restart, below, is deliberately still offered: it restarts
+      // the gateway SERVICE and touches no repository, so it is the one control on
+      // this row that still works — and the one an operator may actually want.
+      const out: ReactNode[] = readOnlyReason ? [] : [
         <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc={fleet?.gateway_service_active ? i18nT('pages.devFleetPage.pulls_main_rebuilds_then_restarts_keep_page_open') : i18nT('pages.devFleetPage.pulls_main_and_rebuilds_6_min_does_not_restart')} confirmLabel={i18nT('pages.devFleetPage.start')} onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
           {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? i18nT('pages.devFleetPage.building') : i18nT('pages.devFleetPage.pull_build_2'))}
         </ConfirmBtn>,
@@ -1912,8 +1931,13 @@ export default function DevFleetPage() {
       } else {
         if (showRestart) {
           out.push(
-            <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
-              {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
+            <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')} title={readOnlyReason ? i18nT('pages.devFleetPage.restart_gateway_read_only_hint') : undefined}>
+              {/* Named in full on a read-only checkout, and carrying a tooltip that
+                  says what it does NOT touch: it is the ONE control the mode keeps,
+                  so beside a banner refusing every repository action a bare
+                  "Restart" reads as the promise being wrong rather than as the
+                  service-level action it is. */}
+              {iconLabel(<RotateCw size={13} className="lucide-inline" />, readOnlyReason ? i18nT('pages.devFleetPage.restart_gateway') : i18nT('pages.devFleetPage.restart'))}
             </Btn>
           )
         }
@@ -1923,7 +1947,10 @@ export default function DevFleetPage() {
         // needs no drivable service, and a host without one is precisely where
         // gating it would strand the operator on a feature worktree with no route
         // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
-        if (!w.is_live && !w.is_staged) {
+        // Not offered on a read-only checkout: the gateway refuses `make-live`
+        // there, and the live-state-unknown title it would carry names the wrong
+        // cause — the state is unknown BECAUSE this mode refuses the cutover.
+        if (!readOnlyReason && !w.is_live && !w.is_staged) {
           out.push(
             <Btn
               key="makelive"
@@ -1958,8 +1985,15 @@ export default function DevFleetPage() {
       }
       return out
     }
+    // Every control below posts: Provision, Open (mints a pod token), the pod
+    // verbs, Rebase onto main, Make live, QA + video. A read-only checkout refuses
+    // all of them, so the row shows its state and offers none of them, and the
+    // banner above the rows carries the reason. Returned early rather than gated
+    // one item at a time: a control added here later inherits the refusal instead
+    // of having to remember it.
+    if (readOnlyReason) return []
     const out: ReactNode[] = []
-    if (!w.has_dist) {
+    if (w.has_dist === false) {
       // Active/failed provisioning is rendered as a row-spanning stepper (see
       // renderProvStepper), so this branch only offers the entry-point button.
       out.push(<Btn key="prov" onClick={() => provision(w.name)}>{i18nT('pages.devFleetPage.provision')}</Btn>)
@@ -2155,7 +2189,16 @@ export default function DevFleetPage() {
           <span style={{ overflow: 'hidden', display: 'flex' } as CSSProperties}>{stateDot(w)}</span>
           <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden' } as CSSProperties}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.name}</span>
-            {w.dirty ? <span title={i18nT('pages.devFleetPage.uncommitted_changes')}>{"\u2022"}</span> : null}
+            {w.dirty
+              ? <span title={i18nT('pages.devFleetPage.uncommitted_changes')}>{"\u2022"}</span>
+              : w.dirty == null
+                // Absence of the dot reads as "clean", and on a checkout this app
+                // only reads nobody looked inside: `git status` converts content and
+                // is not run there. A HOLLOW ring, in the same slot the filled dot
+                // uses, says unknown without a word that could be read as part of
+                // the worktree name beside it.
+                ? <span style={{ color: 'var(--muted)' } as CSSProperties} title={i18nT('pages.devFleetPage.working_tree_not_inspected')}>{"\u25E6"}</span>
+                : null}
             {/* The primary checkout can be left parked on a feature branch (a
                 past PR checked out in place and never switched back). The row's
                 name is hardcoded to the base branch, so without this badge the
@@ -2203,7 +2246,7 @@ export default function DevFleetPage() {
             {detail[w.name].error
               // Read failure of the row's detail fetch — nothing typed, hand-off on.
               ? <ErrorNotice message={detail[w.name].error} askAgent testId={`worktree-detail-error-${w.name}`} />
-              : <DetailPanel w={w} d={detail[w.name]} busy={busy} onRemove={() => removeWorktree(w.name, { ...w, ...detail[w.name] })} onLoadLogs={() => loadPodLogs(w.name)} logs={podLogs[w.name]} logsLoading={podLogsLoading[w.name]} />}
+              : <DetailPanel w={w} d={detail[w.name]} busy={busy} onRemove={() => removeWorktree(w.name, { ...w, ...detail[w.name] })} onLoadLogs={() => loadPodLogs(w.name)} logs={podLogs[w.name]} logsLoading={podLogsLoading[w.name]} readOnlyReason={readOnlyReason} />}
           </div>
         ) : null}
       </div>
@@ -2242,7 +2285,22 @@ export default function DevFleetPage() {
   // the unknown state is an error notice above the list, never a bare list.
   else body = (
     <div>
-      {fleet?.live_state_known === false && (
+      {readOnlyReason && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="fleet-read-only"
+          className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn-subtle px-3 py-2.5 mb-3 text-[12.5px] leading-relaxed text-text-strong"
+        >
+          <Eye className="lucide-inline h-4 w-4 shrink-0 mt-0.5 text-warn" aria-hidden />
+          <span className="min-w-0 break-words">{readOnlyReason}</span>
+        </div>
+      )}
+      {/* Suppressed while the checkout is read-only: the live state is unknown there
+          because THIS mode refuses the cutover routes, not because the gateway failed
+          to answer, and the read-only notice above already states the cause and the
+          remedy. Rendering both would offer "check the gateway" for a healthy one. */}
+      {!readOnlyReason && fleet?.live_state_known === false && (
         <ErrorNotice
           title={i18nT('pages.devFleetPage.live_state_unknown')}
           message={i18nT('pages.devFleetPage.live_state_unknown_help')}
@@ -2455,16 +2513,24 @@ export default function DevFleetPage() {
       )}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
-          <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
+          {/* The default subtitle names sync, rebase, QA pods and cleanup -- the four
+              things a read-only checkout refuses -- so the page would contradict its
+              own banner two lines later. */}
+          <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={readOnlyReason ? i18nT('pages.devFleetPage.read_only_subtitle') : i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
           <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-8 min-h-0">
             {/* The how-to describes row actions; with no readable fleet there are
-                no rows, and instructions for absent controls read as a broken page. */}
+                no rows, and instructions for absent controls read as a broken page.
+                A read-only checkout is the same problem with rows present: all four
+                controls it names are refused there, so it is replaced by the one
+                sentence that IS true of that mode. */}
             {!noFleet && (
             <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1">
+              {readOnlyReason ? i18nT('pages.devFleetPage.read_only_rows_are_git_state_only') : <>
               {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
+              </>}
             </p>
             )}
             {/* Fleet-level totals: worktree disk, pod-home disk, and orphan
@@ -2607,7 +2673,12 @@ export default function DevFleetPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-3.5">
               <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={noFleet ? '—' : running} accent={!noFleet} />
               <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={noFleet ? '—' : wts.length} />
-              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={noFleet ? '—' : needsProv} />
+              {/* Withheld on a read-only checkout: provisioning is one of the actions
+                  this mode refuses, and every row's build state there is UNKNOWN
+                  rather than false -- so a "0" would claim an absence read from a
+                  state nobody read, which is the same mistake the build badge
+                  avoids by naming unknown-ness. */}
+              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={noFleet || readOnlyReason ? '—' : needsProv} />
               <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={noFleet || diskFailed ? '—' : diskGb} />
             </div>
             {/* A failed /disk read shows "—" in the card (not the "…" that reads
@@ -2661,7 +2732,11 @@ export default function DevFleetPage() {
                     destructive-styled "Prune merged" reads as "deletion in
                     progress", but nothing is deleted until the review dialog is
                     confirmed. `aria-busy` stays as-is for assistive tech. */}
+                {/* Prune posts, so a read-only checkout refuses it: not offered
+                    there, for the same reason no row offers its own actions. */}
+                {!readOnlyReason && (
                 <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
+                )}
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
               )}

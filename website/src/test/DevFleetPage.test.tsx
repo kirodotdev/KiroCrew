@@ -545,6 +545,118 @@ describe('DevFleetPage', () => {
     expect(screen.queryByTestId('fleet-make-live-disabled-unknown')).toBeNull()
   })
 
+  it('renders the read-only reason instead of blaming the gateway, and offers no refused control', async () => {
+    // A checkout Dev Fleet may only read: every non-GET route is refused, and the
+    // build and cutover fields answer null because only this product's own chain
+    // could know them. `null` is falsy in JavaScript, so each of these assertions
+    // is about a read that would otherwise report unknown as "no".
+    const FLEET_READ_ONLY = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: null, is_live: null, is_staged: null, behind: 0, dirty: null },
+        { name: 'their-wt', is_main: false, running: false, has_dist: null, is_live: null, is_staged: null, behind: 2, dirty: null },
+      ],
+      build_pending: null,
+      live_state_known: false,
+      gateway_service_active: true,
+      read_only_reason: 'read-only: /srv/other-project is a git repository but does not carry the Kiro Crew markers',
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_READ_ONLY), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+
+    const notice = await waitFor(() => screen.getByTestId('fleet-read-only'))
+    expect(notice.textContent).toMatch(/does not carry the Kiro Crew markers/)
+    // The live state is unknown BECAUSE this mode refuses the cutover, so the
+    // notice that tells the operator to check a healthy gateway must not appear.
+    expect(screen.queryByTestId('fleet-live-state-unknown')).toBeNull()
+
+    // Unknown build state names its cause and does not advertise provisioning. The
+    // exact old label is what must be gone: it asserted the artifact is missing, and
+    // that row is what offers Provision.
+    expect(screen.getByText('their-wt')).toBeInTheDocument()
+    expect(screen.queryByText('not built', { exact: true })).toBeNull()
+    // Names unknown-ness rather than absence: the page's own comment forbids
+    // rendering an unknown build state as "no build", which the old label did.
+    expect(screen.getAllByText('build unknown').length).toBeGreaterThan(0)
+    expect(screen.queryByText('no build here')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^provision$/i })).toBeNull()
+
+    // Nothing that posts is offered: the gateway refuses make-live, and the
+    // backend refuses rebase, pods, QA and Pull+Build on the method alone. The row
+    // menu holds most of them, so its TRIGGER must be gone — asserting on the items
+    // alone would pass against a closed dropdown that still carries them.
+    expect(screen.queryAllByRole('button', { name: /more actions/i })).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /make live/i })).toBeNull()
+    expect(screen.queryByTestId('fleet-make-live-disabled-unknown')).toBeNull()
+    expect(screen.queryByRole('button', { name: /pull\s*\+\s*build/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /prune merged/i })).toBeNull()
+    // The how-to above the rows names Pull + Build, Pod, Rebase and Prune. All four
+    // are refused here, so instructing the operator to use them describes a page
+    // that does not exist.
+    // The NEEDS PROVISION card reads "—", not "0": every row's build state here is
+    // unknown, so a count would claim an absence nobody measured, and provisioning
+    // is itself one of the actions this mode refuses.
+    const provCard = screen.getByText(/needs provision/i).closest('.stat-accent')!
+    expect(provCard.textContent).toMatch(/—/)
+    expect(provCard.textContent).not.toMatch(/\b0\b/)
+    expect(screen.queryByText(/fast-forward it from origin/i)).toBeNull()
+    // The helper line carries the one fact the subtitle does not: what a row IS.
+    // It no longer restates "reads only", which the subtitle and banner both say.
+    expect(screen.getByText(/a worktree of the checkout named above/i)).toBeInTheDocument()
+    // Restart is the exception and is deliberately still offered: it restarts the
+    // gateway service and touches no repository. It says so in a tooltip, because
+    // the one live control beside a refuse-everything banner otherwise reads as
+    // the promise being wrong.
+    const restart = screen.getByRole('button', { name: /restart/i })
+    expect(restart).toBeInTheDocument()
+    expect(restart).toHaveAttribute('title', expect.stringMatching(/does not touch this repository/i))
+
+    // `git status` converts content, so it is not run in a checkout this app does not
+    // own and `dirty` answers null. Absence of the dot would read as "clean", which
+    // is the same unknown-as-absent defect the build badge above was corrected for,
+    // so the row says unknown in words instead.
+    const unknownTree = screen.getAllByTitle(/working tree|uncommitted changes can't be shown/i)
+    expect(unknownTree.length).toBeGreaterThan(0)
+    expect(screen.queryByTitle('uncommitted changes')).toBeNull()
+  })
+
+  it('offers no Remove in an expanded read-only row', async () => {
+    // The chevron is a read-only row's only affordance, so the panel behind it is
+    // where an operator actually lands. A destructive control there answers 409 and
+    // sits directly under copy promising that no action changes the repository.
+    const FLEET_READ_ONLY = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: null, behind: 0 },
+        {
+          name: 'their-wt', is_main: false, running: false, has_dist: null, behind: 2,
+          path: '/srv/other-project/../their-wt', branch: 'feature/x',
+        },
+      ],
+      live_state_known: false,
+      read_only_reason: 'read-only: /srv/other-project does not carry the Kiro Crew markers',
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_READ_ONLY), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/worktree')) {
+        return Promise.resolve(new Response(JSON.stringify({ branch: 'feature/x', dirty: false }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => screen.getByTestId('fleet-read-only'))
+
+    const expander = screen.getAllByRole('button', { name: /expand|details|their-wt/i })[0]
+    fireEvent.click(expander)
+    await waitFor(() => expect(screen.getByText(/feature\/x/)).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /^remove$/i })).toBeNull()
+  })
+
   it('shows build-pending chip when fleet.build_pending is true', async () => {
     const FLEET_BP = { ...FLEET, build_pending: true }
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {

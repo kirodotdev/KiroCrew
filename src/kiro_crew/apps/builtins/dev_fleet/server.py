@@ -137,12 +137,13 @@ async def dev_fleet_startup(app: web.Application) -> None:
     if worktree_ops._reaper_task is None or worktree_ops._reaper_task.done():
         worktree_ops._reaper_task = asyncio.create_task(worktree_ops._auto_prune_reaper())
     try:
-        repository._repo()
+        repository._repo_read()
     except repository.RepoUnavailable:
         # Same reason as the reaper: a configured-but-unusable path is truthy, and
         # warming would only raise into a task nobody awaits ("Task exception was
         # never retrieved"). The setup / discovery-error state is served from the
-        # route instead.
+        # route instead. The READ accessor, because a checkout served read-only
+        # still has a fleet worth warming.
         pass
     else:
         worktree_ops._warm_task = asyncio.create_task(fleet_state._fleet_refresh())

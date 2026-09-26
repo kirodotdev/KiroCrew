@@ -175,6 +175,13 @@ async def _ensure_repo() -> web.Response | None:
     ``_make_live`` validates its target against the discovered worktree set, which
     the backend resolves at ITS startup; the gateway resolves it lazily here, on
     first use, so a host that never opens Dev Fleet pays nothing.
+
+    It also carries the read-only refusal, because every gateway route that needs
+    a resolved checkout calls this and none of them is a read: the backend surface
+    gates its own mutations on the request METHOD in ``hmac_proxy_middleware``, and
+    a gateway route reaches ``live._make_live`` without crossing that middleware
+    at all. Refusing here rather than inside the handler is what makes a route
+    added later inherit it: resolving the checkout is the step it cannot skip.
     """
     try:
         await repository.ensure_main_repo_discovered()
@@ -186,6 +193,29 @@ async def _ensure_repo() -> web.Response | None:
                 "code": "repo_not_configured",
                 "error": f"Dev Fleet main checkout unavailable: {runtime._redact(str(exc))}",
             },
+            status=409,
+        )
+    read_only = repository._read_only_reason()
+    if read_only:
+        # Audited HERE, because this refusal returns before the route reaches its
+        # own ``_audit`` call: an authenticated Make Live against a read-only
+        # checkout is the expected interaction for this mode, so without an event
+        # the one denial the gateway itself takes would leave no record. Wrapped,
+        # because auditing may not mask the refusal.
+        try:
+            runtime._sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="dev-fleet:repo-read-only",
+                tool_kind="dev_fleet",
+                outcome="denied",
+                resources="gateway repo resolution",
+                error=runtime._redact(read_only),
+            )
+        except Exception:  # noqa: BLE001 — auditing must never mask the 409
+            logger.warning("dev-fleet: SEL emit failed for gateway read-only denial")
+        return web.json_response(
+            {"ok": False, "code": "repo_read_only", "error": runtime._redact(read_only)},
             status=409,
         )
     return None

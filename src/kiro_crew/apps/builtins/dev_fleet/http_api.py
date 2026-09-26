@@ -89,6 +89,14 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
         # (and WITHOUT an `error` field) so the page can ask where the checkout is
         # instead of rendering a failure against a path the user never chose.
         return web.json_response({"worktrees": [], "needs_setup": True})
+    except repository.RepoReadOnly as exc:
+        # The read surface uses `_repo_read()`, so building a snapshot does not
+        # reach the mutating accessor and this clause is unreachable through it. It
+        # exists because the alternative to an explicit answer is an uncaught 500:
+        # a read site added later that reached `_repo()` would turn a servable
+        # fleet into a blank failure, which is the one outcome worth refusing
+        # outright.
+        return web.json_response({"worktrees": [], "error": runtime._redact(str(exc))})
     except repository.RepoUnreadable as exc:
         # A checkout WAS named and git cannot read it: the page renders this as the
         # Discovery Error banner, naming the path because the user chose it.
@@ -575,7 +583,56 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
         return _deny("invalid proxy signature")
 
     try:
+        if request.method != "GET":
+            # ONE refusal for every mutating route, taken BEFORE the handler runs.
+            # ``_repo()`` already refuses a read-only checkout at every call site
+            # rooted at the main checkout, but not every mutation is rooted there:
+            # a rebase fetches into the WORKTREE it rebases, so it reaches git
+            # without passing the accessor at all. Gating on the METHOD closes that
+            # whole class at once and fails closed for a route added later — every
+            # read on this app is a GET and every mutation is not. Raised rather
+            # than answered here so the boundary below owns the response shape.
+            read_only = repository._read_only_reason()
+            if read_only:
+                raise repository.RepoReadOnly(read_only)
+            # Same reasoning one step further out: a resolution publishes the new
+            # checkout's PATH before the reads that derive its base branch and
+            # upstream remote, and a rebase in that window would replay a worktree
+            # onto whichever base the default name happens to match in the new
+            # repository. Refused here as well as in the accessor because a rebase is
+            # rooted at the worktree it rebases and never passes the accessor.
+            settling = repository._mutations_settling_reason()
+            if settling:
+                raise repository.RepoReadOnly(settling)
         return await handler(request)
+    except repository.RepoReadOnly as exc:
+        # Ordered first among the three: a distinct code, because "this repository
+        # is served read-only" is a different answer from "the path you gave me is
+        # wrong" and from "tell me where the checkout is" — the client hides the
+        # refused controls on this one rather than rendering an error.
+        #
+        # Audited for the same reason the HMAC denial above is: this is a
+        # permission decision on an AUTHENTICATED request, taken before any
+        # handler runs, so without an event the refusal is the one outcome this
+        # app reaches that leaves no trace. It is also the feature's ordinary
+        # steady state rather than an edge case — every mutating request against a
+        # read-only checkout lands here.
+        try:
+            runtime._sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="dev-fleet:repo-read-only",
+                tool_kind="dev_fleet",
+                outcome="denied",
+                resources=f"{request.method} {request.path}",
+                error=runtime._redact(str(exc)),
+            )
+        except Exception:  # noqa: BLE001 — auditing must never mask the 409
+            runtime.logger.warning("dev-fleet: SEL emit failed for read-only denial")
+        return web.json_response(
+            {"ok": False, "code": "repo_read_only", "error": runtime._redact(str(exc))},
+            status=409,
+        )
     except repository.RepoUnreadable as exc:
         # Ordered before RepoNotConfigured: it is a SUBCLASS of the same base, so
         # a broader handler first would swallow it and report the wrong code.

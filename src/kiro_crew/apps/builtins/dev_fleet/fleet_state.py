@@ -21,8 +21,13 @@ from kiro_crew.platform_compat import is_link_or_junction
 _START_EPOCH = time.time()
 
 
-def _build_pending() -> bool:
+def _build_pending() -> bool | None:
     """True when MAIN_REPO's built SPA dist is NEWER than this process's start.
+
+    ``None`` is UNKNOWN, and it is the answer for a checkout this app may only
+    read. The dist inspected here is written by Pull+Build, which never runs
+    against a repository that does not carry the Kiro Crew markers, so ``False``
+    would assert "nothing to apply" about a mechanism that does not apply at all.
 
     The dist inspected is the one Pull+Build actually writes — the MAIN CHECKOUT's
     — not the dist of the installation this backend happens to be running from.
@@ -34,7 +39,8 @@ def _build_pending() -> bool:
     """
     try:
         # Path("") is Path("."), which would stat this process's own tree —
-        # no checkout means nothing can be pending.
+        # no checkout means nothing can be pending. The MUTATING accessor on
+        # purpose: it is what makes a read-only checkout answer unknown below.
         dist = Path(repository._repo()) / "src" / "kiro_crew" / "static" / "dist"
         if not dist.exists():
             return False
@@ -42,6 +48,10 @@ def _build_pending() -> bool:
         # static/dist at website/dist, and the rebuild time we care about is the
         # target's.
         return dist.stat().st_mtime > _START_EPOCH
+    except repository.RepoReadOnly:
+        # Ordered ahead of the base class the three states share, so this one is
+        # not swallowed into the False below.
+        return None
     except (OSError, repository.RepoUnavailable):
         return False
 
@@ -54,19 +64,82 @@ _OWNER_REPO: str | None = None
 _OWNER_REPO_RETRY_AT: float = 0.0  # monotonic deadline before retrying a failed lookup
 
 
+def _reset_checkout_derived_caches() -> None:
+    """Forget what this module memoized about the checkout being left behind.
+
+    ``_OWNER_REPO`` is cached permanently on success and is the identity every PR
+    query and the merged-worktree prune are asked about, so carrying it across a
+    resolution to a different checkout asks GitHub about the wrong repository and
+    hands the prune gate the wrong ancestry. The PR entries keyed under it, the
+    snapshot built from it and the disk aggregation of its worktrees go with it.
+
+    Every cache here is derived from the resolved checkout, so each one serves the
+    wrong repository's data after a switch rather than merely stale data, and age
+    does not fix that: ``_HTML_BASE`` has no expiry at all, and the per-worktree
+    disk map names worktrees of a fleet this process has left. Freshness alone is
+    therefore not enough for the disk numbers -- the content goes too, back to the
+    pre-measurement state so the next read aggregates the new fleet.
+    """
+    global _OWNER_REPO, _OWNER_REPO_RETRY_AT, _HTML_BASE
+    _OWNER_REPO = None
+    _OWNER_REPO_RETRY_AT = 0.0
+    _HTML_BASE = None
+    _PR_CACHE.clear()
+    _CTX_CACHE.clear()
+    _FLEET_CACHE["data"] = None
+    _FLEET_CACHE["ts"] = 0.0
+    _DISK.update({"status": "idle", "total_mb": None, "per": {}})
+    _disk_invalidate()
+
+
+repository.register_checkout_reset(_reset_checkout_derived_caches)
+
+
+def _checkout_generation() -> int:
+    """Read the generation to compare a later cache write against.
+
+    Call it BEFORE the await that computes the value, so the comparison covers the
+    whole window in which a resolution could land. The counter itself lives in
+    ``repository``, which owns the resolution that moves it, so every module above it
+    compares against the same answer.
+    """
+    return repository._checkout_generation()
+
+
+def _still_same_checkout(generation: int) -> bool:
+    """True when nothing has re-resolved the checkout since *generation* was read.
+
+    Every cache in this module is keyed to the resolved checkout and every one of
+    them is written AFTER an await, so clearing them is only half the guard: a value
+    computed against the checkout being left behind lands past the clear and puts the
+    old repository's answer back. Neither the owner/repo name nor the browser base
+    URL has any expiry, so nothing undoes that write, and the PR verdict keyed under
+    the wrong repository is what the unattended reaper reads as MERGED.
+
+    A write of a checkout-derived cache calls this and declines when it answers
+    False. That is the whole obligation -- a cache added later calls it too, rather
+    than being added to a list somewhere else that has to stay in step.
+    """
+    return repository._still_same_checkout(generation)
+
+
 async def _repo_owner_name() -> str | None:
     """Derive owner/repo from the upstream remote URL."""
     remote = await repository._upstream_remote()
     try:
-        repo = repository._repo()
+        repo = repository._repo_read()
     except repository.RepoUnavailable:
         # Best-effort helper: an unresolved checkout is "not derivable", the
         # same answer every other failure below produces. Without the accessor
         # this ran `git -C ""` and could report whatever repository the
         # backend's working directory happened to be.
         return None
-    rc, stdout, _ = await runtime._run_cmd(
-        ["git", "-C", repo, "remote", "get-url", remote], timeout=5
+    # Gated, like every other read of a checkout this app may only read: a bare spawn
+    # here took the default tier, which is the one that hands over the trusted
+    # credential helpers, and skipped the clearance that catches a config the
+    # repository changed after adoption.
+    rc, stdout, _ = await repository._run_gated_git_soft(
+        repo, "remote", "get-url", remote, timeout=5
     )
     if rc != 0:
         return None
@@ -85,7 +158,15 @@ async def _get_owner_repo() -> str | None:
     now = time.monotonic()
     if now < _OWNER_REPO_RETRY_AT:
         return None
+    generation = _checkout_generation()
     val = await _repo_owner_name()
+    if not _still_same_checkout(generation):
+        # This name identifies the checkout the lookup was asked about, and the
+        # permanent cache has no expiry, so storing it would answer every later PR
+        # query and prune verdict about a repository this process has left. The
+        # retry deadline is withheld for the same reason: a failure against the old
+        # checkout must not suppress the new one's first attempt.
+        return None
     if val:
         _OWNER_REPO = val
         return val
@@ -115,6 +196,9 @@ async def _pr_query_one(owner_repo: str, branch: str) -> dict | None:
             "1",
         ],
         timeout=15,
+        # This row carries a `body` the pull request author wrote, so the capture is
+        # bounded like any other read whose size someone else chose.
+        max_output_bytes=_PR_CAPTURE_MAX_BYTES,
     )
     if rc != 0:
         return None
@@ -127,7 +211,10 @@ async def _pr_query_one(owner_repo: str, branch: str) -> dict | None:
         pr["_repo"] = owner_repo
         pr["_head_oid"] = pr.pop("headRefOid", None)
         if "body" in pr:
-            pr["_body"] = pr.pop("body") or ""
+            # Truncated where it is RETAINED: the cache holds this per branch for the
+            # whole TTL, and the consumers scan it for issue and ticket references,
+            # which the opening of a body carries.
+            pr["_body"] = (pr.pop("body") or "")[:_PR_BODY_MAX_CHARS]
     return pr
 
 
@@ -157,8 +244,12 @@ async def _head_contained_in_pr(path: str, branch_oid: str, pr_head_oid: str) ->
     """
     if branch_oid.strip() == pr_head_oid.strip():
         return True
-    rc, _, _err = await runtime._run_cmd(
-        ["git", "-C", path, "merge-base", "--is-ancestor", branch_oid.strip(), pr_head_oid.strip()],
+    rc, _, _err = await repository._run_gated_git_soft(
+        path,
+        "merge-base",
+        "--is-ancestor",
+        branch_oid.strip(),
+        pr_head_oid.strip(),
         timeout=10,
     )
     return rc == 0
@@ -287,6 +378,7 @@ async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | 
                 return ent.get("data")
         elif (now - ent["ts"]) < _PR_TTL:
             return ent.get("data")
+    generation = _checkout_generation()
     data = await _fetch_pr_status(branch)
     if data and data.get("state") == "MERGED" and head_oid and data.get("_head_oid") != head_oid:
         # GitHub may return the old merged PR when a branch name is reused
@@ -295,9 +387,15 @@ async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | 
         # before merge); only a divergent head means this verdict is stale.
         pr_head_oid = data.get("_head_oid")
         if not pr_head_oid or not await _head_contained_in_pr(
-            repository._repo(), head_oid, pr_head_oid
+            repository._repo_read(), head_oid, pr_head_oid
         ):
             data = None
+    if not _still_same_checkout(generation):
+        # This verdict is about the repository of the checkout being left behind, and
+        # `_prunable` reads a MERGED one as permission for the unattended reaper to
+        # delete a worktree. An unknown PR is the honest answer and the safe one:
+        # neither `_is_pr_merged` nor `_is_pr_closed` treats None as a verdict.
+        return None
     _PR_CACHE[branch] = {"data": data, "ts": time.time(), "cached_head": head_oid}
     return data
 
@@ -418,10 +516,11 @@ async def _html_repo_base() -> str | None:
     global _HTML_BASE
     if _HTML_BASE:
         return _HTML_BASE
+    generation = _checkout_generation()
     remote = await repository._upstream_remote()
     try:
-        rc, out, _ = await runtime._run_cmd(
-            ["git", "-C", repository._repo(), "remote", "get-url", remote], timeout=5
+        rc, out, _ = await repository._run_gated_git_soft(
+            repository._repo_read(), "remote", "get-url", remote, timeout=5
         )
     except repository.RepoUnavailable:
         # Same degrade as a failed get-url: fall through to the cached
@@ -429,11 +528,11 @@ async def _html_repo_base() -> str | None:
         rc, out = 1, ""
     if rc == 0:
         base = _parse_html_repo_base(out.strip())
-        if base:
+        if base and _still_same_checkout(generation):
             _HTML_BASE = base
             return base
     owner_repo = await _get_owner_repo()
-    if owner_repo:
+    if owner_repo and _still_same_checkout(generation):
         _HTML_BASE = f"https://github.com/{owner_repo}"
     return _HTML_BASE
 
@@ -441,6 +540,17 @@ async def _html_repo_base() -> str | None:
 # per-branch context cache (mirrors _PR_CACHE / _PR_TTL)
 _CTX_CACHE: dict[str, dict] = {}
 _CTX_TTL = 55
+# What ten commit messages from a repository this app may only READ are allowed to
+# weigh, and what one subject and one body are allowed to weigh after that. The
+# outer bound keeps the gateway from holding an answer whose size the repository
+# chose; the inner two keep one oversized field from riding through inside it.
+_LOG_CAPTURE_MAX_BYTES = 256 * 1024
+# A PR body is written by whoever opened the pull request and is RETAINED in
+# `_PR_CACHE` per branch, so it is bounded at capture and again at retention.
+_PR_CAPTURE_MAX_BYTES = 256 * 1024
+_PR_BODY_MAX_CHARS = 8000
+_SUBJECT_MAX_CHARS = 300
+_BODY_MAX_CHARS = 4000
 
 
 async def _resolve_context(
@@ -468,7 +578,9 @@ async def _resolve_context(
     }
 
 
-async def _build_context(branch: str, path: str, pr: dict | None) -> dict:
+async def _build_context(
+    branch: str, path: str, pr: dict | None, *, generation: int | None = None
+) -> dict:
     """Resolve {issues, tickets, summary} for a worktree branch. Best-effort:
     the PR body comes from the already-cached PR dict (no NEW gh call) and the
     commit subjects/bodies from a local `git log`; any failure yields empties."""
@@ -485,6 +597,11 @@ async def _build_context(branch: str, path: str, pr: dict | None) -> dict:
         "-10",
         "--format=%s%x1f%b%x1e",
         timeout=12,
+        generation=generation,
+        # The commit messages of a repository this app may only read: their size is
+        # the repository's choice, not ours, so the capture is bounded and an
+        # oversized answer degrades to no context rather than to an exhausted gateway.
+        max_output_bytes=_LOG_CAPTURE_MAX_BYTES,
     )
     if log:
         for rec in log.split("\x1e"):
@@ -494,13 +611,18 @@ async def _build_context(branch: str, path: str, pr: dict | None) -> dict:
             subj, _sep, body = rec.partition("\x1f")
             subj = subj.strip()
             if subj:
-                subjects.append(subj)
+                # Each field is bounded too, not just the whole capture: ten commits
+                # inside the cap can still be ten fields nothing downstream should
+                # hold or render at full length.
+                subjects.append(subj[:_SUBJECT_MAX_CHARS])
             if body.strip():
-                bodies.append(body)
+                bodies.append(body[:_BODY_MAX_CHARS])
     return await _resolve_context(branch, subjects, bodies, (pr or {}).get("_body"))
 
 
-async def _context_cached(branch: str | None, path: str, pr: dict | None) -> dict:
+async def _context_cached(
+    branch: str | None, path: str, pr: dict | None, *, generation: int | None = None
+) -> dict:
     """TTL-cached per-branch context (same approach as _pr_status_cached)."""
     empty: dict = {"issues": [], "tickets": [], "summary": None}
     if not branch or branch == repository.BASE_BRANCH:
@@ -509,10 +631,21 @@ async def _context_cached(branch: str | None, path: str, pr: dict | None) -> dic
     ent = _CTX_CACHE.get(branch)
     if ent and (now - ent["ts"]) < _CTX_TTL:
         return ent["data"]
+    # The CALLER's generation, captured before discovery, is the binding one. Taking a
+    # fresh reading here would bind the path to the checkout in force after discovery
+    # already handed it over, which is the window the capture exists to close; a local
+    # reading is a fallback for a caller that has none, not a refresh.
+    if generation is None:
+        generation = _checkout_generation()
     try:
-        data = await _build_context(branch, path, pr)
+        data = await _build_context(branch, path, pr, generation=generation)
     except Exception:  # noqa: BLE001 — context is best-effort, never break fleet
         data = empty
+    if not _still_same_checkout(generation):
+        # Issues and tickets resolved against the old checkout's repository. The TTL
+        # would keep serving them on the new one's rows, so answer empty and cache
+        # nothing; the next poll builds the context against the repository in force.
+        return empty
     _CTX_CACHE[branch] = {"data": data, "ts": time.time()}
     return data
 
@@ -531,6 +664,10 @@ _FLEET_INFLIGHT: asyncio.Task[dict] | None = None
 # reaped by the first build that started after them.
 _FLEET_EPOCH = 0
 _FLEET_TOMBSTONES: dict[str, int] = {}
+# How many times a build may be discarded for landing on a different checkout than
+# it started against. One retry covers the ordinary case -- a single operator edit --
+# and the cap keeps a config being edited repeatedly from looping here forever.
+_FLEET_BUILD_ATTEMPTS = 3
 
 
 def _drop_worktrees(data: dict, names: set[str]) -> dict:
@@ -550,18 +687,34 @@ def _drop_worktrees(data: dict, names: set[str]) -> dict:
 
 async def _fleet_build() -> dict:
     global _FLEET_TOMBSTONES
-    started = _FLEET_EPOCH
-    data = await _build_fleet()
-    # Removals that landed DURING this build are invisible to it — the git state
-    # it read predates them. Re-apply them so a slow build cannot put back a row
-    # an eviction already removed.
-    data = _drop_worktrees(data, {n for n, e in _FLEET_TOMBSTONES.items() if e > started})
-    # Evictions that predate this build's start need no tombstone: `_fleet_forget`
-    # runs only after git has removed the worktree, so no later build can see it.
-    _FLEET_TOMBSTONES = {n: e for n, e in _FLEET_TOMBSTONES.items() if e > started}
-    _FLEET_CACHE["data"] = data
-    _FLEET_CACHE["ts"] = time.monotonic()
-    return data
+    for _ in range(_FLEET_BUILD_ATTEMPTS):
+        started = _FLEET_EPOCH
+        started_checkout = _checkout_generation()
+        data = await _build_fleet()
+        if not _still_same_checkout(started_checkout):
+            # Every row here describes the checkout this process was told to leave,
+            # and the reset that moved the counter already emptied the cache, so
+            # storing this would re-seed it with the old fleet and serving it would
+            # answer a request about B with A's worktrees. Build again: the accessor
+            # now resolves the new checkout, so the next pass reads the right one.
+            continue
+        # Removals that landed DURING this build are invisible to it — the git state
+        # it read predates them. Re-apply them so a slow build cannot put back a row
+        # an eviction already removed.
+        data = _drop_worktrees(data, {n for n, e in _FLEET_TOMBSTONES.items() if e > started})
+        # Evictions that predate this build's start need no tombstone: `_fleet_forget`
+        # runs only after git has removed the worktree, so no later build can see it.
+        _FLEET_TOMBSTONES = {n: e for n, e in _FLEET_TOMBSTONES.items() if e > started}
+        _FLEET_CACHE["data"] = data
+        _FLEET_CACHE["ts"] = time.monotonic()
+        return data
+    # The checkout moved under every attempt. There is no snapshot to serve and an
+    # empty one would assert an empty fleet, so report it: `RepoUnavailable` is the
+    # base the degrade sites catch, and the `/fleet` route renders it as a banner
+    # the operator's next poll clears once the config stops moving.
+    raise repository.RepoUnavailable(
+        "the configured checkout changed while the fleet was being read; retry"
+    )
 
 
 def _fleet_rebuild_task() -> asyncio.Task[dict]:
@@ -697,10 +850,18 @@ def _serving_install_reason_sync(main_repo: str, managed: "tuple[str, ...]") -> 
 
 async def _serving_install_reason(worktrees: "list[dict]") -> str | None:
     global _SERVING_REASON
+    if repository._read_only_reason() is not None:
+        # The notice's whole premise is that Pull+Build HERE does not change the
+        # code that runs. A checkout this app may only read never runs Pull+Build,
+        # and both remedies the message offers — start the gateway from it, or Make
+        # live onto it — are refused, so it would name actions that cannot be
+        # taken. That is the same dead-end instruction the sync helper below
+        # already declines to print, for the same reason.
+        return None
     managed = tuple(sorted(str(wt["path"]) for wt in worktrees if wt.get("path")))
     # Reached only with a built fleet in hand, so the accessor cannot raise
     # here; it exists to keep the path build off the bare global.
-    repo = repository._repo()
+    repo = repository._repo_read()
     key = (repo, managed)
     if _SERVING_REASON is not None and _SERVING_REASON[0] == key:
         return _SERVING_REASON[1]
@@ -1166,9 +1327,22 @@ async def _build_fleet() -> dict:
         # live": the two invite opposite actions (check the gateway vs. stage a
         # cutover). The badges below stay unset; this one field says why.
         live_state_known = False
+    if repository._read_only_reason():
+        # Make live manages THIS product's own service unit, so it is refused for a
+        # checkout served read-only, and `is_live`/`is_staged` answer unknown there.
+        # Reusing the existing unknown-state field is what makes the refusal visible
+        # today: the page already disables Make live and states the reason on it,
+        # where a `null` badge alone is falsy and would render as "nothing is live" —
+        # a row still offering the button that answers 409.
+        live_state_known = False
     live_path = pointer.live
     staged_path = pointer.staged
     previous_path = Path(pointer.previous) if pointer.previous is not None else None
+    # Captured BEFORE discovery, not after: the paths discovery returns were
+    # enumerated under the generation in force when it STARTED, so capturing
+    # afterwards would stamp a switch that landed mid-enumeration with the new
+    # generation and call the stale paths current.
+    generation = repository._checkout_generation()
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
     loop = asyncio.get_running_loop()
@@ -1185,12 +1359,16 @@ async def _build_fleet() -> dict:
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (repository._FALLBACK_REPOS or [])
     )
+    # Resolved once for the whole snapshot rather than per row: it is a property of
+    # the CHECKOUT, not of a worktree, so reading it per row would let two rows
+    # disagree with each other and with the payload's own reason field.
+    read_only = repository._read_only_reason() is not None
     wts = []
     for wt in worktrees:
         path = wt.get("path", "")
         branch = wt.get("branch")
         is_main = wt.get("is_main", False)
-        g = await repository._git_info(path)
+        g = await repository._git_info(path, generation=generation)
         pr = (await _pr_status_cached(branch, g.get("head_oid"))) if branch else None
         name = Path(path).name if not is_main else repository.BASE_BRANCH
 
@@ -1198,8 +1376,13 @@ async def _build_fleet() -> dict:
         running = False
         port = None
         health = None
-        has_venv = False
-        has_dist = False
+        # None is UNKNOWN, and it is the answer for a checkout this app may only
+        # read: ``.venv`` and ``static/dist`` are what THIS product's provision
+        # chain writes, and provision is refused there — so False would report
+        # "not built" about a build that repository never runs, and a row reading
+        # False is exactly what offers Provision.
+        has_venv: bool | None = None if read_only else False
+        has_dist: bool | None = None if read_only else False
         # Build state is a plain filesystem check (``.venv`` binary present /
         # ``static/dist`` directory present) and is therefore knowable on EVERY
         # platform — report it even where pods cannot run, so the Fleet view
@@ -1208,7 +1391,7 @@ async def _build_fleet() -> dict:
         # surface a human checks, and reporting main as unprovisioned reads as
         # "the cutover failed". The ``not is_main`` restriction belongs to the
         # POD-state check below (pods never run on main), not to these probes.
-        if runtime._POD_IMPORTED:
+        if runtime._POD_IMPORTED and not read_only:
             try:
                 has_venv = await loop.run_in_executor(
                     subprocess_executor(), runtime.prov.has_venv, Path(path)
@@ -1239,7 +1422,7 @@ async def _build_fleet() -> dict:
                 except Exception:  # noqa: BLE001
                     pass
 
-        ahead = await repository._git_ahead(path)
+        ahead = await repository._git_ahead(path, generation=generation)
         # "shipped" drives the UI's "safe to remove" affordance — require a
         # POSITIVELY clean worktree (dirty is False, not merely unknown), so
         # the confirm dialog never promises a removal the backend will refuse.
@@ -1253,7 +1436,7 @@ async def _build_fleet() -> dict:
         # Per-worktree context (issue/ticket links + purpose one-liner). Skipped
         # for the main checkout (no feature context). Best-effort: never raises.
         ctx = (
-            await _context_cached(branch, path, pr)
+            await _context_cached(branch, path, pr, generation=generation)
             if branch and not is_main
             else {"issues": [], "tickets": [], "summary": None}
         )
@@ -1269,8 +1452,19 @@ async def _build_fleet() -> dict:
                 "running": running,
                 "port": port,
                 "health": health,
-                "is_live": live_path is not None and repository._same_path(path, live_path),
-                "is_staged": staged_path is not None and repository._same_path(path, staged_path),
+                # None is UNKNOWN. The live target is THIS product's own gateway
+                # and Make live is refused on a checkout this app may only read,
+                # so neither flag is a question about that repository at all.
+                "is_live": (
+                    None
+                    if read_only
+                    else (live_path is not None and repository._same_path(path, live_path))
+                ),
+                "is_staged": (
+                    None
+                    if read_only
+                    else (staged_path is not None and repository._same_path(path, staged_path))
+                ),
                 "has_venv": has_venv,
                 "has_dist": has_dist,
                 "branch": runtime._redact(g["branch"] or branch or ""),
@@ -1400,8 +1594,15 @@ async def _build_fleet() -> dict:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "worktrees": wts,
-        "main_repo": runtime._redact(repository._repo()),
+        "main_repo": runtime._redact(repository._repo_read()),
         "main_repo_inferred": repository.MAIN_REPO_INFERRED,
+        # Non-null when the checkout is served READ-ONLY: it is a git repository
+        # that does not carry the Kiro Crew markers, so its worktrees are listed
+        # and every action that would change it is refused. Carries the prose the
+        # backend composed, like gateway_service_reason and pods_unavailable_reason
+        # below, so the UI can hide the refused controls AND say why instead of
+        # hiding them silently. Null is the ordinary managed checkout.
+        "read_only_reason": runtime._redact(repository._read_only_reason() or "") or None,
         "base_branch": repository.BASE_BRANCH,
         "build_pending": _build_pending(),
         "gateway_service_active": await live._gateway_service_active(),
@@ -1444,15 +1645,17 @@ async def _build_fleet() -> dict:
 
 async def _worktree_detail(name: str) -> dict:
     """Lazy per-worktree detail."""
+    # Captured with the lookup that produced the path, not at the read.
+    generation = repository._checkout_generation()
     wt, err = await repository._find_worktree(name)
     if wt is None:
         return {"error": err}
     path = wt["path"]
     branch = wt.get("branch")
     is_main = wt.get("is_main", False)
-    g = await repository._git_info(path)
+    g = await repository._git_info(path, generation=generation)
     pr = (await _pr_status_cached(branch, g.get("head_oid"))) if branch else None
-    own_commits = await repository._own_commits_count(path)
+    own_commits = await repository._own_commits_count(path, generation=generation)
 
     remote = await repository._upstream_remote()
     commits: list[dict] = []
@@ -1463,13 +1666,23 @@ async def _worktree_detail(name: str) -> dict:
             f"{remote}/{repository.BASE_BRANCH}..HEAD",
             "-12",
             "--format=%h\x1f%s\x1f%cr",
+            generation=generation,
+            # Twelve subjects a foreign repository wrote: bounded like every other read
+            # whose size someone else chose.
+            max_output_bytes=_LOG_CAPTURE_MAX_BYTES,
         )
         if log:
             for line in log.splitlines():
                 parts = line.split("\x1f")
                 if len(parts) == 3:
                     commits.append(
-                        {"hash": parts[0], "subject": runtime._redact(parts[1]), "when": parts[2]}
+                        {
+                            "hash": parts[0],
+                            # Truncated where it is RETAINED, for the same reason the
+                            # context subjects are: the row is held and rendered.
+                            "subject": runtime._redact(parts[1])[:_SUBJECT_MAX_CHARS],
+                            "when": parts[2],
+                        }
                     )
 
     design_docs: list[str] = []
@@ -1480,6 +1693,8 @@ async def _worktree_detail(name: str) -> dict:
             "--name-only",
             f"{remote}/{repository.BASE_BRANCH}...HEAD",
             timeout=15,
+            generation=generation,
+            max_output_bytes=_LOG_CAPTURE_MAX_BYTES,
         )
         if diff_out:
             seen: set[str] = set()
@@ -1523,8 +1738,10 @@ async def _worktree_detail(name: str) -> dict:
     # authoritative "is there any dirt" answer is unchanged. The breakdown is
     # additive and computed only when there IS dirt -- a clean tree has nothing
     # to describe, and an unverifiable one (None) has nothing trustworthy to say.
-    real_dirty = await repository._real_dirty(path)
-    dirt_tracked, dirt_untracked = await repository._dirty_split(path) if real_dirty else (None, [])
+    real_dirty = await repository._real_dirty(path, generation=generation)
+    dirt_tracked, dirt_untracked = (
+        await repository._dirty_split(path, generation=generation) if real_dirty else (None, [])
+    )
     return {
         "name": name,
         "path": runtime._redact(path),
@@ -1610,6 +1827,7 @@ async def _disk() -> dict:
     # above from the flag set below, so on asyncio's single event loop
     # concurrent polls cannot both reach this point.
     started_epoch = _DISK_EPOCH
+    started_checkout = _checkout_generation()
     _DISK_COMPUTING = True
     if _DISK["status"] != "done":
         # Only the very first aggregation surfaces as "computing": once a
@@ -1636,6 +1854,17 @@ async def _disk() -> dict:
             # empty fleet, and the page header renders that assertion as fact.
             # Distinguishing the two is what keeps a host where no `du` resolves --
             # every native Windows host -- from reporting total=0 as a measurement.
+            #
+            # A checkout change is the one invalidation where publishing is wrong
+            # rather than merely early: these are another fleet's worktree names and
+            # sizes. The cleared state is restored instead, both because it is the
+            # honest answer and because `_disk` treats a "computing" status as an
+            # aggregation still running -- left there, it would refuse every later
+            # read. An ordinary mutation keeps publishing, because there the numbers
+            # describe the same fleet.
+            if not _still_same_checkout(started_checkout):
+                _DISK.update({"status": "idle", "total_mb": None, "per": {}})
+                return
             _DISK.update({"status": "done", "total_mb": total if measured else None, "per": per})
             fresh = True
         except Exception:  # noqa: BLE001
