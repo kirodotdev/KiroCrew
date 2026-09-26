@@ -42,11 +42,81 @@ _TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER})
 # User-message counts at which an AUTO title is re-examined in the background.
 # The first title is generated from the very first message, before the real
 # task has emerged; by turn 8 the session's actual topic is visible, and 24
-# catches long sessions that pivoted. Two milestones cap the whole feature at
-# TWO extra background one-liner calls per session lifetime — attempt-counted
-# (a KEEP/SKIP/error consumes the milestone; see maybe_refresh_title), and the
-# consumed mark is persisted so restarts cannot re-spend it.
+# catches long sessions that pivoted. This built-in schedule spends at most TWO
+# extra background one-liner calls per session lifetime. The opt-in
+# ``dashboard.title_refresh_every_turns`` cadence replaces it with one call per
+# N user turns, bounded only by the turns the session holds (see
+# ``_title_refresh_due``). Either way a milestone is attempt-counted (a
+# KEEP/SKIP/error consumes it; see maybe_refresh_title), and the consumed mark
+# is persisted so restarts cannot re-spend it.
 _TITLE_REFRESH_MILESTONES: tuple[int, ...] = (8, 24)
+
+
+def _title_refresh_due(mark: int, user_count: int, every: int, milestones: tuple[int, ...]) -> bool:
+    """Whether an AUTO title is due a refresh at ``user_count`` user turns.
+
+    ``milestones`` is the fixed schedule for this slot: the built-in
+    ``_TITLE_REFRESH_MILESTONES``, plus the early milestone for a low-signal
+    title. ``every > 0`` is the ``dashboard.title_refresh_every_turns`` cadence,
+    which REPLACES the built-in milestones with N, 2N, 3N, ... while keeping the
+    early one: due when the latest multiple of N at or below ``user_count`` has
+    not been consumed yet. Like the milestones it is attempt-counted through
+    ``mark``, and a session that crossed several multiples since its last
+    attempt gets one refresh, not a catch-up burst.
+    """
+    if every > 0:
+        milestones = tuple(m for m in milestones if m not in _TITLE_REFRESH_MILESTONES)
+        if (user_count // every) * every > mark:
+            return True
+    return any(mark < m <= user_count for m in milestones)
+
+
+def _rehydrated_refresh_mark(mark: int, user_count: int) -> int:
+    """Re-base a persisted refresh mark against the user turns a reload holds.
+
+    A rehydrated slot holds only its latest rows (500 per loader), so its user
+    count restarts below the count the session had reached, while ``mark`` is
+    restored verbatim. Left alone, a cadence mark above the restored count
+    keeps ``_title_refresh_due`` silent until the count climbs past the mark
+    again, one turn at a time. Pulling the mark down to the restored count lets
+    the ``title_refresh_every_turns`` cadence continue from that count, at the
+    next multiple of N above it; when the floor below holds the mark above the
+    restored count, the cadence resumes after that fixed milestone instead, not
+    after the restored count.
+
+    The floor is the largest fixed milestone at or below ``mark``, including
+    the low-signal early milestone, or zero when none qualifies. It keeps every
+    fixed milestone covered by ``mark`` spent while allowing a cadence mark
+    between fixed milestones to follow the restored count. A mark at or below
+    the restored count is returned unchanged.
+
+    Applied once, at rehydrate, over the loaded window. Never re-applied lazily
+    from ``maybe_refresh_title``: ``_ChatSlot.append`` trims the live window one
+    row at a time at ``_MAX_SLOT_MESSAGES``, so a mark re-based against a count
+    that oscillates there would fire on every dip.
+    """
+    fixed_milestones = (_TITLE_EARLY_REFRESH_MILESTONE, *_TITLE_REFRESH_MILESTONES)
+    floor = max(
+        (milestone for milestone in fixed_milestones if milestone <= mark),
+        default=0,
+    )
+    return max(min(mark, user_count), floor)
+
+
+def _title_refresh_every() -> int:
+    """Read ``dashboard.title_refresh_every_turns``; 0 on any failure.
+
+    Read per turn (the load is mtime-cached) so a change in Settings applies to
+    the next turn without a restart. **Call this OFF the event loop**, for the
+    same reason as :func:`_ui_language`. A failed read falls back to the
+    built-in schedule, the bounded one, never to an unbounded cadence.
+    """
+    try:
+        return int(KiroCrewConfig.load().dashboard.title_refresh_every_turns)
+    except Exception:
+        logger.debug("title_refresh_every_turns lookup failed; using built-in milestones")
+        return 0
+
 
 # Extra refresh milestone for a title born LOW-SIGNAL (see
 # ``_is_low_signal_title``): a first message dominated by a pasted link or an
@@ -1338,16 +1408,27 @@ async def title_then_refresh(state: DashboardState, slot: _ChatSlot) -> None:
     await maybe_refresh_title(state, slot)
 
 
+def _refresh_blocked(slot: _ChatSlot) -> bool:
+    """True when a background refresh must not start for ``slot``.
+
+    It needs an AUTO title (a manual rename locks it out) and no attempt already
+    in flight.
+    """
+    return not slot._titled or slot._title_origin != _TITLE_ORIGIN_AUTO or slot._title_in_flight
+
+
 async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     """Background task: re-examine an AUTO title as the conversation evolves.
 
     The initial title is generated from the first message, before the session's
-    real task has emerged — so a long session's name often describes its
+    real task has emerged, so a long session's name often describes its
     opening pleasantry, and a session that fell back to the truncated first
     message keeps that truncation forever. Fired from ``chat_done`` (same
     call site as the initial titling), this re-runs the background ``_bg``
-    one-liner at the ``_TITLE_REFRESH_MILESTONES`` user-turn marks and swaps
-    the sidebar title when the model says the old one no longer fits.
+    one-liner at the ``_TITLE_REFRESH_MILESTONES`` user-turn marks, or every
+    ``dashboard.title_refresh_every_turns`` user turns when that cadence is
+    set, and swaps the sidebar title when the model says the old one no
+    longer fits.
 
     Token discipline (the whole point of doing this in the background instead
     of exposing a title tool to every chat):
@@ -1356,11 +1437,14 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
       rename is final; legacy titles with no stored origin rehydrate as "user"
       and are equally final.
     - Each milestone fires at most ONCE, attempt-counted: a KEEP/SKIP/prose
-      reply or an error consumes it (no retries). Two ordinary milestones plus
-      the low-signal early milestone = at most three extra one-liner calls over
-      a session's whole lifetime, and the early one only exists for sessions
-      whose title locked as a URL/ticket-key echo or as the truncated
-      first-message fallback (see ``_is_low_signal_title``).
+      reply or an error consumes it (no retries). On the built-in schedule the
+      two ordinary milestones plus the low-signal early milestone are at most
+      three extra one-liner calls over a session's whole lifetime, and the
+      early one only exists for sessions whose title locked as a URL/ticket-key
+      echo or as the truncated first-message fallback (see
+      ``_is_low_signal_title``). The opt-in cadence has no such cap: it spends
+      one call per N user turns, attempt-counted the same way, for as many
+      turns as the session holds (see ``_title_refresh_due``).
     - The consumed mark is persisted (``title_refresh_mark``) so a gateway
       restart cannot re-spend it.
     - The prompt is bounded exactly like the initial titling prompt (ten
@@ -1371,11 +1455,18 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     manual rename landing mid-generation is detected via ``_title_epoch`` and
     the refresh stands down.
     """
-    if not slot._titled or slot._title_origin != _TITLE_ORIGIN_AUTO:
+    if _refresh_blocked(slot):
         return
-    if slot._title_in_flight:
-        return
+    # Count first: the config thread hop below yields to the event loop, and a
+    # queued follow-up that lands during it opens the NEXT turn, which this
+    # refresh must not count.
     user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    every = await asyncio.to_thread(_title_refresh_every)
+    # A manual rename or another turn's refresh may also have landed during the
+    # hop, and either must stand this attempt down BEFORE it consumes the
+    # milestone or spends the call.
+    if _refresh_blocked(slot):
+        return
     # A low-signal title (URL/ticket-key echo — see _is_low_signal_title) adds
     # the early milestone: the first turn's transcript is the FIRST moment the
     # session's real topic is visible, and a one-message "investigate this
@@ -1387,8 +1478,7 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     # below user_count (the mark jumps past them all). A session that first
     # becomes refresh-eligible at turn >= 24 — e.g. rehydrated mid-life — gets
     # ONE refresh, not a catch-up burst. The budget is a ceiling, not a quota.
-    due = any(slot._title_refresh_mark < m <= user_count for m in milestones)
-    if not due:
+    if not _title_refresh_due(slot._title_refresh_mark, user_count, every, milestones):
         return
     slot._title_in_flight = True
     # Consume the milestone up-front: a failed/KEEP attempt must not be retried

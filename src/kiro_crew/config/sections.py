@@ -3264,6 +3264,28 @@ class DashboardConfig:
             "Concatenate follow-up messages while the agent is busy instead of queueing them separately.",
         ),
     )
+    title_refresh_every_turns: int = field(
+        default=0,
+        metadata=_meta(
+            "Refresh Auto Title Every N Turns",
+            "Re-examine a session's auto-generated title every N user turns "
+            "(at turns N, 2N, 3N, ...) from its last ten messages, and rename the "
+            "session when the topic has moved. 0 keeps the built-in schedule: "
+            "turns 8 and 24 only. Either way, a title that began as a bare link "
+            "or ticket key also gets one refresh after the first turn. A value "
+            "from 1 to 3 is raised to 4, and the ceiling is 1000. Each refresh is "
+            "one background LLM call. Turns are counted over the messages held "
+            "for the session. A session reloaded by a gateway restart or "
+            "reopened from History holds its latest 500 plus the new ones, and "
+            "the cadence continues from the restored count; if the reload keeps "
+            "fewer user turns than the latest built-in turn the session had "
+            "already reached (the first turn, 8 or 24), the cadence resumes "
+            "after that turn instead. Once 10,000 are held, the oldest drop off "
+            "as new ones arrive, so refreshes slow down or stop until the next "
+            "reload. A title you renamed by hand is never refreshed. Takes "
+            "effect on the next turn; no restart.",
+        ),
+    )
     mcp_probe_timeout_secs: int = field(
         default=15,
         metadata=_meta(
@@ -4645,6 +4667,10 @@ COMPLETION_KEEP_CHARS_MIN = 0
 COMPLETION_KEEP_CHARS_MAX = 512_000
 MCP_PROBE_TIMEOUT_MIN = 5
 MCP_PROBE_TIMEOUT_MAX = 120
+# ``dashboard.title_refresh_every_turns``: 0 is "built-in schedule"; any other
+# value is at least MIN, so a typo of 1 cannot spend an LLM call on every turn.
+TITLE_REFRESH_EVERY_TURNS_MIN = 4
+TITLE_REFRESH_EVERY_TURNS_MAX = 1000
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
 SESSION_TIMEOUT_MIN = 0

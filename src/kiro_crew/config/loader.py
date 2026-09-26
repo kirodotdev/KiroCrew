@@ -3391,6 +3391,17 @@ def _build_feishu_config(feishu_data: dict) -> FeishuConfig:
     )
 
 
+def _title_refresh_every_turns(value: object) -> int:
+    """Parse ``dashboard.title_refresh_every_turns``: 0, or MIN..MAX.
+
+    0 means "built-in schedule" and is kept as is; a value below the floor is
+    raised to it rather than read as 0, so a user who asked for frequent
+    refreshes gets the most frequent one allowed instead of silently none.
+    """
+    every = _safe_int(value, 0, 0, _sections.TITLE_REFRESH_EVERY_TURNS_MAX)
+    return every if every == 0 else max(every, _sections.TITLE_REFRESH_EVERY_TURNS_MIN)
+
+
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
     return DashboardConfig(
         url=dashboard_data.get("url", ""),
@@ -3410,6 +3421,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         bot_name=dashboard_data.get("bot_name", ""),
         avatar=dashboard_data.get("avatar", ""),
         merge_queued_messages=dashboard_data.get("merge_queued_messages", False),
+        title_refresh_every_turns=_title_refresh_every_turns(
+            dashboard_data.get("title_refresh_every_turns", 0)
+        ),
         mcp_probe_timeout_secs=_safe_int(
             dashboard_data.get("mcp_probe_timeout_secs", 15),
             15,

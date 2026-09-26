@@ -72,6 +72,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _rebase_rehydrated_refresh_mark,
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restored_agent_name,
@@ -11890,6 +11891,12 @@ def _hydrate_slot_from_history(
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
+    # Same as the two chat_persistence loaders: a transcript past the 500-row
+    # window restores fewer user rows than its persisted refresh mark was taken
+    # over, so re-base the mark or the opt-in cadence stays silent after the
+    # resume. A mark at or below the restored count is left alone, so surfacing
+    # every row (import's ``window_limit=None``) changes nothing.
+    _rebase_rehydrated_refresh_mark(slot)
     # Loaded window is the on-disk window region; older lines (in
     # _disk_older_count above) are the frozen prefix saves never rewrite,
     # so older on-disk turns are preserved.

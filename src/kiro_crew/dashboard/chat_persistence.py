@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
     config_dir,
 )
 from kiro_crew.dashboard.channel_slots import slot_closed_since
+from kiro_crew.dashboard.chat_title import _TITLE_ORIGINS, _rehydrated_refresh_mark
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
@@ -106,12 +107,6 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 
 
-# Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
-# here rather than imported to avoid dragging the chat_title import graph into
-# the persistence module's load path).
-_TITLE_ORIGINS = ("auto", "user")
-
-
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
     """Resolve a rehydrated slot's title origin from persisted metadata.
 
@@ -167,6 +162,24 @@ def _rehydrate_slot_title(
     slot._title_origin = _rehydrate_title_origin(titled, metadata.get("title_origin"))
     slot._title_refresh_mark = _rehydrate_title_refresh_mark(metadata.get("title_refresh_mark"))
     slot._title_low_signal = _rehydrate_title_low_signal(metadata.get("title_low_signal"))
+
+
+def _rebase_rehydrated_refresh_mark(slot: _ChatSlot) -> None:
+    """Re-base the restored refresh mark against the user rows the loader kept.
+
+    Call once per rehydrate path, AFTER its message window is appended. The
+    window is the latest 500 rows, so the slot's user count restarts below the
+    count the persisted mark was taken at, and the opt-in refresh cadence
+    (``dashboard.title_refresh_every_turns``) would otherwise stay silent until
+    the count climbed past that mark again. Counts user rows over
+    ``slot.messages`` exactly as ``maybe_refresh_title`` does, so the two agree
+    on what a turn is. See ``chat_title._rehydrated_refresh_mark`` for the
+    floor that keeps a spent built-in milestone spent.
+    """
+    if not slot._title_refresh_mark:
+        return
+    user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    slot._title_refresh_mark = _rehydrated_refresh_mark(slot._title_refresh_mark, user_count)
 
 
 _MAX_HISTORY_CHARS = 8000
@@ -1952,6 +1965,10 @@ def _rehydrate_slot_from_history(
             _attach_variants(slot, m)
         slot.drain()
         slot._resumed_count = len(slot.messages)
+        # A session past 500 rows restores fewer user rows than its persisted
+        # refresh mark was taken over; re-base the mark so the opt-in cadence
+        # continues after the reload.
+        _rebase_rehydrated_refresh_mark(slot)
         # The whole in-memory window is already on disk → it is the on-disk window
         # region. Saves re-serialize the window in place; the frozen prefix (older
         # turns counted above) is never rewritten.
@@ -2483,6 +2500,9 @@ def _apply_recent_session(
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
+    # Same as _rehydrate_slot_from_history: a session past 500 rows restores
+    # fewer user rows than its persisted refresh mark was taken over.
+    _rebase_rehydrated_refresh_mark(slot)
     # Loaded window is the on-disk window region; older lines (counted in
     # _disk_older_count above) are the frozen prefix saves never rewrite.
     slot._disk_window_len = len(slot.messages)
