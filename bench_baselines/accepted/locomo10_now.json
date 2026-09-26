@@ -39,7 +39,7 @@
     "turns": 2760,
     "variant": "locomo10[5i/allq]"
   },
-  "elapsed_s": 1112.94,
+  "elapsed_s": 1781.71,
   "ingest_totals": {
     "attempted": 2760,
     "dropped_fragments": 3,
