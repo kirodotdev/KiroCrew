@@ -71,8 +71,12 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import _AGENT_DENIED_ENV_KEYS
 from kiro_crew.security import (
+    _BACKSLASH_ESCAPE_RE,
+    _MAX_LOCAL_ASSIGNMENTS,
     _SENSITIVE_HOME_DIRS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
+    _iter_local_assignments,
+    _substitute_local_assignments,
     audit_bash_exfiltration,
     enabled_rule_ids,
     is_sensitive_bash_command,
@@ -230,44 +234,6 @@ _CRON_SHELL_KEYWORD_RE = re.compile(r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|whi
 _CRON_MAX_GLOB_WORD = 256
 
 
-# Local variable assignments can smuggle path fragments past the vet:
-# `A=.s; B=sh; cp ~/$A$B/id_rsa ...` — the vetter sees `~/` and `/id_rsa` as
-# separate tokens and misses the assembled `~/.ssh/id_rsa`.
-#
-# Two shapes both set variables and BOTH must be captured. Anchoring only at
-# start-of-command / after a separator catches the first shape but stops at the
-# first token of the second, leaving later names unresolved:
-#
-#   A=.s; B=sh; ...   separate commands   — one assignment per anchor
-#   A=.s B=sh ...     an assignment LIST  — whitespace-separated, ONE command
-#                     (verified: `sh -c 'A=.s B=sh; echo "[$A][$B]"'` -> [.s][sh])
-#
-def _iter_local_assignments(text: str) -> Iterator[tuple[str, str]]:
-    """Yield the conservative assignment scan's name/value pairs in source order."""
-    for word in re.split(r"[;&|\s]+", text):
-        name, separator, value = word.partition("=")
-        # ASCII identifiers are exactly the shell NAME grammar. Partition at
-        # the first '=' once; failed names cannot restart a pattern search.
-        # ``cp a=b`` still conservatively counts as an assignment for scanning.
-        if separator and name.isascii() and name.isidentifier():
-            yield name, value
-
-
-# A backslash escaping any character. sh drops the backslash and keeps the
-# character during word expansion, so the scan must do the same to see the string
-# the shell will actually use.
-_BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
-#: Cap on one resolved assignment value. Chained self-references double per
-#: assignment, so this is what keeps a hostile `cron_add` from OOM-killing the
-#: gateway out of the vetting gate. Set to the `command` field's own max_len: a
-#: value cannot legitimately exceed the string it was parsed out of.
-_CRON_MAX_EXPANDED_VALUE = 5000
-#: Cap on tracked assignments. `_expand` rewrites a segment once per known name,
-#: so cost is O(names x segments) — with the value cap alone, 700 chained
-#: assignments still measured 97s. Far above any real cron one-liner; past it the
-#: extra names simply go unresolved, which cannot admit a payload (an unresolved
-#: `$X` stays literal and so cannot match a credential path).
-_CRON_MAX_ASSIGNMENTS = 64
 # Cap how much of a cron script we read for the security review (256 KiB is far
 # larger than any legitimate cron script; bounds memory on a hostile huge file).
 # ALIASED to the gate's own source-body ceiling rather than restated, so the reader and
@@ -283,25 +249,6 @@ _MAX_SCRIPT_SCAN_BYTES = MAX_SCANNABLE_SOURCE_BODY_CHARS
 #: of exactly the cap still reads short of this and is scanned in full, so no legitimate
 #: script is refused for being at the boundary.
 _SCRIPT_READ_PROBE_BYTES = _MAX_SCRIPT_SCAN_BYTES + 1
-
-
-def _split_segments(command: str) -> list[tuple[str, str]]:
-    """Split *command* on shell command separators, keeping each separator.
-
-    Returns ``(segment, separator)`` pairs whose concatenation reproduces the
-    input exactly, so a caller can expand each segment independently and rejoin
-    without altering anything it did not intend to. Splitting on `;`/`&`/`|` runs
-    is coarse — it does not respect quoting — but it only ever makes the
-    credential scan consider a NARROWER environment per segment, never a wider
-    one, so a mis-split cannot admit a payload.
-    """
-    parts: list[tuple[str, str]] = []
-    pos = 0
-    for m in re.finditer(r"[;&|]+", command):
-        parts.append((command[pos : m.start()], m.group(0)))
-        pos = m.end()
-    parts.append((command[pos:], ""))
-    return parts
 
 
 def _contains_glob_meta(value: str) -> bool:
@@ -415,95 +362,6 @@ def _glob_could_reach_credentials(command: str) -> bool:
                 if literals & set(probe):
                     return True
     return False
-
-
-def _substitute_local_assignments(command: str) -> str:
-    """Return *command* with any locally-assigned ``$var``/``${var}`` expanded.
-
-    Cron `command` values are executed by ``sh -c``, so a shell assignment
-    earlier in the string (``A=.ssh; ...``) is visible to later ``$A`` /
-    ``${A}`` references in the same command. The static credential-path scan
-    can't see the assembled path unless we perform the same substitution here
-    before scanning. Only LOCAL assignments in this command are resolved —
-    unknown vars are left as-is, so a scan that follows must not treat an
-    unresolved ``$var`` as innocuous (they simply cannot make the path checker
-    match a literal .ssh / .aws / .netrc etc. AT VET TIME, which is the point).
-    """
-
-    def _expand(text: str, env: dict[str, str]) -> str:
-        """Replace every ``$NAME`` / ``${NAME}`` known to *env*, longest name first.
-
-        Longest-first so ``$AB`` is never matched by the rule for ``$A``.
-        """
-        for name in sorted(env, key=len, reverse=True):
-            # A CALLABLE replacement, never the string: re.sub reads backslashes
-            # in a string replacement as escapes, so a value like `\q` raises
-            # re.error ("bad escape") and would abort the whole cron_add MCP call
-            # — a vetting gate that crashes on hostile input is worse than one
-            # that misses it. A callable is substituted literally.
-            literal = env[name]
-            repl = lambda _m, v=literal: v  # noqa: E731 - one-line literal repl
-            text = re.sub(r"\$\{" + re.escape(name) + r"\}", repl, text)
-            text = re.sub(r"\$" + re.escape(name) + r"(?![A-Za-z0-9_])", repl, text)
-        return text
-
-    # Resolve SEQUENTIALLY, in source order, expanding each value against the
-    # state at that point — which is what sh does. A name/value map plus a
-    # fixpoint cannot model this, because it keeps only the LAST value per name
-    # and so loses the intermediate one a later variable captured:
-    #
-    #   A=.s; B=$A; A=x; C=sh; cp ~/${B}${C}/id_rsa
-    #
-    # `B` captures `.s` BEFORE `A` is reassigned, so sh reads `.ssh` (verified),
-    # while a last-value map resolves B to `x` and scans a harmless `~/xsh/`.
-    # Sequential resolution also removes the need for a fixpoint loop and its
-    # cycle cap: a value can only ever reference names already assigned, so one
-    # left-to-right pass is complete by construction.
-    # Each SEGMENT is expanded with the environment as it stands at that segment,
-    # then the expanded segments are rejoined. Expanding the whole command with
-    # the FINAL environment would let a trailing reassignment hide an earlier
-    # read — `A=.ssh; cp ~/$A/id_rsa /tmp/key; A=safe` scans as `~/safe/id_rsa`
-    # while sh copies the key, because sh evaluates `$A` when it reaches that
-    # command, not after the last one.
-    env: dict[str, str] = {}
-    out: list[str] = []
-    for segment, separator in _split_segments(command):
-        for name, value in _iter_local_assignments(segment):
-            # Quote removal deletes EVERY quote character in the word, not just a
-            # surrounding pair: sh reads `A=.s''sh` as `.ssh` (verified), and an
-            # INTERNAL empty pair is the cheapest way to split a credential
-            # directory name across characters the scan can never see adjacent.
-            # A value is treated as single-quoted for expansion purposes only when
-            # the WHOLE word is one single-quoted run — that is the case in which
-            # sh performs neither parameter expansion nor escape removal on it.
-            wholly_single_quoted = (
-                len(value) >= 2 and value[0] == value[-1] == "'" and "'" not in value[1:-1]
-            )
-            value = value.replace('"', "").replace("'", "")
-            if not wholly_single_quoted:
-                # sh REMOVES an escaping backslash during word expansion, so
-                # `B=s\h` sets B to `sh` — and `~/$A$B` then reads `.ssh` while
-                # the literal text carried `.ss\h`, which the credential-path
-                # regex does not match. Quote removal is part of expansion, so it
-                # has to happen here too or the scan sees a different string than
-                # the shell does. Inside SINGLE quotes a backslash is literal, so
-                # that case is left alone.
-                value = _BACKSLASH_ESCAPE_RE.sub(r"\1", value)
-                # A single-quoted value is also not subject to parameter
-                # expansion, hence expanding only on this branch.
-                value = _expand(value, env)
-            # Bound the stored value. Each assignment can reference earlier ones,
-            # so `A0=ab; A1=$A0$A0; A2=$A1$A1; ...` DOUBLES per assignment —
-            # measured 67 MB at 24 assignments, and the `command` field allows
-            # 5000 chars (~700 assignments), which is ~1 TiB. That OOM-kills the
-            # single-process gateway from inside a gate whose whole job is to
-            # REFUSE hostile input, and it happens before the credential scan
-            # runs at all. Truncating can only narrow what the scan sees, never
-            # widen it, and no legitimate value exceeds the field's own cap.
-            if len(env) < _CRON_MAX_ASSIGNMENTS or name in env:
-                env[name] = value[:_CRON_MAX_EXPANDED_VALUE]
-        out.append(_expand(segment, env) + separator)
-    return "".join(out)
 
 
 def _audit_governance_deny(session_key: str, tool_name: str, scope: str, decision: object) -> None:
@@ -691,15 +549,15 @@ def _vet_shell_command(command: str) -> str | None:
             "follow. Ship a `script` job instead; its body is scanned in full."
         )
     # Refuse a command carrying more assignments than the resolver tracks. The
-    # resolver caps `env` at _CRON_MAX_ASSIGNMENTS to bound its cost, but that
+    # resolver caps `env` at _MAX_LOCAL_ASSIGNMENTS to bound its cost, but that
     # cap must FAIL CLOSED here rather than in the resolver: otherwise 64
     # harmless `Z=x` assignments fill the map, and a later `A=.s; B=sh; cp
     # ~/$A$B/id_rsa` goes untracked, so `$A$B` stays literal and the credential
     # path is missed. No legitimate cron one-liner sets this many variables.
-    if sum(1 for _ in _iter_local_assignments(command)) > _CRON_MAX_ASSIGNMENTS:
+    if sum(1 for _ in _iter_local_assignments(command)) > _MAX_LOCAL_ASSIGNMENTS:
         return (
             "Error: cron command blocked: too many variable assignments "
-            f"(limit {_CRON_MAX_ASSIGNMENTS}). A command that sets this many "
+            f"(limit {_MAX_LOCAL_ASSIGNMENTS}). A command that sets this many "
             "variables is composing strings a static check cannot follow. Ship a "
             "`script` job instead; its body is scanned in full."
         )
