@@ -16,17 +16,30 @@ including agent crons: the launcher injects ``KIROCREW_SESSION_KEY=cron:<job>``
 into the child env, and the MCP bridge hard-pins that key on the server spawn so
 script code cannot swap it for another session's.
 
+The key is the caller's own word, so the launcher also publishes a signed token
+that maps back to it, and the child presents that token on BOTH of its hops: the
+MCP bridge inherits it through the environment, and ``ScriptContext._post``
+sends it as ``X-Session-Token`` beside ``X-Session-Key``. An owner-surface route
+such as ``POST /api/crons/{id}/run`` accepts a declared key only behind that
+attestation; a request carrying the key alone is answered with 409
+``member_identity_unavailable``, which ``_post`` returns as a structured refusal
+(``error``, ``status_code``, ``code``) rather than the bare status line.
+
 Must be runnable with ``--noconftest`` (no hypothesis dependency).
 """
 
 from __future__ import annotations
 
+import io
 import os
+import urllib.error
+import urllib.request
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from kiro_crew.cron_script import McpToolClient, ScriptContext, run_script_sandboxed
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 JOB_ID = "job-8b1f"
 EXPECTED_KEY = f"cron:{JOB_ID}"
@@ -101,6 +114,81 @@ def _no_ambient_identity(monkeypatch, tmp_path):
     monkeypatch.setattr(session_token_sig, "config_dir", lambda: tmp_path)
 
 
+@pytest.fixture
+def signing_root(tmp_path):
+    """An isolated mapping directory over a valid SEL trust-root key.
+
+    Four patches for the same reason ``test_session_token_sig`` needs four:
+    the protocol SHARES its key loader with ``session_pid_sig``, so patching
+    one module's view of the trust root leaves the loader reading the real one.
+    """
+    from kiro_crew import session_pid_sig, session_token_sig
+
+    key_path = tmp_path / "sel_hmac.key"
+    key_path.write_bytes(b"\x02" * 32)
+    with (
+        patch.object(session_token_sig, "config_dir", return_value=tmp_path),
+        patch.object(session_pid_sig, "sel_hmac_key_path", return_value=key_path),
+        patch.object(session_token_sig, "sel_hmac_key_path", return_value=key_path),
+        patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
+    ):
+        yield tmp_path
+
+
+def _sent_request(ctx: ScriptContext, path: str, body: dict) -> urllib.request.Request:
+    """Return the ``Request`` ``ctx._post`` hands the loopback transport.
+
+    Stops at the transport so nothing is dialled; the gateway's answer is an
+    empty JSON object.
+    """
+    captured: dict[str, urllib.request.Request] = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout):
+        captured["req"] = req
+        return _Resp()
+
+    with patch("kiro_crew.cron_script.loopback_urlopen", side_effect=fake_urlopen):
+        ctx._post(path, body)
+    return captured["req"]
+
+
+class _WireHeaders:
+    """Case-insensitive view of a ``Request``'s headers, as aiohttp's ``CIMultiDict`` is.
+
+    ``urllib`` stores a header under its capitalised spelling while the consumer
+    asks for ``X-Session-Token``; on the wire neither spelling matters.
+    """
+
+    def __init__(self, req: urllib.request.Request) -> None:
+        self._items = {name.lower(): value for name, value in req.header_items()}
+
+    def get(self, name: str, default: str | None = None) -> str | None:
+        return self._items.get(name.lower(), default)
+
+
+class _GatewayRequest(dict):
+    """The two things ``session_key_is_attested`` reads off an aiohttp request.
+
+    ``request.get("peer_verified")`` is the kernel attestation, which a loopback
+    TCP caller never has, so it stays absent; ``request.headers`` is the request
+    the child actually built.
+    """
+
+    def __init__(self, req: urllib.request.Request) -> None:
+        super().__init__()
+        self.headers = _WireHeaders(req)
+
+
 class TestLauncherInjectsIdentity:
     def test_child_env_carries_the_jobs_session_key(self):
         env = _capture_launcher_env(JOB_ID)
@@ -153,26 +241,6 @@ class TestLauncherPublishesAVerifiableToken:
     sandbox launcher's pid -- so the token is its channel, and it has to map back
     to the job's own key rather than to any other session.
     """
-
-    @pytest.fixture
-    def signing_root(self, tmp_path):
-        """An isolated mapping directory over a valid SEL trust-root key.
-
-        Four patches for the same reason ``test_session_token_sig`` needs four:
-        the protocol SHARES its key loader with ``session_pid_sig``, so patching
-        one module's view of the trust root leaves the loader reading the real one.
-        """
-        from kiro_crew import session_pid_sig, session_token_sig
-
-        key_path = tmp_path / "sel_hmac.key"
-        key_path.write_bytes(b"\x02" * 32)
-        with (
-            patch.object(session_token_sig, "config_dir", return_value=tmp_path),
-            patch.object(session_pid_sig, "sel_hmac_key_path", return_value=key_path),
-            patch.object(session_token_sig, "sel_hmac_key_path", return_value=key_path),
-            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
-        ):
-            yield tmp_path
 
     def _capture_verified_env(self, signing_root, job_id):
         from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -244,6 +312,189 @@ class TestLauncherPublishesAVerifiableToken:
         token = self._capture_verified_env(signing_root, JOB_ID)[STUB_SESSION_TOKEN_ENV]
 
         assert token != "f" * 64
+
+
+class TestChildPresentsTheTokenOverHttp:
+    """The launcher's token must ride every ``ScriptContext`` request, not only the MCP hop.
+
+    ``ctx._post("/api/crons/<id>/run", ...)`` reaches an owner-surface route,
+    which accepts the declared ``X-Session-Key`` only behind an attestation. The
+    child sends the key on every request, so a child that keeps the token to
+    itself is refused on exactly the routes it needs the identity for, while
+    ``notify()`` -- an unguarded route -- keeps working and hides the gap.
+    """
+
+    def _context_in_child_env(self, env: dict[str, str]) -> ScriptContext:
+        """Construct the context the way the launcher's child does: from its env."""
+        child_env = {"_KIROCREW_DIAL_PORT": "5476"}
+        if STUB_SESSION_TOKEN_ENV in env:
+            child_env[STUB_SESSION_TOKEN_ENV] = env[STUB_SESSION_TOKEN_ENV]
+        with patch.dict(os.environ, child_env):
+            return ScriptContext(job=MagicMock(id=JOB_ID, message=""))
+
+    def test_the_launchers_token_is_sent_as_x_session_token(self):
+        env = _capture_launcher_env(JOB_ID)
+        ctx = self._context_in_child_env(env)
+
+        req = _sent_request(ctx, f"/api/crons/{JOB_ID}/run", {})
+
+        assert req.get_header("X-session-token") == env[STUB_SESSION_TOKEN_ENV]
+        assert req.get_header("X-session-key") == EXPECTED_KEY
+
+    def test_the_gateways_own_consumer_attests_the_sent_request(self, signing_root):
+        """End to end through the real primitives, while the run's mapping exists.
+
+        The launcher publishes the mapping for the life of the run and retracts
+        it in its ``finally``, so the request has to be built and judged DURING
+        the spawn -- the same window in which a real child makes its calls. The
+        judge is ``member_memory_auth.session_key_is_attested``, the function
+        every owner-surface route asks, given the request the child built and
+        the key that request declares.
+        """
+        from kiro_crew.member_memory_auth import session_key_is_attested
+
+        verdicts: dict[str, bool] = {}
+
+        def judge_during_run(env):
+            req = _sent_request(self._context_in_child_env(env), f"/api/crons/{JOB_ID}/run", {})
+            declared = req.get_header("X-session-key")
+            verdicts["declared"] = declared == EXPECTED_KEY
+            verdicts["attested"] = session_key_is_attested(_GatewayRequest(req), declared)
+            verdicts["not_for_a_neighbour"] = session_key_is_attested(
+                _GatewayRequest(req), "cron:job-other"
+            )
+
+        _capture_launcher_env(JOB_ID, during_spawn=judge_during_run)
+
+        assert verdicts == {"declared": True, "attested": True, "not_for_a_neighbour": False}
+
+    def test_without_the_token_the_same_request_is_unattested(self, signing_root):
+        """Baseline: the key alone is exactly the request the gateway refuses."""
+        from kiro_crew.member_memory_auth import session_key_is_attested
+
+        verdicts: dict[str, bool] = {}
+
+        def judge_during_run(env):
+            bare = {k: v for k, v in env.items() if k != STUB_SESSION_TOKEN_ENV}
+            req = _sent_request(self._context_in_child_env(bare), f"/api/crons/{JOB_ID}/run", {})
+            verdicts["has_token"] = req.has_header("X-session-token")
+            verdicts["attested"] = session_key_is_attested(_GatewayRequest(req), EXPECTED_KEY)
+
+        _capture_launcher_env(JOB_ID, during_spawn=judge_during_run)
+
+        assert verdicts == {"has_token": False, "attested": False}
+
+    def test_no_token_means_no_header(self):
+        """A directly constructed context sends exactly the request it always sent."""
+        ctx = self._context_in_child_env({})
+
+        req = _sent_request(ctx, "/api/send-message", {"text": "x"})
+
+        assert not req.has_header("X-session-token")
+        assert req.get_header("X-session-key") == EXPECTED_KEY
+
+    def test_the_token_stays_in_the_environ_for_the_mcp_bridge(self):
+        """Read, not popped: ``ctx.call_tool``'s server children resolve their identity from it.
+
+        The secret is popped so ``fn(ctx)`` cannot reach it; the token is not a
+        secret of that kind -- it names the job, and the MCP bridge builds every
+        server child's env from this process's ``os.environ``.
+        """
+        child_env = {STUB_SESSION_TOKEN_ENV: "a" * 64, "_KIROCREW_DIAL_PORT": "5476"}
+        with patch.dict(os.environ, child_env):
+            ctx = ScriptContext(job=MagicMock(id=JOB_ID, message=""))
+            assert os.environ[STUB_SESSION_TOKEN_ENV] == "a" * 64
+        assert ctx._session_token == "a" * 64
+
+    def test_the_token_is_not_in_the_contexts_repr(self):
+        """The token is a bearer name; a script that logs its context must not log it."""
+        child_env = {STUB_SESSION_TOKEN_ENV: "a" * 64, "_KIROCREW_DIAL_PORT": "5476"}
+        with patch.dict(os.environ, child_env):
+            ctx = ScriptContext(job=MagicMock(id=JOB_ID, message=""))
+
+        assert "a" * 64 not in repr(ctx)
+
+
+class TestPostSurfacesRefusals:
+    """A refused request must come back as a refusal a script can read, not a status line.
+
+    ``str(HTTPError)`` is ``"HTTP Error 409: Conflict"``: the body that says WHY
+    (``member_identity_unavailable`` versus a job that is already running) never
+    reached the script, so a refused trigger looked like any transport hiccup.
+    """
+
+    def _context(self) -> ScriptContext:
+        with patch.dict(os.environ, {"_KIROCREW_DIAL_PORT": "5476"}):
+            return ScriptContext(job=MagicMock(id=JOB_ID, message=""))
+
+    def _post_refused_with(self, status: int, reason: str, body: bytes) -> dict:
+        exc = urllib.error.HTTPError(
+            f"http://localhost:5476/api/crons/{JOB_ID}/run", status, reason, {}, io.BytesIO(body)
+        )
+        with patch("kiro_crew.cron_script.loopback_urlopen", side_effect=exc):
+            return self._context()._post(f"/api/crons/{JOB_ID}/run", {})
+
+    def test_a_gateway_refusal_carries_its_status_reason_and_code(self):
+        result = self._post_refused_with(
+            409,
+            "Conflict",
+            b'{"error": "The execution identity is unavailable; Global memory was not used.",'
+            b' "code": "member_identity_unavailable"}',
+        )
+
+        assert result == {
+            "error": "HTTP 409: The execution identity is unavailable; Global memory was not used.",
+            "status_code": 409,
+            "code": "member_identity_unavailable",
+        }
+
+    def test_a_refusal_without_a_json_body_still_names_the_status(self):
+        result = self._post_refused_with(403, "Forbidden", b"Forbidden")
+
+        assert result == {"error": "HTTP 403: Forbidden", "status_code": 403}
+
+    def test_an_empty_refusal_body_falls_back_to_the_status_reason(self):
+        result = self._post_refused_with(404, "Not Found", b"")
+
+        assert result == {"error": "HTTP 404: Not Found", "status_code": 404}
+
+    def test_a_code_that_is_not_an_identifier_is_dropped_not_echoed(self):
+        result = self._post_refused_with(
+            409, "Conflict", b'{"error": "job is already running", "code": "<script>x</script>"}'
+        )
+
+        assert result == {"error": "HTTP 409: job is already running", "status_code": 409}
+
+    def test_a_body_nested_past_the_parser_limit_is_still_a_refusal(self):
+        """``json.loads`` raises RecursionError there, which is not a ValueError."""
+        depth = 20_000
+        result = self._post_refused_with(409, "Conflict", b"[" * depth + b"]" * depth)
+
+        assert result["status_code"] == 409
+        assert result["error"].startswith("HTTP 409: ")
+        assert "code" not in result
+
+    def test_a_transport_failure_keeps_the_plain_error_shape(self):
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", side_effect=OSError("connection refused")
+        ):
+            result = self._context()._post("/api/send-message", {"text": "x"})
+
+        assert result == {"error": "connection refused"}
+
+    def test_notify_raises_with_the_refusal_not_the_status_line(self):
+        exc = urllib.error.HTTPError(
+            "http://localhost:5476/api/send-message",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b'{"error": "Forbidden", "code": "internal_auth_mismatch"}'),
+        )
+        with (
+            patch("kiro_crew.cron_script.loopback_urlopen", side_effect=exc),
+            pytest.raises(RuntimeError, match=r"notify\(\) failed: HTTP 403: Forbidden"),
+        ):
+            self._context().notify("hello")
 
 
 class TestBridgePinsIdentityOnTheServerSpawn:

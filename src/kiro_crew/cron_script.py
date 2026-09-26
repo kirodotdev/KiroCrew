@@ -34,9 +34,10 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -49,6 +50,7 @@ from kiro_crew.env import sanitize_spec_env
 from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV, mint_stub_session_token
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
@@ -69,6 +71,11 @@ from kiro_crew.security import (
     sensitive_path_refusal,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_token_sig import (
+    publish_session_token,
+    retract_session_token,
+    session_token_header,
+)
 
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
 # of OS sandbox mode. The OS sandbox can fall back to backend "none" (e.g.
@@ -1092,6 +1099,9 @@ class ScriptContext:
     job: CronJob
     _port: int = 5476
     _secret: str = ""
+    # A bearer name for the job's identity: kept out of the generated repr so a
+    # script that prints or logs its context does not print the token with it.
+    _session_token: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         # The parent injects the port it minted the credential for. Preferring it
@@ -1112,6 +1122,14 @@ class ScriptContext:
                 pass
         else:
             self._secret = os.environ.pop("KIROCREW_INTERNAL_SECRET", "")
+        # The signed token the launcher published for this run, read but NOT popped:
+        # the MCP bridge builds every server child's env from this process's
+        # os.environ, and those children resolve their identity from the same
+        # variable. Bound at construction like the port and the secret, so the
+        # HTTP requests below present the token this run was launched with; a
+        # context constructed without one falls back to the live environment, as
+        # ``session_token_header`` does for every caller.
+        self._session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
 
     @property
     def message(self) -> str:
@@ -1183,10 +1201,17 @@ class ScriptContext:
 
     def _post(self, path: str, body: dict) -> dict:
         data = json.dumps(body).encode()
+        # The key states this job's identity; the token proves it. An owner-surface
+        # route such as POST /api/crons/{id}/run accepts a declared key only behind
+        # an attestation, and a loopback TCP request has no kernel peer attestation
+        # to offer, so the launcher's signed token is the one channel left. Absent,
+        # the gateway answers 409 ``member_identity_unavailable`` and the job's
+        # request is refused as a caller that merely holds the internal secret.
         headers = {
             "Content-Type": "application/json",
             "X-Internal-Secret": self._secret,
             "X-Session-Key": f"cron:{self.job.id}",
+            **session_token_header(self._session_token),
         }
         req = urllib.request.Request(
             f"http://localhost:{self._port}{path}",
@@ -1197,9 +1222,51 @@ class ScriptContext:
         try:
             with loopback_urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            refusal = _http_refusal(exc)
+            logger.warning("ScriptContext._post(%s) refused: %s", path, refusal["error"])
+            return refusal
         except Exception as exc:
             logger.warning("ScriptContext._post(%s) failed: %s", path, exc)
             return {"error": str(exc)}
+
+
+def _http_refusal(exc: urllib.error.HTTPError) -> dict[str, Any]:
+    """Decode a gateway refusal into the ``{"error", "status_code", "code"}`` result.
+
+    ``str(exc)`` is the status line alone (``"HTTP Error 409: Conflict"``); the
+    body's reason and its machine-readable ``code`` are what tell a refused
+    identity from a job that is already running, so both travel with the status.
+    The body is text this process did not write: the reason is redacted like any
+    other inbound text and ``code`` survives only as a short identifier.
+    """
+    try:
+        raw = exc.read().decode("utf-8", "replace").strip()
+    except Exception:
+        raw = ""
+    reason = raw or str(exc.reason)
+    code = ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            # Any parse failure leaves the raw text as the reason -- RecursionError
+            # included, which a body nested past the parser's limit raises and
+            # which is not a ValueError.
+            parsed = None
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("error"), str):
+                reason = parsed["error"]
+            raw_code = parsed.get("code")
+            if isinstance(raw_code, str) and re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_code):
+                code = raw_code
+    result: dict[str, Any] = {
+        "error": f"HTTP {exc.code}: {redact(reason)}",
+        "status_code": exc.code,
+    }
+    if code:
+        result["code"] = code
+    return result
 
 
 # ── MCP Tool Bridge ──
@@ -1760,13 +1827,13 @@ def _safe_tail_redaction_window(text: str, keep: int) -> str:
 def _publish_script_session_token(clean_env: dict[str, str], job_id: str) -> str:
     """Attach the signed token naming ``cron:<job id>`` to a script child's env.
 
-    A script cron's MCP children reach the gateway's internal API under the job's
-    session key, and that API accepts a declared key only behind a transport
-    attestation. The unix-socket peer walk cannot supply one here: nothing
-    publishes a signed pid mapping for the sandbox launcher's pid, so the
-    ancestry walk resolves no session and the middleware attaches no kernel
-    attestation. The signed token is the channel that remains, minted with the
-    same primitive every ACP session uses.
+    A script cron's MCP children, and its ``ScriptContext`` over loopback HTTP,
+    reach the gateway's internal API under the job's session key, and that API
+    accepts a declared key only behind a transport attestation. The unix-socket
+    peer walk cannot supply one here: nothing publishes a signed pid mapping for
+    the sandbox launcher's pid, so the ancestry walk resolves no session and the
+    middleware attaches no kernel attestation. The signed token is the channel
+    that remains, minted with the same primitive every ACP session uses.
 
     One token per run: its mapping exists for the life of the run and is removed
     when the run ends, so completed runs accumulate no mappings or orphans.
@@ -1777,9 +1844,6 @@ def _publish_script_session_token(clean_env: dict[str, str], job_id: str) -> str
     A publication failure leaves a token the verifier refuses, which costs the
     child calls that need an attested identity, never the run itself.
     """
-    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV, mint_stub_session_token
-    from kiro_crew.session_token_sig import publish_session_token
-
     token = mint_stub_session_token()
     publish_session_token(token, f"cron:{job_id}")
     clean_env[STUB_SESSION_TOKEN_ENV] = token
@@ -1981,8 +2045,6 @@ def run_script_sandboxed(
     internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
     secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
-    from kiro_crew.session_token_sig import retract_session_token
-
     script_session_token = ""
     try:
         try:
@@ -2110,8 +2172,9 @@ def run_script_sandboxed(
         clean_env["KIROCREW_SESSION_KEY"] = f"cron:{job_id}"
         # The key states an identity; the token PROVES it. Session-scoped gateway
         # routes accept a declared key only behind an attestation, and this is the
-        # only one a script cron can carry, so its MCP children reach those routes
-        # as this job instead of as a caller that merely holds the internal secret.
+        # only one a script cron can carry, so its MCP children and its own
+        # ScriptContext requests reach those routes as this job instead of as a
+        # caller that merely holds the internal secret.
         script_session_token = _publish_script_session_token(clean_env, job_id)
         # Pre-resolve gh OUTSIDE the sandbox and pin its identity for the
         # child: the sandbox's single-uid user namespace maps every root-owned
