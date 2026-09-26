@@ -26,6 +26,8 @@ import hmac
 import secrets
 import time
 
+from kiro_crew.dashboard.token_auth import _ct_eq
+
 # Long enough that a forgery attempt is hopeless, short enough to stay readable
 # in a URL path segment.
 _MAC_CHARS = 43
@@ -83,4 +85,7 @@ class PathTokenSigner:
             return False
         if exp < time.time():
             return False
-        return hmac.compare_digest(self._mac(exp, parts), mac)
+        # Compared as BYTES via the shared helper: ``hmac.compare_digest`` raises
+        # TypeError on a str holding a non-ASCII character, and the MAC is
+        # request-controlled.
+        return _ct_eq(self._mac(exp, parts), mac)
