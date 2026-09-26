@@ -26,6 +26,10 @@
         "mcp_registry_mode": false,
         "mcp_quarantine_after_failures": 3,
         "acp_backend": "",
+        "custom_acp": {
+          "command": "",
+          "args": []
+        },
         "member_acp_backend": "kas",
         "default_agent": "",
         "deepseek_env": {},
@@ -312,6 +316,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.custom_acp",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Custom ACP launch",
+      "help": "Experimental ACP executable and argument array. Configure in Developer > Agent Backend. Saving does not select it; new custom sessions read the saved pair. Tool approvals and advanced integrations are not verified. Do not put credentials in command arguments.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "command": "",
+        "args": []
+      }
     },
     {
       "path": "agent.member_acp_backend",

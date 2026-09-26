@@ -83,6 +83,12 @@ _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
+#: The Custom ACP launch. There is no adapter, no npm package and no node: the
+#: operator names an executable and its arguments, and ``resolve_custom_acp`` resolves
+#: the command against PATH. Synthetic and absolute for the same reason every other
+#: resolver answer here is -- the golden records the argv the arm hands the factory,
+#: never a real host resolution, and Custom's command is NEVER run by the capture.
+_CUSTOM_ACP_ARGV = ["/opt/bin/my-agent", "--acp", " a b "]
 
 #: Env keys whose VALUE is a property of the host or the run. The key still has to
 #: appear -- that a harness receives it at all is the fact being pinned.
@@ -388,6 +394,16 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(AcpClient, "_verify_opencode_routing", return_value=("", "")),
             patch.object(AcpClient, "_opencode_routing_config", return_value=_OPENCODE_CONFIG),
             patch.object(client_mod, "_unlink_readback_launcher", return_value=None),
+            # The Custom arm resolves argv from ``agent.custom_acp`` and PATH; the
+            # capture never runs or resolves a real command, so the resolver is
+            # stubbed to a fixed synthetic argv. Patched at its DEFINING module
+            # because the arm imports it fresh at call time
+            # (``from kiro_crew.agent_sdk.custom_acp import resolve_custom_acp``),
+            # so a ``client_mod`` binding would not be the one it reads.
+            patch(
+                "kiro_crew.agent_sdk.custom_acp.resolve_custom_acp",
+                return_value=list(_CUSTOM_ACP_ARGV),
+            ),
             # The DEFAULT data home, pinned to this run's temp dir. Required rather
             # than incidental: the parent environment above carries no
             # ``KIROCREW_HOME``, so anything on the spawn path that resolves

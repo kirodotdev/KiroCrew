@@ -11396,7 +11396,8 @@
         "word_not_checked": "未確認",
         "word_not_offered": "非提供",
         "word_ready": "利用可能",
-        "word_recheck": "未反映"
+        "word_recheck": "未反映",
+        "custom_acp": "カスタム ACP"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",
@@ -11511,6 +11512,32 @@
         "could_not_sign_out": "サインアウトできませんでした",
         "keep_current_sign_in": "現在のサインインを維持",
         "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。"
+      },
+      "customAcpSetup": {
+        "warn_title": "これは、あなたが用意した harness を {{productName}} の制御の外で実行します。",
+        "warn_no_approval": "カスタム harness は、{{productName}} の承認プロンプト、拒否ツールのルール、フックのチェックを経ずに、コマンドを実行したりファイルの読み取り・書き込み・削除を行えます。これらのいずれもその経路上にありません。",
+        "warn_sandbox_floor": "OS サンドボックスと認証情報のマスキングは引き続き適用されますが、それらは大まかな下限であり、使い捨てや読み取り専用のプロジェクトでもネットワーク許可リストでもありません。harness が読み取れるプロジェクトデータは、接続先へ送信される可能性があります。",
+        "warn_trust": "信頼できる harness にのみ向け、機密でない使い捨てのプロジェクトに対してのみ実行してください。",
+        "warn_platform": "分離のないネイティブ Windows では起動しません。{{productName}} の保護された認証情報をマスキングすると、harness 自身の認証、git、クラウドのワークフローが壊れる場合もあります。",
+        "feature_no_projection": "{{productName}} は、その agent 仕様や MCP サーバーをカスタム harness に投影しません。",
+        "feature_no_tools": "harness に {{productName}} のメモリ、スケジュール、サブエージェントのツールがあると想定しないでください。",
+        "feature_model_in_harness": "モデルは harness で選択します。{{productName}} のモデルピッカーは auto のみを提供します。",
+        "feature_no_continuation": "共有プロセスやサブエージェントの継続はなく、ターン中の誘導もなく、手動のコンパクションや推論の制御もありません。",
+        "feature_logs_not_cleaned": "{{productName}} はカスタムプロバイダーのログをクリーンアップしません。",
+        "executable_label": "実行ファイル",
+        "executable_help": "絶対パス、または PATH で解決される単純な名前。シェルを介さずに実行されます。",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "引数",
+        "arguments_help": "1 行に 1 つの引数。入力どおりに渡され、シェルによる解析は行いません。行頭・行末の空白は保持されます。なしの場合は空欄にしてください。",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "保存された引数の 1 つに改行が含まれており、変更せずに 1 行 1 引数で編集することはできません。代わりに config.json でこのコマンドラインを編集してください。",
+        "save_configuration": "構成を保存",
+        "saving": "保存中…",
+        "could_not_save": "カスタム ACP 構成を保存できませんでした。",
+        "error_command_required": "実行ファイルを入力してください。",
+        "error_command_too_long": "実行ファイルが長すぎます（上限 {{max}} 文字）。",
+        "error_too_many_args": "引数が多すぎます（上限 {{max}}）。",
+        "error_arg_too_long": "引数の 1 つが長すぎます（上限 {{max}} 文字）。"
       }
     },
     "developerPage": {

@@ -2318,6 +2318,12 @@ async def api_models(request: web.Request) -> web.Response:
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CUSTOM
+
+    if backend == ACP_BACKEND_CUSTOM:
+        # Custom uses the harness's own model configuration. Opening a picker
+        # must not execute the configured command or query Kiro's account.
+        return web.json_response([])
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))

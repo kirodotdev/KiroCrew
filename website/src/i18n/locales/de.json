@@ -11568,7 +11568,8 @@
         "word_not_checked": "Ungeprüft",
         "word_not_offered": "Nicht angeboten",
         "word_ready": "Bereit",
-        "word_recheck": "Nicht aktiv"
+        "word_recheck": "Nicht aktiv",
+        "custom_acp": "Benutzerdefiniertes ACP"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Blendet Live-Diagnose zu Scrollposition und Ankern über dem Chat ein",
@@ -11683,6 +11684,32 @@
         "could_not_sign_out": "Abmelden nicht möglich",
         "keep_current_sign_in": "Aktuelle Anmeldung behalten",
         "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an."
+      },
+      "customAcpSetup": {
+        "warn_title": "Hier läuft ein Harness, den du bereitstellst, außerhalb der Kontrollen von {{productName}}.",
+        "warn_no_approval": "Ein benutzerdefinierter Harness kann Befehle ausführen und Dateien lesen, schreiben oder löschen, ohne die Genehmigungsaufforderungen, die Regeln für verweigerte Tools oder die Hook-Prüfungen von {{productName}}. Keine davon liegt auf seinem Weg.",
+        "warn_sandbox_floor": "Die OS-Sandbox und die Anmeldedaten-Maskierung gelten weiterhin, aber sie sind eine grobe Untergrenze, kein wegwerfbares oder schreibgeschütztes Projekt und keine Netzwerk-Zulassungsliste. Alle Projektdaten, die der Harness lesen kann, können dorthin gesendet werden, wohin er sich verbindet.",
+        "warn_trust": "Wähle nur einen Harness, dem du vertraust, und führe ihn nur in entbehrlichen Projekten ohne sensible Daten aus.",
+        "warn_platform": "Unter nativem Windows, wo es keine Isolation gibt, startet er nicht. Das Maskieren der geschützten Anmeldedaten von {{productName}} kann auch die eigene Authentifizierung, git oder die Cloud-Workflows des Harness beschädigen.",
+        "feature_no_projection": "{{productName}} projiziert seine Agent-Spezifikation oder seine MCP-Server nicht in einen benutzerdefinierten Harness.",
+        "feature_no_tools": "Gehe nicht davon aus, dass der Harness über die Speicher-, Zeitplan- oder Subagent-Tools von {{productName}} verfügt.",
+        "feature_model_in_harness": "Das Modell wird im Harness gewählt. Die Modellauswahl von {{productName}} bietet nur auto.",
+        "feature_no_continuation": "Es gibt keinen gemeinsamen Prozess und keine Subagent-Fortsetzung, keine Steuerung mitten im Zug und keine manuelle Verdichtung oder Reasoning-Steuerung.",
+        "feature_logs_not_cleaned": "{{productName}} bereinigt die Protokolle eines benutzerdefinierten Anbieters nicht.",
+        "executable_label": "Ausführbare Datei",
+        "executable_help": "Ein absoluter Pfad oder ein einfacher Name, der über PATH aufgelöst wird. Wird ohne Shell ausgeführt.",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "Argumente",
+        "arguments_help": "Ein Argument pro Zeile, unverändert wie eingegeben übergeben, ohne Shell-Analyse. Leer- und Endzeichen am Zeilenanfang und -ende bleiben erhalten. Für keine Argumente leer lassen.",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "Die gespeicherten Argumente enthalten einen Zeilenumbruch innerhalb eines Arguments, das nicht zeilenweise bearbeitet werden kann, ohne es zu verändern. Bearbeite diese Befehlszeile stattdessen in der config.json.",
+        "save_configuration": "Konfiguration speichern",
+        "saving": "Wird gespeichert…",
+        "could_not_save": "Die benutzerdefinierte ACP-Konfiguration konnte nicht gespeichert werden.",
+        "error_command_required": "Gib eine ausführbare Datei ein.",
+        "error_command_too_long": "Die ausführbare Datei ist zu lang (Grenze {{max}} Zeichen).",
+        "error_too_many_args": "Zu viele Argumente (Grenze {{max}}).",
+        "error_arg_too_long": "Ein Argument ist zu lang (Grenze {{max}} Zeichen)."
       }
     },
     "developerPage": {

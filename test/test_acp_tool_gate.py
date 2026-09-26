@@ -29,6 +29,7 @@ from kiro_crew import platform_compat
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -619,12 +620,26 @@ def test_every_enforced_harness_reaches_the_spawn_preflight() -> None:
             "spawns with no mask and no refusal, two enforces twice"
         )
 
-    # A per-session harness keeps its arm in the client core, one call each.
+    # A per-session harness keeps its arm in the client core, one call each -- plus
+    # Custom, the one deliberate exception. Custom's tool routing is UNVERIFIED, so it
+    # is NOT in ``enforced``, but its arm still runs the preflight because the OS
+    # credential mask is the whole of its compensating control
+    # (``tool_gate._requires_credential_mask`` is true for Custom OR any enforced id).
+    # It therefore adds exactly one client-core call site that ``on_client`` does not
+    # count, and it is named here rather than folded into ``enforced`` so a harness
+    # that silently lost its enforced routing could not hide behind this allowance.
+    expected_client_sites = on_client | {ACP_BACKEND_CUSTOM}
+    assert ACP_BACKEND_CUSTOM not in on_client, (
+        "Custom is enforced now, so its preflight is covered by the enforced count "
+        "and this exception is double-counting -- fold it back into on_client"
+    )
     client_calls = _preflight_calls(AcpClient._spawn)
-    assert client_calls == len(on_client), (
+    assert client_calls == len(expected_client_sites), (
         f"{len(on_client)} enforced harness(es) on AcpClient {sorted(on_client)!r} "
+        f"plus the Custom mask-only exception ({len(expected_client_sites)} arms total) "
         f"but {client_calls} _sandbox_preflight call site(s) in AcpClient._spawn: "
-        "every enforced harness must invoke the preflight inside its own spawn arm"
+        "every enforced harness -- and Custom -- must invoke the preflight inside its "
+        "own spawn arm"
     )
 
 

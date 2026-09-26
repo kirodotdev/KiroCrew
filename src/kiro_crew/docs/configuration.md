@@ -118,6 +118,7 @@ provider.
 | `opencode` | OpenCode | Uses OpenCode's native ACP server. |
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
+| `custom` | Custom ACP | **Experimental.** Runs an executable you supply in `agent.custom_acp`. Tool approvals and advanced integrations are not verified; it runs only behind the OS credential sandbox and is refused where that cannot apply. |
 
 The non-default harnesses are offered only when this build registers them. A
 host governance policy can narrow that list further, and the dashboard reports
@@ -140,6 +141,16 @@ per-harness capability matrix.
 
 Set a registered value with, for example,
 `kirocrew config set agent.acp_backend kas`.
+
+The `custom` harness is experimental. Its executable and arguments live in a
+separate key, `agent.custom_acp` (`{"command": "", "args": []}`), edited from
+Developer → Agent Backend. Saving that pair does not select the backend, and
+selecting the backend does not fill it in; a change applies to the next custom
+session, not a running one. The command is a name on `PATH` or an absolute path —
+it is never shell-parsed, so put no pipes, redirects, or quoting in it, and put no
+secrets in the arguments. Custom sessions run only inside the OS credential
+sandbox and are refused where it cannot apply (including native Windows); tool
+approvals and integrations that other harnesses verify are not verified here.
 
 ## Key Settings
 
@@ -225,6 +236,7 @@ Set a registered value with, for example,
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
 | `agent.deepseek_env` | Provider keys handed to the DeepSeek Harness (`agent.acp_backend: deepseek`) as environment variables at spawn: a map of environment-variable NAME to a `secret://<vault name>` reference. Store the key under Settings → Secrets first, then map it — e.g. `{"DEEPSEEK_API_KEY": "secret://my-dsh-key"}`. Any provider name the harness knows works. A plaintext value is refused at write time — the `config set` itself fails, so no key is ever stored in `config.json` — and, at spawn, so is a name the harness would forward to its own shell children, a name Kiro Crew sets itself, or one Kiro Crew's agent environment scrub strips: the session is refused before it starts, naming the offending key. Empty means no key — a locally served model needs none. Other backends ignore it | `{}` |
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
+| `agent.custom_acp` | Executable and argument array for the experimental `custom` ACP backend (`agent.acp_backend: custom`): `{"command": "<name on PATH or absolute path>", "args": []}`. Not shell-parsed; no secrets in `args`. Saving does not select the backend, and a change applies at the next custom session. A custom session runs only behind the OS credential sandbox and is refused where it cannot apply. Ignored by other backends | `{"command": "", "args": []}` |
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
 | `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
 | `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). Applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |

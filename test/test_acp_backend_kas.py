@@ -26,6 +26,7 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -92,6 +93,7 @@ class TestBackendPredicates:
             provider.is_pi_backend,
             provider.is_goose_backend,
             provider.is_deepseek_backend,
+            provider._client.backend == ACP_BACKEND_CUSTOM,
         ]
         assert sum(held) == 1
 

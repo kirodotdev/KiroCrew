@@ -1018,6 +1018,16 @@ class AgentConfig:
             # renders. See harness-parity H4.
         ),
     )
+    custom_acp: dict = field(
+        default_factory=lambda: {"command": "", "args": []},
+        metadata=_meta(
+            "Custom ACP launch",
+            "Experimental ACP executable and argument array. Configure in Developer > "
+            "Agent Backend. Saving does not select it; new custom sessions read the "
+            "saved pair. Tool approvals and advanced integrations are not verified. "
+            "Do not put credentials in command arguments.",
+        ),
+    )
     member_acp_backend: str = field(
         default="kas",
         metadata=_meta(
@@ -1856,6 +1866,9 @@ class AgentConfig:
     )
 
     def __post_init__(self) -> None:
+        from kiro_crew.agent_sdk.custom_acp import coerce_custom_acp
+
+        self.custom_acp = coerce_custom_acp(self.custom_acp)
         self.max_channels = max(1, min(5, self.max_channels))
         self.max_channel_agents = max(1, min(10, self.max_channel_agents))
         # Clamp to [0.5, 60.0] to match ``KiroCrewConfig.load()`` behavior

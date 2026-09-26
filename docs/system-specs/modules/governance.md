@@ -2302,7 +2302,10 @@ below), `filesystem.read` / `filesystem.write` / `folders.*` and
 `network.egress` (host gate via tool kind + args), `channels` (per-transport at
 the messaging chokepoint AND at transport startup), `apps` (app
 activation), `agent_backend` (which ACP harness a deployment may select —
-materialised by narrowing the `acp_backends` registry at gateway start),
+materialised by narrowing the `acp_backends` registry at gateway start; a deny
+of `custom` forbids the operator-supplied Custom ACP harness by id whatever
+executable `agent.custom_acp` names, and the config save and the spawn both
+reject a denied `custom`),
 `approval_modes` (currently the `yolo` dashboard mode), `yolo_duration`
 (the `permanent` and `until_shutdown` no-expiry choices), `sandbox.min_level`
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability

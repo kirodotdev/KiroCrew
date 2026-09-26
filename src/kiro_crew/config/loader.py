@@ -2711,6 +2711,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             agent_data.get("mcp_quarantine_after_failures", 3), 3
         ),
         acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
+        custom_acp=agent_data.get("custom_acp", {"command": "", "args": []}),
         member_acp_backend=_normalize_acp_backend(agent_data.get("member_acp_backend", "kas")),
         default_agent=agent_data.get("default_agent", ""),
         # Through the module alias rather than a new top-level import: the loader's

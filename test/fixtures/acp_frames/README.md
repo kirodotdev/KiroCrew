@@ -153,14 +153,18 @@ than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-Seven of the eight backends carry a live capture reaching all seven required
-classes. `codex/` is the one exception: it carries a live capture of four of them
+Seven of the nine backends carry a live capture reaching all seven required
+classes. `codex/` carries a live capture of four of them
 beside a synthesized file holding the other three, because a corpus is judged per
 directory and a four-class file cannot satisfy the seven-class gate on its own;
 its row says what stopped the rest. Stated plainly because it bounds what the
 corpus proves: a synthesized fixture locks the dispatch layer's behaviour against
 refactoring, which is what it was built for, and it does **not** prove that the
 backend really emits those shapes. Only a live file carries that second proof.
+
+`custom/session-synthesized.jsonl` covers standard ACP v1 shapes with synthetic
+identities and tool content. It checks parsing only: no particular operator
+executable was run, and voluntary permission frames establish no routing guarantee.
 
 `kas/steering.jsonl` and `kiro/notifications.jsonl` are synthesized too, but
 neither is a required-class carrier -- each directory's live file already reaches

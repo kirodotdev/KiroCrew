@@ -11396,7 +11396,8 @@
         "word_not_checked": "확인 안 됨",
         "word_not_offered": "제공 안 함",
         "word_ready": "사용 가능",
-        "word_recheck": "미적용"
+        "word_recheck": "미적용",
+        "custom_acp": "사용자 지정 ACP"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "실시간 스크롤 및 앵커 진단 정보를 채팅 위에 표시합니다",
@@ -11511,6 +11512,32 @@
         "could_not_sign_out": "로그아웃할 수 없음",
         "keep_current_sign_in": "현재 로그인 유지",
         "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요."
+      },
+      "customAcpSetup": {
+        "warn_title": "이것은 사용자가 제공한 harness를 {{productName}}의 제어 밖에서 실행합니다.",
+        "warn_no_approval": "사용자 지정 harness는 {{productName}}의 승인 프롬프트, 거부 도구 규칙 또는 훅 검사 없이 명령을 실행하고 파일을 읽고 쓰거나 삭제할 수 있습니다. 이들 중 어느 것도 그 경로에 있지 않습니다.",
+        "warn_sandbox_floor": "OS 샌드박스와 자격 증명 마스킹은 여전히 적용되지만, 이는 대략적인 하한선일 뿐이며 일회용 또는 읽기 전용 프로젝트도, 네트워크 허용 목록도 아닙니다. harness가 읽을 수 있는 모든 프로젝트 데이터는 연결되는 곳으로 전송될 수 있습니다.",
+        "warn_trust": "신뢰하는 harness에만 연결하고, 민감하지 않은 일회용 프로젝트에서만 실행하세요.",
+        "warn_platform": "격리가 없는 네이티브 Windows에서는 시작되지 않습니다. {{productName}}의 보호된 자격 증명을 마스킹하면 harness 자체의 인증, git 또는 클라우드 워크플로가 중단될 수도 있습니다.",
+        "feature_no_projection": "{{productName}}은(는) 자신의 agent 사양이나 MCP 서버를 사용자 지정 harness에 투영하지 않습니다.",
+        "feature_no_tools": "harness에 {{productName}}의 메모리, 일정 또는 서브에이전트 도구가 있다고 가정하지 마세요.",
+        "feature_model_in_harness": "모델은 harness에서 선택합니다. {{productName}}의 모델 선택기는 auto만 제공합니다.",
+        "feature_no_continuation": "공유 프로세스나 서브에이전트 연속성이 없고, 턴 중간 조정도 없으며, 수동 압축이나 추론 제어도 없습니다.",
+        "feature_logs_not_cleaned": "{{productName}}은(는) 사용자 지정 공급자의 로그를 정리하지 않습니다.",
+        "executable_label": "실행 파일",
+        "executable_help": "절대 경로 또는 PATH에서 확인되는 단순 이름입니다. 셸 없이 실행됩니다.",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "인수",
+        "arguments_help": "한 줄에 인수 하나씩, 입력한 그대로 전달되며 셸 구문 분석은 없습니다. 줄의 앞뒤 공백은 유지됩니다. 없으면 비워 두세요.",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "저장된 인수 중 하나에 줄 바꿈이 포함되어 있어, 변경하지 않고 한 줄에 하나씩 편집할 수 없습니다. 대신 config.json에서 이 명령줄을 편집하세요.",
+        "save_configuration": "구성 저장",
+        "saving": "저장 중…",
+        "could_not_save": "사용자 지정 ACP 구성을 저장할 수 없습니다.",
+        "error_command_required": "실행 파일을 입력하세요.",
+        "error_command_too_long": "실행 파일이 너무 깁니다(제한 {{max}}자).",
+        "error_too_many_args": "인수가 너무 많습니다(제한 {{max}}).",
+        "error_arg_too_long": "인수 하나가 너무 깁니다(제한 {{max}}자)."
       }
     },
     "developerPage": {

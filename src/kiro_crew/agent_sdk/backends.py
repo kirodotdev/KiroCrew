@@ -204,6 +204,7 @@ logger = logging.getLogger(__name__)
 # ``acp.types`` re-exports these, so every existing call site keeps importing
 # them from there; this module is only where they are DEFINED.
 
+ACP_BACKEND_CUSTOM = "custom"
 ACP_BACKEND_CLAUDE = "claude"
 ACP_BACKEND_KAS = "kas"
 # The Codex ACP adapter: a Node stdio server that boots the Codex app server and
@@ -270,6 +271,7 @@ ACP_BACKEND_KIRO = ""
 # kiro-cli, so provider construction rejects it instead.
 ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
     {
+        ACP_BACKEND_CUSTOM,
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
@@ -493,8 +495,11 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
 #:   marker, keyed to this session's nonce and to Crew's sealed file, read before the
 #:   first prompt. See :data:`Routing.VERIFIED_GATE_EXTENSION` and
 #:   :data:`Readback.LOAD_MARKER`.
+#: Custom is the explicitly experimental exception to verified routing. Its own
+#: launch requires credential isolation and the governed selectable registry.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
+        ACP_BACKEND_CUSTOM,
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
@@ -517,6 +522,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
 POLICY_ID_KIRO = "kiro"
 
 POLICY_ID_BY_BACKEND: dict = {
+    ACP_BACKEND_CUSTOM: ACP_BACKEND_CUSTOM,
     ACP_BACKEND_KIRO: POLICY_ID_KIRO,
     ACP_BACKEND_KAS: ACP_BACKEND_KAS,
     ACP_BACKEND_CLAUDE: ACP_BACKEND_CLAUDE,
@@ -581,24 +587,10 @@ def register_selectable_backend(backend: str) -> None:
     ``ACP_BACKENDS_KNOWN``: provider construction would raise on it later, and a
     dashboard option that cannot start a session is worse than an absent one.
 
-    ALSO rejects a harness whose routing is :attr:`Routing.UNVERIFIED`, and that
-    second refusal is the one worth reading. ``ACP_BACKENDS_KNOWN`` membership is
-    not a safety property: it says a build can SPELL the id, which is what lets a
-    governance rule deny it. Selectability is a different claim, because a
-    selectable harness starts sessions — and for an ``UNVERIFIED`` one nothing
-    establishes that its tool calls reach ``HookManager.on_tool_call``, its
-    routing verdict is INDETERMINATE so nothing refuses the session, and
-    ``tool_gate.is_enforced`` is False so the spawn path applies no compensating
-    credential mask. One call from an out-of-repo edition would put a harness in
-    exactly that state on the switch, and the only thing standing in its way
-    otherwise is a frozen literal plus a test that names it.
-
-    There is deliberately NO opt-out. A keyword flag here would be a documented way
-    to put an ungated harness on the switch, and no shipped caller wants one: every
-    known backend but one is routed, and the one that is not is deliberately absent
-    from the selectable baseline. A harness must have established routing BEFORE it
-    can be selectable — an edition that needs otherwise arrives with its own caller
-    and its own justification, which is a conversation rather than a flag.
+    Unverified routing is refused except for the named Custom ACP experiment.
+    Custom stays UNVERIFIED: its launch requires the governed registry and OS
+    credential isolation, but cannot guarantee per-tool approval. There is no
+    caller flag that relaxes admission for another harness.
     """
     if backend not in ACP_BACKENDS_KNOWN:
         raise ValueError(
@@ -608,7 +600,10 @@ def register_selectable_backend(backend: str) -> None:
     # ``routing_for`` rather than a direct table read, so this shares the table's
     # own fail-closed default: an id the routing table does not name at all is
     # UNVERIFIED here too, which is the answer that refuses.
-    if routing_for(backend) is Routing.UNVERIFIED:
+    admitted_routing = (
+        backend == ACP_BACKEND_CUSTOM or routing_for(backend) is not Routing.UNVERIFIED
+    )
+    if not admitted_routing:
         raise ValueError(
             f"cannot register {backend!r} as selectable: its routing is "
             f"{Routing.UNVERIFIED.value!r}, so nothing establishes that its tool calls "
@@ -1874,6 +1869,7 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
 # namespace is a passthrough -- which is exactly right for ids the backend itself
 # advertised.
 _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
+    ACP_BACKEND_CUSTOM: "custom",
     ACP_BACKEND_CLAUDE: "claude_code",
     ACP_BACKEND_KIRO: "acp",
     ACP_BACKEND_KAS: "acp",
@@ -2222,7 +2218,8 @@ class Routing(str, Enum):
     ``UNVERIFIED`` -- Kiro Crew has NOT established how, or whether, this harness
     can be made to ask. This member exists so "we do not know" is a state a
     caller must handle rather than an absent case that falls through to a
-    permissive branch. It always resolves INDETERMINATE, which refuses.
+    permissive branch. It always resolves INDETERMINATE. Only the named Custom
+    ACP experiment is selectable in this state, with mandatory OS isolation.
     """
 
     AGENT_SPEC = "agent_spec"
@@ -2238,6 +2235,7 @@ class Routing(str, Enum):
 #: A ``.get(backend, Routing.UNVERIFIED)`` read is deliberate: an id this table
 #: does not name fails closed rather than inheriting a neighbour's mechanism.
 ACP_BACKEND_ROUTING: dict = {
+    ACP_BACKEND_CUSTOM: Routing.UNVERIFIED,
     ACP_BACKEND_KIRO: Routing.AGENT_SPEC,
     ACP_BACKEND_KAS: Routing.AGENT_SPEC,
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,

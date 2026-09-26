@@ -7068,6 +7068,35 @@
       "show_controls": "Show controls"
     },
     "developer": {
+      "agentBackendTab": {
+        "custom_acp": "Custom ACP"
+      },
+      "customAcpSetup": {
+        "warn_title": "This runs a harness you supply, outside {{productName}}'s controls.",
+        "warn_no_approval": "A custom harness can run commands and read, write, or delete files without {{productName}}'s approval prompts, denied-tool rules, or hook checks. None of those sit in its path.",
+        "warn_sandbox_floor": "The OS sandbox and credential masking still apply, but they are a coarse floor, not a disposable or read-only project and not a network allowlist. Any project data the harness can read may be sent wherever it connects.",
+        "warn_trust": "Only point this at a harness you trust, and only run it against non-sensitive, disposable projects.",
+        "warn_platform": "On native Windows, where there is no isolation, it will not start. Masking {{productName}}'s protected credentials may also break the harness's own authentication, git, or cloud workflows.",
+        "feature_no_projection": "{{productName}} does not project its agent spec or MCP servers into a custom harness.",
+        "feature_no_tools": "Do not assume the harness has {{productName}}'s memory, schedule, or subagent tools.",
+        "feature_model_in_harness": "The model is chosen in the harness. {{productName}}'s model picker offers only auto.",
+        "feature_no_continuation": "There is no shared process or subagent continuation, no mid-turn steering, and no manual compaction or reasoning controls.",
+        "feature_logs_not_cleaned": "{{productName}} does not clean up a custom provider's logs.",
+        "executable_label": "Executable",
+        "executable_help": "An absolute path, or a bare name resolved on PATH. Run without a shell.",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "Arguments",
+        "arguments_help": "One argument per line, passed through as typed with no shell parsing. Leading and trailing spaces on a line are kept. Leave empty for none.",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "The saved arguments contain a line break inside one argument, which cannot be edited one-per-line without changing it. Edit this command line in config.json instead.",
+        "save_configuration": "Save configuration",
+        "saving": "Saving…",
+        "could_not_save": "Could not save the custom ACP configuration.",
+        "error_command_required": "Enter an executable.",
+        "error_command_too_long": "The executable is too long (limit {{max}} characters).",
+        "error_too_many_args": "Too many arguments (limit {{max}}).",
+        "error_arg_too_long": "One argument is too long (limit {{max}} characters)."
+      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane.",

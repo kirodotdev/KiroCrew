@@ -11740,7 +11740,8 @@
         "word_not_checked": "Não verificado",
         "word_not_offered": "Não oferecido",
         "word_ready": "Pronto",
-        "word_recheck": "Não ativo"
+        "word_recheck": "Não ativo",
+        "custom_acp": "ACP personalizado"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "Sobrepõe ao chat um diagnóstico ao vivo de rolagem e âncoras",
@@ -11855,6 +11856,32 @@
         "could_not_sign_out": "Não foi possível sair",
         "keep_current_sign_in": "Manter o login atual",
         "signed_in_body_no_refresh": "Os agentes são executados com esta conta Kiro. Este login não tem token de atualização e não pode se renovar sozinho — entre novamente antes que expire."
+      },
+      "customAcpSetup": {
+        "warn_title": "Isto executa um harness que você fornece, fora dos controles do {{productName}}.",
+        "warn_no_approval": "Um harness personalizado pode executar comandos e ler, gravar ou excluir arquivos sem as solicitações de aprovação, as regras de ferramentas negadas ou as verificações de hooks do {{productName}}. Nenhuma delas está no caminho dele.",
+        "warn_sandbox_floor": "O sandbox do sistema operacional e o mascaramento de credenciais ainda se aplicam, mas são um piso aproximado, não um projeto descartável ou somente leitura nem uma lista de permissões de rede. Quaisquer dados do projeto que o harness possa ler podem ser enviados para onde quer que ele se conecte.",
+        "warn_trust": "Aponte isto apenas para um harness em que você confia e execute-o somente em projetos descartáveis e não sensíveis.",
+        "warn_platform": "No Windows nativo, onde não há isolamento, ele não iniciará. Mascarar as credenciais protegidas do {{productName}} também pode quebrar a autenticação, o git ou os fluxos de trabalho na nuvem do próprio harness.",
+        "feature_no_projection": "O {{productName}} não projeta sua especificação de agente nem seus servidores MCP em um harness personalizado.",
+        "feature_no_tools": "Não presuma que o harness tenha as ferramentas de memória, agendamento ou subagentes do {{productName}}.",
+        "feature_model_in_harness": "O modelo é escolhido no harness. O seletor de modelos do {{productName}} oferece apenas auto.",
+        "feature_no_continuation": "Não há processo compartilhado nem continuação de subagente, nem direcionamento no meio do turno, nem controles manuais de compactação ou raciocínio.",
+        "feature_logs_not_cleaned": "O {{productName}} não limpa os logs de um provedor personalizado.",
+        "executable_label": "Executável",
+        "executable_help": "Um caminho absoluto, ou um nome simples resolvido no PATH. Executado sem shell.",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "Argumentos",
+        "arguments_help": "Um argumento por linha, repassado exatamente como digitado, sem análise de shell. Os espaços no início e no fim da linha são mantidos. Deixe vazio para nenhum.",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "Os argumentos salvos contêm uma quebra de linha dentro de um argumento, que não pode ser editada um por linha sem alterá-la. Edite esta linha de comando no config.json.",
+        "save_configuration": "Salvar configuração",
+        "saving": "Salvando…",
+        "could_not_save": "Não foi possível salvar a configuração de ACP personalizado.",
+        "error_command_required": "Insira um executável.",
+        "error_command_too_long": "O executável é muito longo (limite {{max}} caracteres).",
+        "error_too_many_args": "Argumentos em excesso (limite {{max}}).",
+        "error_arg_too_long": "Um argumento é muito longo (limite {{max}} caracteres)."
       }
     },
     "developerPage": {

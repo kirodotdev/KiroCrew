@@ -31,6 +31,7 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.session_handle import models_from_config_options
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -1627,14 +1628,18 @@ def test_a_routed_harness_still_registers() -> None:
 def test_no_known_backend_is_unverified() -> None:
     """The audit the refusal rests on, kept as a test so it cannot go quietly stale.
 
-    deepseek was the one member of this set, and this change empties it. If a
-    harness ever resolves to ``UNVERIFIED`` again -- including by being absent from
-    the routing table, which ``routing_for`` answers ``UNVERIFIED`` for -- the
-    refusal above starts applying to it. That may be right, but it must be noticed
-    rather than discovered when an edition's registration begins failing.
+    deepseek was the one member of this set; it left when Crew composed its gate
+    plugin and read the load marker back (``Routing.VERIFIED_GATE_EXTENSION``). One
+    KNOWN id resolves ``UNVERIFIED`` now, and it is the DELIBERATE one: Custom ACP is
+    the explicitly experimental harness, selectable but with its tool routing
+    unverified, resting on the OS credential mask alone. It is named here so that if
+    ANY OTHER harness ever resolves to ``UNVERIFIED`` -- including by being absent
+    from the routing table, which ``routing_for`` answers ``UNVERIFIED`` for -- the
+    refusal above starts applying to it and this test notices, rather than the gap
+    being discovered when an edition's registration begins failing.
     """
     unverified = {b for b in ACP_BACKENDS_KNOWN if routing_for(b) is Routing.UNVERIFIED}
-    assert unverified == set()
+    assert unverified == {ACP_BACKEND_CUSTOM}
     # Every known id is named EXPLICITLY, so none of them is unverified merely by
     # omission.
     from kiro_crew.acp_backends import ACP_BACKEND_ROUTING

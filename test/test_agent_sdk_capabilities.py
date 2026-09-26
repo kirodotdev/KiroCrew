@@ -312,6 +312,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "",
         "claude",
         "codex",
+        "custom",
         "deepseek",
         "goose",
         "kas",
@@ -331,6 +332,7 @@ EXPECTED_CAPABILITIES = {
     "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
     "codex": (PROVIDER_ACP, "codex", True, True, True),
+    "custom": (PROVIDER_ACP, "custom", False, False, False),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
 }
 

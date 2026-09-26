@@ -1,0 +1,107 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": false
+    },
+    "agent_version": "0.0.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "custom-session"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Checking the sample."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Checking the sample.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "printf sample"
+        },
+        "title": "printf sample",
+        "tool_call_id": "sample-call",
+        "tool_input": "{\n  \"command\": \"printf sample\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "shell"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "printf sample"
+        },
+        "request_id": 7,
+        "shell_classified": true,
+        "title": "shell",
+        "tool_call_id": "sample-call",
+        "tool_input": "{\n  \"command\": \"printf sample\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "sample-call",
+        "tool_final": true,
+        "tool_output": "sample",
+        "tool_output_bytes": 6,
+        "tool_output_digest": "af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

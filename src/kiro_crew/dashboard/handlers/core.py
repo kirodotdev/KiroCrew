@@ -2375,6 +2375,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # against the one code owner, so this cannot drift from what ``AcpProvider``
     # will actually serve.
     "agent.acp_backend": {"type": "enum", "values_fn": _selectable_acp_backends},
+    "agent.custom_acp": {"type": "custom_acp"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -2804,7 +2805,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         return _deny(f"field not editable: {path_key}", f"{path_key}={value}")
 
     # Validate value
-    if spec["type"] == "enum":
+    if spec["type"] == "custom_acp":
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CUSTOM
+        from kiro_crew.agent_sdk.custom_acp import validate_custom_acp
+
+        if ACP_BACKEND_CUSTOM not in _selectable_acp_backends():
+            return _deny("Custom ACP is not allowed by this deployment", path_key, 403)
+        try:
+            value = validate_custom_acp(value)
+        except ValueError as exc:
+            return _deny(str(exc), path_key)
+    elif spec["type"] == "enum":
         # ``values_fn`` (the same hook the ``str`` branch already carries) is for an
         # enum whose membership is not knowable at import: it can widen after boot
         # when an edition registers a backend. A static ``values`` list would be
@@ -3070,7 +3081,14 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
 
-    _log_sel("success", f"{path_key}={value}")
+    if path_key == "agent.custom_acp":
+        from kiro_crew.agent_sdk.backend_install import forget_probe
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CUSTOM
+
+        forget_probe(ACP_BACKEND_CUSTOM)
+        _log_sel("success", path_key)
+    else:
+        _log_sel("success", f"{path_key}={value}")
 
     # Everything a running gateway does in response to this write lives behind
     # ``config.live.subscribe`` (the provider switch and role-model rebuild are

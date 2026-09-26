@@ -102,6 +102,7 @@ from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rule
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -317,6 +318,7 @@ PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
 #: keeps that path free of conditionals added in service of one. A harness added
 #: later is one row here; an id with no row speaks kiro-cli's date-stamped dialect.
 _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
+    ACP_BACKEND_CUSTOM: 1,
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
     # Every harness whose own binary serves ACP declares its dialect in its
@@ -8888,6 +8890,30 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+        elif self.backend == ACP_BACKEND_CUSTOM:
+            from kiro_crew.agent_sdk.backends import selectable_backends
+            from kiro_crew.agent_sdk.custom_acp import LABEL, resolve_custom_acp
+
+            if self.backend not in selectable_backends():
+                raise AcpError("Custom ACP is not allowed by this deployment")
+            adapter_hidden_dirs = await _run_preflight_bounded(
+                _sandbox_preflight, self.backend, self._sandbox_mode
+            )
+            try:
+                argv = await asyncio.to_thread(resolve_custom_acp)
+            except ValueError as exc:
+                raise AcpError(str(exc)) from None
+            spawn_label = stderr_label = LABEL
+            # There is no spec adapter for an arbitrary executable. Do not inject
+            # broker stubs with grants whose per-tool routing is unverified.
+            self._mcp_gateway_overlay = None
+            self._resume_session_id = None
+            self._model = DEFAULT_MODEL
+            logger.warning(
+                "Custom ACP is experimental: tool approvals, saved agent settings "
+                "and advanced integrations are not verified; trust the executable "
+                "with all files and network access available inside its sandbox"
+            )
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live

@@ -2036,3 +2036,265 @@ describe('AgentBackendTab new backend', () => {
     )
   })
 })
+
+/**
+ * The custom ACP backend, which is the one backend with an inline SETUP surface.
+ *
+ * Its command line is config the operator types, not a binary they install, so the
+ * detail carries the setup form. These tests are about how the PANEL treats it:
+ * that the setup form appears for `custom` and only `custom`, that the Use button
+ * refuses to activate until a non-empty command line is SAVED (save is not
+ * activate), and that a policy denial hides it exactly like any other denied
+ * backend — reusing the selectable state rather than a separate policy path.
+ *
+ * The form's own behaviour (exact argv, draft retention, validation, the
+ * embedded-newline refusal) is pinned in CustomAcpSetup.test.tsx; here the
+ * component renders for real against the shared patchConfig mock.
+ */
+describe('AgentBackendTab custom backend', () => {
+  it('shows the setup form for the custom row and its security warning first', async () => {
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    // The warning leads the detail, outside any disclosure, and the inputs exist.
+    expect(
+      screen.getByText(/runs a harness you supply, outside/),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('Executable')).toBeInTheDocument()
+    expect(screen.getByLabelText('Arguments')).toBeInTheDocument()
+  })
+
+  it('shows no setup form for any other backend', async () => {
+    // The form is custom-only. Every other backend keeps the generic detail.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    expect(screen.queryByLabelText('Executable')).toBeNull()
+    expect(screen.queryByText(/runs a harness you supply/)).toBeNull()
+  })
+
+  it('will not let Use activate custom until a command line is saved', async () => {
+    // Save is not activate: with no saved command line, switching to custom would
+    // spawn nothing, so the Use button is dead even though the row is selectable.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: '' } })
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    expect(useButton('Custom ACP')).toBeDisabled()
+  })
+
+  it('treats a saved-but-blank command as unconfigured', async () => {
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '   ', args: [] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    expect(useButton('Custom ACP')).toBeDisabled()
+  })
+
+  it('enables Use once a non-empty command line is saved in config', async () => {
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: ['--serve'] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    fireEvent.click(useButton('Custom ACP'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'custom'))
+  })
+
+  it('seeds the setup form from the saved custom_acp config', async () => {
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: ['--a', '--b'] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() =>
+      expect((screen.getByLabelText('Executable') as HTMLInputElement).value).toBe('/bin/agent'),
+    )
+    expect((screen.getByLabelText('Arguments') as HTMLTextAreaElement).value).toBe('--a\n--b')
+  })
+
+  it('hides custom when the deployment denies it, reusing the selectable state', async () => {
+    // A policy denial is not the reader's to fix, so a denied custom is HIDDEN like
+    // any other denied backend — the same `unavailable` path, not a separate policy
+    // evaluation. Other backends are unaffected.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude']))
+    wrap()
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    expect(row('Claude Code')).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Custom ACP' })).toBeNull()
+  })
+
+  it('shows a policy-denied custom as Disabled with inputs and Use disabled when it is the saved backend', async () => {
+    // The one case a denied custom is still listed: it is the saved backend, so the
+    // panel keeps a row rather than showing no active harness. It reads as denied —
+    // no Use button — and the reader cannot activate it.
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: 'custom', custom_acp: { command: '/bin/agent', args: [] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toHaveAttribute('aria-current', 'true'))
+    // It is the active backend, so its control reads "In use" and is disabled —
+    // there is no live "Use Custom ACP" button to activate an unsaved or denied
+    // switch, and the setup form still renders for the current row.
+    expect(screen.queryByRole('button', { name: 'Use Custom ACP' })).toBeNull()
+    highlight('Custom ACP')
+    expect(screen.getByLabelText('Executable')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The Use gate against an UNSAVED custom draft, driven through the real setup form.
+ *
+ * Save is not activate, and the gate reads the SAVED command line — so an edit the
+ * user has typed but not saved, and a save still in flight, must both keep Use
+ * disabled. The regression these guard: the parent read only `custom_acp` from
+ * config, so Use stayed enabled during an unsaved edit and could activate a
+ * command line other than the one on disk. The gate must be consistent across
+ * every activation path (the button, and Enter/Space landing on it).
+ */
+describe('AgentBackendTab custom Use gate follows the draft', () => {
+  const cmd = () => screen.getByLabelText('Executable') as HTMLInputElement
+  const argv = () => screen.getByLabelText('Arguments') as HTMLTextAreaElement
+  const saveConfig = () => screen.getByRole('button', { name: 'Save configuration' })
+
+  beforeEach(() => {
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+  })
+
+  it('disables Use while an unsaved edit differs from the saved command line', async () => {
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: [] } },
+    })
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    // A saved, non-empty command line: Use is live to begin with.
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    // The moment the user edits the command, Use goes dead — the draft no longer
+    // matches what is saved.
+    fireEvent.change(cmd(), { target: { value: '/bin/agent-2' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+    // Editing the value back to the saved one re-enables it.
+    fireEvent.change(cmd(), { target: { value: '/bin/agent' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+  })
+
+  it('disables Use when only the arguments are edited', async () => {
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: ['--a'] } },
+    })
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    fireEvent.change(argv(), { target: { value: '--a\n--b' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+  })
+
+  it('keeps Use dead across every activation path while the draft is dirty', async () => {
+    // The disabled attribute must gate the keyboard routes too — a dead button
+    // that Enter or Space could still fire would activate the unsaved command line.
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: [] } },
+    })
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    fireEvent.change(cmd(), { target: { value: '/bin/edited' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+    patchConfigMock.mockClear()
+    fireEvent.click(useButton('Custom ACP'))
+    fireEvent.keyDown(useButton('Custom ACP'), { key: 'Enter' })
+    fireEvent.keyDown(useButton('Custom ACP'), { key: ' ' })
+    // None of the activation paths wrote agent.acp_backend.
+    expect(patchConfigMock).not.toHaveBeenCalledWith('agent.acp_backend', 'custom')
+  })
+
+  it('disables Use while the save is still pending', async () => {
+    // A pending PATCH has not changed what is on disk, so the gate stays closed for
+    // the whole in-flight window rather than only at the edit.
+    let resolveSave: (v: unknown) => void = () => {}
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: [] } },
+    })
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    fireEvent.change(cmd(), { target: { value: '/bin/agent-2' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+    patchConfigMock.mockReturnValue(new Promise(r => (resolveSave = r)))
+    fireEvent.click(saveConfig())
+    // Still disabled while saving.
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+    resolveSave({})
+    // And still disabled after it resolves, because config has not re-seeded the
+    // form yet — the just-saved draft still differs from the stale saved value.
+    await waitFor(() => expect(saveConfig()).toBeEnabled())
+    expect(useButton('Custom ACP')).toBeDisabled()
+  })
+
+  it('re-establishes the gate from the saved value after switching away and back', async () => {
+    // The dirty state is per-visit: leaving the custom row and returning re-seeds
+    // the form from the saved config, so a stale draft from a prior visit does not
+    // keep Use dead once the row is re-entered clean.
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: '', custom_acp: { command: '/bin/agent', args: [] } },
+    })
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toBeInTheDocument())
+    highlight('Custom ACP')
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+    fireEvent.change(cmd(), { target: { value: '/bin/edited' } })
+    await waitFor(() => expect(useButton('Custom ACP')).toBeDisabled())
+    // Away to Kiro CLI, then back to custom: the pane remounts and re-seeds.
+    highlight('Kiro CLI')
+    highlight('Custom ACP')
+    await waitFor(() => expect(cmd().value).toBe('/bin/agent'))
+    await waitFor(() => expect(useButton('Custom ACP')).toBeEnabled())
+  })
+
+  it('disables the setup form controls for a policy-denied saved custom row', async () => {
+    // Bug 4: a denied custom that is still listed because it is the saved backend
+    // rendered an editable form. It must be read-only — governed selection, no new
+    // evaluator. Denial is expressed by the schema omitting `custom`.
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: 'custom', custom_acp: { command: '/bin/agent', args: ['--a'] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toHaveAttribute('aria-current', 'true'))
+    highlight('Custom ACP')
+    // The form renders (it is the current row) but every control is disabled.
+    await waitFor(() => expect(cmd()).toBeDisabled())
+    expect(argv()).toBeDisabled()
+    expect(saveConfig()).toBeDisabled()
+  })
+
+  it('leaves the setup form editable for an allowed saved custom row', async () => {
+    // The contrast: when the deployment permits custom, the same saved row's form
+    // is editable — the disable is the governed path, not every current row.
+    kirocrewConfigMock.mockResolvedValue({
+      agent: { acp_backend: 'custom', custom_acp: { command: '/bin/agent', args: ['--a'] } },
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'custom']))
+    wrap()
+    await waitFor(() => expect(row('Custom ACP')).toHaveAttribute('aria-current', 'true'))
+    highlight('Custom ACP')
+    await waitFor(() => expect(cmd()).toBeEnabled())
+    expect(argv()).toBeEnabled()
+  })
+})

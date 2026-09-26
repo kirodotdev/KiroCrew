@@ -31,6 +31,7 @@ from __future__ import annotations
 from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GATE_PROBE_COMMAND,
     ACP_BACKEND_GOOSE,

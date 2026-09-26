@@ -4671,17 +4671,33 @@ class TestReclaimOwnsEveryHarnessItTracked:
         The reclaim cannot recognise a process it has no name for, and its failure
         mode is silent — the entry is dropped and the process spared. So the omission
         has to be a red test rather than something an operator finds later.
+
+        Custom ACP is the one deliberate exception: the operator names an arbitrary
+        executable, so there is no stable argv0 basename to reclaim by, and adding a
+        ``custom`` kill-name would signal an unrelated process holding a recycled PID.
+        Its orphan reclaim being limited is a stated gap in agent-host-contract §8,
+        not an omission — so ``custom`` is exempted here rather than given a name that
+        widens the reaper.
         """
         from kiro_crew.agent_sdk.backends import (
+            ACP_BACKEND_CUSTOM,
             ACP_BACKEND_PROCESS_NAMES,
             ACP_BACKENDS_KNOWN,
             agent_process_markers,
         )
 
-        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES))
+        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES) - {ACP_BACKEND_CUSTOM})
         assert not missing, (
             "these registered backends have no argv0 basename, so the PID-file "
             f"reclaim cannot recognise their orphans: {missing}"
+        )
+        # The exemption is a named dynamic executable, never a kill-name: custom
+        # must stay OUT of the process-name table so the reaper has no basename to
+        # signal a recycled PID by.
+        assert ACP_BACKEND_CUSTOM not in ACP_BACKEND_PROCESS_NAMES, (
+            "custom must not carry a process name: a dynamic executable has no stable "
+            "basename, and a name here would let the reaper SIGKILL an unrelated "
+            "process that recycled its PID"
         )
         markers = agent_process_markers()
         uncovered = sorted(

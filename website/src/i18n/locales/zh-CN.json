@@ -11396,7 +11396,8 @@
         "word_not_checked": "未检查",
         "word_not_offered": "未提供",
         "word_ready": "可用",
-        "word_recheck": "未生效"
+        "word_recheck": "未生效",
+        "custom_acp": "自定义 ACP"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "在聊天上叠加实时滚动与锚点诊断信息",
@@ -11511,6 +11512,32 @@
         "could_not_sign_out": "无法登出",
         "keep_current_sign_in": "保留当前登录",
         "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。"
+      },
+      "customAcpSetup": {
+        "warn_title": "这会运行你提供的、不受 {{productName}} 管控的 harness。",
+        "warn_no_approval": "自定义 harness 可以运行命令并读取、写入或删除文件，而不经过 {{productName}} 的审批提示、禁用工具规则或钩子检查。这些都不在它的执行路径上。",
+        "warn_sandbox_floor": "操作系统沙箱和凭证屏蔽仍然生效，但它们只是一道粗略的底线，既不是一次性或只读的项目，也不是网络允许清单。harness 能读取的任何项目数据都可能被发送到它所连接的任何地方。",
+        "warn_trust": "只将其指向你信任的 harness，并且只在非敏感、可丢弃的项目上运行。",
+        "warn_platform": "在没有隔离的原生 Windows 上，它无法启动。屏蔽 {{productName}} 的受保护凭证还可能破坏 harness 自身的认证、git 或云工作流。",
+        "feature_no_projection": "{{productName}} 不会将其 agent 规范或 MCP 服务器投射到自定义 harness 中。",
+        "feature_no_tools": "不要假设该 harness 拥有 {{productName}} 的记忆、计划或子 agent 工具。",
+        "feature_model_in_harness": "模型在 harness 中选择。{{productName}} 的模型选择器仅提供 auto。",
+        "feature_no_continuation": "没有共享进程或子 agent 续接，没有轮次中途干预，也没有手动压缩或推理控制。",
+        "feature_logs_not_cleaned": "{{productName}} 不会清理自定义提供方的日志。",
+        "executable_label": "可执行文件",
+        "executable_help": "绝对路径，或在 PATH 上解析的裸名称。不经过 shell 运行。",
+        "executable_placeholder": "/usr/local/bin/my-acp-agent",
+        "arguments_label": "参数",
+        "arguments_help": "每行一个参数，按输入原样传递，不做 shell 解析。行首和行尾的空格会被保留。留空表示没有参数。",
+        "arguments_placeholder": "--serve\n--port\n8080",
+        "uneditable_argv": "已保存的参数中有一个参数内部包含换行符，无法在不改动的情况下按每行一个进行编辑。请改为在 config.json 中编辑此命令行。",
+        "save_configuration": "保存配置",
+        "saving": "正在保存…",
+        "could_not_save": "无法保存自定义 ACP 配置。",
+        "error_command_required": "请输入可执行文件。",
+        "error_command_too_long": "可执行文件过长（上限 {{max}} 个字符）。",
+        "error_too_many_args": "参数过多（上限 {{max}} 个）。",
+        "error_arg_too_long": "有一个参数过长（上限 {{max}} 个字符）。"
       }
     },
     "developerPage": {

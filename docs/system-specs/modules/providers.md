@@ -590,7 +590,12 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
 - **A non-runtime backend (not a member)** → `AcpClient.ensure_ready()`, one
   process per session with no shared runtime. The branch is expressed as
   positive membership, not `not is_claude_backend`, so a harness added later
-  does not inherit the kiro-family path (harness-parity H5).
+  does not inherit the kiro-family path (harness-parity H5). The operator-supplied
+  Custom ACP backend (`ACP_BACKEND_CUSTOM`) takes this path: it is in no capability
+  set, so it is never runtime-multiplexed, session-shared, or handed a `cli.json`
+  overlay. Its tool routing is `Routing.UNVERIFIED` and its only added posture is
+  the mandatory OS credential mask
+  ([agent-host-contract.md](agent-host-contract.md#custom-acp-experiment)).
 
 `AcpProvider.is_acp_runtime_backend` reads `ACP_BACKENDS_ACP_RUNTIME` directly.
 There is no indirection function and no env switch in front of it, so the

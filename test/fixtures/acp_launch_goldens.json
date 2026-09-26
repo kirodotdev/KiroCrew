@@ -28,6 +28,22 @@
     "env_removed": [],
     "served_by": "AcpRuntime"
   },
+  "custom": {
+    "argv": [
+      "/opt/bin/my-agent",
+      "--acp",
+      " a b "
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "Custom ACP",
+    "stderr_label": "Custom ACP"
+  },
   "deepseek": {
     "argv": [
       "/opt/bin/dsh",

@@ -64,6 +64,7 @@ from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -100,6 +101,10 @@ ENTITLEMENT_OWN_CREDENTIAL_FILE = "own_credential_file"
 #: declared source and not a flag any driver may set.
 ENTITLEMENT_HOST_VAULT = "host_vault"
 
+#: The operator's arbitrary executable defines authentication. No known store or
+#: credential exception is inferred from its command name or ACP agentInfo.
+ENTITLEMENT_HARNESS_DEFINED = "harness_defined"
+
 # Three sources, because three are constructed. A harness whose entitlement arrives
 # from the ambient cloud environment (an AWS profile, an instance role) rather than
 # from a file it owns or from Crew's vault would add a fourth here, with its label,
@@ -113,6 +118,7 @@ ENTITLEMENT_HOST_VAULT = "host_vault"
 #: is a regression whether or not the fact behind it is right, so the label lives
 #: beside the identifier rather than being spelled at each print site.
 ENTITLEMENT_LABELS: Dict[str, str] = {
+    ENTITLEMENT_HARNESS_DEFINED: "the custom harness's own authentication",
     ENTITLEMENT_HOST_IDENTITY_STORE: "kiro-cli's own sign-in",
     ENTITLEMENT_OWN_CREDENTIAL_FILE: "the harness's own credential file",
     ENTITLEMENT_HOST_VAULT: "a key in Kiro Crew's secret vault",
@@ -120,6 +126,7 @@ ENTITLEMENT_LABELS: Dict[str, str] = {
 
 ENTITLEMENT_SOURCES: FrozenSet[str] = frozenset(
     {
+        ENTITLEMENT_HARNESS_DEFINED,
         ENTITLEMENT_HOST_IDENTITY_STORE,
         ENTITLEMENT_OWN_CREDENTIAL_FILE,
         ENTITLEMENT_HOST_VAULT,
@@ -398,6 +405,23 @@ _KAS_SIGNED_OUT = (
 #: becomes selectable by joining that set, and joining it without an auth answer
 #: is exactly how a live OAuth token stayed off the credential floor once already.
 AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_CUSTOM,
+        credential_leaves=(),
+        home_override_env_vars=(),
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "Install and authenticate the custom harness separately. Protected credential "
+            "stores remain hidden; authentication that depends on them will not work. "
+            "Do not put secrets in executable arguments."
+        ),
+        signed_out_message=(
+            "The custom harness requires authentication. Follow its own sign-in "
+            "instructions; protected host credential stores are not available to it."
+        ),
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HARNESS_DEFINED,
+    ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_KIRO,
         # None of its own. kiro-cli signs in to the HOST identity store, whose

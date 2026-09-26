@@ -754,6 +754,36 @@ cannot correct one without overriding the other. Telling them apart needs per-ke
 provenance -- a record of which keys the operator actually set -- which this layer
 does not have.
 
+## `agent.custom_acp` — the experimental Custom ACP launch pair
+
+`agent.custom_acp` holds the operator-supplied Custom ACP launch pair,
+`{"command": "", "args": []}` by default. It is validated **atomically**:
+`custom_acp.validate_custom_acp` accepts the whole pair or none of it (an object
+carrying any key other than exactly `command` and `args` is rejected), with no
+shell parsing, the command a `PATH` name or an absolute path (a relative path
+containing a separator is refused), no control or null characters, and bounded
+lengths (`command` ≤ 4096, ≤ 128 args, each ≤ 8192).
+
+It is **coerced, not affirmed**: an invalid saved pair resolves back to the empty
+pair through `coerce_custom_acp` in `AgentConfig.__post_init__`, disabling custom
+launch rather than the gateway. This coercion is distinct from the
+`COERCED_VALUES` registry above (which drives `--keep` refusal); it is applied
+unconditionally at construction.
+
+Three behaviours are load-bearing and each is a separate write from another:
+
+- **Saving the pair does not select the backend, and selecting `custom` does not
+  populate the pair.** The dashboard writes it via an atomic PATCH from
+  Developer → Agent Backend; `agent.acp_backend` is the separate switch.
+- **New custom sessions read the saved pair; a running session does not change.**
+  The argv is resolved fresh at each spawn (`resolve_custom_acp` re-reads one
+  config snapshot and caches nothing), so an edited command never reuses the
+  previous executable's result. A relative `PATH` match is converted to an
+  absolute executable path before launching in the session's working directory.
+- **The arguments are never logged.** They can carry private values, so the only
+  warning site (`coerce_custom_acp` on an invalid pair) omits the submitted pair,
+  and no argv is written to the audit log.
+
 ## Config Overlay (config.local.json)
 
 User overrides can be placed in `~/.kiro/crew/config.local.json`. This file is

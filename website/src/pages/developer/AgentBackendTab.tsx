@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useRef, useState } from 'react'
+import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query'
 import {
   Bot,
   Boxes,
@@ -11,6 +11,7 @@ import {
   Download,
   Minus,
   RotateCw,
+  SlidersHorizontal,
   Sparkles,
   Terminal,
   X,
@@ -24,6 +25,8 @@ import { SettingsCard } from '../../components/settings'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { i18nT } from '../../i18n/t'
+import { CUSTOM_ACP_MUTATION_KEY, CustomAcpSetup } from './CustomAcpSetup'
+import type { CustomAcpConfig } from './CustomAcpSetup'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
@@ -41,6 +44,16 @@ const CLAUDE = 'claude'
 const KAS = 'kas'
 
 /**
+ * The custom-ACP harness: an operator-supplied command line the core resolves as
+ * a real, selectable backend (`custom`). It is the one backend this panel gives
+ * an inline SETUP surface, because its command line is config the user types
+ * rather than a binary they install — see the `shown === CUSTOM` branch in the
+ * detail. Everything else about it (row, readiness, tool-approval line) flows
+ * through the same server-driven path as every other backend.
+ */
+const CUSTOM = 'custom'
+
+/**
  * The agents this frontend has a translated name and an icon for.
  *
  * A FLOOR for what the panel renders, never a ceiling — see `candidates`. Every id
@@ -49,7 +62,7 @@ const KAS = 'kas'
  * flight. An agent absent from this list still gets a row once a server answer
  * names it, labelled with its `policy_id`.
  */
-const NAMED = [KIRO, CLAUDE, KAS]
+const NAMED = [KIRO, CLAUDE, KAS, CUSTOM]
 
 /**
  * The tool-approval mechanism that means nothing establishes how a harness asks.
@@ -325,7 +338,15 @@ export function AgentBackendTab() {
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const schema = useConfigSchema()
 
-  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
+  // The mutation cache survives switching rows while a Custom save is in flight.
+  const customSaving = useIsMutating({ mutationKey: CUSTOM_ACP_MUTATION_KEY }) > 0
+  const [customDraft, setCustomDraft] = useState({ dirty: false, saving: false })
+  const onCustomDraftState = useCallback(
+    (state: { dirty: boolean; saving: boolean }) => setCustomDraft(state),
+    [],
+  )
+
+  const cfgQ = useQuery<{ agent?: { acp_backend?: string; custom_acp?: CustomAcpConfig } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
@@ -719,12 +740,14 @@ export function AgentBackendTab() {
     [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
     [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
     [KAS]: i18nT('pages.developer.agentBackendTab.kas_kiro_agent'),
+    [CUSTOM]: i18nT('pages.developer.agentBackendTab.custom_acp'),
   }
 
   const ICON: Record<string, React.ReactNode> = {
     [KIRO]: <Terminal size={14} />,
     [CLAUDE]: <Sparkles size={14} />,
     [KAS]: <Bot size={14} />,
+    [CUSTOM]: <SlidersHorizontal size={14} />,
   }
 
   /**
@@ -1089,13 +1112,19 @@ export function AgentBackendTab() {
     if (next !== undefined) focusRow(next)
   }
 
+  const customConfig: CustomAcpConfig | undefined = cfgQ.data?.agent?.custom_acp
+  const customUnconfigured = (value: string) =>
+    value === CUSTOM &&
+    (!customConfig?.command.trim() || customDraft.dirty || customSaving || cfgQ.isFetching)
+
   /**
    * Whether the one mutating control is pressable, computed once.
    *
    * Read by both the `disabled` attribute and the styling, so the two cannot disagree
    * -- a button that looks live and is not is the defect this replaced.
    */
-  const useDisabled = shown === current || cannotUse(shown) || patchMut.isPending
+  const useDisabled =
+    shown === current || unavailable(shown) || cannotUse(shown) || customUnconfigured(shown) || patchMut.isPending
 
   const install = probe(shown)?.install_command ?? ''
   // Every state the re-check can help with, and only those. A build-excluded harness
@@ -1107,18 +1136,10 @@ export function AgentBackendTab() {
 
   return (
     <>
-      {/* `askAgent` is ON, and the rule makes that the author's call rather than the
-          reviewer's. It is right here because there is nothing for the hand-off to
-          destroy: this panel has no editable field and no draft. It is a row list, a
-          read-only detail and two buttons, and the one value it writes goes straight
-          to `PATCH /api/config/kirocrew` -- so navigating to the chat can only cost
-          the highlight, which is re-derived from the saved backend on return. Every
-          failure that reaches this notice (a refused PATCH, a failed re-probe, a
-          clipboard the browser would not grant) is also one an agent can act on with
-          the structured context `ErrorNotice` recovers. */}
+      {/* No hand-off beside Custom setup: navigating away would discard its draft. */}
       <ErrorNotice
         message={actionError}
-        askAgent
+        askAgent={shown !== CUSTOM}
         onDismiss={() => setActionError('')}
       />
       <SettingsCard>
@@ -1355,22 +1376,29 @@ export function AgentBackendTab() {
                   </button>
                 </div>
               )}
-              {/* Inline, inside the strip, because that is where the control that
-                  failed is. `askAgent` for the same reason as the notice at the top:
-                  nothing here is an unsaved draft, and a failed probe or a refused
-                  clipboard is exactly the kind of thing the agent can read the
-                  structured context for. */}
+              {/* No hand-off beside Custom setup: its executable/argv draft is unsaved. */}
               {stripError?.backend === shown && (
                 <div className="mt-1.5">
                   <ErrorNotice
                     message={stripError.message}
                     variant="inline"
-                    askAgent
+                    askAgent={shown !== CUSTOM}
                     onDismiss={() => setStripError(null)}
                   />
                 </div>
               )}
             </div>
+
+            {/* Warnings stay above the inline inputs and outside disclosures. */}
+            {shown === CUSTOM && (
+              <ErrorBoundary scope="developer-custom-acp-setup" fallback={null}>
+                <CustomAcpSetup
+                  saved={customConfig}
+                  disabled={unavailable(CUSTOM) || customSaving || patchMut.isPending}
+                  onDraftState={onCustomDraftState}
+                />
+              </ErrorBoundary>
+            )}
 
             {/* Tool approval stays first among the standing lines. It is the one
                 security-relevant line on the card and the reason a build-excluded

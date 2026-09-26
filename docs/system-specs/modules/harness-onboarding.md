@@ -31,6 +31,15 @@ Dormant is a legitimate destination, and shipping there deliberately is cheaper
 than a long-lived branch. But it must be *named* as an exception (Stage 7), or
 the narrowing check fails.
 
+There is one further, deliberately narrow destination: **selectable while
+`Routing.UNVERIFIED`.** `register_selectable_backend` refuses an `UNVERIFIED`
+routing for every id but `ACP_BACKEND_CUSTOM`, the operator-supplied Custom ACP
+harness, whose launch requires the governed selectable registry and OS credential
+isolation but cannot guarantee per-tool approval. It is not a template for a new
+harness — the routing bar (Stage 7) still stands for everything else — but it is
+why the routing verdict alone does not gate selectability. Its posture and limits
+are the [Custom ACP experiment](agent-host-contract.md#custom-acp-experiment).
+
 ## Stage 1 — the vocabulary, in the leaf
 
 Everything a consumer needs to *name* your harness goes in
@@ -438,6 +447,17 @@ Selectability has exactly one gate, `resolve_selected_backend`, and it logs
 at import cannot see a boot-time registration, and `validate_config_data`
 *deletes* an out-of-enum value before the loader ever sees it — which strips a
 registered harness from `config.json` with no degrade log at all.
+
+**The routing bar is not waived for a new harness, and `ACP_BACKEND_CUSTOM` is the
+one standing exception rather than a precedent.** `register_selectable_backend`
+refuses an `UNVERIFIED` routing for every id but `custom`, so a harness whose tool
+calls are not established to reach the gate cannot become selectable by editing an
+allowlist. Custom is admitted because its launch is operator-defined and cannot
+promise per-tool approval, and it pays for that with mandatory OS credential
+isolation (`_requires_credential_mask` true even though `is_enforced` is false) and
+a session that is refused where the mask cannot apply. A new harness that finds
+itself reaching for this exception has instead not finished its routing — implement
+a mechanism (Stage 4 / the routing table), do not reuse `custom`'s exemption.
 
 ## Stage 8 — what a live harness additionally touches
 

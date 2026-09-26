@@ -1,0 +1,8 @@
+{"_meta": {"backend": "custom", "recorded": "synthesized", "date": "2026-09-24", "agent_version": "unmeasured", "note": "Standard ACP v1 shapes parsed by this repository, not a recording of any particular custom harness. Tool permission requests are voluntary; this fixture does not establish routing or feature support."}}
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1, "agentInfo": {"name": "synthetic-custom", "version": "0.0.0"}, "agentCapabilities": {"loadSession": false}}}
+{"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "custom-session"}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "custom-session", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Checking the sample."}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "custom-session", "update": {"sessionUpdate": "tool_call", "toolCallId": "sample-call", "title": "shell", "kind": "execute", "status": "pending", "rawInput": {"command": "printf sample"}}}}
+{"jsonrpc": "2.0", "id": 7, "method": "session/request_permission", "params": {"sessionId": "custom-session", "toolCall": {"toolCallId": "sample-call", "title": "shell", "kind": "execute", "rawInput": {"command": "printf sample"}}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "deny", "name": "Deny", "kind": "reject_once"}]}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "custom-session", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "sample-call", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "sample"}}]}}}
+{"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}}

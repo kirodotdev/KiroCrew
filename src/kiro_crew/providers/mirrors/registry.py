@@ -32,6 +32,7 @@ from enum import Enum
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -208,6 +209,16 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
 #: selectable backend to exactly one entry here, so a new harness cannot reach the
 #: dashboard switch without one of these four answers being written down.
 PROJECTIONS: dict[str, McpProjection] = {
+    ACP_BACKEND_CUSTOM: McpProjection(
+        kind=ProjectionKind.NO_CHANNEL,
+        reason=(
+            "An arbitrary executable has no verified agent-spec or MCP projection. "
+            "Custom sessions receive no Crew MCP servers; configure the harness's "
+            "own tools independently."
+        ),
+        channel="a reviewed harness adapter for session/new mcpServers and tool restrictions",
+        tracking="docs/system-specs/modules/agent-host-contract.md#custom-acp-experiment",
+    ),
     ACP_BACKEND_KIRO: McpProjection(
         kind=ProjectionKind.NATIVE,
         reason=(
