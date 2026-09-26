@@ -1,9 +1,10 @@
 """Append-only learned per-agent cost store for dynamic sub-agent sizing.
 
 One JSONL line per completed run, written via atomic ``O_APPEND`` (race-free,
-no lock). The cap is computed at startup from ``read_learned_cost`` =
-``max(per-agent p90)`` over the last N samples; the log is FIFO-trimmed to the
-last N per agent both at startup and periodically.
+no lock). The auto cap is computed at startup from ``read_pooled_cost``, the
+p90 of every agent's last N samples pooled; each start is priced by the spawn
+guard at its own agent's p90 (``read_learned_costs``). The log is FIFO-trimmed
+to the last N per agent both at startup and periodically.
 
 See ``dynamic-subagent-sizing.md`` §4.2 (storage) / §4.3 (aggregation).
 """
@@ -283,8 +284,7 @@ def read_learned_costs(
 
     *max_age_secs* leaves out older samples; the reserve's refresh passes
     :data:`_SAMPLE_MAX_AGE_SECS` so a price learned under a removed workload can
-    expire. :func:`read_learned_cost`, which sizes the cap, passes none, so its
-    result is what it always was.
+    expire. :func:`read_pooled_cost`, which sizes the cap, applies no horizon.
 
     ``dedicated_only`` leaves out samples recorded from session-shared runs (a
     per-session share of one runtime, see :func:`append_cost_sample`): the
@@ -312,29 +312,46 @@ def cap_buckets(costs: Mapping[str, float]) -> dict[str, float]:
     return dict(heaviest)
 
 
-def read_learned_cost(
+def read_pooled_cost(
     key: str,
     *,
     window: int = _DEFAULT_WINDOW,
     min_samples: int = _DEFAULT_MIN_SAMPLES,
     percentile: float = _DEFAULT_PERCENTILE,
 ) -> float | None:
-    """Return ``max(per-agent p90)`` for *key* (``mem_gb``/``cpu_cores``), or None.
+    """The p90 of every agent's last ``window`` samples of *key*, pooled; or None.
 
-    Per agent, take the p90 of the last ``window`` samples (only if it has at
-    least ``min_samples``), then the max across agents. Returns None when no
-    agent qualifies — the caller falls back to the configured first-boot cost.
-    A percentile is outlier-robust, so a single pathological run can't dominate.
+    This is the price the auto-sized cap puts on ONE slot. The cap is a count
+    of concurrent workers, so the question it asks is what a typical run on
+    this host costs, and pooling answers it: 90% of recent runs, across every
+    agent, fit under the figure. The maximum of the per-agent p90s answers a
+    different question -- what the heaviest agent class costs at its peak --
+    and pricing every slot at that let one build-heavy agent, whose release
+    builds were more than 10% of its own window, size the whole host.
+    That agent's starts are still priced at its own p90 by the spawn guard's
+    reserve (:func:`learned_cost_for`), so it is not under-priced where it runs.
+
+    Each agent contributes at most ``window`` samples, the same tail the
+    per-agent figures read, so an agent's history beyond that window does not
+    outvote the others. Within the pool every run counts once, so an agent
+    that runs often weighs more than one that runs rarely: the pool describes
+    the host's actual mix of runs, and when a heavy agent IS most of that mix,
+    its price is the right one. Session-shared samples count as they always
+    did here (a per-session share of one runtime is what a shared slot costs).
+    None when fewer than ``min_samples`` samples exist in total; the caller
+    falls back to the configured first-boot cost.
     """
-    costs = read_learned_costs(key, window=window, min_samples=min_samples, percentile=percentile)
-    return max(costs.values()) if costs else None
+    by_agent = _group_by_agent(_iter_samples(_ReadStatus()), key, window=window)
+    pooled = [v for vals in by_agent.values() for v in vals]
+    if len(pooled) < max(1, min_samples):
+        return None
+    return _percentile(pooled, percentile)
 
 
 def learned_cost_for(costs: Mapping[str, float], agent: str) -> float | None:
     """The learned figure for one spawn: *agent*'s own p90, or None.
 
-    The cap is sized from the heaviest agent because it bounds the whole host;
-    a single start is priced at what THAT agent's own dedicated runs have cost
+    A single start is priced at what THAT agent's own dedicated runs have cost
     here, so one build-heavy agent's history does not hold every other spawn to
     its price. A bucket with no qualifying dedicated history answers None and
     the caller prices from the configured cost plus whatever live dedicated

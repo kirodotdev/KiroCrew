@@ -130,9 +130,9 @@ from kiro_crew.subagent_cost import (
     compact_cost_log,
     cost_log_identity,
     learned_cost_for,
-    read_learned_cost,
     read_learned_costs,
     read_learned_costs_checked,
+    read_pooled_cost,
 )
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
@@ -1333,9 +1333,13 @@ def compute_max_subagents(cfg: KiroCrewConfig) -> int:
     memory guard), never above the absolute ``subagent_auto_max`` (which
     stands in for the unmodeled LLM-provider concurrency limit).
 
-    The per-agent memory cost comes from the learned cost store
-    (``read_learned_cost``); when no learned value exists yet, the configured
-    first-boot fallback (``subagent_cost_gb``) is used. Fails open to the legacy
+    The per-slot memory cost comes from the learned cost store
+    (``read_pooled_cost``: the p90 of every agent's recent runs, pooled); when
+    no learned value exists yet, the configured first-boot fallback
+    (``subagent_cost_gb``) is used. Pooled rather than the heaviest agent's own
+    p90, because a count of slots needs the price of a typical slot: a
+    build-heavy agent's release builds are a minority of the host's runs, and
+    the spawn guard already prices each of that agent's starts at its own p90. Fails open to the legacy
     default when memory can't be read (e.g. non-Linux hosts).
 
     See ``dynamic-subagent-sizing.md`` §3.
@@ -1392,7 +1396,7 @@ def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
     if avail_gb <= 0:
         return None
     buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
-    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
+    mem_cost = read_pooled_cost("mem_gb") or agent.subagent_cost_gb or 0.5
     pool_size = cfg.session.pool_size
     return math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
 

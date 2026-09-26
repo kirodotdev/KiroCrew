@@ -351,7 +351,7 @@ def test_expired_samples_do_not_price_a_start(monkeypatch, tmp_path) -> None:
     horizon = sc._SAMPLE_MAX_AGE_SECS
     assert sc.read_learned_costs("mem_gb", max_age_secs=horizon) == {}
     # The cap's reader applies no horizon: its result is what it always was.
-    assert sc.read_learned_cost("mem_gb") == pytest.approx(6.0)
+    assert sc.read_pooled_cost("mem_gb") == pytest.approx(6.0)
     # A record without a timestamp (a legacy line) still counts.
     log.write_text(
         "".join(

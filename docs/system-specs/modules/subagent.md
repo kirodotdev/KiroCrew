@@ -205,8 +205,8 @@ window is never worse than the fallback the fix replaces and self-corrects with
 every new sample. The reserve's read leaves out samples older than
 `_SAMPLE_MAX_AGE_SECS` (30 days), so a price learned under a workload that is
 gone expires without an operator reset while a host idle for less than that
-keeps its figure; the cap's reader (`read_learned_cost`, `_host_mem_term`)
-applies no horizon and is unchanged. The log is streamed, never held whole
+keeps its figure; the cap's reader (`read_pooled_cost`, `_host_mem_term`)
+applies no horizon. The log is streamed, never held whole
 (`_iter_samples`): each bucket keeps at most `window` values in a bounded deque,
 at most `_PARSE_BUCKET_CEILING` buckets are held while parsing (a memory
 ceiling, with one WARNING naming an overflow), keys longer than `_BUCKET_KEY_CAP`

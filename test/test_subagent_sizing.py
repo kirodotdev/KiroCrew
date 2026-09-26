@@ -28,12 +28,12 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 @pytest.fixture(autouse=True)
 def _no_learned_cost(monkeypatch):
     """Isolate from the machine's learned-cost store (~/.kirocrew/subagents/
-    cost_samples.jsonl). compute_max_subagents prefers read_learned_cost over
+    cost_samples.jsonl). compute_max_subagents prefers read_pooled_cost over
     the cfg fallback, so on a dev box with a populated store these tests would
     read the real mem_gb/cpu_cores instead of the per-case fallback costs and
     assert against the wrong cap. These cases exercise the fallback path by
     design, so force the learned lookup to miss."""
-    monkeypatch.setattr(subagent, "read_learned_cost", lambda *a, **k: None)
+    monkeypatch.setattr(subagent, "read_pooled_cost", lambda *a, **k: None)
 
 
 def _cfg(
@@ -101,6 +101,35 @@ class TestMemoryIsTheOnlyHostTerm:
 
         assert "agent.subagent_cpu_cost_cores" not in SubagentManager.SIZING_CONFIG_PATHS
         assert "agent.subagent_cpu_cost_cores" not in SubagentManager.LIVE_CONFIG_PATHS
+
+    def test_one_build_heavy_agent_does_not_size_every_slot(
+        self, patch_host, monkeypatch, tmp_path
+    ) -> None:
+        """A learned heavy tail on ONE agent must not pin the auto cap low.
+
+        Reproduces the reported host: 171.8 GB available, one agent whose own
+        window is 12% release builds (p90 ~22 GB) beside light agents. Priced at
+        that agent's p90 the cap was floor(171.8*0.8/22) = 6; priced at the
+        pooled p90 of every agent's runs it reaches the hard cap.
+        """
+        import json
+
+        import kiro_crew.subagent_cost as sc
+
+        log = tmp_path / "cost_samples.jsonl"
+        recs = [{"agent": "build-heavy", "mem_gb": 1.2} for _ in range(44)]
+        recs += [{"agent": "build-heavy", "mem_gb": 24.0} for _ in range(6)]
+        recs += [
+            {"agent": name, "mem_gb": 1.5}
+            for name in ("kirocrew", "kirocrew-worker", "coder")
+            for _ in range(50)
+        ]
+        log.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+        monkeypatch.setattr(sc, "_cost_log_path", lambda: log)
+        monkeypatch.setattr(subagent, "read_pooled_cost", sc.read_pooled_cost)
+        assert sc.read_learned_costs("mem_gb")["build-heavy"] > 20.0
+        patch_host(171.8, 128)
+        assert compute_max_subagents(_cfg(mem_cost=0.5, hard_cap=32)) == 32
 
 
 # --- Worked examples from dynamic-subagent-sizing.md §3.3 -------------------

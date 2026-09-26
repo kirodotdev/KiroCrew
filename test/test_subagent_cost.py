@@ -1,7 +1,7 @@
 """Tests for the append-only learned-cost store (subagent_cost).
 
 Covers append/round-trip, p90 aggregation with tail-outlier robustness,
-max-across-agents, min-sample fallback, empty/corrupt fail-open, concurrent
+pooling across agents, min-sample fallback, empty/corrupt fail-open, concurrent
 appends, and FIFO compaction bound.
 """
 
@@ -60,7 +60,7 @@ def test_concurrent_appends_do_not_lose_samples(cost_log):
     assert len(lines) == 20  # O_APPEND keeps every line
 
 
-# --- read_learned_cost -----------------------------------------------------
+# --- read_pooled_cost ------------------------------------------------------
 
 
 def test_p90_ignores_single_outlier(cost_log):
@@ -69,35 +69,78 @@ def test_p90_ignores_single_outlier(cost_log):
     recs = [{"agent": "kirocrew", "mem_gb": 0.30, "cpu_cores": 0.1} for _ in range(20)]
     recs.append({"agent": "kirocrew", "mem_gb": 9.9, "cpu_cores": 0.1})
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb")
+    val = sc.read_pooled_cost("mem_gb")
     assert val is not None
     assert val < 1.0  # outlier did not dominate
 
 
-def test_max_across_agents(cost_log):
+def test_pooled_across_agents(cost_log):
     recs = (
         [{"agent": "kirocrew-lite", "mem_gb": 0.30, "cpu_cores": 0.1} for _ in range(5)]
         + [{"agent": "kirocrew", "mem_gb": 0.55, "cpu_cores": 0.1} for _ in range(5)]
     )
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb")
-    assert val == pytest.approx(0.55, abs=0.01)  # heaviest type wins
+    # p90 of the ten pooled values: rank 8.1 of 0..9 sits among the 0.55s.
+    assert sc.read_pooled_cost("mem_gb") == pytest.approx(0.55, abs=0.01)
+
+
+def test_heavy_tail_of_one_agent_does_not_price_the_pool(cost_log):
+    """The regression this reader exists for.
+
+    One agent whose own window is 12% release builds (6 of 50 at ~24 GB) has a
+    per-agent p90 of ~22 GB. Priced at that, a 170 GB host sized its auto cap
+    at 4-8. Pooled with the host's other agents, the p90 is a typical run.
+    """
+    heavy = [{"agent": "build-heavy", "mem_gb": 24.0, "cpu_cores": 18.0} for _ in range(6)]
+    light_helper = [{"agent": "build-heavy", "mem_gb": 1.2, "cpu_cores": 0.5} for _ in range(44)]
+    others = [
+        {"agent": name, "mem_gb": 1.5, "cpu_cores": 0.5}
+        for name in ("kirocrew", "kirocrew-worker", "coder", "reviewer")
+        for _ in range(50)
+    ]
+    _seed(cost_log, light_helper + heavy + others)
+    per_agent = sc.read_learned_costs("mem_gb")
+    assert per_agent["build-heavy"] > 20.0  # the heaviest bucket is still known
+    pooled = sc.read_pooled_cost("mem_gb")
+    assert pooled == pytest.approx(1.5, abs=0.01)
+
+
+def test_pooled_counts_each_agent_window_only(cost_log):
+    # A busy agent's history beyond its window does not outvote the others.
+    recs = [{"agent": "busy", "mem_gb": 0.1, "cpu_cores": 0.1} for _ in range(200)]
+    recs += [{"agent": "heavy", "mem_gb": 5.0, "cpu_cores": 0.1} for _ in range(3)]
+    _seed(cost_log, recs)
+    # window=3: pool is [0.1, 0.1, 0.1, 5, 5, 5] -> p90 is 5.0.
+    assert sc.read_pooled_cost("mem_gb", window=3) == pytest.approx(5.0)
 
 
 def test_min_samples_fallback_returns_none(cost_log):
     _seed(cost_log, [{"agent": "kirocrew", "mem_gb": 0.5, "cpu_cores": 0.1}])  # only 1
-    assert sc.read_learned_cost("mem_gb", min_samples=3) is None
+    assert sc.read_pooled_cost("mem_gb", min_samples=3) is None
+
+
+def test_min_samples_counts_the_pool(cost_log):
+    # Two agents with too few samples each still form a pool large enough.
+    _seed(
+        cost_log,
+        [
+            {"agent": "a", "mem_gb": 0.5, "cpu_cores": 0.1},
+            {"agent": "b", "mem_gb": 0.5, "cpu_cores": 0.1},
+            {"agent": "b", "mem_gb": 0.5, "cpu_cores": 0.1},
+        ],
+    )
+    assert sc.read_pooled_cost("mem_gb", min_samples=3) == pytest.approx(0.5)
 
 
 def test_empty_log_returns_none(cost_log):
-    assert sc.read_learned_cost("mem_gb") is None
+    assert sc.read_pooled_cost("mem_gb") is None
 
 
 def test_corrupt_lines_skipped(cost_log):
     cost_log.parent.mkdir(parents=True, exist_ok=True)
     good = json.dumps({"agent": "kirocrew", "mem_gb": 0.4, "cpu_cores": 0.1})
     cost_log.write_text(f"{good}\nNOT JSON\n{good}\n{good}\n", encoding="utf-8")
-    val = sc.read_learned_cost("mem_gb", min_samples=3)
+    val = sc.read_pooled_cost("mem_gb", min_samples=3)
     assert val == pytest.approx(0.4, abs=0.01)  # 3 good lines, corrupt skipped
 
 
@@ -106,7 +149,7 @@ def test_window_limits_to_recent(cost_log):
     recs = [{"agent": "kirocrew", "mem_gb": 0.1, "cpu_cores": 0.1} for _ in range(10)]
     recs += [{"agent": "kirocrew", "mem_gb": 0.9, "cpu_cores": 0.1} for _ in range(3)]
     _seed(cost_log, recs)
-    val = sc.read_learned_cost("mem_gb", window=3, min_samples=3)
+    val = sc.read_pooled_cost("mem_gb", window=3, min_samples=3)
     assert val == pytest.approx(0.9, abs=0.01)
 
 
