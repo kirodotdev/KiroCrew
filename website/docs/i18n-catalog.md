@@ -69,20 +69,33 @@ and unmirrored directional icons, so an RTL catalog would render correct text in
 visibly wrong shell. Adding one needs `dir="rtl"` plus a logical-property
 conversion (`ps-*`/`pe-*`, `start-*`/`end-*`) first, not just a catalog.
 
-Adding a language is a **data change**: three edits, no component or test changes.
+Adding a language is a **data change**: four edits, no component or test changes.
 
 1. `locales/<tag>.json`, with the same key set as `en.json` plus `en.manual.json`.
 2. One entry in `SUPPORTED_LANGUAGES` (`src/i18n/languages.ts`).
 3. One line in `AUTHORED_CATALOGS` (`src/i18n/catalogs.ts`, the module that owns
-   every catalog import; `src/i18n/all.ts` is the entry that registers them).
+   every static catalog import; `src/i18n/all.ts` is the eager entry that registers
+   them all up front, used by the catalog tests and the crew-companion / Mochi app
+   windows).
+4. One line in `AUTHORED_LOADERS` (`src/i18n/lazy.ts`, the browser entry `main.tsx`
+   boots through, which loads a catalog on demand), and the code in
+   `CATALOG_CHUNK_BUDGETS` (`scripts/check-bundle-size.mjs`) for its chunk.
 
 The parity tests generate their cases from `SUPPORTED_LANGUAGES` and read catalogs
 from the `CATALOGS` map in `src/i18n/catalogs.ts` (the map registration is fed
 from), so a new language automatically gets its
-key-parity, placeholder-preservation, and no-empty-value coverage. Miss one of the
-three edits and CI fails naming the gap; it cannot silently ship as English. There
+key-parity, placeholder-preservation, and no-empty-value coverage, and
+`src/i18n/lazy.test.ts` pins `AUTHORED_LOADERS` against the same map. Miss one of the
+four edits and CI fails naming the gap; it cannot silently ship as English. There
 is **no allowlist**, so every language lands in the same commit. That is what makes
 each new language add marginal cost to every subsequent i18n change.
+
+When a catalog chunk fails to load in the browser, the language does not switch:
+`ensureCatalog` resolves `false`, `changeLanguage` leaves i18next on the language
+it already renders, and the next request for that language fetches again. At boot,
+`main.tsx` switches i18next back to English before the first render when the stored
+language's chunk fails, so `i18next.language` never names a language the store
+cannot render; `LanguageProvider`'s mount effect then retries the stored language.
 
 Three code lists answer three different questions, and conflating them is a real
 bug (registering the pseudolocale made `en` ambiguous, so `en-GB` stopped

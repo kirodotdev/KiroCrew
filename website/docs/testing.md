@@ -115,15 +115,16 @@ is dropped from a release build.
 
 That is why `src/i18n/index.ts` imports **English only** (1,027,227 bytes, 5.9% of the
 17,508,449 authored bytes), `src/i18n/catalogs.ts` owns every catalog import, and
-`src/i18n/all.ts` is the entry that registers them. Three rules hold that split in
-place:
+`src/i18n/all.ts` is the entry that registers them all. The browser boots through
+`src/i18n/lazy.ts` instead, which fetches one non-English catalog on demand. Three
+rules hold that split in place:
 
 - **No non-English catalog import in `src/i18n/index.ts`** — that is the module
   `integration/setup.ts` and ~600 components import.
 - **No all-catalogs import in `integration/setup.ts`**: neither `src/i18n/all` nor
   `src/i18n/catalogs`, and not transitively through a helper it pulls in.
-- **A page entry point imports `initI18n` from `src/i18n/all`**, never from
-  `src/i18n/index`. Both export the same signature so `tsc` accepts either, but
+- **A page entry point imports `initI18n` from `src/i18n/lazy` or `src/i18n/all`**,
+  never from `src/i18n/index`. Both export the same signature so `tsc` accepts either, but
   through the English-only module the dashboard renders English to a user who
   picked Japanese: i18next falls back, nothing throws, no key renders raw.
 
@@ -132,8 +133,8 @@ import graph, because none of them changes a test result on its own.
 
 A test that needs a language other than English imports `src/i18n/all`; a test that
 audits the whole catalog set imports `CATALOGS` from `src/i18n/catalogs`. Either way
-a single file pays the load. None of this defers a load — `t()` is synchronous on
-every path — it only settles which module owns the import.
+a single file pays the load. `t()` is synchronous on every path: the lazy entry
+registers a catalog before anything renders in its language.
 
 Weigh anything else you put in the setup graph the same way: multiply it by the
 file count first.

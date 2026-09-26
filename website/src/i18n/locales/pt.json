@@ -16604,7 +16604,8 @@
         "auto": "Automático",
         "description": "Idioma da interface do painel.",
         "label": "Idioma",
-        "sync_failed": "Não foi possível salvar isso na sua configuração do {{productName}} — o idioma se aplica somente a este navegador e pode ser redefinido ao recarregar."
+        "sync_failed": "Não foi possível salvar isso na sua configuração do {{productName}} — o idioma se aplica somente a este navegador e pode ser redefinido ao recarregar.",
+        "catalog_failed": "Não foi possível carregar o idioma selecionado. O painel continua usando o último idioma carregado com sucesso."
       }
     },
     "groups": {

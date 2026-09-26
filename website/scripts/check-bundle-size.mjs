@@ -36,94 +36,30 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * -- still trips it. Lower a ceiling the moment its chunk shrinks; raising one
  * is a bundle-size regression and needs to be justified in the PR that does it.
  *
- * ONE entry departs from the 5% rule on purpose: `all`, the eager i18n catalogs.
- * Its note below carries the measurement and the reasoning. Every other entry,
- * and the default budget, are unchanged.
+ * The lazy i18n catalog chunks depart from the 5% rule on purpose; their note
+ * below carries the reasoning. Every other entry, and the default budget, follow it.
  */
+/** Ceiling shared by the lazy per-language catalog chunks; see their entry below. */
+const CATALOG_CHUNK_BUDGET = 3 * 1024 * KB
+
+/** The non-English catalogs `src/i18n/lazy.ts` emits as their own chunks. */
+const CATALOG_CHUNK_BUDGETS = Object.fromEntries(
+  ['bn', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'ko', 'pt', 'ru', 'zh-CN'].map((code) => [code, CATALOG_CHUNK_BUDGET])
+)
+
 export const CHUNK_BUDGETS = {
-  // Eager i18n catalogs for all shipped languages, reached through
-  // `src/i18n/all.ts` — Rolldown names the chunk after that entry. Grows a
-  // little with every translated string, which is expected and fine; what this
-  // ceiling catches is a NEW library or surface landing in the catalog chunk.
-  // The built-in App Store guidance adds one use-case and one configuration
-  // string for each of 23 apps across all 12 shipped catalogs. The Dev Fleet
-  // closed-PR prune group and the expanded Disconnect guidance are the largest
-  // recent catalog increments included in this measurement; Dev Fleet's
-  // per-pod system readout then adds its own strings across the same 12
-  // catalogs on top of that baseline. The Drive gallery's keys across 13
-  // catalogs and this stack's structured-monitor, session-mode, and
-  // source-provider additions ride inside the headroom that measurement already
-  // left, so this stack does not move the ceiling.
-  // Re-measured 2026-09-06: main @ 3a6478967 alone builds the chunk at
-  // 10,700,930 B (10450 KB) against the 10490 KB ceiling -- 0.4% headroom, so
-  // any feature PR shipping a normal set of keys across the 13 catalogs fails
-  // the gate on its merge ref (first seen on the Create Folders From Project
-  // takeover, 13 catalogs x 52 lines, ~55 KB). Same recurrence as the `t` and
-  // `App` entries below: a ceiling that drifted to <1% headroom fails on
-  // routine string growth rather than on the new library it exists to catch.
-  // Re-measured 2026-09-10: main @ b165ba1be alone builds the chunk at
-  // 11,302,007 B (11037 KB) against the 10975 KB ceiling -- 62 KB OVER, so
-  // main's own gate is red and every PR rebased onto it inherits the failure.
-  // Attribution is measured, not assumed: the two feature PRs merged back to
-  // back at 17:53-17:54 (#9810 browser element annotations, +423 catalog lines
-  // across 13 languages; #9812 file-viewer type-first annotator, +107 lines)
-  // ship only translated product copy into this chunk -- it still holds the
-  // same 14 modules (13 catalogs plus the entry), no library reached it, and
-  // no lazy import() boundary can move a catalog string out of `all`. Same
-  // recurrence, same remedy: back to the 5% convention.
-  // Memory V2 adds the private-memory panels' strings (member memory, records
-  // editor, store picker/card, carve, backups, retired) across all 13 catalogs
-  // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
-  // the 5% headroom is taken over that measurement rather than main's.
-  // Re-measured 2026-09-16: main @ a9c1cb253d alone builds the chunk at
-  // 11,880,309 B (11602.8 KB) against the 11620 KB ceiling -- 17.2 KB left, or
-  // 0.15% headroom. Same recurrence as every note above: the ceiling drifted to
-  // under 1% on accumulated catalog copy, so it now fails on the next feature
-  // PR's ordinary strings rather than on the new library or surface it exists to
-  // catch. Attribution measured, not assumed: this branch adds 61 catalog lines
-  // x 13 languages for the tasks-capacity panel (49,821 B, 48.7 KB) and no
-  // module -- the chunk still holds the same 13 catalogs plus the entry, and no
-  // lazy import() boundary can move a catalog string out of `all`, which is why
-  // shrinking is not an option here. Back to the 5% convention over the
-  // measurement that includes this branch (11,930,130 B).
-  // Re-measured 2026-09-21: the 5.1% headroom is spent and main's tip alone
-  // builds the chunk at 12,548,680 B (12254.6 KB) against the 12240 KB ceiling --
-  // 14.6 KB OVER, so the gate had begun failing on the merge ref of every open
-  // PR. Same recurrence as both notes above, and the third time it has landed
-  // this way. Attribution measured, not assumed: the branch that surfaced it
-  // (fix/fork-lane-claude-install-egress) changes six files under `.github/`,
-  // one under `docs/` and one under `test/` and NOTHING under `website/`, so the
-  // tree it built is main's tip verbatim; two unrelated fork PRs whose diffs are
-  // Python-only failed the same gate in the same window, and the measured size
-  // rose monotonically across those three runs (12,525.22 -> 12,541.08 ->
-  // 12,548.68 kB) while main merged, independent of any of their diffs. Still no
-  // module: the chunk holds the same 13 catalogs plus the entry, so shrinking
-  // remains unavailable for the reason stated above. Back to the 5% convention
-  // over that measurement.
-  //
-  // The 5% convention is now abandoned for THIS entry, and the ceiling is set to
-  // three times the one above. Four recurrences of the same failure is the
-  // reason, not a measurement: each time the headroom was spent, the gate began
-  // failing on the merge ref of EVERY open pull request, and each time the fix
-  // was the same arithmetic. This recurrence measured 12872.8 KB against the
-  // 12870 KB ceiling -- 2.8 KB over -- while four pull requests carrying no file
-  // under `website/` at all sat red on it. Growth rate at this recurrence: 618 KB
-  // over three days, so 5% of the ceiling is about three days of headroom, which
-  // is why the arithmetic keeps coming back. Tripling buys roughly four months at
-  // that rate.
-  //
-  // What that costs, stated plainly so nobody has to rediscover it: an accidental
-  // regression inside `all` -- a library that should not be there, a catalog
-  // loaded twice -- is not caught until the chunk nearly triples. What still
-  // holds: every other entry keeps its measured ceiling, any chunk without an
-  // entry keeps the 500 KB default, and a NEW oversized chunk is still caught by
-  // that default, which is the gap this gate exists to close. The structural fix
-  // -- measuring main's own tip so the drift is visible before it reaches a
-  // contributor -- is tracked in #12392 and is NOT what this ceiling does.
-  all: 38610 * KB, // 3x the prior 12870 KB; a deliberate exception, see the note above
+  // One lazy chunk per shipped non-English catalog, named after its locale
+  // file and fetched by `src/i18n/lazy.ts` only for the language a user picks,
+  // so none of them is on the first load. Catalog copy grows with every
+  // translated feature (~200 KB a week across the eleven, measured in
+  // September 2026), which is why these share one ceiling well above the
+  // largest (bn, 1.71 MB) instead of a 5% one per file: a 5% ceiling here was
+  // spent in about three days and then failed every open PR. A new language
+  // needs its code added here; until then its chunk meets the 500 KB default.
+  ...CATALOG_CHUNK_BUDGETS,
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
-  // named after `src/i18n/t.ts`. Held separately from `all` above because
+  // named after `src/i18n/t.ts`. Held separately from the catalog chunks above because
   // `src/i18n/index.ts` imports English alone, so the ~600 components that call
   // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
   // English catalog plus headroom; a jump here means a non-English catalog, or a
@@ -137,7 +73,7 @@ export const CHUNK_BUDGETS = {
   // (`t-BLZeayKy.js`, 755,868 B on both), and main's tip alone, with none of that
   // branch's code, reproduces the 4-byte failure with the same content hash. So
   // the growth is main's accumulated English strings, and headroom is what was
-  // actually missing. 5% headroom, matching the `all` entry's convention above,
+  // actually missing. 5% headroom, matching the file-wide convention,
   // so the next English string does not re-trip this for the third time.
   // Re-measured 2026-09-08: main @ 9af9543b0 alone builds the chunk at
   // 795,127 B (776.5 KB) against the 777 KB ceiling -- 0.07% headroom, the
@@ -149,7 +85,7 @@ export const CHUNK_BUDGETS = {
   // surface (25 English keys plus setup / irreversibility guidance). Both are
   // ordinary translated product copy, not a library reaching the runtime. The
   // merged analyze build measures the chunk at 807,525 B (788.6 KB); keep
-  // roughly 5% headroom (matching the `all` entry's convention above) over that
+  // roughly 5% headroom (the file-wide convention) over that
   // combined measurement so expected catalog growth does not block descendants.
   // Re-measured 2026-09-13 on the reviewed member capability inheritance
   // branch rebased onto main @ f382f0a70: the analyze build emits the chunk at
@@ -172,8 +108,8 @@ export const CHUNK_BUDGETS = {
   // product copy across 13 catalogs plus the generated `en-XA` pseudo-locale,
   // which roughly doubles the byte cost of every string. The report still counts
   // 12 modules and this branch adds no dependency, and no lazy `import()`
-  // boundary can move a catalog string out of this chunk (same as the `all`
-  // entry's note above). This is the documented drift for the fourth time: a
+  // boundary can move a catalog string out of this chunk (English
+  // is the always-loaded fallback). This is the documented drift for the fourth time: a
   // ceiling left at 0.04% headroom fails on the next feature's ordinary strings
   // rather than on the new library it exists to catch. Back to the 5% convention
   // over the measured size.
@@ -186,7 +122,7 @@ export const CHUNK_BUDGETS = {
   // ceiling. Attribution is measured, not assumed: reverting ONLY the files under
   // `website/src/i18n/` to the base and rebuilding produces the 926,128 B above,
   // and this branch adds no dependency to the chunk. No lazy `import()` boundary
-  // can move a catalog string out of it, same as the `all` entry's note. This is
+  // can move a catalog string out of it, since English is the always-loaded fallback. This is
   // the drift the notes above already describe: a ceiling left under a tenth of a
   // percent of headroom fails on the next feature's ordinary strings rather than
   // on the new library it exists to catch. Back to the 5% convention over the
@@ -224,8 +160,8 @@ export const CHUNK_BUDGETS = {
   // @ 6ae74179d to 3,440,273 B (3360 KB) against the 3360 KB ceiling -- 367 B
   // of headroom, so a PR adding ONE module to the app core (#9437, +1.7 KB)
   // fails the gate on its merge ref while main itself still passes by a hair.
-  // Same recurrence, same remedy: 5% headroom, matching the `all` and `t`
-  // entries' convention, so ordinary first-party growth does not re-trip this
+  // Same recurrence, same remedy: 5% headroom, matching the `t`
+  // entry's convention, so ordinary first-party growth does not re-trip this
   // within days.
   // The managed-credentials UI and its setup / irreversible-delete states take
   // the merge result to 3,445,107 B (3364.4 KB). Preserve the documented margin
@@ -235,8 +171,8 @@ export const CHUNK_BUDGETS = {
   // code in the tree -- builds this chunk at 3,619,504 B and so exceeds the
   // 3533 KB (3,617,792 B) ceiling by 1,712 B on its own. The margin the lines
   // above describe is therefore already spent: the gate fails on the merge ref
-  // of every open PR, which is exactly the recurrence the `all` and `t` entries
-  // document, and attribution here was measured rather than assumed (pristine
+  // of every open PR, which is exactly the recurrence the `t` entry
+  // documents, and attribution here was measured rather than assumed (pristine
   // main built in its own worktree, then this branch on top of it).
   // The compaction shadow-scoring surface (the keep line, its record reader and
   // one settings switch) adds 2,761 B of first-party code on top of that, for a
@@ -261,7 +197,7 @@ export const CHUNK_BUDGETS = {
   // projection store, its hook and the roster/drawer wiring are first-party app-core
   // code with no lazy boundary available, the same shape the notes above document.
   // Back to the ~5% convention over the measurement that includes this branch,
-  // matching the `all` and `t` entries.
+  // matching the `t` entry.
   // The memory-recall strip, its own record reader and the card's second switch
   // add a further 5,492 B on top of that. A tree carrying all three surfaces
   // measures 3,641,334 B, which is what the ceiling below is set against. It

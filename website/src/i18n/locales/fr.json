@@ -16604,7 +16604,8 @@
         "auto": "Automatique",
         "description": "Langue de l'interface du tableau de bord.",
         "label": "Langue",
-        "sync_failed": "Impossible d'enregistrer ce réglage dans votre configuration {{productName}} — la langue ne s'applique qu'à ce navigateur et peut être réinitialisée au rechargement."
+        "sync_failed": "Impossible d'enregistrer ce réglage dans votre configuration {{productName}} — la langue ne s'applique qu'à ce navigateur et peut être réinitialisée au rechargement.",
+        "catalog_failed": "Impossible de charger la langue sélectionnée. Le tableau de bord conserve la dernière langue chargée correctement."
       }
     },
     "groups": {

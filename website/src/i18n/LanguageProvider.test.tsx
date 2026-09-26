@@ -11,6 +11,20 @@ import './all'
 import { LanguageProvider, useLanguage } from './LanguageProvider'
 import { LANG_STORAGE_KEY } from './detect'
 import { api } from '../api/client'
+import { i18next } from './index'
+
+const changeLanguageControl = vi.hoisted(() => ({
+  call: vi.fn<(code: string) => Promise<boolean>>(),
+}))
+
+vi.mock('./index', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./index')>()
+  changeLanguageControl.call.mockImplementation(async (code) => {
+    await actual.changeLanguage(code)
+    return true
+  })
+  return { ...actual, changeLanguage: changeLanguageControl.call }
+})
 
 /** Fresh QueryClient per test so the ['theme-boot'] cache never leaks across cases. */
 function wrap(children: ReactNode, boot: { language?: string } = {}) {
@@ -25,13 +39,14 @@ function wrap(children: ReactNode, boot: { language?: string } = {}) {
 
 /** Surfaces the context so assertions can read it. */
 function Probe() {
-  const { language, resolved, detected, setLanguage, syncFailed } = useLanguage()
+  const { language, resolved, detected, setLanguage, syncFailed, catalogFailed } = useLanguage()
   return (
     <div>
       <span data-testid="choice">{language || '(auto)'}</span>
       <span data-testid="resolved">{resolved}</span>
       <span data-testid="detected">{detected}</span>
       <span data-testid="sync">{syncFailed ? 'failed' : 'ok'}</span>
+      <span data-testid="catalog">{catalogFailed ? 'failed' : 'ok'}</span>
       <button onClick={() => setLanguage('zh-CN')}>to-zh</button>
       <button onClick={() => setLanguage('')}>to-auto</button>
     </div>
@@ -135,6 +150,17 @@ describe('LanguageProvider', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
     wrap(<Probe />)
     await waitFor(() => expect(document.documentElement.lang).toBe('zh-CN'))
+  })
+
+  it('keeps <html lang> on the rendered language when the switch does not happen', async () => {
+    // A catalog that fails to load leaves i18next on its current language;
+    // stand that in by making the underlying switch a no-op.
+    await i18next.changeLanguage('en')
+    vi.spyOn(i18next, 'changeLanguage').mockResolvedValue((() => '') as never)
+    localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
+    wrap(<Probe />)
+    expect(screen.getByTestId('resolved').textContent).toBe('zh-CN')
+    await waitFor(() => expect(document.documentElement.lang).toBe('en'))
   })
 
   // A regional tag must land on the bare code, or the locale-specific font
@@ -288,5 +314,26 @@ describe('LanguageProvider cross-tab boot ordering', () => {
 
     expect(screen.getByTestId('choice')).toHaveTextContent('zh-CN')
     expect(localStorage.getItem(LANG_STORAGE_KEY)).toBe('zh-CN')
+  })
+})
+
+describe('LanguageProvider — catalog failures are reported', () => {
+  it('sets catalogFailed when the selected catalog does not load', async () => {
+    changeLanguageControl.call.mockResolvedValueOnce(false)
+
+    wrap(<Probe />, { language: '' })
+
+    await waitFor(() => expect(screen.getByTestId('catalog')).toHaveTextContent('failed'))
+  })
+
+  it('clears catalogFailed after a later switch succeeds', async () => {
+    changeLanguageControl.call.mockResolvedValueOnce(false)
+    wrap(<Probe />, { language: '' })
+    await waitFor(() => expect(screen.getByTestId('catalog')).toHaveTextContent('failed'))
+
+    changeLanguageControl.call.mockResolvedValueOnce(true)
+    await userEvent.click(screen.getByText('to-zh'))
+
+    await waitFor(() => expect(screen.getByTestId('catalog')).toHaveTextContent('ok'))
   })
 })

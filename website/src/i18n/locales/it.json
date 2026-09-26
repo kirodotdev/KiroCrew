@@ -16604,7 +16604,8 @@
         "auto": "Automatico",
         "description": "Lingua dell'interfaccia della dashboard.",
         "label": "Lingua",
-        "sync_failed": "Non è stato possibile salvarlo nella configurazione di {{productName}} — la lingua vale solo in questo browser e potrebbe reimpostarsi al ricaricamento."
+        "sync_failed": "Non è stato possibile salvarlo nella configurazione di {{productName}} — la lingua vale solo in questo browser e potrebbe reimpostarsi al ricaricamento.",
+        "catalog_failed": "Impossibile caricare la lingua selezionata. La dashboard continua a usare l'ultima lingua caricata correttamente."
       }
     },
     "groups": {

@@ -16152,7 +16152,8 @@
         "auto": "自动",
         "description": "仪表板界面的显示语言。",
         "label": "语言",
-        "sync_failed": "无法保存到 {{productName}} 配置 — 此语言仅在此浏览器生效，重新加载后可能重置。"
+        "sync_failed": "无法保存到 {{productName}} 配置 — 此语言仅在此浏览器生效，重新加载后可能重置。",
+        "catalog_failed": "无法加载所选语言。仪表板仍使用上一个成功加载的语言。"
       }
     },
     "groups": {
