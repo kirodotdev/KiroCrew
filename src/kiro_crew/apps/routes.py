@@ -864,18 +864,26 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
 
 
 async def handle_update_app(request: web.Request) -> web.Response:
-    """POST /api/apps/{name}/update — update an installed app from its source path."""
+    """POST /api/apps/{name}/update — update an installed app from its source path.
+
+    The dashboard's Sync button and ``kirocrew app update`` both land here, so the
+    refusals carry a ``code`` the CLI maps to its exit codes; the prose is advisory.
+    """
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
-        return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+        return web.json_response(
+            {"error": f"app {name!r} not installed", "code": "app_not_installed"},
+            status=404,
+        )
 
     # Apps with lifecycle != "gateway" handle their own updates
     lifecycle = info.get("lifecycle", "gateway")
     if lifecycle != "gateway":
         return web.json_response(
             {
-                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"
+                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint",
+                "code": "app_lifecycle_not_gateway",
             },
             status=400,
         )
@@ -886,12 +894,30 @@ async def handle_update_app(request: web.Request) -> web.Response:
         body = {}
 
     source = body.get("source", info.get("source", ""))
+    previous_version = info.get("version", "")
 
     # Registry-installed apps: re-clone from registry.
     # Attempt install first, only deregister old resources on success
     # to avoid leaving the app in a broken state on failure.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
+        if registry_name != name:
+            # ``install_from_registry`` treats its argument as both the entry to
+            # clone and the app to install, so a registry source naming another
+            # app would swap THAT app's files under this app's lifecycle lock and
+            # then report this app unchanged. The local branch has the same guard
+            # through ``update_app(..., expected_name=name)``.
+            return web.json_response(
+                {
+                    "ok": False,
+                    "name": name,
+                    "error": (
+                        f"registry source {source!r} names app {registry_name!r}, not {name!r}"
+                    ),
+                    "code": "app_source_name_mismatch",
+                },
+                status=400,
+            )
         async with app_lifecycle_lock(name):
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
@@ -926,7 +952,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
-        return web.json_response(reg_install)
+        return web.json_response(_with_version_transition(reg_install, name, previous_version))
 
     if not source:
         return web.json_response(
@@ -993,7 +1019,24 @@ async def handle_update_app(request: web.Request) -> web.Response:
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
-    return web.json_response(resp)
+    return web.json_response(_with_version_transition(resp, name, previous_version))
+
+
+def _with_version_transition(
+    resp: dict[str, Any], name: str, previous_version: str
+) -> dict[str, Any]:
+    """Add ``previousVersion`` / ``version`` to a successful update response.
+
+    ``update_app`` reports the transition only inside its prose ``message``
+    (``updated <name> v1 -> v2``); ``kirocrew app update`` prints the two values
+    as fields a script can read, and the installed record is the one place the
+    new version is authoritative after the swap.
+    """
+    installed = get_app(name) or {}
+    current = installed.get("version", "")
+    resp["previousVersion"] = previous_version if isinstance(previous_version, str) else ""
+    resp["version"] = current if isinstance(current, str) else ""
+    return resp
 
 
 async def handle_register_external(request: web.Request) -> web.Response:

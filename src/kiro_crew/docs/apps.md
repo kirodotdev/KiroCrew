@@ -37,6 +37,10 @@ registry, or install a local directory from a path.
 - **Enable** is the activation gate. A disabled app contributes no pages, no agents,
   no skills, no crons and no backend process.
 - **Disable** reverses all of that. Its data directory is kept.
+- **Sync** (on an app installed from a local directory) re-copies it from that
+  directory and re-registers what the new version declares, keeping its data.
+  `kirocrew app update <name>` does the same thing from a terminal — see
+  [From the command line](#from-the-command-line).
 - **Uninstall** applies to apps you installed; a shipped app cannot be uninstalled,
   only disabled. Uninstalling keeps the app's data by default. Pass `--purge-data` on
   the CLI to delete that too — which is not reversible.
@@ -178,9 +182,17 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app update my-app             # what the Sync button does, from a terminal
+kirocrew app update my-app --source /path/to/my-app   # ...from a different checkout
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
+
+`update` needs the gateway running: it is the gateway that stops the app's
+backend, swaps the files with your data kept, and re-registers the new version's
+agents, skills and MCP servers, so with no gateway reachable the command exits 3
+and changes nothing. It exits 5 when the app is not installed (or manages its own
+updates), and 4 when the source directory's `app.json` names a different app.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`

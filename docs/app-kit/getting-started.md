@@ -160,7 +160,9 @@ During development:
 
 1. Edit `ui/src/App.tsx`.
 2. Run `cd ui && npm run build`.
-3. Use the installed app's **Update** action in the authenticated App Store UI.
+3. Use the installed app's **Sync** action in the authenticated App Store UI, or run
+   `kirocrew app update my-dashboard` (the same operation, through the running
+   gateway).
 4. Refresh the dashboard.
 
 For UI live reload, follow [App Dev Mode](api-reference.md#app-dev-mode-live-reload).
