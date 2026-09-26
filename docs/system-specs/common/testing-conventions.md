@@ -636,6 +636,16 @@ which is the private target the shared-home write guard exempts. A test that
 edits the agents directory waits for the managed `kirocrew.json` first (the
 spec rebuild runs after the dashboard is serving).
 
+`gw.registered_routes()` is every `(METHOD, canonical path)` the live router
+serves -- the same reading the coverage ratchet counts -- so a sweep over
+"every route of a kind" (`test_route_sweep.py`: every parameter-less `GET`,
+the SPA shell and its assets included, is guarded and serves without a 5xx on
+a fresh home) and the metric agree on what a route is. A sweep excludes by
+EXACT path with a reason, never by pattern or prefix: the routes that answer
+unauthenticated, the ones that hold a connection open, and the ones that
+reach the network on a fresh home are each a small table in the test, and a
+route that joins one of those classes is added there by hand.
+
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by
 the bare name `conftest`; a second top-level `conftest` shadows it and 160
