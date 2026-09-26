@@ -216,6 +216,16 @@ class SlackClientOps(ABC):
         """Fetch thread replies. Returns list of message dicts with 'user'/'bot_id' and 'text'."""
         return []
 
+    async def fetch_channel_history(
+        self, channel: str, limit: int = 20, oldest: str | None = None
+    ) -> list[dict]:
+        """Fetch recent messages from a channel/DM timeline (newest first).
+
+        Returns a list of message dicts with 'user'/'bot_id', 'text', 'ts'.
+        Default returns empty list — subclasses override to hit Slack.
+        """
+        return []
+
     async def conversations_list(self) -> list[dict]:
         """List channels the bot can see. Each dict has at least ``id`` and ``name``.
 
@@ -795,6 +805,27 @@ class RealSlackClient(SlackClientOps):
         except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
             logger.debug("fetch_thread_replies failed for %s/%s", channel, thread_ts, exc_info=True)
         return []
+
+    async def fetch_channel_history(
+        self, channel: str, limit: int = 20, oldest: str | None = None
+    ) -> list[dict]:
+        """Fetch recent channel/DM messages via conversations.history (newest first).
+
+        Does NOT swallow SlackApiError: the caller (api_slack_history) needs to
+        surface ``missing_scope`` / ``channel_not_found`` to the user, exactly as
+        api_slack_profile does. Transient network errors return an empty list.
+        """
+        kwargs: dict[str, Any] = {"channel": channel, "limit": limit}
+        if oldest:
+            kwargs["oldest"] = oldest
+        self._inject_team(channel, kwargs)
+        try:
+            resp = await self._web.conversations_history(**kwargs)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            logger.debug("fetch_channel_history transient error for %s", channel, exc_info=True)
+            return []
+        data: dict = resp.data if hasattr(resp, "data") else dict(resp)  # type: ignore[assignment,call-overload]
+        return data.get("messages", [])
 
     async def conversations_list(self) -> list[dict]:
         """Fetch all public + private channels the bot is a member of.
