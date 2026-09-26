@@ -3252,9 +3252,16 @@ function mergePreservedClientTs<M extends { role: string; content: string; ts?: 
  *  shape rather than truncate. */
 export const REFRESH_LIMIT_CEILING = 500
 
+/** A stale-page guard for stall-triggered refreshes: the transcript's row
+ *  count and tail-row length at dispatch. If either moved while the GET was in
+ *  flight, the page is older than the view it would replace. */
+export type RefreshStaleGuard = { rows: number; tail: number }
+
 export const refreshSlot = createAsyncThunk(
   'chat/refreshSlot',
-  async (key: string, { getState }) => {
+  async (arg: string | { key: string; guard?: RefreshStaleGuard }, { getState }) => {
+    const key = typeof arg === 'string' ? arg : arg.key
+    const guard = typeof arg === 'string' ? undefined : arg.guard
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot !== key) return null
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
@@ -3329,6 +3336,18 @@ export const refreshSlot = createAsyncThunk(
      * same way the pre-fetch check does. */
     const after = (getState() as { chat: ChatState }).chat
     if (after.activeSlot !== key) return null
+    /* The stall guard turns this fetch self-invalidating. If rows landed after
+     * the stall was declared -- the socket resumed delivering, or the user
+     * acted -- the page was built against an older view. Handing it to the
+     * REPLACES-`messages` reducer would drop exactly those newer rows and
+     * restore a stale `slotRunning`. Discard it instead; the watchdog tick
+     * re-arms itself and re-fetches, so nothing is lost by refusing this page. */
+    if (guard) {
+      const afterMsgs = after.messages
+      const afterLast = afterMsgs[afterMsgs.length - 1]
+      const afterTail = afterLast ? (afterLast.rawText ?? afterLast.content ?? '').length : 0
+      if (afterMsgs.length !== guard.rows || afterTail !== guard.tail) return null
+    }
     const viewNow = after.messages
     const serverRowsNow = viewNow.filter(
       m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
