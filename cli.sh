@@ -146,6 +146,83 @@ ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
 
+# ── Progress output ──────────────────────────────────────────────────────────
+# The slow steps (the wheel download, pip resolving and fetching every
+# dependency, `python -m venv` running ensurepip) used to print one line and
+# then nothing for a minute or more, which reads as a hang. Under
+# `curl ... | sh` only STDIN is the pipe; stdout is still the terminal, so the
+# script can tell an interactive run from a logged one and draw accordingly.
+#
+#   _tty            1 when stdout is a terminal that can take a redrawn line.
+#   CURL_PROGRESS   curl's progress flag for artifact downloads: a progress bar
+#                   on a terminal, silent (as before) in a log.
+#   _run_step LOG MSG CMD...
+#                   runs CMD with stdout+stderr captured to LOG. On a terminal
+#                   it redraws one line: spinner, MSG, elapsed seconds and the
+#                   last line CMD wrote (pip's "Collecting ..." / "Downloading
+#                   ..." lines, so the user sees which package it is on).
+#                   Otherwise it prints one heartbeat line every 30 s so a CI
+#                   log still shows the step is alive. Ends with a "done"/
+#                   "FAILED" line and returns CMD's exit status; the caller
+#                   reads LOG for the failure report, exactly as before.
+_tty=0
+if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ -z "${KIROCREW_INSTALL_PLAIN:-}" ]; then
+  _tty=1
+fi
+CURL_PROGRESS="-s"
+if [ "$_tty" = 1 ]; then CURL_PROGRESS="--progress-bar"; fi
+
+_run_step() {
+  _rs_log="$1"; _rs_msg="$2"; shift 2
+  : > "$_rs_log"
+  "$@" > "$_rs_log" 2>&1 &
+  _rs_pid=$!
+  _rs_start="$(date +%s)"
+  _rs_cols="$(tput cols 2>/dev/null || echo "${COLUMNS:-80}")"
+  case $_rs_cols in ''|*[!0-9]*) _rs_cols=80 ;; esac
+  _rs_i=0
+  _rs_beat=0
+  while kill -0 "$_rs_pid" 2>/dev/null; do
+    _rs_el=$(( $(date +%s) - _rs_start ))
+    if [ "$_tty" = 1 ]; then
+      case $((_rs_i % 4)) in
+        0) _rs_f='|' ;; 1) _rs_f='/' ;; 2) _rs_f='-' ;; *) _rs_f='\' ;;
+      esac
+      # Last line the command wrote, trimmed so the whole redrawn line fits
+      # the terminal: a line that wraps is not replaced by the next \r, it
+      # stacks up a new row per redraw. Width comes from tput, then
+      # $COLUMNS, then 80; the tail gets whatever room the prefix leaves.
+      _rs_head="$_rs_f $_rs_msg (${_rs_el}s)"
+      _rs_room=$(( _rs_cols - 1 - ${#_rs_head} - 2 ))
+      _rs_last=""
+      if [ "$_rs_room" -ge 8 ]; then
+        _rs_last="$(tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' \
+          | sed 's/^[[:space:]]*//' | cut -c1-"$_rs_room")"
+      fi
+      printf '\r\033[K%s%s' "$_rs_head" "${_rs_last:+  $_rs_last}"
+      _rs_i=$((_rs_i + 1))
+      # Fractional sleep is not POSIX; sleep 1 when this sleep lacks it.
+      sleep 0.25 2>/dev/null || sleep 1
+    else
+      if [ $((_rs_el - _rs_beat)) -ge 30 ]; then
+        _rs_beat=$_rs_el
+        echo "$_rs_msg ... still running (${_rs_el}s)"
+      fi
+      sleep 1
+    fi
+  done
+  _rs_rc=0
+  wait "$_rs_pid" || _rs_rc=$?
+  _rs_el=$(( $(date +%s) - _rs_start ))
+  if [ "$_tty" = 1 ]; then printf '\r\033[K'; fi
+  if [ "$_rs_rc" -eq 0 ]; then
+    echo "$_rs_msg ... done (${_rs_el}s)"
+  else
+    echo "$_rs_msg ... FAILED after ${_rs_el}s (exit $_rs_rc)" >&2
+  fi
+  return "$_rs_rc"
+}
+
 # Dependencies come from prebuilt wheels only. Left to itself, pip treats a
 # dependency with no wheel for this host as something to BUILD from its
 # sdist, and a native one (numpy, Pillow, cryptography, lxml) then needs a C
@@ -410,7 +487,8 @@ _provision_python_via_uv() {
   # the bytes but never substitute them. (uv's own python-build-standalone
   # download honors UV_PYTHON_INSTALL_MIRROR, which inherits through env.)
   _uv_base="${KIROCREW_UV_URL:-https://github.com/astral-sh/uv/releases/download}"
-  curl -fsSL --proto '=https' --proto-redir '=https' \
+  # shellcheck disable=SC2086
+  curl -f $CURL_PROGRESS -S -L --proto '=https' --proto-redir '=https' \
     "${_uv_base%/}/$UV_VERSION/uv-$_uv_target.tar.gz" \
     -o "$TMP/uv.tar.gz" || return 1
   _uv_got="$($SHA_CMD "$TMP/uv.tar.gz" | awk '{print $1}')"
@@ -424,6 +502,9 @@ _provision_python_via_uv() {
   # reach the interpreter that the venv's shebangs point at.
   _uv_data_home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
+  # uv draws its own download progress on a terminal and reuses an already
+  # installed interpreter without a download, so it is not wrapped in _run_step.
+  echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
   UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
     || return 1
   # only-managed: resolve the interpreter just installed, never a system one
@@ -701,7 +782,11 @@ WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
-curl -fsS --proto '=https' "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
+# $CURL_PROGRESS is one word (-s or --progress-bar), unquoted on purpose.
+# shellcheck disable=SC2086
+curl -f $CURL_PROGRESS -S --proto '=https' "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
+_whl_kb=$(( $(wc -c < "$WHL") / 1024 ))
+echo "Downloaded $WHEEL_NAME (${_whl_kb} KB); verifying SHA-256 ..."
 
 GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"
@@ -788,9 +873,10 @@ if command -v pipx >/dev/null 2>&1; then
   # is on and nothing at all when it is off (no empty argument for pipx to
   # trip on). The output is captured so a failure can be explained; pipx's
   # own words are replayed by _report_pip_failure.
-  if ! pipx install --force --python "$PY" \
-      ${PIP_BINARY_ONLY:+"--pip-args=$PIP_BINARY_ONLY"} "$WHL" \
-      > "$TMP/pip-install.log" 2>&1; then
+  # shellcheck disable=SC2086
+  if ! _run_step "$TMP/pip-install.log" "Installing kirocrew $VER and its dependencies with pipx" \
+      pipx install --force --python "$PY" \
+      ${PIP_BINARY_ONLY:+"--pip-args=$PIP_BINARY_ONLY"} "$WHL"; then
     _report_pip_failure "$TMP/pip-install.log"
     if [ -n "$_PIPX_VENV_BACKUP" ] && [ -d "$_PIPX_VENV_BACKUP" ]; then
       _restore_tree "$_PIPX_VENV_BACKUP" "$_PIPX_VENV" \
@@ -866,7 +952,8 @@ else
   # EVERY failure after the move-aside must restore the backup -- under
   # `set -eu` an unguarded command would exit past the restore and leave the
   # working install orphaned at the backup path.
-  if ! "$PY" -m venv "$VENV"; then
+  if ! _run_step "$TMP/venv-create.log" "Creating virtual environment" "$PY" -m venv "$VENV"; then
+    if [ -s "$TMP/venv-create.log" ]; then tail -n 20 "$TMP/venv-create.log" >&2; fi
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _restore_tree "$_VENV_BACKUP" "$VENV" \
         && err "creating the venv at $VENV failed (disk full?). The previous install was restored and keeps working; re-run this installer to retry." \
@@ -874,13 +961,15 @@ else
     fi
     err "creating the venv at $VENV failed."
   fi
-  "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+  _run_step "$TMP/pip-upgrade.log" "Updating pip" "$VENV/bin/pip" install --quiet --upgrade pip || true
   # On failure, put the pre-rebuild venv back so the previous install keeps
   # working -- then name the retry instead of dying with a raw pip trace. The
-  # binary-only flag is unquoted on purpose: it is one word or nothing.
+  # binary-only flag is unquoted on purpose: it is one word or nothing. Not
+  # --quiet: pip's "Collecting"/"Downloading" lines are what _run_step shows
+  # on the progress line, and they are the context _report_pip_failure needs.
   # shellcheck disable=SC2086
-  if ! "$VENV/bin/pip" install --quiet $PIP_BINARY_ONLY "$WHL" \
-      > "$TMP/pip-install.log" 2>&1; then
+  if ! _run_step "$TMP/pip-install.log" "Installing kirocrew $VER and its dependencies" \
+      "$VENV/bin/pip" install --progress-bar off $PIP_BINARY_ONLY "$WHL"; then
     _report_pip_failure "$TMP/pip-install.log"
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _restore_tree "$_VENV_BACKUP" "$VENV" \

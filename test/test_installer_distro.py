@@ -13,6 +13,7 @@ so the suite skips on native Windows.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -495,7 +496,13 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     # The venv-creation step after the move-aside must be guarded too:
     # under `set -eu` an unguarded `"$PY" -m venv` failure (disk full at
     # ensurepip time) would exit past the restore and orphan the backup.
-    assert 'if ! "$PY" -m venv "$VENV"; then' in text, (
+    # The creation runs through the `_run_step` progress wrapper, which
+    # returns the command's own exit status, so the `if !` guard still sees
+    # the failure.
+    venv_guard = re.search(
+        r'if ! _run_step "[^"]*" "[^"]*" "\$PY" -m venv "\$VENV"; then', text
+    )
+    assert venv_guard is not None, (
         "cli.sh runs venv creation unguarded after the move-aside -- a "
         "creation failure under set -eu skips the restore and destroys the "
         "working install"
@@ -503,7 +510,7 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     # A tree already at the backup path (recycled PID) may be the only
     # WORKING install left by an interrupted earlier run, so it is never
     # deleted -- the move-aside picks the next free sibling instead.
-    assert 'rm -rf "$_VENV_BACKUP"' not in text.split('if ! "$PY" -m venv')[0], (
+    assert 'rm -rf "$_VENV_BACKUP"' not in text[: venv_guard.start()], (
         "cli.sh deletes whatever sits at the backup path before the "
         "move-aside -- an interrupted earlier run parks the working venv "
         "exactly there, so a recycled PID would destroy it"
@@ -926,3 +933,115 @@ def test_cli_marker_read_never_opens_a_fifo(tmp_path: Path) -> None:
 
     combined = result.stdout + result.stderr
     assert "Reusing the recorded managed-python choice" not in combined
+
+
+# ── Progress output ──────────────────────────────────────────────────────────
+# The slow steps (wheel download, pip, venv creation) run through `_run_step`,
+# which must keep a non-interactive log readable (one line per step plus a
+# heartbeat, never a spinner), capture the command's output to the log the
+# failure reporter reads, and return the command's own exit status so the
+# `if !` guards around it still see a failure.
+
+
+def _progress_helpers() -> str:
+    """The helper block of cli.sh, extracted so it can be sourced alone."""
+    text = CLI_SH.read_text()
+    start = text.index("# ── Progress output")
+    end = text.index("# Dependencies come from prebuilt wheels only.")
+    return text[start:end]
+
+
+def test_run_step_off_a_terminal_prints_done_line_and_passes_exit_status(
+    tmp_path: Path,
+) -> None:
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    log = tmp_path / "step.log"
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'echo "tty=$_tty curl=$CURL_PROGRESS"; '
+        f"_run_step \"{log}\" \"Installing things\" sh -c 'echo Collecting aiohttp; echo oops >&2; exit 3' "
+        f'|| echo "rc=$?"'
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TERM": "xterm"},
+    )
+    assert result.returncode == 0, result.stderr
+    # stdout is a pipe here, so the terminal path must be off regardless of TERM.
+    assert "tty=0 curl=-s" in result.stdout
+    assert "rc=3" in result.stdout, "the wrapper did not return the command's exit status"
+    assert "Installing things ... FAILED after" in result.stderr
+    assert "\r" not in result.stdout, "spinner redraws leaked into a non-terminal run"
+    # Both streams of the wrapped command land in the log the failure report reads.
+    assert log.read_text() == "Collecting aiohttp\noops\n"
+
+
+def test_run_step_reports_success_with_elapsed_time(tmp_path: Path) -> None:
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'_run_step "{tmp_path}/ok.log" "Creating virtual environment" true'
+    )
+    result = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"Creating virtual environment \.\.\. done \(\d+s\)", result.stdout)
+
+
+def test_cli_downloads_use_the_progress_flag_and_pip_is_wrapped() -> None:
+    text = CLI_SH.read_text()
+    # Wheel and uv downloads: silent in a log (the flag resolves to -s), a
+    # progress bar on a terminal. Never both -s and --progress-bar at once.
+    assert re.search(r'curl -f \$CURL_PROGRESS -S --proto \'=https\' "\$WHEEL_URL"', text)
+    assert re.search(r"curl -f \$CURL_PROGRESS -S -L --proto '=https'", text)
+    assert 'CURL_PROGRESS="-s"' in text and 'CURL_PROGRESS="--progress-bar"' in text
+    # Every pip/pipx install goes through the wrapper and keeps writing the
+    # log _report_pip_failure reads.
+    assert re.search(
+        r'_run_step "\$TMP/pip-install\.log" "[^"]*" \\\n\s+pipx install --force', text
+    )
+    assert re.search(
+        r'_run_step "\$TMP/pip-install\.log" "[^"]*" \\\n\s+"\$VENV/bin/pip" install --progress-bar off',
+        text,
+    )
+    assert "pip\" install --quiet $PIP_BINARY_ONLY" not in text, (
+        "the wheel install went back to --quiet; the progress line and the "
+        "failure report both need pip's Collecting/Downloading lines"
+    )
+
+
+def test_run_step_redrawn_line_fits_the_terminal_width(tmp_path: Path) -> None:
+    """Every `\\r`-redrawn frame must be shorter than the terminal.
+
+    A frame that wraps is not overwritten by the next `\\r`: it leaves a new
+    row per redraw and the "one live line" turns into a wall of spinner
+    lines. `tput cols` is what the helper measures, so drive it with a fake
+    tput and a pty-free stand-in for the terminal test (`_tty=1` forced).
+    """
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "tput").write_text("#!/bin/sh\necho 72\n")
+    (fake_bin / "tput").chmod(0o755)
+    long_line = "Downloading " + "x" * 200 + ".whl (310 kB)"
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; _tty=1; '
+        f'_run_step "{tmp_path}/wide.log" "Installing kirocrew 1.2.3 and its dependencies" '
+        f"sh -c 'echo \"{long_line}\"; sleep 1'"
+    )
+    # Bytes, not text=True: universal newlines would fold the \r redraws into \n.
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "TERM": "xterm"},
+    )
+    assert result.returncode == 0, result.stderr
+    frames = re.findall(r"\r\x1b\[K([^\r\n]*)", result.stdout.decode())
+    assert frames, "no redrawn frames on the forced-terminal path"
+    tails = [f for f in frames if "Downloading" in f]
+    assert tails, "the command's last line never made it onto the progress line"
+    assert max(len(f) for f in frames) < 72, max(frames, key=len)

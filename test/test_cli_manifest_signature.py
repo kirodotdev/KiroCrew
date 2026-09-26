@@ -1460,7 +1460,7 @@ def test_installer_authenticates_before_reading_or_downloading_artifact() -> Non
 
     verify = executable.index("openssl dgst -sha256 -verify")
     parse_fields = executable.index("read_field()")
-    wheel_download = executable.index("curl -fsS --proto '=https' \"$WHEEL_URL\"")
+    wheel_download = executable.index("curl -f $CURL_PROGRESS -S --proto '=https' \"$WHEEL_URL\"")
     assert verify < parse_fields < wheel_download
     assert "SHA256SUMS" not in executable, "strict installer must have no unsigned fallback"
 
