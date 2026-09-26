@@ -18,6 +18,7 @@ import { type RefObject } from 'react'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import type { UseVirtualChatOptions } from '../hooks/virtualizer/types'
 import { setRailWidth, railWidthFor, RAIL_SETTLE_MS, __resetRailWidth } from '../hooks/useRailWidth'
+import { __resetComposerResizeMark } from '../utils/composerResize'
 
 interface Geom { scrollTop: number; scrollHeight: number; clientHeight: number }
 
@@ -247,6 +248,443 @@ describe('useVirtualChat: viewport-box resize re-pin', () => {
     // One re-pin when the settle window closes (we were following).
     act(() => { state.clientHeight = 340; vi.advanceTimersByTime(RAIL_SETTLE_MS + 1) })
     expect(el.scrollTop).toBe(2000 - 340)
+  })
+})
+
+// The iOS toolbar case. Safari's URL bar collapses under exactly the DOWNWARD
+// drag that scrolls toward the bottom, so for the frames of that animation the
+// scroller GROWS while the reader moves: the bottom comes up to meet them. The
+// scroll handler's re-engage band used to be judged against the already-grown
+// box, so a reader who nudged down a few px from well outside the band was read
+// as arriving inside it and follow re-armed -- for someone who never reached the
+// bottom. The next automatic pin (here: the toolbar re-showing, which shrinks the
+// box and re-pins a follower) then carried them to the end: the reported yank.
+// A viewport SHRINK on its own never moves a released reader -- every pin is
+// follow-gated -- which "does NOT move a user who scrolled up" above already pins.
+describe('useVirtualChat: iOS toolbar collapse under a downward drag', () => {
+  let origRO: typeof ResizeObserver | undefined
+  let origRaf: typeof requestAnimationFrame
+
+  beforeEach(() => {
+    localStorage.clear()
+    __resetRailWidth()
+    __resetComposerResizeMark()
+    FakeResizeObserver.instances = []
+    origRO = globalThis.ResizeObserver
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver
+    origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    globalThis.ResizeObserver = origRO as typeof ResizeObserver
+    globalThis.requestAnimationFrame = origRaf
+    __resetRailWidth()
+    __resetComposerResizeMark()
+  })
+
+  function viewportRO(el: HTMLElement): FakeResizeObserver {
+    const inst = FakeResizeObserver.instances.find((i) => i.observed.has(el))
+    expect(inst).toBeDefined()
+    return inst!
+  }
+  function fireViewport(el: HTMLElement) {
+    viewportRO(el).fire([{ target: el } as Partial<ResizeObserverEntry>])
+  }
+  /** A live turn: the idle rule would otherwise release a wrongly re-armed
+   *  follow before it could pin, hiding the re-arm behind a second guard. */
+  function mount(sessionId: string, geom: Geom, items: Item[]) {
+    const { el, state, writes } = makeScroller(geom)
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const baseProps: UseVirtualChatOptions<Item> = { items, sessionId, getKey, externalScrollerRef: ref, runActive: true }
+    const view = renderHook((p: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(p), { initialProps: baseProps })
+    act(() => { vi.advanceTimersByTime(250) })
+    return { el, state, view, writes, baseProps }
+  }
+  /** Reader scrolls up to read, then comes part-way back: released, parked
+   *  `above` px above the bottom, settled. */
+  function parkAbove(el: HTMLElement, state: Geom, above: number) {
+    act(() => { state.scrollTop = 600; el.dispatchEvent(new Event('scroll')) })
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => { state.scrollTop = state.scrollHeight - state.clientHeight - above; el.dispatchEvent(new Event('scroll')) })
+    act(() => { vi.advanceTimersByTime(400) })
+  }
+
+  it('a nudge down while the toolbar collapses does not re-arm follow, so the toolbar re-showing does not pin', () => {
+    // Phone with the URL bar showing: 340px of transcript.
+    const { el, state, view, writes } = mount('ios-bar-collapse', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 60)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1600)
+    const before = writes.n
+
+    // One frame of the collapse: the reader's drag moves them 3px down and the
+    // bar's animation grows the box 50px. Live distance 2000 - 1603 - 390 = 7px,
+    // inside the re-engage band -- 50 of those 53px were the browser's.
+    act(() => {
+      state.clientHeight = 390
+      state.scrollTop = 1603
+      el.dispatchEvent(new Event('scroll'))
+      fireViewport(el)
+    })
+
+    // The bar re-shows (the reader scrolls up a hair, or taps the top): the box
+    // shrinks back. A follower is re-pinned here; this reader must not be.
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => {
+      state.clientHeight = 340
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1603)
+    expect(writes.n).toBe(before)
+    expect(view.result.current.getFollow()).toBe(false)
+  })
+
+  it('a collapse animated over several frames is credited in full, not one frame at a time', () => {
+    // Safari does not collapse the bar in one step: the box grows across the
+    // frames of the drag, and each frame's scroll event carries only THAT
+    // frame's growth. Reader parked 60px up; three frames of the collapse each
+    // move them 3px while the box grows 38, 8, then 1px. After the third
+    // frame the live distance is 2000 - 1609 - 387 = 4px. Judged on the frame
+    // alone the third's 3px of travel against 1px of growth is the reader's
+    // arrival, and follow re-arms on the tail of every real collapse; on the
+    // gesture the reader moved 9px of the 56px approach against the box's
+    // 47px, so the toolbar re-showing must leave them where they are.
+    const { el, state, view, writes } = mount('ios-bar-collapse-frames', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 60)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1600)
+    const before = writes.n
+
+    const frames: Array<[clientHeight: number, scrollTop: number]> = [[378, 1603], [386, 1606], [387, 1609]]
+    for (const [clientHeight, scrollTop] of frames) {
+      act(() => {
+        state.clientHeight = clientHeight
+        state.scrollTop = scrollTop
+        el.dispatchEvent(new Event('scroll'))
+        fireViewport(el)
+        vi.advanceTimersByTime(16)
+      })
+      expect(view.result.current.getFollow()).toBe(false)
+    }
+
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => {
+      state.clientHeight = 340
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1609)
+    expect(writes.n).toBe(before)
+    expect(view.result.current.getFollow()).toBe(false)
+  })
+
+  it('growth from a collapse the reader sat through is not credited to a later, separate nudge', () => {
+    // The window has to close, or the credit leaks: the bar collapses fully
+    // under a STILL reader (neutral events, so nothing re-arms), they rest,
+    // and well after the settle window they drag themselves down into the
+    // band. That approach is entirely theirs and re-engages.
+    const { el, state, view } = mount('ios-bar-collapse-lapsed', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 80)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1580)
+
+    for (const clientHeight of [360, 380, 390]) {
+      act(() => {
+        state.clientHeight = clientHeight
+        el.dispatchEvent(new Event('scroll'))
+        fireViewport(el)
+        vi.advanceTimersByTime(16)
+      })
+    }
+    // Distance is now 2000 - 1580 - 390 = 30px, follow still released.
+    expect(view.result.current.getFollow()).toBe(false)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    // A fresh downward drag of 20px lands 10px from the bottom: inside the
+    // band by the reader's own hand.
+    act(() => {
+      state.scrollTop = 1600
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+  })
+
+  it('growth that landed while the reader rested, with no scroll event of its own, is not charged to their next drag', () => {
+    // Parked far above the bottom, the keyboard closes (or the window grows):
+    // the box grows by 50px and NO scroll event fires, because nothing clamped.
+    // The reader then drags down in two frames to within the band. That drag
+    // is theirs, so it must re-engage -- the rest-period growth must not sit in
+    // the gesture total and hold the band out of reach for the whole drag.
+    const { el, state, view } = mount('ios-rest-growth', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 200)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1460)
+
+    // Rest growth: viewport branch only, no scroll event.
+    act(() => {
+      state.clientHeight = 390
+      fireViewport(el)
+      vi.advanceTimersByTime(400)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+
+    // Fresh drag: 1460 -> 1560 -> 1600. Frame 2 lands 2000 - 1600 - 390 = 10px
+    // from the bottom, inside the band, with no viewport change in the gesture.
+    act(() => {
+      state.scrollTop = 1560
+      el.dispatchEvent(new Event('scroll'))
+      vi.advanceTimersByTime(16)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+    act(() => {
+      state.scrollTop = 1600
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+  })
+
+  it('a reader who drags all the way down while the toolbar collapses re-engages and is pinned through the re-show', () => {
+    const { el, state, view } = mount('ios-bar-collapse-arrive', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 200)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1460)
+
+    // Safari's real 50px collapse, and the reader's own 148px drag is what
+    // reaches the bottom: live distance 2000 - 1608 - 390 = 2px. Judged
+    // against the pre-growth box that is 52px -- past the band, as is every
+    // position the grown box lets them reach -- so "return to live" was refused
+    // for the whole collapse. They closed 148 of the 198px approach themselves.
+    act(() => {
+      state.clientHeight = 390
+      state.scrollTop = 1608
+      el.dispatchEvent(new Event('scroll'))
+      fireViewport(el)
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => {
+      state.clientHeight = 340
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(2000 - 340)
+  })
+
+  it('a released reader clamped flush by the growth stays released', () => {
+    // The growth alone (no reader move in the frame) drops the maximum under a
+    // reader parked 20px up; the engine clamps them flush. Arriving is not
+    // asking, so the toolbar re-showing leaves them 60px above the new bottom.
+    const { el, state, view, writes } = mount('ios-bar-collapse-clamp', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 20)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1640)
+
+    act(() => {
+      state.clientHeight = 400
+      state.scrollTop = 1600 // the layout engine's clamp, not a user scroll
+      el.dispatchEvent(new Event('scroll'))
+      fireViewport(el)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+    const before = writes.n
+
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => {
+      state.clientHeight = 340
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1600)
+    expect(writes.n).toBe(before)
+  })
+
+  it('a nudge the collapse clamps FLUSH does not re-arm follow either', () => {
+    // The nudge case above lands 7px up, inside the band, and rule 3 refuses
+    // it. Parked 60px up the box's new maximum is only 10px past the reader,
+    // so a nudge of 10px or more is clamped flush instead -- distance 0, a
+    // downward move -- and reaches the bottom-epsilon branch. That branch must
+    // apply the same travel-against-growth test, or most of the nudge range
+    // re-arms follow and the toolbar re-showing takes them to the end.
+    const { el, state, view, writes } = mount('ios-bar-collapse-flush-nudge', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 60)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1600)
+    const before = writes.n
+
+    // 12px nudge, 50px collapse: the engine stops the scroller at the new
+    // maximum 2000 - 390 = 1610. 10 of the 12 asked-for pixels moved.
+    act(() => {
+      state.clientHeight = 390
+      state.scrollTop = 1610
+      el.dispatchEvent(new Event('scroll'))
+      fireViewport(el)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    act(() => {
+      state.clientHeight = 340
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1610)
+    expect(writes.n).toBe(before)
+    expect(view.result.current.getFollow()).toBe(false)
+  })
+
+  it('growth that lands under our own pins mid-turn is not charged to the reader\'s later gesture', () => {
+    // A follower during a streaming turn: every tail-row resize pins, and each
+    // pin fires a scroll event of OUR making well inside the settle window. The
+    // keyboard closes mid-turn (the box grows 50px, no reader scroll), the
+    // reader flicks up to check something, and reverses back down within the
+    // band a frame later. That approach is entirely theirs and must
+    // re-engage. When our pins counted as "a gesture in flight" the growth
+    // sat in the gesture total for the rest of the turn and refused them:
+    // follow stayed released and the output streamed past.
+    const { el, state, view, baseProps } = mount('ios-midturn-growth', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    expect(view.result.current.getFollow()).toBe(true)
+    expect(el.scrollTop).toBe(1660)
+
+    let items = mkItems(10)
+    /** One streaming tick: a row appends, the bottom moves, pinAuto writes,
+     *  and the write's own scroll event dispatches ~50ms after the last. */
+    const streamTick = () => {
+      act(() => {
+        state.scrollHeight += 40
+        items = mkItems(items.length + 1)
+        view.rerender({ ...baseProps, items })
+      })
+      expect(el.scrollTop).toBe(state.scrollHeight - state.clientHeight)
+      act(() => {
+        el.dispatchEvent(new Event('scroll'))
+        vi.advanceTimersByTime(50)
+      })
+    }
+    for (let i = 0; i < 3; i++) streamTick()
+    expect(view.result.current.getFollow()).toBe(true)
+
+    // Keyboard closes between two pins: viewport branch only, no scroll event.
+    act(() => {
+      state.clientHeight = 390
+      fireViewport(el)
+    })
+    for (let i = 0; i < 3; i++) streamTick()
+    expect(view.result.current.getFollow()).toBe(true)
+    const bottom = state.scrollHeight - state.clientHeight
+    expect(el.scrollTop).toBe(bottom)
+
+    // The reader flicks up 30px: released.
+    act(() => {
+      state.scrollTop = bottom - 30
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+
+    // ...and reverses 20px down a frame later, landing 10px from the bottom.
+    // No viewport change in THEIR gesture, so this is the reader's own arrival.
+    act(() => {
+      vi.advanceTimersByTime(40)
+      state.scrollTop = bottom - 10
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+  })
+
+  it('growth across one of OUR scroll events inside the reader\'s gesture is dropped, not charged to them', () => {
+    // The reader is scrolling down and taps jump-to-latest mid-gesture. The
+    // tap blurs the composer, so the keyboard dismisses in the same frames:
+    // the box grows 50px while our instant pin fires its own scroll event. The
+    // pin is not their gesture, so the growth that arrives across it must not
+    // land in the gesture total -- a flick up and straight back down within
+    // the band is still their own arrival.
+    const { el, state, view } = mount('ios-pin-inside-gesture', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    parkAbove(el, state, 300)
+    expect(view.result.current.getFollow()).toBe(false)
+    expect(el.scrollTop).toBe(1360)
+
+    // Reader nudges 10px down: a gesture opens, with 10px of travel in it.
+    act(() => {
+      state.scrollTop = 1370
+      el.dispatchEvent(new Event('scroll'))
+      vi.advanceTimersByTime(30)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+    // Keyboard dismisses (viewport branch, gesture in flight so no re-baseline)
+    // and our jump-to-latest pin writes the new bottom next frame and fires
+    // its own scroll event.
+    act(() => {
+      state.clientHeight = 390
+      fireViewport(el)
+      view.result.current.scrollToBottom()
+      vi.advanceTimersByTime(20)
+    })
+    expect(el.scrollTop).toBe(2000 - 390)
+    act(() => {
+      el.dispatchEvent(new Event('scroll'))
+      vi.advanceTimersByTime(30)
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+
+    // Still inside their gesture: flick 30px up (released), then 20px back
+    // down to 10px from the bottom. Their gesture holds 30px of travel against
+    // no growth of theirs, so this re-engages; charged the 50px the pin's
+    // event saw, 30 < 50 would refuse them.
+    act(() => {
+      state.scrollTop = 1610 - 30
+      el.dispatchEvent(new Event('scroll'))
+      vi.advanceTimersByTime(30)
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+    act(() => {
+      state.scrollTop = 1610 - 10
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(true)
+  })
+
+  it('growth that lands right after the turn\'s LAST pin is re-baselined at rest, not held for the reader\'s next move', () => {
+    // The turn ends on a pin, and within the settle window of that pin's own
+    // scroll event the keyboard closes: the box grows 50px with no scroll event
+    // of anyone's (a flush follower has nothing to clamp). The observer is the
+    // only code that sees it. Keyed on ANY scroll event it read the pin as a
+    // gesture still in flight and left the baseline alone, so the reader's
+    // first move seconds later -- a flick up and back -- inherited the 50px as
+    // its own growth and was refused its arrival.
+    const { el, state, view, baseProps } = mount('ios-last-pin-growth', { scrollTop: 0, scrollHeight: 2000, clientHeight: 340 }, mkItems(10))
+    let items = mkItems(10)
+    for (let i = 0; i < 3; i++) {
+      act(() => {
+        state.scrollHeight += 40
+        items = mkItems(items.length + 1)
+        view.rerender({ ...baseProps, items })
+      })
+      act(() => {
+        el.dispatchEvent(new Event('scroll'))
+        vi.advanceTimersByTime(50)
+      })
+    }
+    expect(view.result.current.getFollow()).toBe(true)
+    const bottom = state.scrollHeight - 390
+    // 50ms after the last pin's scroll event: the keyboard closes.
+    act(() => {
+      state.clientHeight = 390
+      fireViewport(el)
+      vi.advanceTimersByTime(400)
+    })
+    // The engine holds a flush follower flush; mirror that in the fake.
+    state.scrollTop = bottom
+
+    act(() => {
+      state.scrollTop = bottom - 30
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(false)
+    act(() => {
+      vi.advanceTimersByTime(40)
+      state.scrollTop = bottom - 10
+      el.dispatchEvent(new Event('scroll'))
+    })
+    expect(view.result.current.getFollow()).toBe(true)
   })
 })
 

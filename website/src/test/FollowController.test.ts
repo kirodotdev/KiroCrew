@@ -609,6 +609,7 @@ describe('resolveUserScrollStick — a clamp only ever lowers scrollTop', () => 
       prevScrollTop: 500,
       geom: { scrollTop: 550, scrollHeight: 1000, clientHeight: 450 },
       viewportGrowth: 50,
+      readerTravel: 50, // their own 50px is the whole move; the released row credits it against the growth
     })
     expect(armed).toBe(true)
   })
@@ -623,6 +624,199 @@ describe('resolveUserScrollStick — a clamp only ever lowers scrollTop', () => 
       viewportGrowth: 50,
     })
     expect(armed).toBe(false)
+  })
+})
+
+describe('resolveUserScrollStick — an arrival inside the band is credited to whoever closed more of the gap', () => {
+  // On iOS the Safari toolbar collapses under exactly the DOWNWARD drag that
+  // scrolls toward the bottom, so for the frames of that animation the scroller
+  // GROWS while the reader moves: the bottom comes UP to meet them by the growth.
+  // Rule 3 measured the FOLLOW_REENGAGE_PX band against the already-grown box, so
+  // a reader who nudged down a few px while sitting well outside the band was
+  // read as having arrived inside it — the band arrived at the reader, the same
+  // class as the neutral-event guard — and follow re-armed for someone who never
+  // reached the bottom. The next automatic pin then carried them there.
+  //
+  // The arrival test stays the LIVE distance; the discriminator is the split of
+  // the approach between the reader's own downward travel this gesture and the
+  // box's growth this gesture: `travel >= growth` is theirs.
+  it('a small downward move that lands inside the band ONLY because the viewport grew does not re-engage', () => {
+    // Pre-growth: scrollHeight 2000, clientHeight 340, scrollTop 1600 -> 60px
+    // from the bottom, follow released. In one frame the reader moves down 3px
+    // and the toolbar collapse grows the scroller by 50px: live distance is
+    // 2000 - 1603 - 390 = 7px, inside the 16px band -- but 50 of the 53px of
+    // approach were the browser's, so 3 < 50 refuses.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1603,
+      prevScrollTop: 1600,
+      geom: { scrollTop: 1603, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 3,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('the same downward move with NO growth, genuinely inside the band, still re-engages', () => {
+    // 2000 - 1590 - 400 = 10px from the bottom after a 3px downward move: the
+    // reader brought themselves into the band, rule 3 unchanged (3 >= 0).
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1590,
+      prevScrollTop: 1587,
+      geom: { scrollTop: 1590, scrollHeight: 2000, clientHeight: 400 },
+      viewportGrowth: 0,
+      readerTravel: 3,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('a reader who drags all the way down while the toolbar collapses 50px re-engages', () => {
+    // Safari's real collapse. Parked 200px up (scrollHeight 2000, clientHeight
+    // 340, scrollTop 1460), the reader drags 148px down while the bar collapses
+    // 50px: live distance 2000 - 1608 - 390 = 2px. Judged against the
+    // pre-growth box this reads 52px -- past the band -- and so does EVERY
+    // position they can reach, because the growth lowered the maximum scrollTop
+    // by the same 50px: a rule of that shape refuses "return to live" for the
+    // whole collapse. They closed 148 of the 198px approach themselves.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1608,
+      prevScrollTop: 1460,
+      geom: { scrollTop: 1608, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 148,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('a downward move that outruns a small growth re-engages', () => {
+    // 60px above the bottom, the reader drags down 50px while the box grows 6px:
+    // live distance 4px. 50 >= 6, so the arrival is theirs.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1650,
+      prevScrollTop: 1600,
+      geom: { scrollTop: 1650, scrollHeight: 2000, clientHeight: 346 },
+      viewportGrowth: 6,
+      readerTravel: 50,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('a NEUTRAL event during growth stays released even when the live distance lands inside the band', () => {
+    // The toolbar collapse alone, no move of the reader's: scrollTop 1600 both
+    // before and after, box grows 50px, live distance 2000 - 1600 - 390 = 10px.
+    // Nothing the reader did brought them here, so rule 3 does not fire — the
+    // same guard the neutral-event case has always had, now also with growth.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1600,
+      prevScrollTop: 1600,
+      geom: { scrollTop: 1600, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 0,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('a viewport SHRINK never widens the band', () => {
+    // Negative growth (the toolbar re-showing) is clamped to zero, never
+    // subtracted: the reader is 20px from the bottom after their move, outside
+    // the band, whatever the box did.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1590,
+      prevScrollTop: 1580,
+      geom: { scrollTop: 1590, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: -50,
+      readerTravel: 10,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('both sides of the split are GESTURE totals the caller accumulates, not the last frame alone', () => {
+    // The final frame of a collapse Safari spread over three: the box grew 1px
+    // this frame (47px over the gesture) and live distance is 2000 - 1609 - 387
+    // = 4px. Two readers arrive at this exact frame, each moving 3px in it. One
+    // nudged 3px per frame, 9px over the gesture: on the frame's own numbers
+    // 3 >= 1 re-arms a reader the earlier frames' growth carried into the band;
+    // on the gesture 9 < 47 refuses. The other dragged from 200px up, 140px
+    // over the gesture: 140 >= 47 re-engages. The resolver is a pure function
+    // of the numbers; the hook owns both accumulations, and this is the
+    // contract.
+    const frame = {
+      stick: false,
+      followOutput: true,
+      scrollTop: 1609,
+      prevScrollTop: 1606,
+      geom: { scrollTop: 1609, scrollHeight: 2000, clientHeight: 387 },
+    }
+    expect(resolveUserScrollStick({ ...frame, viewportGrowth: 1, readerTravel: 3 })).toBe(true)
+    expect(resolveUserScrollStick({ ...frame, viewportGrowth: 47, readerTravel: 9 })).toBe(false)
+    expect(resolveUserScrollStick({ ...frame, viewportGrowth: 47, readerTravel: 140 })).toBe(true)
+  })
+
+})
+
+describe('resolveUserScrollStick — the same split guards a released reader clamped FLUSH', () => {
+  // Rule 3 judges an arrival INSIDE the band; a nudge the growth clamps to
+  // distance ~0 reaches the bottom-epsilon branch instead, where the released
+  // row used to decide on direction alone. With the toolbar's real 50px
+  // collapse the box's new maximum scrollTop is only 10px past a reader parked
+  // 60px up, so every nudge of 10px or more lands flush and read as the reader
+  // coming back -- the exact yank rule 3 refuses, for most of the nudge range.
+  it('a nudge the growth clamps flush stays released', () => {
+    // Parked 60px up (scrollHeight 2000, clientHeight 340, scrollTop 1600); a
+    // 12px nudge while the box grows 50px. The new maximum is 1610, so the
+    // engine clamps the nudge flush: live distance 0, movedDown. The scroller
+    // only moved 10 of the asked-for 12, and that is the travel the caller
+    // sums; 10 < 50, so the approach was the browser's.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1610,
+      prevScrollTop: 1600,
+      geom: { scrollTop: 1610, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 10,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('a reader who drags to flush while the box grows re-engages', () => {
+    // Parked 200px up (scrollTop 1460), the reader drags 150px to the new
+    // maximum 1610 as the bar collapses 50px: flush, movedDown, 150 >= 50.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 1610,
+      prevScrollTop: 1460,
+      geom: { scrollTop: 1610, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 150,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('a follower clamped flush by the growth keeps following, whatever the split says', () => {
+    // The clamp is the engine carrying a follower; travel is irrelevant to them.
+    const armed = resolveUserScrollStick({
+      stick: true,
+      followOutput: true,
+      scrollTop: 1610,
+      prevScrollTop: 1660,
+      geom: { scrollTop: 1610, scrollHeight: 2000, clientHeight: 390 },
+      viewportGrowth: 50,
+      readerTravel: 0,
+    })
+    expect(armed).toBe(true)
   })
 })
 

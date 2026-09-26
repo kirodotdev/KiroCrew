@@ -794,6 +794,52 @@ export function useVirtualChat<T>(
   // growth would already be folded away by the time the clamp's scroll event
   // asked about it.
   const lastScrollClientHRef = useRef(0)
+  // Viewport growth accumulated across the scroll events of ONE gesture -- the
+  // value `resolveUserScrollStick` is told about as `viewportGrowth`.
+  //
+  // A single event's delta is not enough: Safari animates the toolbar collapse
+  // over several frames, and each frame's scroll event carries only that
+  // frame's growth. Judged per event, a reader nudging down across the
+  // animation was credited only the LAST frame's growth while the earlier
+  // frames' growth had already carried the band onto them, so follow re-armed
+  // on the final frame of every real collapse. The credit therefore runs for as
+  // long as the READER's scroll events keep arriving within SCROLL_SETTLE_MS of
+  // each other (a gesture in flight, see lastReaderScrollAtRef) and resets once
+  // the reader has rested for a settle window, so growth from a collapse they
+  // merely sat through is not credited to a later, separate nudge. Only the
+  // reader's events contribute: a pin of ours and the glide of a smooth pin
+  // are not their gesture, so the box's change across such an event is dropped
+  // rather than carried into the next gesture they make. Signed: a shrink
+  // inside the same window (the bar re-showing mid-drag) pays growth back, so
+  // the total is how much taller the box is than the one the gesture began in.
+  // The resolver clamps a net shrink to zero.
+  const viewportGrowthAccumRef = useRef(0)
+  // The reader's own DOWNWARD travel across the same gesture -- the value
+  // `resolveUserScrollStick` is told about as `readerTravel`, and the other
+  // half of its rule-3 split: an arrival inside the re-engage band is the
+  // reader's when this is at least the growth above. Only user scroll events
+  // count (a pin of ours, the glide of a smooth pin and the engine's clamp are
+  // not their hand), only positive deltas count (an upward move releases
+  // follow on its own and contributes nothing to a later approach), and it
+  // lapses and restarts on the same settle window as the growth, so the two
+  // totals always describe the same gesture.
+  const readerTravelAccumRef = useRef(0)
+  // When the READER's last scroll event landed: the clock the two accumulators
+  // above lapse on, and the one the viewport observer consults before it
+  // re-baselines the scroll-event height. "A gesture in flight" has to mean the
+  // reader's hand. A streaming turn pins on every tail-row resize, and each pin
+  // fires a scroll event of our own well inside the settle window -- keyed on
+  // any scroll event, the window never closed for the whole turn, so a box
+  // growth mid-turn (the keyboard closing, a banner leaving) stayed in the
+  // growth total and the observer never re-baselined it: a reader who then
+  // flicked up and came straight back was refused their own arrival because
+  // the stale growth outweighed their travel, and the output streamed past
+  // them. Stamped where `lastUserScrollAtRef` is stamped for a scroll event --
+  // a user scroll that is not the engine's layout clamp, and the grab that
+  // interrupts a smooth glide -- so our pins, glide frames and clamps extend
+  // no gesture. Starts at -Infinity like its siblings: "no gesture yet" must
+  // read as lapsed.
+  const lastReaderScrollAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // Has the offset tree been committed even once on this mount?
   //
   // Gates the motion deferral below. Deferring is about not moving a picture the
@@ -2455,10 +2501,44 @@ export function useVirtualChat<T>(
     let rafId = 0
     const onScroll = () => {
       const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+      // Self-scroll pin writes and the frames of a smooth glide are excluded
+      // from every reader-activity signal below: our own corrections must not
+      // hold a fetched page hostage, our own writes are not the reader's
+      // travel, and the box's change across one of our events is not part of
+      // any gesture of theirs -- only the READER's activity defers the flush,
+      // counts toward the re-engage split, and keeps a gesture in flight.
+      const readerMove = !smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)
+      // A gap longer than the settle window since the READER's last scroll
+      // event means they rested, and a fresh gesture starts from zero. Measured
+      // from their events alone (see lastReaderScrollAtRef): a streaming turn's
+      // pins arrive every few frames and must not keep a gesture open.
+      const scrollNow = performance.now()
+      const gestureLapsed = scrollNow - lastReaderScrollAtRef.current > SCROLL_SETTLE_MS
+      // Fold this event's viewport delta into the gesture's running growth
+      // (see viewportGrowthAccumRef). Measured against the height as of the
+      // previous SCROLL event, not the ResizeObserver's, because the resize
+      // and the clamp it causes are separate events and the observer may run
+      // first. Growth that landed WHILE the reader rested is not in that delta:
+      // the ResizeObserver's viewport branch re-baselines lastScrollClientHRef
+      // when the box changes with no reader scroll event in the window, so
+      // what is left here is the growth of this gesture's own frames. Only a
+      // reader event contributes; across one of our own events the delta is
+      // dropped (the baseline still moves below), never carried forward.
+      const growthDelta =
+        readerMove && lastScrollClientHRef.current > 0 ? geom.clientHeight - lastScrollClientHRef.current : 0
+      // A rest longer than the settle window ends the previous gesture, so the
+      // total restarts from THIS event's delta rather than adding to a stale
+      // one.
+      viewportGrowthAccumRef.current = gestureLapsed ? growthDelta : viewportGrowthAccumRef.current + growthDelta
+      // The reader's downward travel this gesture (see readerTravelAccumRef).
+      // A first event on a fresh scroller has no direction reference, and an
+      // engine clamp or an upward move only ever lowers scrollTop, so each of
+      // those adds nothing.
+      const travelDelta =
+        readerMove && lastObservedTopRef.current >= 0 ? Math.max(0, geom.scrollTop - lastObservedTopRef.current) : 0
+      readerTravelAccumRef.current = gestureLapsed ? travelDelta : readerTravelAccumRef.current + travelDelta
       // Quiescence signal for the older-page flush hold (scrollQuiet.ts).
-      // Self-scroll pin writes are excluded: our own corrections must not
-      // hold a fetched page hostage -- only the READER's activity defers it.
-      if (!smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) {
+      if (readerMove) {
         noteUserScrollActivity()
       }
       const atBottom = computeAtBottom(geom, bottomThreshold)
@@ -2505,6 +2585,8 @@ export function useVirtualChat<T>(
           smoothPinActiveRef.current = false
           lastUserScrollAtRef.current = performance.now()
           lastHardInputAtRef.current = lastUserScrollAtRef.current
+          // The grab is the reader's hand on the scroller: it opens a gesture.
+          lastReaderScrollAtRef.current = lastUserScrollAtRef.current
           // scrollTop moving backward against the animation IS a confirmed
           // upward gesture, so it also arms the clamp-release stamp.
           lastUpwardInputAtRef.current = lastUserScrollAtRef.current
@@ -2532,15 +2614,19 @@ export function useVirtualChat<T>(
           scrollTop: el.scrollTop,
           prevScrollTop: lastObservedTopRef.current,
           geom,
-          // How much viewport came BACK since the previous scroll event. A
+          // How much viewport came BACK across this gesture's scroll events. A
           // deletion shrinks the composer, this grows, the maximum scrollTop
           // drops, and the engine clamps a near-bottom reader to the end with no
           // write to see. Without this the clamp reads as the reader returning to
           // the bottom and re-arms follow for someone who never touched it.
-          viewportGrowth:
-            lastScrollClientHRef.current > 0
-              ? geom.clientHeight - lastScrollClientHRef.current
-              : 0,
+          // Accumulated rather than per event so a collapse animated over
+          // several frames is credited in full (see viewportGrowthAccumRef).
+          viewportGrowth: viewportGrowthAccumRef.current,
+          // The reader's own downward travel over the same gesture, so an
+          // arrival inside the re-engage band is credited to whichever of the
+          // two -- the reader or the box's growth -- closed more of the gap
+          // (see readerTravelAccumRef).
+          readerTravel: readerTravelAccumRef.current,
           // An UPWARD hardware input stamped within the settle window is proof
           // the reader scrolled up. The intent listeners stamp its direction
           // BEFORE this scroll event dispatches, so a landing at the bottom
@@ -2572,8 +2658,13 @@ export function useVirtualChat<T>(
         // below stamp at wheel/touch/key/scrollbar time, which is EARLIER than
         // the scroll event this branch handles, so nothing is lost by declining
         // to stamp here. `stick` and `lastWriteTop` already treat the clamp as
-        // ours; the gate now agrees with them.
-        if (!layoutClamp) lastUserScrollAtRef.current = performance.now()
+        // ours; the gate now agrees with them. The gesture clock the growth and
+        // travel totals lapse on is stamped by the same rule: a clamp is not
+        // the reader's hand, so it neither opens nor extends their gesture.
+        if (!layoutClamp) {
+          lastUserScrollAtRef.current = performance.now()
+          lastReaderScrollAtRef.current = lastUserScrollAtRef.current
+        }
         // Re-baseline the self-scroll reference to where the clamp left us —
         // otherwise it keeps pointing at our last write, and the next pin
         // evaluation reads that gap as a user scroll-up, releasing follow for the
@@ -2760,6 +2851,20 @@ export function useVirtualChat<T>(
           // characters -- the bounce reported from a real phone. Skipped.
           const prevCh = viewportHeightRef.current
           viewportHeightRef.current = el.clientHeight
+          // A viewport change that lands while the reader is AT REST (no scroll
+          // event of THEIRS within the settle window) has no clamp to attribute
+          // and is not part of any gesture, so it must not surface as the next
+          // reader scroll event's delta: re-baseline the scroll-event height
+          // here. When a reader gesture IS in flight the baseline is left
+          // alone, because the observer can run before the clamp's own scroll
+          // event and that event needs to see the growth (see
+          // lastScrollClientHRef). Our own pins do not count as a gesture --
+          // a streaming turn pins every few frames, and keyed on those this
+          // re-baseline never ran for the whole turn, so a mid-turn growth
+          // was charged to whatever gesture the reader made next.
+          if (performance.now() - lastReaderScrollAtRef.current > SCROLL_SETTLE_MS) {
+            lastScrollClientHRef.current = el.clientHeight
+          }
           if (prevCh > 0 && el.clientHeight > prevCh) continue
           if (composerExplainsViewportChange()) continue
           viewportResized = true
