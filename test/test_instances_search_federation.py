@@ -340,6 +340,12 @@ class TestSearchSessionsRemote:
 
         mgr = SshTunnelManager.__new__(SshTunnelManager)
         mgr._tokens = {"peer": "tok-1"}
+        mgr._peer_sessions = {}
+
+        async def _identity_exchange(url, link, cookie_name):
+            return link
+
+        mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
         mgr._tunnels = {}
         return mgr
 

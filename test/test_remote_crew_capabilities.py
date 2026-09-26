@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -486,7 +486,7 @@ class TestPeerCapabilityCarrier:
 
         mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
         mgr._peer_target = MagicMock(return_value=("http://127.0.0.1:1" + path, "cookie"))
-        mgr._peer_cookie_header = MagicMock(return_value={"Cookie": "c=1"})
+        mgr._peer_cookie_header = AsyncMock(return_value={"Cookie": "c=1"})
 
         captured: list[float] = []
 
@@ -574,7 +574,7 @@ def _manager_answering(monkeypatch, replies: dict[str, tuple[int, object]]):
 
     mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
     mgr._peer_target = MagicMock(side_effect=lambda _iid, path: ("http://peer" + path, "cookie"))
-    mgr._peer_cookie_header = MagicMock(return_value={"Cookie": "c=1"})
+    mgr._peer_cookie_header = AsyncMock(return_value={"Cookie": "c=1"})
 
     class _FakeSession:
         def __init__(self, *, timeout):

@@ -384,6 +384,8 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "stale"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
@@ -1083,6 +1085,11 @@ def test_validate_coerces_a_non_string_ts_to_empty():
     assert bundle["messages"][0]["ts"] == ""
 
 
+async def _identity_exchange(url, link, cookie_name):
+    """Stand in for the peer's link exchange: the session cookie is the link."""
+    return link
+
+
 # ── tunnel-manager delivery hop ──────────────────────────────────────────
 
 
@@ -1108,6 +1115,8 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
@@ -1128,6 +1137,8 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "irrelevant-credential"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=1
     )
@@ -1207,6 +1218,8 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "tok"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
@@ -2188,6 +2201,8 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "tok"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
@@ -2251,6 +2266,8 @@ async def test_send_bundle_downgrades_only_once():
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "tok"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
@@ -2445,6 +2462,8 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
     mgr._tokens = {"peer": "tok"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )

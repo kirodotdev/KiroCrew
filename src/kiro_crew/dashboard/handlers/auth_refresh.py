@@ -681,6 +681,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         user_id,
         ttl_seconds=MAX_SESSION_TTL_SECS,
         register_nonce=False,
+        session=True,
         peer_key=bound_peer_key,
         extra=_carried_claims or None,
     )
