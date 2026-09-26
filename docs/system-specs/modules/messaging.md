@@ -1692,11 +1692,23 @@ A debt is bounded in three directions, all decided at that one seam, because eac
 way the same retention grows without end. How MUCH one holds is `RECEIPT_MAX_OWED`
 above. How LONG one is held is `RECEIPT_MAX_PUBLISH_ATTEMPTS`: publications that move
 nothing are counted on the entry, and past that many the debt is GIVEN UP -- emptied,
-counted, and its key released. The count restarts on any body that lands and on any new
-record joining the debt, so the guarantee is that a record is given up only after being
-offered and refused that many times itself, and a channel draining slowly is never given
-up on. That bound exists because the entry is the registry's only entry for its session
-key and a key can span several conversations: one permanently unwritable chat -- the bot
+counted, and its key released. Landing a body is the ONLY thing that restarts the
+allowance, and that restriction is the whole bound. Every retention past the first is
+itself one of these refusals, so restarting the count when a record JOINS the debt leaves
+it oscillating below the cap for as long as traffic arrives -- and the ordinary pattern is
+a mid-turn message then the drain that answers it, both refused, so the case the bound
+exists for is exactly the one that would never reach it. What the count measures is
+refusals of the debt's OLDEST body, the only one an attempt offers before returning; the
+newer records behind it share that body's fate rather than each earning an allowance,
+because they are owed on the same conversation and the oldest must go first for a reader
+to see them in order.
+
+Its size is tied to `RECEIPT_MAX_OWED` because the two bounds race: a debt takes on one
+record per refusal, so an allowance shorter than the records the size cap needs would give
+the debt up before that cap could bite, leaving `omitted_records` describing a state
+nothing reaches. Twice the size cap leaves room for the list to fill AND to shed. The
+lifetime bound exists because the entry is the registry's only entry for its session key
+and a key can span several conversations: one permanently unwritable chat -- the bot
 removed from the thread -- would otherwise take the terminal branch on every burst
 forever, so no HEALTHY sibling on that key gets a bubble or a drain record again either.
 Releasing the key is what lets the next arriving message open a fresh bubble on its own
@@ -1708,15 +1720,22 @@ happens. Attempts alone cannot reach every debt: one is retried only by a later
 transition ON ITS OWN KEY, and a session key carries a `:gen{N}` generation that rotates
 on reset, so an outage spanning a rotation leaves a debt nothing will ever attempt again
 -- `finish_cancelled_locked` is reached only from the `/stop` handlers and clearing a
-queue does not touch the registry. Past the cap the LEAST RECENTLY retained debt is
-released, which is the one whose key has been silent longest and so the likeliest orphan;
-each retention moves its entry to the back of the registry, which is what puts them in
-that order. A LIVE entry is never released -- its messages are still queued, so dropping
-it strands that bubble on `⏳ Queued` and opens a second beside it. Both releases go
-through one counted seam and land in `abandoned_records` and `abandoned_debts`, for the
-same reason the body cap counts what it drops: a registry that quietly got smaller reads
-exactly like one that never owed anything. Nothing is said to the reader, deliberately --
-the conversation those records belonged to is the one that would not take a write.
+queue does not touch the registry. Past the cap the LEAST RECENTLY ATTEMPTED debt is
+released. Position follows every attempt, not only every retention, because a debt refused
+on each burst is the opposite of silent and still has a channel to hope for: ordering on
+retentions alone would leave it at the front and evict it while an untouched orphan sat
+behind it. A LIVE entry is never released -- its messages are still queued, so dropping it
+strands that bubble on `⏳ Queued` and opens a second beside it.
+
+Both releases go through one counted seam, which also releases the key, so "published"
+and "given up" mean the same thing to every transition above -- this key owes nothing --
+and none of them re-derives it. A drain meeting a spent debt hands its own record to that
+same seam rather than retaining it, since retaining would re-arm the very key the release
+freed. The count is a WARNING log carrying the channel, the reason, and how many records
+reach nobody, for the same reason the body cap counts what it drops: a registry that
+quietly got smaller reads exactly like one that never owed anything. Nothing is said to
+the reader, deliberately -- the conversation those records belonged to is the one that
+would not take a write.
 
 The key is released only once the record is on the bubble, because that entry is the
 bubble's only handle. Editing is tried first, so the record lands in the bubble the

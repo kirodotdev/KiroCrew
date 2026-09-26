@@ -702,6 +702,10 @@ class TestSeveralOwedRecordsSurviveInOrder:
 
         The OLDEST is released on overflow: the newest record is the one that corrects
         what the reader can currently see.
+
+        Driven by drains alone. A grow against a terminal entry is a refused publication
+        too, so interleaving them would spend the lifetime allowance before the list could
+        overflow -- which is why that allowance is sized off this cap.
         """
 
         async def go() -> ReceiptQueue:
@@ -711,7 +715,6 @@ class TestSeveralOwedRecordsSurviveInOrder:
                 await queue.create_or_grow_locked("s", chat, "m0", "alice")
                 for n in range(RECEIPT_MAX_OWED + 2):
                     await queue.flip_answering_locked("s", chat, [f"m{n}"])
-                    await queue.create_or_grow_locked("s", chat, f"m{n + 1}", "alice")
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
@@ -729,8 +732,8 @@ class TestSeveralOwedRecordsSurviveInOrder:
         kept: no path reads a terminal entry's lines, so keeping them would change
         nothing a reader sees while holding a verbatim burst for the whole outage.
 
-        Held to one message inside the lifetime bound, so what is pinned here is the line
-        retention alone; giving the debt up past that bound has its own tests.
+        Held inside the lifetime allowance, so what is pinned here is the line retention
+        alone; giving the debt up past that allowance has its own tests.
         """
 
         async def go() -> ReceiptQueue:
@@ -739,7 +742,7 @@ class TestSeveralOwedRecordsSurviveInOrder:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
                 await queue.flip_answering_locked("s", chat, ["first"])
-                for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
+                for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
                     await queue.create_or_grow_locked("s", chat, f"during outage {n}", "alice")
             return queue
 
@@ -929,6 +932,22 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
     conversation sharing it goes without receipts too.
     """
 
+    GIVEN_UP = "queue receipt debt given up"
+
+    @staticmethod
+    def given_up(caplog: Any) -> list[int]:
+        """The record count from each give-up warning, in order.
+
+        A released record leaves no other trace, so the warning IS the accounting. Read as
+        the log's own arguments rather than its rendered text, which is what the operator's
+        handler receives.
+        """
+        return [
+            r.args[2]
+            for r in caplog.records
+            if isinstance(r.args, tuple) and len(r.args) == 3 and "given up" in str(r.msg)
+        ]
+
     @staticmethod
     async def _owing(chat: _Surface, key: str = "s") -> ReceiptQueue:
         """A terminal entry on *key*, owing one record that reached nobody."""
@@ -939,12 +958,21 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         assert queue._receipts[key].owes_record, "the record was refused, so it is owed"
         return queue
 
-    def test_a_conversation_that_refuses_every_write_gives_the_debt_up(self) -> None:
+    def test_the_allowance_outlives_the_records_the_size_cap_needs(self) -> None:
+        """The two bounds race, and the sizing is what keeps the size cap reachable.
+
+        A debt takes on one record per refused publication, so an allowance shorter than
+        the retentions ``RECEIPT_MAX_OWED`` needs would give the debt up before that cap
+        could ever bite -- leaving ``omitted_records`` describing a state nothing reaches.
+        """
+        assert Q.RECEIPT_MAX_PUBLISH_ATTEMPTS > RECEIPT_MAX_OWED + 2
+
+    def test_a_conversation_that_refuses_every_write_gives_the_debt_up(self, caplog) -> None:
         """The permanent-failure case: neither the edit nor the post ever lands.
 
         Every arriving message is turned away with no bubble while the debt is held, so the
-        count of refusals is a count of acknowledgements the debt is costing. Past the
-        bound it is given up and the key is released.
+        allowance bounds the acknowledgements one debt may cost. Past it the debt is given
+        up and the key released.
         """
 
         async def go() -> tuple[ReceiptQueue, bool]:
@@ -953,17 +981,42 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             queue = await self._owing(chat)
             async with queue.lock:
-                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
+                # The refusal that created the debt counts as one, so this is one short.
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
                     await queue.create_or_grow_locked("s", chat, "again", "alice")
                 held = "s" in queue._receipts
                 await queue.create_or_grow_locked("s", chat, "again", "alice")
             return queue, held
 
-        queue, held = asyncio.run(go())
-        assert held, "inside the bound the record is still owed, not discarded"
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue, held = asyncio.run(go())
+        assert held, "inside the allowance the record is still owed, not discarded"
         assert "s" not in queue._receipts, "past it the debt is given up and the key freed"
-        assert queue.abandoned_debts == 1
-        assert queue.abandoned_records == 1, "the record given up is counted, not dropped"
+        assert self.given_up(caplog) == [1], "the record given up is counted, not dropped"
+
+    def test_the_ordinary_grow_and_drain_pattern_reaches_the_bound(self, caplog) -> None:
+        """The interleaving the bound exists for, and the one it must not be blind to.
+
+        Real traffic alternates a mid-turn message with the drain that answers it, and both
+        are refused publications against a dead conversation. A retention that restarted
+        the allowance would leave the count oscillating below the cap forever, so the key
+        would never be released however long the outage lasted.
+        """
+
+        async def go() -> ReceiptQueue:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._owing(chat)
+            async with queue.lock:
+                for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
+                    await queue.create_or_grow_locked("s", chat, f"mid {n}", "alice")
+                    await queue.flip_answering_locked("s", chat, [f"mid {n}"])
+            return queue
+
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
+        assert not queue.has_receipt("s"), "no live bubble on a conversation taking nothing"
+        assert "s" not in queue._receipts, "the key is released despite the interleaving"
+        assert self.given_up(caplog), "and what it cost is counted"
 
     def test_a_healthy_sibling_on_a_shared_key_gets_its_receipt_back(self) -> None:
         """The harm the lifetime bound exists to end.
@@ -980,7 +1033,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             queue = await self._owing(gone)
             alive = _Surface(address="alive")
             async with queue.lock:
-                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
+                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
                     await queue.create_or_grow_locked("s", alive, "hello", "bob")
             return queue, alive
 
@@ -989,43 +1042,71 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         assert queue.has_receipt("s"), "and a live entry, so its next message grows that one"
         assert queue._receipts["s"].address == alive.address_key, "opened on the sibling"
 
-    def test_a_debt_that_publishes_part_of_itself_is_not_given_up(self) -> None:
-        """Progress restarts the allowance, so a slow channel keeps its records.
+    def test_a_debt_that_publishes_part_of_itself_is_not_given_up(self, caplog) -> None:
+        """Landing a body restarts the allowance, so a slow channel keeps its records.
 
-        The bound is spent by attempts that move NOTHING. A channel that lands the oldest
-        record and refuses the next is working, and giving the rest up there would discard
-        records on their way to a reader.
+        The allowance is spent by attempts that move NOTHING. A channel that lands the
+        oldest record and refuses the next is working, and giving the rest up there would
+        discard records on their way to a reader.
         """
 
-        async def go() -> tuple[ReceiptQueue, _Surface]:
+        async def go() -> tuple[ReceiptQueue, int]:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             queue = await self._owing(chat)
             async with queue.lock:
                 # A second record joins the debt, then arriving messages are turned away
-                # until one attempt short of the bound.
+                # until one attempt short of the allowance.
                 await queue.flip_answering_locked("s", chat, ["second"])
-                for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1):
+                while queue._receipts["s"].publish_failures < Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1:
                     await queue.create_or_grow_locked("s", chat, "again", "alice")
                 spent = queue._receipts["s"].publish_failures
                 # Edits land again: the oldest record publishes, the newer one still
                 # cannot be posted beneath it.
                 chat.edit_refuses = False
                 await queue.create_or_grow_locked("s", chat, "again", "alice")
-            return queue, chat
+            return queue, spent
 
-        queue, chat = asyncio.run(go())
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue, spent = asyncio.run(go())
+        assert spent == Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1, "it really was one short"
         receipt = queue._receipts["s"]
         assert receipt.owed_bodies == [receipt_text(["second"], answering=True)]
         assert receipt.publish_failures == 0, "one record landed, so the allowance restarts"
-        assert queue.abandoned_records == 0, "nothing is given up while the debt is draining"
+        assert self.given_up(caplog) == [], "nothing is given up while the debt is draining"
 
-    def test_a_key_that_stops_arriving_is_released_by_the_population_bound(self) -> None:
+    def test_a_given_up_debt_does_not_re_arm_its_own_key(self, caplog) -> None:
+        """A drain meeting a spent debt must not put the key straight back into retention.
+
+        Its own record has nowhere to go -- the attempt just refused an edit AND a post on
+        that surface -- so retaining it would re-arm the very key the bound released, with
+        a fresh allowance, and starve the siblings again. It goes with the debt instead,
+        counted rather than dropped.
+        """
+
+        async def go() -> ReceiptQueue:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._owing(chat)
+            async with queue.lock:
+                for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
+                    await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+            return queue
+
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
+        assert "s" not in queue._receipts, "the key stays released, not re-armed"
+        counts = self.given_up(caplog)
+        assert len(counts) == 1, "given up once, not a second write-off on the same entry"
+        assert counts[0] > RECEIPT_MAX_OWED, (
+            "the count covers more than the bodies still held: the omitted records the "
+            "entry carried, and this drain's own record that died with the debt"
+        )
+
+    def test_a_key_that_stops_arriving_is_released_by_the_population_bound(self, caplog) -> None:
         """The orphan case: a debt no transition will ever visit again.
 
         A session key carries a generation that rotates on reset, so traffic moves to a new
         key and the debt on the old one is never retried -- per-debt attempts cannot expire
-        what is never attempted. The population bound is what reaches it, and it takes the
-        least recently retained debt, which is the one whose key has been silent longest.
+        what is never attempted. The population bound is what reaches it.
         """
 
         async def go() -> ReceiptQueue:
@@ -1040,13 +1121,46 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     await queue.flip_answering_locked(key, chat, ["m"])
             return queue
 
-        queue = asyncio.run(go())
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
         assert "s" not in queue._receipts, "the orphaned pre-rotation debt is the one released"
         assert len(queue._receipts) == Q.RECEIPT_MAX_DEBTS, "the registry is held at the bound"
-        assert queue.abandoned_debts == 1
-        assert queue.abandoned_records == 1, "the released record is counted, not silent"
+        assert self.given_up(caplog) == [1], "the released record is counted, not silent"
 
-    def test_the_population_bound_counts_the_records_already_counted_as_omitted(self) -> None:
+    def test_the_population_bound_spares_a_debt_that_is_still_being_retried(self) -> None:
+        """Eviction position follows what was ATTEMPTED, not only what was retained.
+
+        A debt refused on every burst is the opposite of silent, and it still has a channel
+        to hope for. Reading position from retentions alone would leave it at the front and
+        evict it while an untouched orphan sat behind it -- losing the record that had the
+        better chance.
+        """
+
+        async def go() -> ReceiptQueue:
+            retried = _Surface(edit_refuses=True, send_fails_after=1, address="retried")
+            queue = await self._owing(retried, "retried")
+            async with queue.lock:
+                # An orphan retained AFTER it, so retention order alone would spare the
+                # orphan and evict the one still being addressed.
+                orphan = _Surface(edit_refuses=True, send_fails_after=1, address="orphan")
+                await queue.create_or_grow_locked("orphan", orphan, "m", "alice")
+                await queue.flip_answering_locked("orphan", orphan, ["m"])
+                # The retried debt is attempted again, which is what moves it behind.
+                await queue.create_or_grow_locked("retried", retried, "again", "alice")
+                for n in range(Q.RECEIPT_MAX_DEBTS - 1):
+                    key = f"filler{n}"
+                    chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
+                    await queue.create_or_grow_locked(key, chat, "m", "alice")
+                    await queue.flip_answering_locked(key, chat, ["m"])
+            return queue
+
+        queue = asyncio.run(go())
+        assert "orphan" not in queue._receipts, "the untouched debt is the victim"
+        assert "retried" in queue._receipts, "the one still being retried keeps its record"
+
+    def test_the_population_bound_counts_the_records_already_counted_as_omitted(
+        self, caplog
+    ) -> None:
         """A released debt carries its own count of losses, and that is given up too.
 
         Counting only the bodies still held would lose a count that was itself the record
@@ -1059,7 +1173,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
                 # Six records owed: four retained, two counted as omitted.
-                for n in range(6):
+                for n in range(RECEIPT_MAX_OWED + 2):
                     await queue.flip_answering_locked("s", chat, [f"drain {n}"])
                 overflowed = queue._receipts["s"]
                 assert len(overflowed.owed_bodies) == RECEIPT_MAX_OWED
@@ -1071,11 +1185,12 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     await queue.flip_answering_locked(key, other, ["m"])
             return queue
 
-        queue = asyncio.run(go())
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
         assert "s" not in queue._receipts
-        assert queue.abandoned_records == RECEIPT_MAX_OWED + 2, "held bodies AND the omitted"
+        assert RECEIPT_MAX_OWED + 2 in self.given_up(caplog), "held bodies AND the omitted"
 
-    def test_the_population_bound_never_releases_a_live_entry(self) -> None:
+    def test_the_population_bound_never_releases_a_live_entry(self, caplog) -> None:
         """A live entry's messages are still QUEUED, so its bubble is not the registry's.
 
         Dropping one strands that bubble on "⏳ Queued" and opens a second beside it. Only
@@ -1094,10 +1209,11 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     await queue.flip_answering_locked(key, chat, ["m"])
             return queue
 
-        queue = asyncio.run(go())
+        with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
+            queue = asyncio.run(go())
         assert queue.has_receipt("live"), "the live entry survives a registry full of debts"
         assert queue._receipts["live"].texts == ["still queued"]
-        assert queue.abandoned_debts == 3, "only the terminal entries past the bound go"
+        assert len(self.given_up(caplog)) == 3, "only the terminal entries past the bound go"
 
     def test_giving_a_debt_up_says_nothing_to_the_reader(self) -> None:
         """The count is for the operator's log, not for a chat nobody can write to.
@@ -1107,7 +1223,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         could have corrected either.
         """
 
-        async def go() -> tuple[ReceiptQueue, list[str]]:
+        async def go() -> list[str]:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             queue = await self._owing(chat)
             # Read from here on rather than clearing the log: the fake refuses sends past
@@ -1116,9 +1232,8 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             async with queue.lock:
                 for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
                     await queue.create_or_grow_locked("s", chat, "again", "alice")
-            return queue, chat.sent[mark_sent:] + [b for _, b in chat.edits[mark_edits:]]
+            return chat.sent[mark_sent:] + [b for _, b in chat.edits[mark_edits:]]
 
-        queue, offered = asyncio.run(go())
-        assert queue.abandoned_records == 1
+        offered = asyncio.run(go())
         assert all("omitted" not in body for body in offered)
         assert all("given up" not in body for body in offered)

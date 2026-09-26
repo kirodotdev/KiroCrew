@@ -33,9 +33,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
+
+#: What one attempt to publish a debt settled. ``owed`` is the only one that leaves the
+#: entry terminal; the other two both mean the key owes nothing and is free, which is why
+#: the transitions may treat them alike. They are still distinguished, because a record
+#: reaching a reader and a record given up are the same only to the REGISTRY.
+RecordOutcome = Literal["published", "owed", "given_up"]
 
 #: Verbatim items shown in a receipt before "…and N more". A large mid-turn
 #: burst would otherwise grow the rendered receipt past a channel's message
@@ -52,7 +58,7 @@ RECEIPT_MAX_ITEMS = 5
 #: shortened list cannot pass for a burst that produced no such records.
 RECEIPT_MAX_OWED = 4
 
-#: Refused publications in a row, with nothing landing, before a debt is GIVEN UP.
+#: Publications refused in a row, with nothing landing, before a debt is GIVEN UP.
 #: :data:`RECEIPT_MAX_OWED` bounds how much one debt holds; this and
 #: :data:`RECEIPT_MAX_DEBTS` bound how LONG it is held and how MANY are held, which is
 #: the rest of the same policy: retain a debt while it is plausibly publishable, and
@@ -60,21 +66,26 @@ RECEIPT_MAX_OWED = 4
 #:
 #: The count is of refusals, not of elapsed time, because each refusal is fresh evidence
 #: that this conversation takes no writes while a clock only says nobody spoke. Each
-#: refusal has already tried an edit AND a post, so this many of them running is strong
-#: evidence rather than a rate-limit window. It restarts on any body that LANDS and on
-#: any new record joining the debt, which together give the bound its guarantee: a record
-#: is given up only after being offered, and refused, this many times itself.
+#: refusal has already tried an edit AND a post, so a run of them is strong evidence
+#: rather than a rate-limit window. Landing a body is the ONLY thing that restarts the
+#: allowance: a transition that retains a record is itself one of these refusals, so
+#: restarting it there would make the whole bound unreachable in the ordinary traffic
+#: pattern -- a mid-turn message then a drain, each refused, each retaining -- which is
+#: exactly the pattern the bound exists for.
 #:
-#: What keeps arriving in the case this exists for is mid-turn messages meeting a debt
-#: that cannot publish, each turned away with no bubble of its own -- so the count is
-#: also how many acknowledgements one debt may cost before it stops being worth keeping.
+#: Its size is tied to :data:`RECEIPT_MAX_OWED` because the two bounds race: a debt takes
+#: on one record per refusal, so an allowance shorter than the records the size cap needs
+#: would give the debt up before that cap could ever bite, leaving
+#: :attr:`QueueReceipt.omitted_records` describing a state nothing reaches. Twice the size
+#: cap leaves room for the list to fill AND to shed, and still gives up while the
+#: conversation is the only thing that has gone wrong.
 #:
 #: Giving up matters because the entry is the registry's only entry for its session key,
 #: and a key can span several conversations: one permanently unwritable chat holds the
 #: key against every healthy sibling on it, so none of them gets a receipt either. The
 #: cost of giving up is the bubble in the dead conversation keeping its "⏳ Queued" text,
 #: which no write could have corrected anyway.
-RECEIPT_MAX_PUBLISH_ATTEMPTS = 5
+RECEIPT_MAX_PUBLISH_ATTEMPTS = 2 * RECEIPT_MAX_OWED
 
 #: Terminal entries the registry retains at once. A debt is retried only by a later
 #: transition ON ITS OWN KEY, so a key that stops being addressed -- a session key
@@ -333,8 +344,10 @@ class QueueReceipt:
         the burst that produced it. The LIST is bounded here, to
         :data:`RECEIPT_MAX_OWED`, because it grows by one every time a transition meets a
         channel that is still refusing. How LONG the debt is held is bounded by
-        :meth:`note_refusal`, whose allowance this restarts for the new record; how MANY
-        debts the registry holds is bounded where this is called from.
+        :meth:`note_refusal`, whose allowance this deliberately leaves alone -- a
+        retention past the first is itself a refused publication, so restarting it here is
+        what would make that bound unreachable; how MANY debts the registry holds is
+        bounded where this is called from.
 
         ``lines`` is released: it holds every message verbatim and is of no further use
         -- a terminal entry is never grown, never flipped, and never rendered again.
@@ -354,12 +367,6 @@ class QueueReceipt:
             del self.owed_bodies[:released]
             self.omitted_records += released
         self.lines = []
-        # The debt has a new newest record, which no channel has refused even once, so the
-        # lifetime bound starts over on it. That is what makes the bound's guarantee the
-        # strong one: a record is never given up until it has itself been offered
-        # RECEIPT_MAX_PUBLISH_ATTEMPTS times. Counting straight through would let a record
-        # that arrived on the last attempt be discarded without ever being written.
-        self.publish_failures = 0
 
     def note_refusal(self, *, progressed: bool) -> bool:
         """Count one refused publication. Returns whether retention is SPENT.
@@ -370,18 +377,20 @@ class QueueReceipt:
         elsewhere: a refusal is seen where a body is published, and the publisher reports
         it here rather than judging it there.
 
-        *progressed* is whether anything left the debt during that attempt. It resets the
-        count, because a channel that published one record and refused the next is
-        working -- the debt is draining, and expiring it would throw away records that
-        are on their way to a reader. Only an attempt that moves nothing counts.
+        *progressed* is whether anything left the debt during that attempt, and landing a
+        body is the ONLY thing that restarts the allowance. A channel that published one
+        record and refused the next is working -- the debt is draining, and expiring it
+        would throw away records on their way to a reader. Nothing else may restart it,
+        least of all a record JOINING the debt: every retention past the first is itself
+        one of these refusals, so restarting there leaves the count oscillating below the
+        cap for as long as traffic keeps arriving, which is precisely when the bound is
+        needed.
 
-        So what the count really measures is how many times the debt's NEWEST record has
-        been offered and refused with nothing moving, since :meth:`terminalize` restarts
-        it for each new record. Spending it takes that many transitions on this key that
-        publish nothing at all, and the transitions that keep arriving in exactly the case
-        this bound exists for are the mid-turn messages being turned away with no bubble:
-        each one is a reader's acknowledgement this debt is costing, and the count is the
-        number of them it may cost.
+        What it counts is refusals of the debt's OLDEST body, since that is the only one
+        a publication attempt offers before returning. The newer records behind it share
+        that body's fate rather than each earning their own allowance -- they are owed on
+        the same conversation, and the oldest has to go first for a reader to see them in
+        the order they happened.
         """
         self.publish_failures = 0 if progressed else self.publish_failures + 1
         return self.publish_failures >= RECEIPT_MAX_PUBLISH_ATTEMPTS
@@ -390,10 +399,9 @@ class QueueReceipt:
         """Give up everything owed. Returns how many records now reach nobody, ever.
 
         The debt is emptied IN PLACE, so this entry stops being terminal: it owes
-        nothing, every transition treats it as settled, and the key it sat on is released
-        by the same line that releases a debt which published. That is the whole point --
-        a key held by a conversation that takes no writes is a key no sibling on it can
-        have.
+        nothing, every transition treats it as settled, and the key it sat on is released.
+        That is the whole point -- a key held by a conversation that takes no writes is a
+        key no sibling on it can have.
 
         The return value includes :attr:`omitted_records` as well as the bodies still
         held, because those records are given up here too. Counting only the bodies would
@@ -474,34 +482,11 @@ class ReceiptQueue:
     def __init__(self) -> None:
         self._receipts: dict[str, QueueReceipt] = {}
         self._lock = asyncio.Lock()
-        self._abandoned_records = 0
-        self._abandoned_debts = 0
 
     @property
     def lock(self) -> asyncio.Lock:
         """The lock callers MUST hold across compound operations (see class doc)."""
         return self._lock
-
-    @property
-    def abandoned_records(self) -> int:
-        """Records given up by the retention bound, so no reader ever sees them.
-
-        Both halves of the bound land here: a debt whose channel refuses it
-        :data:`RECEIPT_MAX_PUBLISH_ATTEMPTS` times running, and a debt released to keep
-        the registry inside :data:`RECEIPT_MAX_DEBTS`. Kept for the same reason
-        :attr:`QueueReceipt.omitted_records` is kept -- a released record leaves no other
-        trace of itself, so a registry that quietly got smaller would read exactly like
-        one that never owed anything.
-
-        Says nothing to the reader, deliberately: the conversation these records belonged
-        to is the one that would not take a write.
-        """
-        return self._abandoned_records
-
-    @property
-    def abandoned_debts(self) -> int:
-        """How many terminal entries the retention bound released."""
-        return self._abandoned_debts
 
     def has_receipt(self, session_key: str) -> bool:
         """Whether a LIVE receipt exists for this session.
@@ -548,18 +533,18 @@ class ReceiptQueue:
             # own: under a shared session key the arriving surface is often a healthy
             # sibling of the one that went silent, and the key was the only thing
             # standing between it and its own receipt.
-            if await self._write_record(receipt):
-                del self._receipts[session_key]
+            if await self._write_record(session_key, receipt) != "owed":
+                self._receipts.pop(session_key, None)
                 receipt = None
             else:
                 # Still no channel, and the debt has attempts left, so this entry stays
                 # terminal and this message gets no bubble yet. The residual is one
                 # missing "⏳ Queued" acknowledgement per message that arrives while the
-                # debt is held, and the count above is what bounds how many of them one
-                # debt may cost; nothing is lost either way, because the caller enqueued
-                # before calling and the drain renders its answering record from what it
-                # dequeued rather than from here. The line is deliberately NOT retained on
-                # a terminal entry. No path reads those lines -- every transition returns
+                # debt is held, and the lifetime bound is what stops them accruing without
+                # end; nothing is lost either way, because the caller enqueued before
+                # calling and the drain renders its answering record from what it dequeued
+                # rather than from here. The line is deliberately NOT retained on a
+                # terminal entry. No path reads those lines -- every transition returns
                 # above on ``owes_record`` -- so keeping them would change nothing a reader
                 # sees while growing a verbatim burst for as long as the channel refuses,
                 # which is the retention the bound at ``terminalize`` exists to release.
@@ -630,8 +615,11 @@ class ReceiptQueue:
         if receipt.owes_record:
             # Already terminal from an earlier refused transition. Retry THAT record
             # first -- writing this transition's words over what actually happened would
-            # say the opposite, permanently -- and keep the entry until it lands.
-            if not await self._write_record(receipt):
+            # say the opposite, permanently -- and keep the entry until it lands. This
+            # record goes WITH the debt if the bound gives it up: ``also=1`` has it counted
+            # there, because retaining it would re-arm the very key that release freed.
+            outcome = await self._write_record(session_key, receipt, also=1)
+            if outcome == "owed":
                 # The debt has no channel: that call just tried an edit AND a post and
                 # both failed, so THIS record has none either and posting it now would
                 # fail the same way. It JOINS the debt behind the older one instead of
@@ -645,13 +633,18 @@ class ReceiptQueue:
                 else:
                     self._receipts[session_key] = receipt
                 return
-            # It owes nothing now, so this transition's own record has no bubble left to
-            # edit: it is POSTED beside it, at the bubble's own address. Retiring the key
-            # and returning here instead would lose the drained burst's receipt for good
-            # -- a retired key is revisited by nothing, and these messages have already
-            # left the queue. That holds whether the older record published or was given
-            # up: a spent debt frees the key, and this record is a fresh one that has not
-            # been refused even once.
+            if outcome == "given_up":
+                # The bound decided this conversation takes nothing, the key is already
+                # released, and this record was counted with the debt. Retaining it would
+                # re-arm that very key as terminal with a fresh allowance, undoing the
+                # release and starving the siblings again; posting it would fail exactly as
+                # the attempt just did.
+                return
+            # It published, so this transition's own record has no bubble left to edit: it
+            # is POSTED beside it, at the bubble's own address. Retiring the key and
+            # returning here instead would lose the drained burst's receipt for good -- a
+            # retired key is revisited by nothing, and these messages have already left
+            # the queue.
             # Only when the caller addresses the bubble: otherwise ``answered`` is
             # another chat's text, which may not appear here at all.
             if receipt.addressed_by(surface):
@@ -725,8 +718,10 @@ class ReceiptQueue:
             # messages left the queue THEN, not in this clear. Writing "Cancelled" over
             # an owed "Now answering" would say the opposite of what happened, and
             # permanently. Retry what is owed, through the bubble's own conversation
-            # rather than this caller's, and leave the entry until it lands.
-            if await self._write_record(receipt):
+            # rather than this caller's, and leave the entry until it lands. A debt the
+            # bound gives up here releases its key too: the clear's own record is not
+            # written either way, so nothing of this transition goes with it.
+            if await self._write_record(session_key, receipt) != "owed":
                 self._receipts.pop(session_key, None)
             return
         if owner:
@@ -798,9 +793,17 @@ class ReceiptQueue:
         The one transition that must NOT come here is a refused GROW: its message is
         still queued, so it owes no record at all and a post would announce something
         that has not happened.
+
+        The refusal that creates the debt is COUNTED like any other, because it is one: an
+        edit was refused above and a post is refused here, which is the same evidence
+        every later attempt gathers. Starting the allowance at zero instead would hand the
+        conversation one free refusal. The evidence is all this reports -- whether the
+        allowance is spent is decided in one place, where a debt is published -- so the
+        record is retained here either way and the next attempt is what acts on it.
         """
         if await self._post_record(receipt.opened_on, body):
             return
+        receipt.note_refusal(progressed=False)
         self._retain_owed(session_key, receipt, body)
 
     def _retain_owed(self, session_key: str, receipt: QueueReceipt, body: str) -> None:
@@ -809,45 +812,65 @@ class ReceiptQueue:
         The only place an entry becomes terminal, which is what keeps the bound on what
         it retains in one place: :meth:`QueueReceipt.terminalize` drops the line list as
         it stores the body.
-
-        The entry is re-inserted at the BACK of the registry, which is what makes the
-        population bound below pick the right victim. Registry order is insertion order,
-        so moving an entry on every retention orders the terminal ones by how recently
-        each was retained, and the front of that order is the debt whose key has been
-        silent longest -- the one most likely to have been orphaned by a key that no
-        longer arrives, rather than one still being retried.
         """
         receipt.terminalize(body)
-        self._receipts.pop(session_key, None)
         self._receipts[session_key] = receipt
+        self._touch(session_key)
         self._release_oldest_debts()
+
+    def _touch(self, session_key: str) -> None:
+        """Move *session_key*'s entry to the BACK of the registry, if it holds one.
+
+        Registry order is insertion order, so re-inserting an entry every time something
+        is ATTEMPTED on it leaves the terminal entries ordered by how recently each was
+        tried. That is what :meth:`_release_oldest_debts` needs: the front is then a key
+        nothing has come back to, rather than merely a debt that happens to be old. A
+        debt still being retried and refused every burst is the opposite of silent, and
+        evicting it while an untouched orphan sits behind it would lose the record that
+        still had a channel to hope for.
+        """
+        receipt = self._receipts.pop(session_key, None)
+        if receipt is not None:
+            self._receipts[session_key] = receipt
 
     def _release_oldest_debts(self) -> None:
         """Hold the registry to :data:`RECEIPT_MAX_DEBTS` terminal entries, counting each.
 
         Live entries are not touched: a live entry's messages are still QUEUED, so
         dropping one strands its bubble on "⏳ Queued" and opens a second bubble beside
-        it. Only terminal entries are candidates, and they are released oldest-retained
-        first. The entry just retained is at the back, so the bound never reaches the
-        record it was called about.
+        it. Only terminal entries are candidates, and they are released least-recently-
+        attempted first. The entry just retained is at the back, so the bound never
+        reaches the record it was called about.
         """
         owing = [key for key, receipt in self._receipts.items() if receipt.owes_record]
         # Computed before it is used as a slice bound: a negative one reads as "all but
         # the last N", which releases debts while the registry is nowhere near full.
         excess = len(owing) - RECEIPT_MAX_DEBTS
         for key in owing[:excess] if excess > 0 else []:
-            self._write_off(self._receipts.pop(key), "registry full")
+            self._write_off(key, self._receipts[key], "registry full")
 
-    def _write_off(self, receipt: QueueReceipt, reason: str) -> None:
-        """Give up *receipt*'s debt and COUNT it. The one path out of retention.
+    def _write_off(
+        self, session_key: str, receipt: QueueReceipt, reason: str, also: int = 0
+    ) -> None:
+        """Give up *receipt*'s debt, release its key, and COUNT what is lost.
 
-        Both halves of the bound end here, so a released record is counted the same way
-        whichever one released it, and neither can become the silent drop that a bound
-        without an accounting seam would be.
+        The one path out of retention, so a released record is accounted the same way
+        whichever bound released it and neither can become the silent drop a bound without
+        an accounting seam would be. Releasing the key HERE is what makes "given up" and
+        "published" mean the same thing to every transition above: the key owes nothing,
+        and none of them has to re-derive that.
+
+        *also* counts records the caller is giving up alongside the debt -- a transition
+        whose own record has nowhere left to go once the conversation has proved it takes
+        nothing. Retaining that record instead would re-arm this very key as terminal with
+        a fresh allowance, which is the opposite of what reaching this bound decided.
+
+        Says nothing to the reader, deliberately: the conversation these records belonged
+        to is the one that would not take a write. The warning is the operator's copy, and
+        it is the only trace a released record leaves.
         """
-        given_up = receipt.abandon()
-        self._abandoned_records += given_up
-        self._abandoned_debts += 1
+        given_up = receipt.abandon() + also
+        self._receipts.pop(session_key, None)
         label = receipt.opened_on.label if receipt.opened_on is not None else "?"
         logger.warning(
             "%s: queue receipt debt given up (%s), %d record(s) reach nobody",
@@ -873,7 +896,9 @@ class ReceiptQueue:
             logger.debug("%s: queue receipt record post failed", surface.label, exc_info=True)
             return False
 
-    async def _write_record(self, receipt: QueueReceipt) -> bool:
+    async def _write_record(
+        self, session_key: str, receipt: QueueReceipt, *, also: int = 0
+    ) -> RecordOutcome:
         """Put the record *receipt* owes onto its bubble. Returns whether it landed.
 
         Writes through ``receipt.opened_on`` and NEVER through a caller's surface.
@@ -917,43 +942,63 @@ class ReceiptQueue:
         failure partway through keeps exactly what has not reached anybody.
 
         A refusal is reported to :meth:`QueueReceipt.note_refusal`, and a debt whose
-        retention that spends is GIVEN UP here: emptied and counted, which is what lets
-        every caller below treat "published" and "given up" alike. Both mean the same
-        thing to them -- this key owes nothing now -- and that is the point, because a key
-        released is a key a healthy sibling conversation can open its own bubble on.
+        retention that spends is GIVEN UP: emptied, counted, and its key released. So the
+        answer is three-valued. ``published`` and ``given_up`` differ in what the reader
+        got and agree on what the REGISTRY has -- a key owing nothing -- which is what
+        lets a transition free the key on either, and a key released is a key a healthy
+        sibling conversation can open its own bubble on. ``owed`` is the only answer that
+        leaves the entry terminal.
 
-        Returns whether the debt is now empty.
+        *also* is for a caller holding a record of its own that dies WITH the debt: pass 1
+        and the give-up counts it alongside, so one bound reaching its limit produces one
+        accounted loss rather than a second write-off on the same entry. It is ignored
+        unless the debt is actually given up, which is the only outcome that strands such a
+        record.
         """
         bodies = receipt.owed_bodies
         if not bodies:
-            return True
+            return "published"
         owed_before = len(bodies)
         surface = receipt.opened_on
         if surface is None:
-            return self._note_refused(receipt, owed_before)
+            return self._note_refused(session_key, receipt, owed_before, also)
         while bodies:
             body = bodies[0]
             if receipt.omitted_records:
                 body += f" · …and {receipt.omitted_records} earlier record(s) omitted"
             if receipt.bubble_consumed:
                 if not await self._post_record(surface, body):
-                    return self._note_refused(receipt, owed_before)
+                    return self._note_refused(session_key, receipt, owed_before, also)
             elif not await self._edit(surface, receipt.msg_id, body):
                 if not await self._post_record(surface, body):
-                    return self._note_refused(receipt, owed_before)
+                    return self._note_refused(session_key, receipt, owed_before, also)
             receipt.bubble_consumed = True
             receipt.omitted_records = 0
             del bodies[0]
-        return True
+        # The whole debt reached the reader, which is the clearest evidence a conversation
+        # takes writes, so the allowance restarts. Carrying the refusals forward would
+        # leave an entry that publishes everything one attempt from being given up.
+        receipt.publish_failures = 0
+        return "published"
 
-    def _note_refused(self, receipt: QueueReceipt, owed_before: int) -> bool:
-        """Report one refused publication of *receipt*. Returns whether it owes nothing.
+    def _note_refused(
+        self, session_key: str, receipt: QueueReceipt, owed_before: int, also: int = 0
+    ) -> RecordOutcome:
+        """Report one refused publication of *receipt*. Says whether it is still owed.
 
         *owed_before* is how many bodies the attempt started with, so what it published
-        before being refused counts as the progress that keeps the debt alive.
+        before being refused counts as the progress that keeps the debt alive. *also* is
+        passed through to :meth:`_write_off` for a caller whose own record goes with the
+        debt when the bound is reached.
+
+        A debt that survives is TOUCHED, so the population bound reads it as recently
+        tried rather than as an orphan. That is the difference between a conversation
+        nothing comes back to and one being refused on every burst, and only the first
+        should be the one evicted.
         """
         progressed = len(receipt.owed_bodies) < owed_before
         if not receipt.note_refusal(progressed=progressed):
-            return False
-        self._write_off(receipt, "channel refuses every write")
-        return True
+            self._touch(session_key)
+            return "owed"
+        self._write_off(session_key, receipt, "channel refuses every write", also)
+        return "given_up"
