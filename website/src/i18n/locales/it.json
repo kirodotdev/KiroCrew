@@ -11043,10 +11043,7 @@
       "goal_loop_cycle": "Ciclo obiettivo · iterazione {{count}} di {{total}}",
       "goal_loop_cycle_no_cap": "Ciclo obiettivo · iterazione {{count}} (senza limite)",
       "goal_loop_interrupted_title": "Loop obiettivo armato — l'ultimo turno è stato interrotto; riprendi la chat o attendi il prossimo ciclo",
-      "hidden": "nascosta",
       "hidden_because_parent_hidden": "{{name}} non è visibile perché una cartella superiore è nascosta",
-      "hidden_folder": "cartella nascosta",
-      "hidden_folders": "cartelle nascoste",
       "hide": "Nascondi",
       "hide_folder": "Nascondi la cartella",
       "hide_when_empty": "Nascondi quando è vuoto",
@@ -11234,7 +11231,16 @@
       "opens_here_runs_on_instance": "Apre questa sessione qui — la sua esecuzione continua su {{name}}",
       "opens_on_crew_switches_there": "Si apre su {{name}} — passa a quel Crew, non qui",
       "remote_instances_list_unavailable": "Non è stato possibile elencare le crew remote, quindi le loro sessioni non vengono mostrate.",
-      "model_list_failed": "Impossibile caricare l'elenco dei modelli. Ciò che viene mostrato potrebbe essere incompleto o non aggiornato."
+      "model_list_failed": "Impossibile caricare l'elenco dei modelli. Ciò che viene mostrato potrebbe essere incompleto o non aggiornato.",
+      "hidden_folder_count_one": "{{count}} cartella nascosta",
+      "hidden_folder_count_many": "{{count}} cartelle nascoste",
+      "hidden_folder_count_other": "{{count}} cartelle nascoste",
+      "sort_filter_sessions_hidden_one": "Ordina e filtra le sessioni — {{count}} cartella nascosta non è mostrata",
+      "sort_filter_sessions_hidden_many": "Ordina e filtra le sessioni — {{count}} cartelle nascoste non sono mostrate",
+      "sort_filter_sessions_hidden_other": "Ordina e filtra le sessioni — {{count}} cartelle nascoste non sono mostrate",
+      "show_hidden_folders_from_board_one": "{{count}} cartella nascosta non è mostrata — usa Ordina e filtra per ripristinarla.",
+      "show_hidden_folders_from_board_many": "{{count}} cartelle nascoste non sono mostrate — usa Ordina e filtra per ripristinarle.",
+      "show_hidden_folders_from_board_other": "{{count}} cartelle nascoste non sono mostrate — usa Ordina e filtra per ripristinarle."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

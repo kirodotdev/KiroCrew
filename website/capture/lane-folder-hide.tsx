@@ -31,8 +31,10 @@ import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
 const lane = params.get('lane') || 'conductor'
-/** Which folder the person unchecked: a folder id, or empty for none. */
+/** Which folder the person unchecked: a folder id, a comma-separated list of them for a
+ *  plural frame, or empty for none. */
 const hidden = params.get('hide') || ''
+const hiddenIds = hidden.split(',').map(s => s.trim()).filter(Boolean)
 const light = params.get('theme') === 'light'
 
 /** The ids the fixture folders carry; `HIDDEN` is the one the person unchecks. */
@@ -55,7 +57,7 @@ localStorage.setItem('mc-chat-config', JSON.stringify({ tagColumnsEnabled: board
 // The person's folder checkboxes, in the key the filter menu persists them to. This IS
 // the input under test, so it is seeded rather than clicked: a click would also have to
 // leave the menu open, and an open popover covers the rows the frame is of.
-localStorage.setItem('mc-flat-hidden-folders', JSON.stringify(hidden ? [hidden] : []))
+localStorage.setItem('mc-flat-hidden-folders', JSON.stringify(hiddenIds))
 // Settled rows would otherwise fold behind a "stale" expander, and a reader could not
 // tell that from a row the hide removed -- which is the whole question.
 localStorage.setItem('mc-session-stale-collapse-ms', '0')

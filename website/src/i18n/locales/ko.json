@@ -10739,10 +10739,7 @@
       "goal_loop_cycle": "목표 루프 · 사이클 {{total}}개 중 {{count}}",
       "goal_loop_cycle_no_cap": "목표 루프 · 사이클 {{count}} (상한 없음)",
       "goal_loop_interrupted_title": "목표 루프 대기 중 — 이전 턴이 중단되었습니다. 채팅을 재개하거나 다음 주기를 기다리세요",
-      "hidden": "숨김",
       "hidden_because_parent_hidden": "상위 폴더가 숨겨져 있어 {{name}}도 숨겨집니다",
-      "hidden_folder": "숨긴 폴더",
-      "hidden_folders": "숨긴 폴더",
       "hide": "숨기기",
       "hide_folder": "폴더 숨기기",
       "hide_when_empty": "비어 있으면 숨기기",
@@ -10906,7 +10903,10 @@
       "opens_here_runs_on_instance": "이 세션을 여기서 엽니다 — 실행은 {{name}}에서 계속됩니다",
       "opens_on_crew_switches_there": "{{name}}에서 엽니다 — 해당 Crew로 전환하며 여기서는 열지 않습니다",
       "remote_instances_list_unavailable": "원격 크루를 나열할 수 없어 해당 세션이 표시되지 않습니다.",
-      "model_list_failed": "모델 목록을 불러올 수 없습니다. 표시된 내용이 불완전하거나 오래된 것일 수 있습니다."
+      "model_list_failed": "모델 목록을 불러올 수 없습니다. 표시된 내용이 불완전하거나 오래된 것일 수 있습니다.",
+      "hidden_folder_count_other": "숨긴 폴더 {{count}}개",
+      "sort_filter_sessions_hidden_other": "세션 정렬 및 필터 — 숨긴 폴더 {{count}}개는 표시되지 않습니다",
+      "show_hidden_folders_from_board_other": "숨긴 폴더 {{count}}개는 표시되지 않습니다. 정렬 및 필터에서 다시 표시할 수 있습니다."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

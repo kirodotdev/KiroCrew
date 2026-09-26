@@ -11043,10 +11043,7 @@
       "goal_loop_cycle": "Loop de objetivo · ciclo {{count}} de {{total}}",
       "goal_loop_cycle_no_cap": "Loop de objetivo · ciclo {{count}} (sem limite)",
       "goal_loop_interrupted_title": "Loop de objetivo armado — o último turno foi interrompido; retome o chat ou aguarde o próximo ciclo",
-      "hidden": "oculta",
       "hidden_because_parent_hidden": "{{name}} não aparece porque uma pasta superior está oculta",
-      "hidden_folder": "pasta oculta",
-      "hidden_folders": "pastas ocultas",
       "hide": "Ocultar",
       "hide_folder": "Ocultar pasta",
       "hide_when_empty": "Ocultar quando vazia",
@@ -11234,7 +11231,16 @@
       "opens_here_runs_on_instance": "Abre esta sessão aqui — a execução dela continua em {{name}}",
       "opens_on_crew_switches_there": "Abre em {{name}} — muda para esse Crew, não aqui",
       "remote_instances_list_unavailable": "Não foi possível listar as crews remotas, portanto as suas sessões não são exibidas.",
-      "model_list_failed": "Não foi possível carregar a lista de modelos. O que está sendo mostrado pode estar incompleto ou desatualizado."
+      "model_list_failed": "Não foi possível carregar a lista de modelos. O que está sendo mostrado pode estar incompleto ou desatualizado.",
+      "hidden_folder_count_one": "{{count}} pasta oculta",
+      "hidden_folder_count_many": "{{count}} pastas ocultas",
+      "hidden_folder_count_other": "{{count}} pastas ocultas",
+      "sort_filter_sessions_hidden_one": "Ordenar e filtrar sessões — {{count}} pasta oculta não é exibida",
+      "sort_filter_sessions_hidden_many": "Ordenar e filtrar sessões — {{count}} pastas ocultas não são exibidas",
+      "sort_filter_sessions_hidden_other": "Ordenar e filtrar sessões — {{count}} pastas ocultas não são exibidas",
+      "show_hidden_folders_from_board_one": "{{count}} pasta oculta não é exibida — use Ordenar e filtrar para restaurá-la.",
+      "show_hidden_folders_from_board_many": "{{count}} pastas ocultas não são exibidas — use Ordenar e filtrar para restaurá-las.",
+      "show_hidden_folders_from_board_other": "{{count}} pastas ocultas não são exibidas — use Ordenar e filtrar para restaurá-las."
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

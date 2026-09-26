@@ -4681,7 +4681,13 @@
       "open_crew_members": "Crew Members",
       "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
       "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do.",
-      "model_list_failed": "Couldn't load the model list. What's shown may be incomplete or out of date."
+      "model_list_failed": "Couldn't load the model list. What's shown may be incomplete or out of date.",
+      "hidden_folder_count_one": "{{count}} hidden folder",
+      "hidden_folder_count_other": "{{count}} hidden folders",
+      "sort_filter_sessions_hidden_one": "Sort & filter sessions — {{count}} hidden folder not shown",
+      "sort_filter_sessions_hidden_other": "Sort & filter sessions — {{count}} hidden folders not shown",
+      "show_hidden_folders_from_board_one": "{{count}} hidden folder is not shown — open sort & filter to bring it back.",
+      "show_hidden_folders_from_board_other": "{{count}} hidden folders are not shown — open sort & filter to bring them back."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
