@@ -30,7 +30,7 @@
   "website/src/components/crew/AgentTemplateDetail.tsx": 7,
   "website/src/components/library/LibraryTable.tsx": 1,
   "website/src/components/settingRef/SettingRef.tsx": 2,
-  "website/src/pages/ChatSidebar.tsx": 39,
+  "website/src/pages/ChatSidebar.tsx": 37,
   "website/src/pages/KiroCrewAgentsPage.tsx": 14,
   "website/src/pages/SchedulePage.tsx": 30,
   "website/src/pages/SystemPage.tsx": 3,

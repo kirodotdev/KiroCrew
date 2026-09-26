@@ -415,6 +415,31 @@ describe('ChatSidebar — list-view folder header', () => {
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
   })
 
+  it('opens the same menu on a right-click of the row, and its items act', async () => {
+    renderSidebar()
+    const row = screen.getByRole('group', { name: 'Folder Alpha' })
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 20 })
+    // Every ⋯-menu item is here under its `-ctx` twin id; the ⋯ copy stays closed.
+    for (const name of ['rename', 'new-subfolder', 'settings', 'visibility', 'delete']) {
+      expect(screen.getByTestId(`folder-${name}-f1-ctx`)).toBeTruthy()
+    }
+    expect(screen.queryByTestId('folder-settings-f1')).toBeNull()
+    fireEvent.click(screen.getByTestId('folder-rename-f1-ctx'))
+    fireEvent.change(folderRenameField(), { target: { value: 'ViaRightClick' } })
+    fireEvent.keyDown(folderRenameField(), { key: 'Enter' })
+    await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f1', { name: 'ViaRightClick' }))
+  })
+
+  it('right-click deletes only through the same confirm as the ⋯ menu', async () => {
+    const confirmFn = vi.fn().mockReturnValue(true)
+    vi.stubGlobal('confirm', confirmFn)
+    renderSidebar()
+    fireEvent.contextMenu(screen.getByRole('group', { name: 'Folder Alpha' }), { clientX: 40, clientY: 20 })
+    fireEvent.click(screen.getByTestId('folder-delete-f1-ctx'))
+    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
+  })
+
   it('starts a chat inside the folder from the row button', async () => {
     renderSidebar()
     fireEvent.click(screen.getByLabelText('New chat in Alpha'))

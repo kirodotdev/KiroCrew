@@ -21,7 +21,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
 import { sseSlotTitle, setSidebarOrder, slotIsRemoteBound, fetchSlots } from '../store/dashboardSlice'
@@ -7757,6 +7757,81 @@ function ChatSidebar({
       && (!listNarrowed || narrowedSubtreeShowsSomething(f)))
       .sort(bySidebarOrder)
 
+  // The folder's action items, rendered once for BOTH surfaces that open them:
+  // the row's ⋯ button (a DropdownMenu) and a right-click on the row (a Radix
+  // ContextMenu, which positions itself at the pointer). Radix menu items only
+  // work inside their own primitive family, so the family is picked from
+  // `variant` -- the same shape SessionActionsMenu and FolderMoveSubmenu use.
+  // `data-testid`s carry a `-ctx` suffix in the context variant so a test can
+  // tell the two copies apart when both are mounted for one folder.
+  const renderFolderMenuItems = (folder: ChatFolder, reparentTargets: readonly ChatFolder[], variant: 'dropdown' | 'context') => {
+    const ctx = variant === 'context'
+    const Item = ctx ? ContextMenuItem : DropdownMenuItem
+    const Separator = ctx ? ContextMenuSeparator : DropdownMenuSeparator
+    const Sub = ctx ? ContextMenuSub : DropdownMenuSub
+    const SubTrigger = ctx ? ContextMenuSubTrigger : DropdownMenuSubTrigger
+    const SubContent = ctx ? ContextMenuSubContent : DropdownMenuSubContent
+    const tid = (name: string) => `folder-${name}-${folder.id}${ctx ? '-ctx' : ''}`
+    const ephemeralRows = (
+      <>
+        {/* Menu create entries take NO open-in-tab gesture (#10575,
+         *  scoped out): a menu closes on select, and Radix keyboard
+         *  activation synthesizes a modifier-free click, so the
+         *  gesture would be mouse-only and undiscoverable. */}
+        <Item data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
+        <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
+      </>
+    )
+    return (
+      <>
+        <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('new-subfolder')} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
+        {/* A flyout has nowhere to open at phone width, so inline the rows
+         *  under a caption there instead (parity with the + New menu). The
+         *  context family has no Label primitive, so the caption is a plain
+         *  div styled like DropdownMenuLabel. */}
+        {isMobile ? (
+          <>
+            {ctx
+              ? <div className="px-3 py-1.5 text-[11px] font-semibold text-muted uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</div>
+              : <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</DropdownMenuLabel>}
+            {ephemeralRows}
+          </>
+        ) : (
+          <Sub>
+            <SubTrigger data-testid={tid('new-ephemeral')}>
+              <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
+              <ChevronRight size={13} className="ml-auto text-muted" />
+            </SubTrigger>
+            <SubContent>{ephemeralRows}</SubContent>
+          </Sub>
+        )}
+        {/* Re-parent: move this folder under another folder or back to the
+         *  top level. Self + descendants are excluded (cycle guard). */}
+        <FolderMoveSubmenu variant={variant} label={i18nT('pages.chatSidebar.move_folder_to')}
+          folders={reparentTargets}
+          currentFolderId={folder.parent_id || null}
+          onPick={pid => moveFolderTo(folder.id, pid)} />
+        <Item data-testid={tid('settings')} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
+        {/* Hide this folder from the session lists (flat lane + tree).
+         *  Same state the filter menu's checkboxes drive, reached from the
+         *  folder itself — which is where the user is looking when they
+         *  decide a folder is noise. Distinct from "Hide when empty"
+         *  below, which is a server-persisted archive affordance. */}
+        <Item data-testid={tid('visibility')} onClick={() => { toggleFolderFilter(folder.id) }}>
+          {filterHiddenFolders.has(folder.id)
+            ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
+            : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
+        </Item>
+        {folderOffersHide(folder, foldersWithActiveSubtree) && (
+          <Item data-testid={tid('hide')} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
+        )}
+        <Separator />
+        <Item className="text-danger focus:text-danger" data-testid={tid('delete')} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
+      </>
+    )
+  }
+
   const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false) => {
     // Same predicate `renderFolderBlock` renders by, so the number describes what
     // the row can actually show. Counting a hidden-when-empty child made the count
@@ -7795,7 +7870,14 @@ function ChatSidebar({
       ? (revealFlash.fading ? 'fade' : 'flash')
       : null
     return (
-      <div key={`folder-header-${folder.id}`}
+      // Right-click (or long-press) anywhere on the row opens the SAME menu the
+      // ⋯ button does, positioned at the pointer. The ⋯ button stays: it is the
+      // keyboard-reachable path, and the only one on a device with no secondary
+      // button. Rename mode opts out so a right-click in the name input keeps the
+      // browser's own edit menu (cut/paste).
+      <ContextMenu key={`folder-header-${folder.id}`}>
+        <ContextMenuTrigger asChild disabled={editingId === folder.id && editScope === 'list'}>
+      <div
         // The reveal target for this folder (command palette Folders tab), and the
         // only marker that identifies a folder ROW. Deliberately not the existing
         // `data-folder-drop`: that one is a drop zone and is rendered once per
@@ -7986,61 +8068,7 @@ function ChatSidebar({
               <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.folder_options_for', { name: folder.name })} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-              <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
-              {(() => {
-                const rows = (
-                  <>
-                    {/* Menu create entries take NO open-in-tab gesture (#10575,
-                     *  scoped out): a menu closes on select, and Radix keyboard
-                     *  activation synthesizes a modifier-free click, so the
-                     *  gesture would be mouse-only and undiscoverable. */}
-                    <DropdownMenuItem data-testid={`folder-new-incognito-${folder.id}`} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                    <DropdownMenuItem data-testid={`folder-new-temporary-${folder.id}`} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
-                  </>
-                )
-                // A flyout has nowhere to open at phone width, so inline the rows
-                // under a caption there instead (parity with the + New menu).
-                if (isMobile) {
-                  return (
-                    <>
-                      <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</DropdownMenuLabel>
-                      {rows}
-                    </>
-                  )
-                }
-                return (
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger data-testid={`folder-new-ephemeral-${folder.id}`}>
-                      <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                      <ChevronRight size={13} className="ml-auto text-muted" />
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>{rows}</DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                )
-              })()}
-              {/* Re-parent: move this folder under another folder or back to the
-               *  top level. Self + descendants are excluded (cycle guard). */}
-              <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')}
-                folders={reparentTargets}
-                currentFolderId={folder.parent_id || null}
-                onPick={pid => moveFolderTo(folder.id, pid)} />
-              <DropdownMenuItem data-testid={`folder-settings-${folder.id}`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
-              {/* Hide this folder from the session lists (flat lane + tree).
-               *  Same state the filter menu's checkboxes drive, reached from the
-               *  folder itself — which is where the user is looking when they
-               *  decide a folder is noise. Distinct from "Hide when empty"
-               *  below, which is a server-persisted archive affordance. */}
-              <DropdownMenuItem data-testid={`folder-visibility-${folder.id}`} onClick={() => { toggleFolderFilter(folder.id) }}>
-                {filterHiddenFolders.has(folder.id)
-                  ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
-                  : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
-              </DropdownMenuItem>
-              {folderOffersHide(folder, foldersWithActiveSubtree) && (
-                <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+              {renderFolderMenuItems(folder, reparentTargets, 'dropdown')}
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Same three-gesture contract as the header New button: plain click
@@ -8059,6 +8087,11 @@ function ChatSidebar({
         </div>
         )}
       </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent data-testid={`folder-context-menu-${folder.id}`} className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+          {renderFolderMenuItems(folder, reparentTargets, 'context')}
+        </ContextMenuContent>
+      </ContextMenu>
     )
   }
 
