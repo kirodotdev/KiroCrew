@@ -1526,6 +1526,17 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 # FIFO ceiling on a slot's pending-context queue (app-kit context inject +
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
+#: Boundary cap on one context entry's ``content``, in SOURCE CHARACTERS. Canonical
+#: here because the restore side re-applies it to a value read off disk.
+MAX_CONTEXT_CONTENT = 40_000
+#: Serialized ceiling for ONE persisted entry. Derived, not equal: every character
+#: can escape to ``\uXXXX`` and a multi-byte codepoint costs more again.
+_JSON_WORST_CASE_BYTES_PER_CHAR = 12
+_MAX_PERSISTED_CONTEXT_BYTES = MAX_CONTEXT_CONTENT * _JSON_WORST_CASE_BYTES_PER_CHAR + 4096
+#: Bounds on a restored ``source`` label, which the drain interpolates into a
+#: prompt frame.
+MAX_SOURCE_LEN = 64
+_SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def context_entry_expired(entry: dict, now: float) -> bool:
@@ -1539,6 +1550,31 @@ def context_entry_expired(entry: dict, now: float) -> bool:
     if max_age is None:
         return False
     return entry.get("injectedAt", 0) + max_age < now
+
+
+def _finite_number(value: object) -> bool:
+    """True when *value* is a real, finite number.
+
+    ``bool`` is excluded even though it is an ``int`` subclass: ``True`` as a
+    ``maxAge`` would silently mean one second.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def _usable_context_source(source: object) -> str | None:
+    """Normalize a persisted ``source`` label, or None when it is unusable.
+
+    The drain interpolates this straight into the ``[Background context from
+    "<source>"]`` prompt frame, so a label carrying a newline or a control
+    character can forge a frame boundary in an operator-editable metadata line.
+    """
+    if not isinstance(source, str) or not source:
+        return None
+    if len(source) > MAX_SOURCE_LEN or _SOURCE_CTRL_RE.search(source):
+        return None
+    return source
 
 
 def _note_authorized_elsewhere(stamped: object, live_session: str) -> bool:
@@ -4162,6 +4198,83 @@ class _ChatSlot:
             max_pending_context=_MAX_PENDING_CONTEXT,
             entry_expired=context_entry_expired,
         )
+
+    def export_pending_context(self) -> list[dict[str, Any]]:
+        """Return the still-live, persistable context entries, for a save.
+
+        Expired entries are filtered rather than written: the restore drops them on
+        the way back in anyway, so persisting them only inflates the line.
+
+        ``ephemeral`` is honoured HERE, at the one seam between the queue and disk,
+        so the durability this adds does not retract a memory-only promise.
+
+        Deduplicated by ``ctxId`` so a queue that already re-seated a restored entry
+        cannot write two copies of it back.
+
+        NOTHING IS TRUNCATED. The persistable bound belongs at
+        :meth:`append_pending_context`, the chokepoint every producer passes;
+        enforcing it again here would mean a caller was told 200 and then had its
+        content dropped with no surface reporting the loss.
+        """
+        now = time.time()
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for entry in self._pending_context:
+            if not isinstance(entry, dict) or context_entry_expired(entry, now):
+                continue
+            if entry.get("ephemeral") is True:
+                continue
+            ident = entry.get("ctxId")
+            if isinstance(ident, str):
+                if ident in seen:
+                    continue
+                seen.add(ident)
+            out.append(dict(entry))
+        return out
+
+    def restore_pending_context(self, entries: object) -> None:
+        """Re-seat persisted context entries, re-validating each against disk.
+
+        Routed through :meth:`append_pending_context` so expiry pruning and the FIFO
+        ceiling are applied by the same code that governs a live enqueue. Expiry is
+        therefore WALL-CLOCK across the close -- ``maxAge`` keeps running while the
+        tab is shut, so a long-closed session does not reopen holding stale context.
+
+        Every field is re-checked rather than trusted: session metadata is the same
+        operator-editable JSONL the rest of the hydrate reads, the boundary
+        validators run only on the LIVE enqueue, and this queue drains straight into
+        an LLM prompt. ``content`` and ``maxAge`` failures DROP the entry, since
+        neither has a safe fallback; an unusable ``source`` drops only the label,
+        because the content is still the caller's and the drain's own fallback names
+        it.
+        """
+        if not isinstance(entries, list):
+            return
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            content = raw.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            # AGREES WITH THE BOUNDARY, which 400s past this bound; a metadata line
+            # is hand-editable and reaches no such check on the way in.
+            if len(content) > MAX_CONTEXT_CONTENT:
+                continue
+            entry = dict(raw)
+            max_age = entry.get("maxAge")
+            if max_age is not None:
+                # Reachable, not merely defensive: with an ``injectedAt`` not yet
+                # past, a non-positive TTL still reads as live to the expiry prune.
+                if not _finite_number(max_age) or max_age <= 0:
+                    continue
+            if "injectedAt" in entry and not _finite_number(entry.get("injectedAt")):
+                continue
+            source = _usable_context_source(entry.get("source"))
+            if source is None:
+                entry.pop("source", None)
+            else:
+                entry["source"] = source
+            self.append_pending_context(entry)
 
     def drop_foreign_authorized_notes(self) -> int:
         """Drop note content whose authorization belongs to another session."""
