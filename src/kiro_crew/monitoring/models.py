@@ -39,8 +39,6 @@ MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS = 1_000
 MAX_MONITOR_STOP_REASON_CHARS = 500
 MAX_MONITOR_CHECK_NAMES = 8
 MAX_MONITOR_PROVIDER_CONCURRENCY = 4
-MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET = 100
-MAX_MONITOR_CHECK_IDENTITY_CHARS = 200
 # The normal turn ceiling is two hours. One extra minute lets the raw completion
 # callback win the timeout race while keeping missing evidence restart-durable
 # and bounded.
