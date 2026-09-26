@@ -334,6 +334,15 @@ class CronRunRecord:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
+def _parse_history_row(line: str) -> dict[str, Any] | None:
+    """Ignore partial JSONL lines and valid JSON values that are not records."""
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return row if isinstance(row, dict) else None
+
+
 class CronHistoryStore:
     """JSONL-per-job execution history with global index."""
 
@@ -573,17 +582,12 @@ class CronHistoryStore:
             lines = job_path.read_text(encoding="utf-8").strip().splitlines()
         except FileNotFoundError:
             return [], 0
-        total = len(lines)
-        lines.reverse()
-        page = lines[offset : offset + limit]
-        results = []
-        for line in page:
-            try:
-                d = json.loads(line)
-                d.pop("trace", None)
-                results.append(d)
-            except json.JSONDecodeError:
-                continue
+        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
+        total = len(records)
+        records.reverse()
+        results = records[offset : offset + limit]
+        for row in results:
+            row.pop("trace", None)
         return results, total
 
     async def get_all_history(
@@ -609,25 +613,12 @@ class CronHistoryStore:
             lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
         except FileNotFoundError:
             return [], 0
+        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
         if job_id:
-            filtered = []
-            for line in lines:
-                try:
-                    if json.loads(line).get("job_id") == job_id:
-                        filtered.append(line)
-                except json.JSONDecodeError:
-                    continue
-            lines = filtered
-        total = len(lines)
-        lines.reverse()
-        page = lines[offset : offset + limit]
-        results = []
-        for line in page:
-            try:
-                results.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return results, total
+            records = [row for row in records if row.get("job_id") == job_id]
+        total = len(records)
+        records.reverse()
+        return records[offset : offset + limit], total
 
     async def get_run_detail(self, job_id: str, run_id: str) -> dict[str, Any] | None:
         """Return full record (with trace) for a specific run."""
@@ -648,12 +639,9 @@ class CronHistoryStore:
         except FileNotFoundError:
             return None
         for line in lines:
-            try:
-                d = json.loads(line)
-                if d.get("run_id") == run_id:
-                    return d
-            except json.JSONDecodeError:
-                continue
+            row = _parse_history_row(line)
+            if row is not None and row.get("run_id") == run_id:
+                return row
         return None
 
     async def rotate(self, job_id: str) -> None:
@@ -739,11 +727,9 @@ class CronHistoryStore:
                 lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
                 filtered = []
                 for line in lines:
-                    try:
-                        if json.loads(line).get("job_id") != job_id:
-                            filtered.append(line)
-                    except json.JSONDecodeError:
-                        continue
+                    row = _parse_history_row(line)
+                    if row is not None and row.get("job_id") != job_id:
+                        filtered.append(line)
                 if len(filtered) != len(lines):
                     tmp = self._index_path.with_suffix(".tmp")
                     content = "\n".join(filtered) + "\n" if filtered else ""
