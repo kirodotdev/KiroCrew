@@ -101,6 +101,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { composerRoot, composerValue, awaitComposer, setComposerValue } from './helpers'
 
 const PROMPT = 'Draft the release note for the ACP retry backoff'
 const NEW_SLOT = 'chat-new-1'
@@ -160,7 +161,7 @@ async function renderAt(route: string, targetTitle?: string, activeSlot?: string
   return store
 }
 
-const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+const composer = () => composerRoot()
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -188,14 +189,14 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     // The staged value is consumed, not left behind for the next slot switch.
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
   it('sends nothing — the prompt waits for a human Enter', async () => {
     await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     expect(sendChat).not.toHaveBeenCalled()
   })
 
@@ -203,7 +204,7 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     const store = await renderAt('/chat?new=1&prefill=')
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
@@ -213,17 +214,17 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     // and typing "1" into it is the failure this guard exists for.
     await renderAt('/chat?prefill=1')
 
-    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    await awaitComposer()
     expect(createChatSlot).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('ignores a bare ?prefill=<text> with no new=1, so the launcher URL must say what it wants', async () => {
     await renderAt(`/chat?prefill=${encodeURIComponent(PROMPT)}`)
 
-    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    await awaitComposer()
     expect(createChatSlot).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 })
 
@@ -244,7 +245,7 @@ describe('App SDK chat launch intent', () => {
       expect(sendChat.mock.calls[0]).toContain(PROMPT)
       expect(sendChat.mock.calls[0]).toContain('chat-other')
     } else {
-      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
       expect(sendChat).not.toHaveBeenCalled()
     }
     expect(createChatSlot).not.toHaveBeenCalled()
@@ -254,7 +255,7 @@ describe('App SDK chat launch intent', () => {
     launch({ message: PROMPT, slotKey: 'chat-old', autoSend: false })
     const store = await renderAt('/chat?sid=chat-old')
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-old'))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     expect(sendChat).not.toHaveBeenCalled()
     expect(createChatSlot).not.toHaveBeenCalled()
   })
@@ -275,12 +276,12 @@ describe('App SDK chat launch intent', () => {
       launch({ message: PROMPT, slotKey: 'chat-other', autoSend: false })
       await act(async () => { navigateInTest('/chat?sid=chat-other') })
     }
-    await waitFor(() => expect(composer().value).toBe(merged))
+    await waitFor(() => expect(composerValue(composer())).toBe(merged))
     await waitFor(() => expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? '{}')['chat-other']).toBe(merged))
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
     await act(async () => { await store.dispatch(switchSlot('chat-old')) })
     await act(async () => { await store.dispatch(switchSlot('chat-other')) })
-    await waitFor(() => expect(composer().value).toBe(merged))
+    await waitFor(() => expect(composerValue(composer())).toBe(merged))
     expect(sendChat).not.toHaveBeenCalled()
     expect(createChatSlot).not.toHaveBeenCalled()
   })
@@ -289,7 +290,7 @@ describe('App SDK chat launch intent', () => {
     launch({ message: PROMPT, autoSend: false })
     const store = await renderAt('/chat?new=1')
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     expect(sendChat).not.toHaveBeenCalled()
   })
@@ -325,7 +326,8 @@ describe('App SDK chat launch intent', () => {
       launch({ message: PROMPT, slotKey: slot })
       await act(async () => { navigateInTest(`/chat?sid=${slot}`) })
     } else {
-      fireEvent.change(composer(), { target: { value: PROMPT } })
+      await awaitComposer()
+      await setComposerValue(PROMPT, composer())
       await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter' }) })
     }
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
@@ -378,7 +380,7 @@ describe('App SDK chat launch intent', () => {
     savePasteDrafts({ [slot]: pastes })
     saveSessionRefDrafts({ [slot]: refs })
     const store = await renderAt(`/chat?sid=${slot}`)
-    await waitFor(() => expect(composer().value).toBe(draft))
+    await waitFor(() => expect(composerValue(composer())).toBe(draft))
     await act(async () => {
       knowledgeInTest.inject([{ id: 'private-doc', title: 'Unsent knowledge', source: null, match_type: 'fts', tokens: 5, summary: '', content: 'Private knowledge contents' }])
     })
@@ -405,7 +407,8 @@ describe('App SDK chat launch intent', () => {
       await waitFor(() => expect(createChatSlot).toHaveBeenCalledTimes(1))
       if (outcome === 'create-refused-switched') {
         await act(async () => { await store.dispatch(switchSlot('chat-other')) })
-        await act(async () => { fireEvent.change(composer(), { target: { value: 'Other session draft' } }) })
+        await awaitComposer()
+        await setComposerValue('Other session draft', composer())
       }
       await act(async () => { fail(new Error('create unavailable')) })
       expect(sendChat).not.toHaveBeenCalled()
@@ -416,7 +419,7 @@ describe('App SDK chat launch intent', () => {
       expect(originMessages.some(m => m.role === 'user' && m.content === message)).toBe(false)
       expect(screen.getByTestId('action-error').textContent).toContain(message)
       if (outcome === 'create-refused-switched') {
-        expect(composer().value).toBe('Other session draft')
+        expect(composerValue(composer())).toBe('Other session draft')
         await act(async () => { await store.dispatch(switchSlot(slot)) })
       }
     } else {
@@ -431,7 +434,7 @@ describe('App SDK chat launch intent', () => {
       expect(meta).toEqual({ sendId: expect.any(String) })
     }
     if (outcome === 'new-session') await act(async () => { await store.dispatch(switchSlot(slot)) })
-    await waitFor(() => expect(composer().value).toBe(draft))
+    await waitFor(() => expect(composerValue(composer())).toBe(draft))
     expect(knowledgeInTest.pendingKnowledge?.items[0].content).toBe('Private knowledge contents')
     expect(loadFileDrafts()[slot]).toEqual(files)
     expect(loadPasteDrafts()[slot]).toEqual(pastes)
@@ -446,14 +449,21 @@ describe('App SDK chat launch intent', () => {
       const cancel = await screen.findByRole('button', { name: 'Cancel queued message' })
       expect(cancel).toHaveAttribute('title', 'Cancel and move back to input')
       expect(cancelQueuedRequest).not.toHaveBeenCalled()
-      expect(composer().value).toBe(draft)
+      expect(composerValue(composer())).toBe(draft)
       await act(async () => { fireEvent.click(cancel) })
-      await waitFor(() => expect(composer().value).toBe(`${draft}\n\n${message}`))
+      // A pill cannot keep a seq that appears anywhere else in the document:
+      // the existing pill moves to fresh #2 with the same content, while the
+      // moved-back #1 marker stays literal because no second record backs it.
+      const resequencedDraft = `Keep these notes  [ Paste #2 · 3 lines ]\n\nApp text ${formatToken(pastes[0])}`
+      await waitFor(() => expect(composerValue(composer())).toBe(resequencedDraft))
       expect(cancelQueuedRequest).toHaveBeenCalledWith(slot, 'app-queue')
       expect(sendChat).toHaveBeenCalledTimes(1)
       expect(knowledgeInTest.pendingKnowledge?.items[0].content).toBe('Private knowledge contents')
       expect(loadFileDrafts()[slot]).toEqual(files)
-      expect(loadPasteDrafts()[slot]).toEqual(pastes)
+      fireEvent(window, new Event('beforeunload'))
+      expect(loadPasteDrafts()[slot]).toEqual([
+        expect.objectContaining({ seq: 2, lines: 3, content: 'Private\npaste\ncontents' }),
+      ])
       expect(loadSessionRefDrafts()[slot]).toEqual(refs)
     }
     if (outcome === 'busy-refused') expect(store.getState().chat.messages.some(m => m.role === 'user')).toBe(false)
@@ -462,7 +472,7 @@ describe('App SDK chat launch intent', () => {
       await act(async () => { await store.dispatch(switchSlot('chat-other')) })
       await act(async () => { await store.dispatch(switchSlot(slot)) })
       expect(screen.getByTestId('action-error').textContent).toContain(message)
-      expect(composer().value).toBe(draft)
+      expect(composerValue(composer())).toBe(draft)
     }
     if (createRefused) {
       sendChat.mockReset()
@@ -494,7 +504,7 @@ describe('App SDK chat launch intent', () => {
     expect(sendChat).not.toHaveBeenCalled()
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     await act(async () => { navigateInTest('/chat?sid=chat-old') })
-    await waitFor(() => expect(composer().value).toBe(''))
+    await waitFor(() => expect(composerValue(composer())).toBe(''))
     expect(screen.getByTestId('action-error').textContent).toContain(PROMPT)
     expect(createChatSlot).toHaveBeenCalledTimes(1)
   })
@@ -505,7 +515,7 @@ describe('App SDK chat launch intent', () => {
     launch({ message: PROMPT, autoSend: false, agent: 'example-agent' })
     await act(async () => { navigateInTest('/chat?new=1') })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     expect(createChatSlot.mock.calls[0]).toContain('example-agent')
     expect(sendChat).not.toHaveBeenCalled()
@@ -523,7 +533,7 @@ describe('App SDK chat launch intent', () => {
       await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
       expect(sendChat.mock.calls[0]).toContain('chat-other')
     } else {
-      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
       expect(sendChat).not.toHaveBeenCalled()
     }
     expect(chatSlotDetail).toHaveBeenCalledTimes(1)
@@ -562,7 +572,7 @@ describe('App SDK chat launch intent', () => {
     await act(async () => { finish({ messages: [], running: false, has_more: false, total: 0 }) })
     expect(store.getState().chat.activeSlot).toBe('chat-old')
     expect(sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
     expect(screen.getByTestId('action-error').textContent).toContain(PROMPT)
     expect(screen.getByTestId('action-error').textContent).toContain('Send cancelled because you switched sessions.')
     expect(screen.getByTestId('action-error').textContent).toContain('Message not sent. Copy it to try again:')

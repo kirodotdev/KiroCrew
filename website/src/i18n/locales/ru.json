@@ -7624,8 +7624,6 @@
     "pastedChip": {
       "collapse_paste": "Свернуть вставку",
       "expand_paste": "Развернуть вставку",
-      "hide_paste_preview": "Скрыть предпросмотр вставки",
-      "show_paste_preview": "Показать предпросмотр вставки",
       "paste_lines_few": "[ Вставка №{{seq}} · {{count}} строки ]",
       "paste_lines_many": "[ Вставка №{{seq}} · {{count}} строк ]",
       "paste_lines_one": "[ Вставка №{{seq}} · {{count}} строка ]",
@@ -9110,6 +9108,29 @@
       "unexpected_response": "Неожиданный ответ",
       "deploy_failed": "Не удалось развернуть",
       "stale_preview_retry": "Приложение изменилось после проверки — повтори попытку."
+    },
+    "pasteBlockChip": {
+      "count_few": "{{count}} строки",
+      "count_many": "{{count}} строк",
+      "count_one": "{{count}} строка",
+      "count_other": "{{count}} строки",
+      "label_few": "Вставленный текст · {{count}} строки",
+      "label_many": "Вставленный текст · {{count}} строк",
+      "label_one": "Вставленный текст · {{count}} строка",
+      "label_other": "Вставленный текст · {{count}} строки",
+      "remove": "Удалить вставленный текст",
+      "actions": "Нажми, чтобы изменить · перетащи, чтобы изменить порядок · Backspace удаляет"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Отмена",
+      "editor_aria": "Редактировать вставленный текст",
+      "save": "Сохранить",
+      "lines_few": "{{count}} строки",
+      "lines_many": "{{count}} строк",
+      "lines_one": "{{count}} строка",
+      "lines_other": "{{count}} строки",
+      "resize_aria": "Изменить размер предпросмотра",
+      "unsaved_hint": "Есть несохранённые изменения — нажми Esc ещё раз, чтобы отменить их, или кликни в стороне, чтобы сохранить"
     }
   },
   "hooks": {

@@ -19,6 +19,7 @@ import {
   $isRangeSelection,
   $isTextNode,
   $nodesOfType,
+  $setCompositionKey,
   $setSelection,
   CLEAR_HISTORY_COMMAND,
   COMMAND_PRIORITY_HIGH,
@@ -40,23 +41,27 @@ import {
 } from 'lexical'
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { createImeLatch } from '../hooks/useImeGuard'
-import type { ComposerControl, ComposerSelection } from './composerControl'
+import type { ComposerControl, ComposerRootHandle, ComposerSelection } from './composerControl'
 import {
   clipboardFiles,
   hasPlainClipboardText,
   stripTrailingBlankLines,
 } from './composerPastePolicy'
 import {
-  $createPasteTokenNode,
-  $isPasteTokenNode,
-  PasteTokenNode,
-} from './PasteTokenNode'
+  $createPasteBlockNode,
+  $isPasteBlockNode,
+  PasteBlockNode,
+} from '../composer/nodes/PasteBlockNode'
+import { DropGapNode } from '../composer/nodes/DropGapNode'
+import PillsPlugin from '../composer/plugins/PillsPlugin'
 import {
   countLines,
   findTokenRanges,
   makePasteId,
-  nextSeq,
+  nextSeqIn,
+  pruneBlocks,
   shouldCollapse,
+  splitDuplicateMarkers,
   type PasteBlock,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
@@ -75,6 +80,13 @@ interface LexicalComposerInputProps {
   onSend: () => void
   ariaLabel: string
   placeholder: string
+  /** Hold the placeholder to ONE line with its cut tail faded out. ChatInput
+   *  sets it for the sigil hint (`Message … (/command · @file · $skill)`), which
+   *  is a label a narrow pane may cut; every status sentence (gateway offline,
+   *  stopping, recording) and a caller's own placeholder keep wrapping so the
+   *  reason is read whole. Mirrors the textarea's `::placeholder` rule (#13812);
+   *  this overlay is a `<div>`, so the classes land on it directly. */
+  placeholderOneLine?: boolean
   disabled?: boolean
   readOnly?: boolean
   sendOnEnter?: SendMode
@@ -88,6 +100,8 @@ interface LexicalComposerInputProps {
   onSelectionChange?: (selection: ComposerSelection) => void
   onUploadFiles?: (files: File[]) => void
   sentMessages?: string[]
+  /** Stable identity of the chat slot whose draft this editor contains. */
+  historyKey?: string | null
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -107,10 +121,21 @@ function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
   let cursor = 0
   for (const range of ranges) {
     appendPlainText(value.slice(cursor, range.start), node => paragraph.append(node))
-    paragraph.append($createPasteTokenNode(range.block))
+    paragraph.append($createPasteBlockNode(range.block))
     cursor = range.end
   }
   appendPlainText(value.slice(cursor), node => paragraph.append(node))
+}
+
+function seedHistoryBaseline(editor: LexicalEditor): void {
+  editor.update(() => { $getRoot().markDirty() }, { tag: 'history-merge', discrete: true })
+}
+
+function clearAndSeedHistory(editor: LexicalEditor): void {
+  editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined)
+  // The fresh baseline makes the first keystroke or recall undoable back to the
+  // restored per-slot draft, matching the textarea composer's reseed behavior.
+  seedHistoryBaseline(editor)
 }
 
 function sameBlocks(left: PasteBlock[], right: PasteBlock[]): boolean {
@@ -124,7 +149,7 @@ function sameBlocks(left: PasteBlock[], right: PasteBlock[]): boolean {
 function $composerSnapshot(): { value: string; blocks: PasteBlock[] } {
   return {
     value: $getRoot().getTextContent(),
-    blocks: $nodesOfType(PasteTokenNode).map(node => node.getBlock()),
+    blocks: $nodesOfType(PasteBlockNode).map(node => node.getBlock()),
   }
 }
 
@@ -197,15 +222,19 @@ function $setPointAtOffset(point: PointType, offset: number): void {
 }
 
 function ComposerControlPlugin({
+  blocks,
   controlRef,
   onReady,
   onSelectionChange,
 }: {
+  blocks: PasteBlock[]
   controlRef?: React.MutableRefObject<ComposerControl | null>
   onReady?: () => void
   onSelectionChange?: (selection: ComposerSelection) => void
 }) {
   const [editor] = useLexicalComposerContext()
+  const blocksRef = useRef(blocks)
+  blocksRef.current = blocks
 
   useEffect(() => {
     if (!controlRef && !onSelectionChange) return
@@ -220,6 +249,14 @@ function ComposerControlPlugin({
         editor.getEditorState().read(() => { selection = $canonicalSelection() })
         return selection
       },
+      replaceText: (text) => {
+        const referencedBlocks = pruneBlocks(text, blocksRef.current)
+        editor.update(() => {
+          $replaceComposerValue(text, referencedBlocks)
+          $getRoot().selectEnd()
+        }, { tag: 'history-push' })
+        editor.focus()
+      },
       setSelection: (start, end = start, options) => {
         editor.update(() => {
           const selection = $createRangeSelection()
@@ -231,6 +268,32 @@ function ComposerControlPlugin({
       },
     }
     if (controlRef) controlRef.current = control
+    // Control seam on the editable root (`ComposerRootHandle`): the control plus
+    // a value read and a caret insert, for callers that reach the composer
+    // through the DOM hook instead of a ref — SideChat's seed nudge and the
+    // test drivers (see test/helpers `composer*`). `composerHandleOf(root)`
+    // is the typed accessor.
+    const hook: ComposerRootHandle = {
+      ...control,
+      getValue: () => {
+        let value = ''
+        editor.getEditorState().read(() => { value = $getRoot().getTextContent() })
+        return value
+      },
+      insertText: (text: string) => {
+        editor.update(() => {
+          // A never-focused editor has no selection: append at the end, the
+          // way a user's first click-then-type lands.
+          const selection = $isRangeSelection($getSelection()) ? $getSelection() : $getRoot().selectEnd()
+          if (!$isRangeSelection(selection)) return
+          if (text === '') selection.removeText()
+          else selection.insertRawText(text)
+        }, { discrete: true })
+      },
+    }
+    const unregisterRoot = editor.registerRootListener(root => {
+      if (root) (root as HTMLElement & { __composer?: ComposerRootHandle }).__composer = hook
+    })
     onReady?.()
     let previous = ''
     const unregister = editor.registerUpdateListener(({ editorState }) => {
@@ -244,6 +307,7 @@ function ComposerControlPlugin({
     })
     return () => {
       unregister()
+      unregisterRoot()
       if (controlRef?.current === control) controlRef.current = null
     }
   }, [controlRef, editor, onReady, onSelectionChange])
@@ -254,27 +318,87 @@ function ComposerControlPlugin({
 function ControlledValuePlugin({
   value,
   blocks,
+  historyKey,
   lastEmittedRef,
+  onChange,
+  onBlocksChange,
 }: {
   value: string
   blocks: PasteBlock[]
+  historyKey?: string | null
   lastEmittedRef: React.MutableRefObject<{ value: string; blocks: PasteBlock[] }>
+  onChange: (value: string) => void
+  onBlocksChange?: (blocks: PasteBlock[]) => void
 }) {
   const [editor] = useLexicalComposerContext()
+  const previousHistoryKeyRef = useRef(historyKey)
+  const settlingRef = useRef(false)
+  // The host value at the moment the settle flag was armed: the previous slot's
+  // draft. Only a host value that differs from it while still equalling the
+  // editor's last emission is a genuine editor echo.
+  const settleBaselineRef = useRef<{ value: string; blocks: PasteBlock[] } | null>(null)
 
   useEffect(() => {
+    // HistoryPlugin appears before ControlledValuePlugin in the composer tree,
+    // so its effect has registered history before this mount seed runs. Defer
+    // one microtask so the seed lands as its own commit after the initial value.
+    let active = true
+    queueMicrotask(() => {
+      if (active) seedHistoryBaseline(editor)
+    })
+    return () => { active = false }
+  }, [editor])
+
+  useEffect(() => {
+    // Invariant: every host sync is an explicit history push. The only clears
+    // live here: a history-key change, and the first host value that settles
+    // that slot switch (the restored draft, which the host commits separately
+    // after the key). A genuine editor echo consumes the settle flag instead --
+    // the user typed into an equal-valued slot, so there is no restore coming.
+    // The residual edge where an unrelated host write arrives first
+    // intentionally matches the textarea composer's slot-settling behavior.
+    const historyChanged = historyKey !== previousHistoryKeyRef.current
+    if (historyChanged) {
+      previousHistoryKeyRef.current = historyKey
+      clearAndSeedHistory(editor)
+      settlingRef.current = true
+      settleBaselineRef.current = { value, blocks }
+    }
     const emitted = lastEmittedRef.current
-    if (emitted.value === value && sameBlocks(emitted.blocks, blocks)) return
+    if (emitted.value === value && sameBlocks(emitted.blocks, blocks)) {
+      // Equal to the editor's last emission: either an echo of an editor edit
+      // or a re-run with nothing changed. This effect also re-runs when a
+      // callback prop takes a new identity (the host passes an inline onChange
+      // and re-renders per streamed chunk), and such a re-run can interleave
+      // between the key change and the host's restore commit -- it must NOT
+      // consume the flag, or the restore would be pushed as an undo step and
+      // Ctrl+Z would cross back into the previous slot's draft. Only content
+      // that moved away from the armed baseline proves a real editor echo.
+      const baseline = settleBaselineRef.current
+      if (settlingRef.current && baseline && (baseline.value !== value || !sameBlocks(baseline.blocks, blocks))) {
+        settlingRef.current = false
+        settleBaselineRef.current = null
+      }
+      return
+    }
     let current = { value: '', blocks: [] as PasteBlock[] }
     editor.getEditorState().read(() => { current = $composerSnapshot() })
     if (current.value === value && sameBlocks(current.blocks, blocks)) return
     lastEmittedRef.current = { value, blocks }
+    const settle = settlingRef.current
+    settlingRef.current = false
+    settleBaselineRef.current = null
     editor.update(() => $replaceComposerValue(value, blocks), {
-      tag: CONTROLLED_SYNC_TAG,
+      tag: [CONTROLLED_SYNC_TAG, settle ? 'history-merge' : 'history-push'],
       discrete: true,
     })
-    editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined)
-  }, [blocks, editor, lastEmittedRef, value])
+    if (settle) clearAndSeedHistory(editor)
+    editor.getEditorState().read(() => { current = $composerSnapshot() })
+    if (current.value === value && sameBlocks(current.blocks, blocks)) return
+    lastEmittedRef.current = current
+    if (current.value !== value) onChange(current.value)
+    if (onBlocksChange && !sameBlocks(current.blocks, blocks)) onBlocksChange(current.blocks)
+  }, [blocks, editor, historyKey, lastEmittedRef, onBlocksChange, onChange, value])
 
   return null
 }
@@ -289,11 +413,12 @@ function expandedSelectionText(): string | null {
   const selection = $getSelection()
   if (!selection) return null
   const nodes = $isRangeSelection(selection) ? selection.extract() : selection.getNodes()
-  if (!nodes.some($isPasteTokenNode)) return null
-  return nodes.map(node => $isPasteTokenNode(node) ? node.getBlock().content : node.getTextContent()).join('')
+  if (!nodes.some($isPasteBlockNode)) return null
+  return nodes.map(node => $isPasteBlockNode(node) ? node.getBlock().content : node.getTextContent()).join('')
 }
 
 function InteractionPlugin({
+  value,
   blocks,
   onBlocksChange,
   onChange,
@@ -304,12 +429,34 @@ function InteractionPlugin({
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+  historyKey,
+}: Pick<LexicalComposerInputProps, 'value' | 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'historyKey'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
   const historyIndexRef = useRef(-1)
-  const historyDraftRef = useRef('')
+  // The draft parked while ↑/↓ browse sent messages. It carries its BLOCKS as
+  // well as its text: a recalled message references no block, so browsing
+  // prunes the editor's block list to [] (and the host follows), and the
+  // restore must bring the draft's own records back or its markers decode as
+  // literal text — the textarea path leaves `pasteBlocks` untouched across a
+  // recall, and this composer has to match it.
+  const historyDraftRef = useRef<{ value: string; blocks: PasteBlock[] }>({ value: '', blocks: [] })
+  // Leave history mode the moment the host's value is no longer the sent message
+  // being shown — the user edited it, the send pipeline cleared it, or the host
+  // swapped in another slot's draft — and whenever the draft's owner changes.
+  // The textarea path has the same rule (ChatInput's value effect); without it a
+  // later ↓ would restore one slot's parked draft, pills included, into another.
+  useEffect(() => {
+    if (historyIndexRef.current !== -1 && value !== sentMessages?.[historyIndexRef.current]) {
+      historyIndexRef.current = -1
+      historyDraftRef.current = { value: '', blocks: [] }
+    }
+  }, [value, sentMessages])
+  useEffect(() => {
+    historyIndexRef.current = -1
+    historyDraftRef.current = { value: '', blocks: [] }
+  }, [historyKey])
   // Shared IME latch (see useImeGuard.ts, ImeEnterClaimRatchet): on WebKit the
   // Enter that COMMITS a candidate arrives after `compositionend` with
   // `isComposing` already false, so the native flags alone cannot identify it.
@@ -328,9 +475,17 @@ function InteractionPlugin({
     // Stable one-line delegations into the SHARED latch (useImeGuard's
     // createImeLatch) — the sanctioned wiring shape the ImeEnterClaimRatchet
     // scans for: every compositionstart subscriber must feed the shared latch.
+    // Lexical mirrors the composition in its own key and drops EVERY keydown
+    // while it is set (LexicalEvents.onKeyDown returns early on
+    // `isComposing()`); `blur` is a pass-through command that never clears it,
+    // so an abandoned composition would also leave the editor deaf. Recover
+    // that state alongside the latch.
+    const recoverEditorComposition = () => {
+      if (editor.isComposing()) editor.update(() => { $setCompositionKey(null) }, { discrete: true })
+    }
     const onCompositionStart = () => latch.onCompositionStart()
     const onCompositionEnd = () => latch.onCompositionEnd()
-    const onFocusChange = () => latch.reset()
+    const onFocusChange = () => { latch.reset(); recoverEditorComposition() }
     const rootListeners = editor.registerRootListener((root, prevRoot) => {
       if (prevRoot) {
         prevRoot.removeEventListener('compositionstart', onCompositionStart)
@@ -377,11 +532,11 @@ function InteractionPlugin({
         if (onBlocksChange && !forceRaw && !showFullPastes && shouldCollapse(cleaned)) {
           const block: PasteBlock = {
             id: makePasteId(),
-            seq: nextSeq(blocksRef.current),
+            seq: nextSeqIn($getRoot().getTextContent(), blocksRef.current),
             lines: countLines(cleaned),
             content: cleaned,
           }
-          selection.insertNodes([$createPasteTokenNode(block)])
+          selection.insertNodes([$createPasteBlockNode(block)])
           blocksRef.current = [...blocksRef.current, block]
           return true
         }
@@ -417,7 +572,7 @@ function InteractionPlugin({
     )
     const deleteSelectedNode = (event: KeyboardEvent) => {
       const selection = $getSelection()
-      if (!$isNodeSelection(selection) || !selection.getNodes().some($isPasteTokenNode)) return false
+      if (!$isNodeSelection(selection) || !selection.getNodes().some($isPasteBlockNode)) return false
       event.preventDefault()
       selection.deleteNodes()
       return true
@@ -459,17 +614,23 @@ function InteractionPlugin({
       COMMAND_PRIORITY_HIGH,
     )
 
-    const moveAfterRecall = (value: string, position: 'start' | 'end') => {
-      requestAnimationFrame(() => {
-        editor.update(() => {
-          const offset = position === 'start' ? 0 : value.length
-          const selection = $createRangeSelection()
-          $setPointAtOffset(selection.anchor, offset)
-          $setPointAtOffset(selection.focus, offset)
-          $setSelection(selection)
-        }, { discrete: true })
-        editor.focus()
-      })
+    // `blocks` is the record set the incoming text may reference: the live list
+    // for a recalled sent message (which references none of it, so the editor and
+    // the host both end up at []), the parked draft's own list when the draft
+    // comes back. Never the already-pruned live list for the restore — that is
+    // how the draft's pill turned into literal marker text.
+    const replaceRecalledText = (value: string, position: 'start' | 'end', blocks: PasteBlock[] = blocksRef.current) => {
+      const referencedBlocks = pruneBlocks(value, blocks)
+      blocksRef.current = referencedBlocks
+      editor.update(() => {
+        $replaceComposerValue(value, referencedBlocks)
+        const offset = position === 'start' ? 0 : value.length
+        const selection = $createRangeSelection()
+        $setPointAtOffset(selection.anchor, offset)
+        $setPointAtOffset(selection.focus, offset)
+        $setSelection(selection)
+      }, { tag: 'history-push' })
+      editor.focus()
     }
     const navigateHistory = (event: KeyboardEvent, direction: 'up' | 'down') => {
       if (!sentMessages?.length || event.isComposing || event.metaKey || event.ctrlKey ||
@@ -482,15 +643,14 @@ function InteractionPlugin({
         if (current !== '' && selection.start !== 0) return false
         const index = historyIndexRef.current
         if (index === -1) {
-          historyDraftRef.current = current
+          historyDraftRef.current = { value: current, blocks: blocksRef.current }
           historyIndexRef.current = last
         } else if (index > 0) {
           historyIndexRef.current = index - 1
         }
         const recalled = sentMessages[historyIndexRef.current]
         event.preventDefault()
-        onChange(recalled)
-        moveAfterRecall(recalled, 'start')
+        replaceRecalledText(recalled, 'start')
         return true
       }
       const index = historyIndexRef.current
@@ -499,14 +659,12 @@ function InteractionPlugin({
       if (index < last) {
         historyIndexRef.current = index + 1
         const recalled = sentMessages[historyIndexRef.current]
-        onChange(recalled)
-        moveAfterRecall(recalled, 'end')
+        replaceRecalledText(recalled, 'end')
       } else {
         historyIndexRef.current = -1
         const draft = historyDraftRef.current
-        historyDraftRef.current = ''
-        onChange(draft)
-        moveAfterRecall(draft, 'end')
+        historyDraftRef.current = { value: '', blocks: [] }
+        replaceRecalledText(draft.value, 'end', draft.blocks)
       }
       return true
     }
@@ -542,14 +700,15 @@ function InteractionPlugin({
 }
 
 export default function LexicalComposerInput({
-  value,
-  blocks,
+  value: hostValue,
+  blocks: hostBlocks,
   onChange,
   onBlocksChange,
   showFullPastes = false,
   onSend,
   ariaLabel,
   placeholder,
+  placeholderOneLine = false,
   disabled = false,
   readOnly = false,
   sendOnEnter = 'enter',
@@ -561,12 +720,30 @@ export default function LexicalComposerInput({
   onSelectionChange,
   onUploadFiles,
   sentMessages,
+  historyKey,
 }: LexicalComposerInputProps) {
+  // The host's pair is canonicalised before it reaches the tree: a value that
+  // holds the same marker twice (a restored draft, a small paste that contained
+  // the marker text) would rehydrate as two pills sharing a seq, and a marker
+  // resolves by seq alone — `expandAll` would send one block for both, dropping
+  // the other's content once either had been edited. `splitDuplicateMarkers`
+  // gives every later occurrence its own block + marker and returns the SAME
+  // references when nothing changed. This happens here, in React, rather than
+  // as a Lexical transform on the initial tree, because OnChangePlugin never
+  // reports the initial commit or a `history-merge` update — the host would keep
+  // the unrewritten value. (`PasteSeqInvariantPlugin` still guards pills created
+  // INSIDE the editor, which do reach the host through OnChange.)
+  const { text: value, blocks } = useMemo(() => splitDuplicateMarkers(hostValue, hostBlocks), [hostBlocks, hostValue])
+  useEffect(() => {
+    if (value !== hostValue) onChange(value)
+    if (blocks !== hostBlocks) onBlocksChange?.(blocks)
+  }, [blocks, hostBlocks, hostValue, onBlocksChange, onChange, value])
+
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
   const initialConfig = useMemo(() => ({
     namespace: 'KiroCrewComposer',
-    nodes: [PasteTokenNode],
+    nodes: [PasteBlockNode, DropGapNode],
     editable: !disabled && !readOnly,
     editorState: () => $replaceComposerValue(initialValueRef.current.value, initialValueRef.current.blocks),
     onError(error: Error, _editor: LexicalEditor) {
@@ -586,39 +763,58 @@ export default function LexicalComposerInput({
   return (
     <LexicalComposer initialConfig={initialConfig}>
       <div className={`relative min-h-[44px] ${className}`}>
-        <PlainTextPlugin
-          contentEditable={
-            <ContentEditable
-              aria-label={ariaLabel}
-              aria-multiline="true"
-              spellCheck={spellCheck}
-              data-composer-input=""
-              data-lexical-composer=""
-              data-composer-typo=""
-              className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
-            />
-          }
-          placeholder={
-            /* Not a real `::placeholder`, so it carries the same hook as the
-               editor: on a coarse pointer both get the 16px floor together and
-               the overlay stays metric-identical to the text it stands in for. */
-            <div data-composer-typo="" className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
-              {placeholder}
-            </div>
-          }
-          ErrorBoundary={LexicalErrorBoundary}
-        />
+        <PillsPlugin>
+          <PlainTextPlugin
+            contentEditable={
+              <ContentEditable
+                aria-label={ariaLabel}
+                aria-multiline="true"
+                spellCheck={spellCheck}
+                data-composer-input=""
+                data-composer-typo=""
+                data-lexical-composer=""
+                className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+              />
+            }
+            placeholder={
+              /* Not a real `::placeholder`, so it carries the same hook as the
+                 editor: on a coarse pointer both get the 16px floor together and
+                 the overlay stays metric-identical to the text it stands in for.
+                 The hint is a label: in a narrow pane it stays on one line with
+                 its tail faded (the textarea's `::placeholder` rule, on a div);
+                 status sentences keep wrapping. Chromium paints no
+                 `text-overflow` here either, so the cut edge fades. */
+              <div
+                data-composer-placeholder
+                data-composer-typo=""
+                className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO} ${placeholderOneLine ? 'whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''}`}
+              >
+                {placeholder}
+              </div>
+            }
+            ErrorBoundary={LexicalErrorBoundary}
+          />
+        </PillsPlugin>
         <HistoryPlugin />
         <ComposerControlPlugin
+          blocks={blocks}
           controlRef={controlRef}
           onReady={onReady}
           onSelectionChange={onSelectionChange}
         />
         {editorRef && <EditorRefPlugin editorRef={editorRef} />}
         <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
-        <ControlledValuePlugin value={value} blocks={blocks} lastEmittedRef={lastEmittedRef} />
+        <ControlledValuePlugin
+          value={value}
+          blocks={blocks}
+          historyKey={historyKey}
+          lastEmittedRef={lastEmittedRef}
+          onChange={onChange}
+          onBlocksChange={onBlocksChange}
+        />
         <EditableStatePlugin editable={!disabled && !readOnly} />
         <InteractionPlugin
+          value={value}
           blocks={blocks}
           onBlocksChange={onBlocksChange}
           showFullPastes={showFullPastes}
@@ -629,6 +825,7 @@ export default function LexicalComposerInput({
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}
+          historyKey={historyKey}
         />
       </div>
     </LexicalComposer>

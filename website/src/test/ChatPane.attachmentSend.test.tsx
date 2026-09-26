@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -67,6 +67,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { setComposerValue, awaitComposer, pressInComposer } from './helpers'
 
 function makeStore(slotKey: string) {
   return configureStore({
@@ -111,9 +112,9 @@ async function stageUpload(container: HTMLElement, name: string, type: string) {
 }
 
 async function sendText(text: string) {
-  const box = (await screen.findAllByRole('textbox'))[0]
-  if (text) fireEvent.change(box, { target: { value: text } })
-  fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+  const box = await awaitComposer()
+  if (text) await setComposerValue(text, box)
+  pressInComposer('Enter', { code: 'Enter' }, box)
 }
 
 function lastSend() {

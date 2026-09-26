@@ -17,7 +17,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
+import { composerValue, setComposerValue, pressInComposer } from './helpers'
 import type { RootState } from '../store'
 import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
@@ -121,14 +122,15 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
 }
 
 /** Type into the composer and submit, the way the user does. */
 async function sendText(text: string) {
-  const box = screen.getByLabelText('Message input')
-  fireEvent.change(box, { target: { value: text } })
-  await act(async () => { fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' }) })
+  await setComposerValue(text)
+  pressInComposer('Enter', { code: 'Enter' })
+  await act(async () => {})
 }
 
 const userRow = (store: ReturnType<typeof makeStore>) =>
@@ -160,7 +162,7 @@ describe('send() confirms its own optimistic bubble from the response', { timeou
       })
       expect(store.getState().chat.messages.filter(m => m.role === 'user')).toHaveLength(1)
       expect(userRow(store)?.meta?.optimistic).toBeUndefined()
-      expect(screen.getByLabelText('Message input')).toHaveValue('')
+      expect(composerValue()).toBe('')
       expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
       expect(store.getState().chat.slotRunning).toBe(true)
     } finally {
@@ -211,7 +213,7 @@ describe('send() confirms its own optimistic bubble from the response', { timeou
     expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
     // The payload is NOT handed back: a composer holding it again is the retry
     // invitation this whole branch exists to withhold.
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('leaves the bubble pending when the server rejects the send', async () => {

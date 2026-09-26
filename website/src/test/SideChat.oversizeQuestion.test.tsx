@@ -9,10 +9,10 @@
  * nothing was sent.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, waitFor, act } from '@testing-library/react'
 import reducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, composerRoot, setComposerValue, pressInComposer } from './helpers'
 
 // The composer blocks sends while the gateway reads as offline, so every
 // scene runs against a connected dashboard unless it tests the offline path.
@@ -45,12 +45,16 @@ const SLOT = 'oversize-slot'
 describe('SideChat oversize-question refusal', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 
-  const render = (draft: string) => {
+  const render = async (draft: string) => {
     const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
-    const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    fireEvent.change(box, { target: { value: draft } })
-    return box
+    await waitFor(() =>
+      expect(document.querySelector('[data-side-chat-input] [data-composer-input]')).not.toBeNull(),
+    )
+    await act(async () => {})
+    const root = composerRoot(document.querySelector('[data-side-chat-input]') as HTMLElement)
+    await setComposerValue(draft, root)
+    return root
   }
 
   beforeEach(() => {
@@ -73,8 +77,8 @@ describe('SideChat oversize-question refusal', () => {
     // points — one past the 8,192-character floor the message tells the user to aim
     // under. `.length` would report 16,386 (surrogate pairs), so this also pins the
     // count to code points rather than UTF-16 units.
-    const box = render('😀'.repeat(8_193))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render('😀'.repeat(8_193))
+    pressInComposer('Enter', {}, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
     expect(
@@ -83,8 +87,8 @@ describe('SideChat oversize-question refusal', () => {
   })
 
   it('mentions no byte count anywhere in the refusal', async () => {
-    const box = render('😀'.repeat(8_193))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render('😀'.repeat(8_193))
+    pressInComposer('Enter', {}, box)
     await settle()
     expect(screen.queryByText(/bytes?/i)).toBeNull()
   })
@@ -94,8 +98,8 @@ describe('SideChat oversize-question refusal', () => {
     // for a pure-ASCII overflow is the full byte budget — unlike the old fixed
     // 4-bytes/char floor, which told an ASCII user to cut to ~8,192 characters when
     // trimming a single character would already fit.
-    const box = render('a'.repeat(32_769))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render('a'.repeat(32_769))
+    pressInComposer('Enter', {}, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
     expect(
@@ -107,8 +111,8 @@ describe('SideChat oversize-question refusal', () => {
     // CJK ideographs cost 3 UTF-8 bytes each — the density target sits between the
     // ASCII (1 byte/char, full budget) and emoji (4 bytes/char, ~8,192) cases,
     // which the old fixed floor could never report since it only knew the worst case.
-    const box = render('中'.repeat(10_923))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render('中'.repeat(10_923))
+    pressInComposer('Enter', {}, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
     expect(
@@ -119,8 +123,8 @@ describe('SideChat oversize-question refusal', () => {
   it('still sends a question under the byte budget', async () => {
     // The control: proves this harness CAN reach `sideTurn`, so the negatives above
     // failing to are the guard working rather than the test never getting there.
-    const box = render('a'.repeat(1_000))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render('a'.repeat(1_000))
+    pressInComposer('Enter', {}, box)
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
   })
 })

@@ -47,11 +47,53 @@ export function makePasteId(): string {
   return `${t}${r}`
 }
 
+/**
+ * A fresh seq: `max + 1` when that is an exactly representable integer, else the
+ * smallest positive integer not in `used`.
+ *
+ * Seqs are parsed from marker text, and marker text can carry any digit run —
+ * `[ Paste #9007199254740991 · 1 lines ]` typed by hand parses to 2^53 - 1, a
+ * longer run to `Infinity`. Past 2^53 a double cannot step by one (`2^53 + 1`
+ * is `2^53`), so two `max + 1` allocations would coincide and two blocks would
+ * share a seq — the collapse this whole family of helpers exists to prevent.
+ * `used` must hold every seq a fresh one must avoid: the blocks' and every
+ * marker's in the text, claimed or not.
+ */
+export function allocateSeq(max: number, used: ReadonlySet<number>): number {
+  const next = max + 1
+  if (Number.isSafeInteger(next) && next > max && !used.has(next)) return next
+  let n = 1
+  while (used.has(n)) n++
+  return n
+}
+
 /** Next seq for a new paste = max existing + 1, starting at 1. */
 export function nextSeq(blocks: PasteBlock[]): number {
   let max = 0
-  for (const b of blocks) { if (b.seq > max) max = b.seq }
-  return max + 1
+  const used = new Set<number>()
+  for (const b of blocks) { if (b.seq > max) max = b.seq; used.add(b.seq) }
+  return allocateSeq(max, used)
+}
+
+/**
+ * Next seq for a paste landing in `text`: {@link nextSeq} that also reserves
+ * every marker already in the text, claimed by a block or not. A literal
+ * `[ Paste #1 · 1 lines ]` the user typed has no block and expands to itself;
+ * if the next paste were minted at 1 the literal would name that block and the
+ * send would replace the user's own text with the pasted content.
+ */
+export function nextSeqIn(text: string, blocks: PasteBlock[]): number {
+  let max = 0
+  const used = new Set<number>()
+  for (const b of blocks) { if (b.seq > max) max = b.seq; used.add(b.seq) }
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = PASTE_TOKEN_REGEX.exec(text)) !== null) {
+    const seq = Number(m[1])
+    if (seq > max) max = seq
+    used.add(seq)
+  }
+  return allocateSeq(max, used)
 }
 
 /**
@@ -76,6 +118,15 @@ export function remapCarriedBlocks(
   let free = 0
   for (const v of used) if (v > free) free = v
   free += 1
+  // The next free seq: walk up from the seed, skipping anything reserved since.
+  // `used` may carry a hand-typed literal's seq beyond 2^53 (or `Infinity`),
+  // where `free++` cannot move; past the safe range fall back to the smallest
+  // positive integer not in `used` instead of walking.
+  const nextFree = (): number => {
+    while (Number.isSafeInteger(free) && used.has(free)) free++
+    if (!Number.isSafeInteger(free)) return allocateSeq(free, used)
+    return free++
+  }
   const remap = new Map<number, number>()
   const blocks: PasteBlock[] = []
   for (const b of carried) {
@@ -85,17 +136,19 @@ export function remapCarriedBlocks(
     // kept block already holds, recreating the duplicate this function exists to
     // prevent. (Reachable when the live list has a seq gap, e.g. after a paste chip
     // is deleted, then a second failed recovery runs.)
-    while (used.has(free)) free++
-    const seq = used.has(b.seq) ? free++ : b.seq
+    const seq = used.has(b.seq) ? nextFree() : b.seq
     used.add(seq)
     if (seq !== b.seq) remap.set(b.seq, seq)
     blocks.push(seq === b.seq ? b : { ...b, seq })
   }
   if (!remap.size) return { text, blocks }
   // Right-to-left so each splice leaves the earlier ranges' offsets valid, and so
-  // no marker written by this pass is ever re-examined.
+  // no marker written by this pass is ever re-examined. EVERY occurrence moves,
+  // not just the first: a second copy of `[ Paste #N … ]` left at #N would carry
+  // the seq the kept block now owns, and merged ahead of that block's own marker
+  // it would take the kept content on expansion (see `findAllTokenRanges`).
   let out = text
-  const ranges = findTokenRanges(text, carried)
+  const ranges = findAllTokenRanges(text, carried)
   for (let i = ranges.length - 1; i >= 0; i--) {
     const { start, end, block } = ranges[i]
     const mapped = remap.get(block.seq)
@@ -112,9 +165,10 @@ export function remapCarriedBlocks(
  * The one owner of the recovery rule every composer host applies: a carried
  * block the composer already holds (same id — the clear had not flushed when
  * the payload was captured, or an undo put it back) is not added twice AND its
- * token is dropped from the payload text, since the composer already shows
- * that token — appending a second one would make the retry send the paste
- * twice. The rest go through {@link remapCarriedBlocks} so a colliding `seq`
+ * token is dropped from the payload text — every copy of it, since the composer
+ * already shows that token — appending a second one would make the retry send
+ * the paste twice, and a copy left behind would ride into the retried prompt as a
+ * stray literal. The rest go through {@link remapCarriedBlocks} so a colliding `seq`
  * gets a fresh number and its token in `text` is rewritten. Returns the text to
  * merge (`text`, held tokens stripped), the same payload with every token still
  * in place (`full`, for the exact-duplicate test — see {@link mergeCarriedDraft})
@@ -122,7 +176,13 @@ export function remapCarriedBlocks(
  */
 export interface CarriedPastes { text: string; full: string; pastes: PasteBlock[] }
 
-export function carryPastes(text: string, carried: PasteBlock[], kept: PasteBlock[]): CarriedPastes {
+export function carryPastes(
+  text: string,
+  carried: PasteBlock[],
+  kept: PasteBlock[],
+  /** The composer text the payload is about to be merged INTO (`mergeCarriedDraft`'s `keep`). */
+  keepText = '',
+): CarriedPastes {
   if (!carried.length) return { text, full: text, pastes: kept }
   const keptIds = new Set(kept.map(b => b.id))
   const fresh = carried.filter(b => !keptIds.has(b.id))
@@ -133,7 +193,9 @@ export function carryPastes(text: string, carried: PasteBlock[], kept: PasteBloc
   const held = carried.filter(b => keptIds.has(b.id) && !freshSeqs.has(b.seq))
   if (held.length) {
     // Right-to-left, so each splice leaves the earlier ranges' offsets valid.
-    const ranges = findTokenRanges(payload, held)
+    // Every copy goes, not just the first: a surviving second copy would ride
+    // into the carried text and the retried prompt as a stray literal.
+    const ranges = findAllTokenRanges(payload, held)
     for (let i = ranges.length - 1; i >= 0; i--) {
       const { start, end } = ranges[i]
       // Take the token's own line break with it, so no blank line is left behind.
@@ -141,11 +203,27 @@ export function carryPastes(text: string, carried: PasteBlock[], kept: PasteBloc
       payload = payload.slice(0, start) + payload.slice(end + eatNewline)
     }
   }
+  // The seqs a carried block must not land on: the kept blocks', every marker
+  // already in the destination text (a literal `[ Paste #1 · 1 lines ]` typed
+  // while the send was in flight has no block and expands to itself — a carried
+  // block coming back as #1 would make the literal name it), and any inert
+  // literal inside the payload itself (a marker no carried block is behind).
   // `remapCarriedBlocks` mutates the seq set it is given, so each pass gets its
   // own copy and both assign the same numbers.
-  const keptSeqs = kept.map(b => b.seq)
-  const { text: remapped, blocks } = remapCarriedBlocks(payload, fresh, new Set(keptSeqs))
-  const full = payload === text ? remapped : remapCarriedBlocks(text, fresh, new Set(keptSeqs)).text
+  const reserved = new Set(kept.map(b => b.seq))
+  const carriedSeqs = new Set(carried.map(b => b.seq))
+  const reserveMarkers = (source: string, skip?: ReadonlySet<number>) => {
+    PASTE_TOKEN_REGEX.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = PASTE_TOKEN_REGEX.exec(source)) !== null) {
+      const seq = Number(m[1])
+      if (!skip?.has(seq)) reserved.add(seq)
+    }
+  }
+  reserveMarkers(keepText)
+  reserveMarkers(text, carriedSeqs)
+  const { text: remapped, blocks } = remapCarriedBlocks(payload, fresh, new Set(reserved))
+  const full = payload === text ? remapped : remapCarriedBlocks(text, fresh, new Set(reserved)).text
   return { text: remapped, full, pastes: [...kept, ...blocks] }
 }
 
@@ -163,22 +241,209 @@ export function mergeCarriedDraft(keep: string | null | undefined, carried: Carr
   return mergeRecoveredDraft(existing, carried.text)
 }
 
-/** Ranges for each token whose seq is present in `blocks`, in document order. */
-export function findTokenRanges(
-  text: string,
-  blocks: PasteBlock[],
-): Array<{ start: number; end: number; block: PasteBlock }> {
+/** A located marker occurrence and the block its seq names. */
+export interface TokenRange { start: number; end: number; block: PasteBlock }
+
+/**
+ * The one regex walk behind {@link findTokenRanges} and {@link findAllTokenRanges}:
+ * every `[ Paste #N · M lines ]` in `text` whose seq a block carries, in document
+ * order. With `firstOnly` a seq is claimed by its first occurrence and every later
+ * copy is skipped (an inert literal); without it every copy is reported.
+ */
+function walkTokenRanges(text: string, blocks: PasteBlock[], firstOnly: boolean): TokenRange[] {
   if (!text || !blocks.length) return []
   const bySeq = new Map(blocks.map(b => [b.seq, b]))
-  const out: Array<{ start: number; end: number; block: PasteBlock }> = []
+  const claimed = new Set<number>()
+  const out: TokenRange[] = []
   PASTE_TOKEN_REGEX.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = PASTE_TOKEN_REGEX.exec(text)) !== null) {
     const seq = Number(m[1])
+    if (firstOnly && claimed.has(seq)) continue
     const block = bySeq.get(seq)
-    if (block) out.push({ start: m.index, end: m.index + m[0].length, block })
+    if (block) {
+      claimed.add(seq)
+      out.push({ start: m.index, end: m.index + m[0].length, block })
+    }
   }
   return out
+}
+
+/**
+ * The FIRST token range for each block seq, in document order.
+ *
+ * One block backs exactly one marker: the first occurrence of its seq in text
+ * order. A later copy of the same marker (a restored draft, a short paste of
+ * the marker text) is inert literal text, not a pill, and must stay that way —
+ * otherwise the send would replace the user's own characters with paste
+ * content. Every consumer that reads, renders, hit-tests or EXPANDS a value
+ * therefore wants first-only, and this is the locator they share:
+ *
+ * | caller                                      | wants      |
+ * |---------------------------------------------|------------|
+ * | `expandAll` (send), `pruneBlocks`,          | first-only |
+ * |   `tokenRangeAt`, `mergePreservedPastes`    |            |
+ * | `ChatInput` caret / hit-test / delete       | first-only |
+ * | `LexicalComposerInput` `$replaceComposerValue` | first-only |
+ * | `PasteHighlightLayer`, `PasteHoverLayer`    | first-only |
+ * | `ChatPageMessageContent` bubble render       | first-only |
+ * | `pinnedPrompt` (via `expandAll`)            | first-only |
+ * | `remapCarriedBlocks` marker REWRITE         | ALL — {@link findAllTokenRanges} |
+ * | `carryPastes` held-marker STRIP             | ALL — {@link findAllTokenRanges} |
+ *
+ * The two `ALL` rows edit the text rather than interpret it: a rewrite or strip
+ * that touches only the first copy leaves the later copies carrying a seq that
+ * now means something else. See {@link findAllTokenRanges}.
+ */
+export function findTokenRanges(text: string, blocks: PasteBlock[]): TokenRange[] {
+  return walkTokenRanges(text, blocks, true)
+}
+
+/**
+ * EVERY token range whose seq a block carries, in document order — the same
+ * shape as {@link findTokenRanges} without the first-occurrence claim.
+ *
+ * For the two callers that MUTATE marker text, first-only is a defect:
+ *
+ * - `remapCarriedBlocks` moves a carried block from seq N to a fresh M. If only
+ *   the first `#N` is rewritten, a second copy keeps `#N` — a seq the KEPT block
+ *   now owns. Merged ahead of the kept block's own marker, first-occurrence
+ *   expansion binds the kept content to that stray and sends the kept marker
+ *   raw: content attributed to a different paste. Rewriting every copy to `#M`
+ *   is safe — the extras become inert literals of a seq that collides with
+ *   nothing (and the Lexical invariant plugin re-seqs the pill away from them).
+ * - `carryPastes` strips a held block's marker from a refused payload because
+ *   the composer already shows it. A second copy left behind rides into the
+ *   carried text and the retried prompt as a stray literal.
+ */
+export function findAllTokenRanges(text: string, blocks: PasteBlock[]): TokenRange[] {
+  return walkTokenRanges(text, blocks, false)
+}
+
+/**
+ * Canonical form of a composer value: every backed marker occurrence names its
+ * OWN block, no two blocks share a seq, and surplus occurrences stay literal.
+ * This text-only layer decodes and never mints records; provenance-owning layers
+ * (paste events, tree node identity, and drag node keys) are the only minting sites.
+ *
+ * A marker resolves by seq alone, so a value that holds the same marker twice (a
+ * restored draft, a small paste that contained the marker text) must not map both
+ * occurrences onto one block: `expandAll` would replace user-authored literal
+ * text with unrelated paste content. The block LIST can carry the same seq twice
+ * as well — a draft persisted while two same-seq pills had already diverged holds
+ * `[original #1, edited #1]` — so canonicalisation must preserve both records.
+ *
+ * Rule, in text order: the k-th occurrence of a seq pairs with the k-th block
+ * record carrying that seq (a tree snapshot lists one record per pill in
+ * document order, so this reproduces exactly what the pills showed). The first
+ * pair keeps its seq; every later paired record gets a fresh seq (max so far + 1);
+ * an occurrence with no record left stays untouched and unbacked; a same-seq
+ * record no occurrence claims is re-sequenced rather than dropped, so nothing is
+ * lost and no seq stays ambiguous. Rewritten markers are spliced right-to-left,
+ * as in `remapCarriedBlocks`, for the same reason.
+ * Finally ids are made unique as well — the first holder keeps its id, every
+ * later record carrying it gets a fresh one — because the textarea composer
+ * removes a pill by id; a duplicated id alone (distinct seqs, e.g. a draft
+ * re-sequenced before this rule) is enough to trigger that repair.
+ *
+ * Returns the SAME `text` / `blocks` references when nothing had to change, so a
+ * caller can detect a rewrite by identity.
+ */
+export function splitDuplicateMarkers(
+  text: string,
+  blocks: PasteBlock[],
+): { text: string; blocks: PasteBlock[] } {
+  if (!text || !blocks.length) return { text, blocks }
+  // Same-seq records, in list order; and whether any id is carried twice.
+  const recordsBySeq = new Map<number, PasteBlock[]>()
+  const ids = new Set<string>()
+  // Every seq a fresh one must avoid: the blocks' and every marker's in the text.
+  const used = new Set<number>()
+  let max = 0
+  let duplicateRecords = false
+  let duplicateIds = false
+  for (const b of blocks) {
+    if (b.seq > max) max = b.seq
+    used.add(b.seq)
+    const list = recordsBySeq.get(b.seq)
+    if (list) { list.push(b); duplicateRecords = true } else recordsBySeq.set(b.seq, [b])
+    if (ids.has(b.id)) duplicateIds = true
+    ids.add(b.id)
+  }
+  // Marker occurrences that name a block, in text order. EVERY marker's seq
+  // raises the floor for fresh seqs, claimed or not: marker text with no record
+  // behind it is inert (expansion leaves it as the literal characters), and it
+  // must stay inert — a fresh seq equal to it would make the literal name the
+  // twin's block, and the send would replace the user's own text with an
+  // unrelated paste's content.
+  const occurrences: Array<{ start: number; end: number; seq: number }> = []
+  const seen = new Map<number, number>()
+  let repeatedOccurrence = false
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = PASTE_TOKEN_REGEX.exec(text)) !== null) {
+    const seq = Number(m[1])
+    if (seq > max) max = seq
+    used.add(seq)
+    if (!recordsBySeq.has(seq)) continue
+    occurrences.push({ start: m.index, end: m.index + m[0].length, seq })
+    const k = seen.get(seq) ?? 0
+    if (k > 0) repeatedOccurrence = true
+    seen.set(seq, k + 1)
+  }
+  if (!duplicateRecords && !repeatedOccurrence && !duplicateIds) return { text, blocks }
+
+  const canonicalOf = new Map<PasteBlock, PasteBlock>()
+  const rewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  const claimed = new Map<number, number>()
+  // `allocateSeq` steps past `max` while that is exact and falls back to the first
+  // free small integer beyond 2^53 (a hand-typed literal can put `max` there).
+  const fresh = (): number => {
+    const seq = allocateSeq(max, used)
+    used.add(seq)
+    if (seq > max) max = seq
+    return seq
+  }
+  for (const o of occurrences) {
+    const k = claimed.get(o.seq) ?? 0
+    claimed.set(o.seq, k + 1)
+    if (k === 0) continue // first occurrence: keeps its seq, pairs with the first record
+    const records = recordsBySeq.get(o.seq)!
+    if (k >= records.length) continue
+    const block = { ...records[k], seq: fresh() }
+    canonicalOf.set(records[k], block)
+    rewrites.push({ start: o.start, end: o.end, block })
+  }
+  // A same-seq record no occurrence claimed still gets its own seq.
+  for (const records of recordsBySeq.values()) {
+    for (let i = 1; i < records.length; i++) {
+      if (!canonicalOf.has(records[i])) canonicalOf.set(records[i], { ...records[i], seq: fresh() })
+    }
+  }
+  if (!canonicalOf.size && !rewrites.length && !duplicateIds) return { text, blocks }
+  let out = text
+  for (let i = rewrites.length - 1; i >= 0; i--) {
+    const { start, end, block } = rewrites[i]
+    out = out.slice(0, start) + formatToken(block) + out.slice(end)
+  }
+  // The textarea composer removes a pill by id, so two records under one id
+  // would both vanish on one ✕. Ids are carried twice by twins minted from one
+  // block, and by a draft re-sequenced before this rule existed (distinct seqs,
+  // one id). Assemble the output in original order and let the first holder of
+  // an id keep it; every later record carrying it — kept or re-sequenced — gets
+  // a fresh id. (The id is not part of the marker text, so no rewrite depends
+  // on it.)
+  const claimedIds = new Set<string>()
+  const withUniqueId = (b: PasteBlock): PasteBlock => {
+    let id = b.id
+    while (claimedIds.has(id)) id = makePasteId()
+    claimedIds.add(id)
+    return id === b.id ? b : { ...b, id }
+  }
+  return {
+    text: out,
+    blocks: blocks.map(b => withUniqueId(canonicalOf.get(b) ?? b)),
+  }
 }
 
 export function tokenRangeAt(

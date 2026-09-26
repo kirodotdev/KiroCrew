@@ -94,7 +94,7 @@ export function writeSideChatPastes(slot: string, pastes: PasteBlock[]): void {
  *  paste's block on retry. */
 export function restoreSideChatDraft(slot: string, text: string, pastes: PasteBlock[] = []): void {
   const cur = entry(slot)
-  const carried = carryPastes(text, pastes, cur.pastes)
+  const carried = carryPastes(text, pastes, cur.pastes, cur.text)
   // The recovery merge, not the plain append: a payload the composer already
   // holds whole (an undo put it back before the refusal landed) is not added.
   set(slot, { text: mergeCarriedDraft(cur.text, carried), seedTick: cur.seedTick, pastes: carried.pastes.length ? carried.pastes : NO_PASTES })

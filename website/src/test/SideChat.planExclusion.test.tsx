@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import reducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, awaitComposer, composerValue } from './helpers'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -89,7 +89,7 @@ describe('SideChat plan exclusion', () => {
 
     renderWithProviders(<SideChat slot={SLOT} />, { store: planStore() })
 
-    const input = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
+    const input = await awaitComposer(document.querySelector('[data-side-chat-input]') as HTMLElement)
     expect(screen.getByText('Go')).toBeInTheDocument()
 
     // Single chip click. SideChat supplies onSend to FollowUpBar, so the click
@@ -100,7 +100,7 @@ describe('SideChat plan exclusion', () => {
     // amendable before send. This is the load-bearing assertion — a dispatch
     // branch would return before the draft edit, so wiring plan dispatch into
     // this handler reds this line.
-    await waitFor(() => expect(input.value).toBe('Go'))
+    await waitFor(() => expect(composerValue(input)).toBe('Go'))
 
     // And no dispatch on the global client's plan-action transport.
     expect(api.planAction).not.toHaveBeenCalled()

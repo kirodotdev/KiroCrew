@@ -7410,8 +7410,6 @@
     "pastedChip": {
       "collapse_paste": "पेस्ट समेटें",
       "expand_paste": "पेस्ट फैलाएँ",
-      "hide_paste_preview": "पेस्ट का पूर्वावलोकन छिपाओ",
-      "show_paste_preview": "पेस्ट का पूर्वावलोकन दिखाओ",
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
       "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]",
       "preview_more_lines_one": "… {{count}} और पंक्ति",
@@ -8870,6 +8868,23 @@
       "unexpected_response": "अनपेक्षित प्रतिक्रिया",
       "deploy_failed": "डिप्लॉय विफल",
       "stale_preview_retry": "जाँच के बाद ऐप बदल गया — फिर से कोशिश करें।"
+    },
+    "pasteBlockChip": {
+      "count_one": "{{count}} पंक्ति",
+      "count_other": "{{count}} पंक्तियाँ",
+      "label_one": "पेस्ट किया गया टेक्स्ट · {{count}} पंक्ति",
+      "label_other": "पेस्ट किया गया टेक्स्ट · {{count}} पंक्तियाँ",
+      "remove": "पेस्ट किया गया टेक्स्ट हटाओ",
+      "actions": "संपादित करने के लिए क्लिक करो · क्रम बदलने के लिए खींचो · Backspace हटाता है"
+    },
+    "pastePreviewEditor": {
+      "cancel": "रद्द करो",
+      "editor_aria": "पेस्ट किया गया टेक्स्ट संपादित करो",
+      "save": "सहेजो",
+      "lines_one": "{{count}} पंक्ति",
+      "lines_other": "{{count}} पंक्तियाँ",
+      "resize_aria": "पूर्वावलोकन का आकार बदलो",
+      "unsaved_hint": "बदलाव सहेजे नहीं गए — छोड़ने के लिए Esc फिर दबाओ, रखने के लिए बाहर क्लिक करो"
     }
   },
   "hooks": {

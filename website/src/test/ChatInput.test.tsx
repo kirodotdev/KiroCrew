@@ -1328,6 +1328,31 @@ describe('ChatInput', () => {
       expect(onSend).toHaveBeenCalled()
       expect(onStop).not.toHaveBeenCalled()
     })
+
+    it('disables the Queue message button, with the offline label, when the gateway drops mid-turn', () => {
+      // The idle Send button already pairs `!connected` with offlineProps; the
+      // mid-turn controls must not render enabled with their normal tooltip and
+      // then do nothing (the central `fireComposer` guard would swallow the press).
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="more" isRunning onStop={vi.fn()} onSend={onSend} connected={false} />)
+      const btn = screen.getByRole('button', { name: /Queue message disabled/ })
+      expect(btn).toBeDisabled()
+      expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to send')
+      fireEvent.click(btn)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('disables the split button\'s fire half when the gateway drops mid-turn, and keeps the mode caret live', () => {
+      const onSteer = vi.fn()
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="more" isRunning canSteer onStop={vi.fn()} onSend={onSend} onSteer={onSteer} connected={false} />)
+      const fire = screen.getByTestId('busy-send-button')
+      expect(fire).toBeDisabled()
+      fireEvent.click(fire)
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSend).not.toHaveBeenCalled()
+      expect(screen.getByTestId('busy-send-caret')).not.toBeDisabled()
+    })
   })
 
   describe('a staged session reference does not arm the mid-turn button', () => {
