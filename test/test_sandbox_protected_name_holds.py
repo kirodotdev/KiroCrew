@@ -274,7 +274,21 @@ class TestLeafOnlyPopulationIsRecorded:
 
     #: Measured per tier. Not a target -- a debt. Today it is the WHOLE
     #: population: nothing is durably held.
-    EXPECTED: dict[str, int] = {"standard": 235, "cc": 242, "strict": 243}
+    #:
+    #: The launcher spells every data-home leaf once per spelling of the crew
+    #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
+    #: the resolved ``config_dir()`` when it is a third place, as the relocated
+    #: ``KIROCREW_HOME`` the conftest pins always is), so one new root-level
+    #: leaf is three entries in every tier. Two landed after the first
+    #: measurement, both at the data-home root, whose parent no stand-in can
+    #: hold, so leaf-only is the only hold available to them:
+    #:
+    #: * ``credential_redaction.json`` -- the owner's credential-redaction
+    #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #: * ``auth-store-staging`` -- the masked directory the two gateway auth
+    #:   stores publish through, so the temp holding a full signing key or
+    #:   refresh-chain state is never listable from inside the namespace.
+    EXPECTED: dict[str, int] = {"standard": 241, "cc": 248, "strict": 249}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
