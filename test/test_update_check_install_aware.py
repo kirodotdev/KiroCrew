@@ -1310,6 +1310,7 @@ class TestAutoApplyGuard:
         orch = object.__new__(GatewayOrchestrator)
         orch.dashboard_state = MagicMock()
         orch._update_apply_deferred = False
+        orch._update_apply_in_flight = False
         orch._mandatory_update_deferred_at = None
         orch._mandatory_update_deferred_key = None
         orch._session_tasks = {}
@@ -1580,6 +1581,100 @@ class TestAutoApplyGuard:
 
         asyncio.run(_scenario())
         replay.assert_awaited_once_with(spool=tmp_path)
+
+
+class TestUpdateApplyInFlightFlag:
+    """The flag the stale-asset watchdog reads to stand down.
+
+    An in-place installer deletes the static bundle it is replacing. If the
+    watchdog reads that as an external prune it shuts the gateway down, and the
+    shutdown cancels the installer before it writes its console scripts. The
+    flag is what tells the watchdog the gap is ours — so it must be set for
+    exactly the window an apply is running, and never a moment longer.
+    """
+
+    _orchestrator = staticmethod(TestAutoApplyGuard._orchestrator)
+
+    def test_flag_is_set_when_prepare_clears_the_apply(self):
+        orch = self._orchestrator()
+        orch._in_flight_work_counts = MagicMock(return_value=(0, 0))
+
+        prepared = asyncio.run(orch._prepare_auto_update_apply(mandatory=False))
+
+        assert prepared is True
+        assert orch._update_apply_in_flight is True
+        assert orch._update_apply_is_in_flight() is True
+
+    def test_flag_is_set_when_there_is_no_session_manager(self):
+        orch = self._orchestrator()
+        orch.sessions = None
+
+        prepared = asyncio.run(orch._prepare_auto_update_apply(mandatory=False))
+
+        assert prepared is True
+        assert orch._update_apply_in_flight is True
+
+    def test_flag_stays_clear_when_prepare_defers(self):
+        # A deferral means nothing is installing. A flag left set here would
+        # mute the watchdog over a tree no installer is touching.
+        orch = self._orchestrator()
+        orch._in_flight_work_counts = MagicMock(return_value=(1, 0))
+
+        prepared = asyncio.run(orch._prepare_auto_update_apply(mandatory=False))
+
+        assert prepared is False
+        assert orch._update_apply_in_flight is False
+        assert orch._update_apply_is_in_flight() is False
+
+    def test_flag_stays_clear_when_admission_cannot_be_paused(self):
+        orch = self._orchestrator()
+        orch.sessions.pause_turn_admission_for_update = AsyncMock(return_value=False)
+
+        prepared = asyncio.run(orch._prepare_auto_update_apply(mandatory=False))
+
+        assert prepared is False
+        assert orch._update_apply_in_flight is False
+
+    def test_flag_stays_clear_when_pausing_admission_raises(self):
+        orch = self._orchestrator()
+        orch.sessions.pause_turn_admission_for_update = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        prepared = asyncio.run(orch._prepare_auto_update_apply(mandatory=False))
+
+        assert prepared is False
+        assert orch._update_apply_in_flight is False
+
+    def test_finish_clears_the_flag(self):
+        orch = self._orchestrator()
+        orch._update_apply_in_flight = True
+
+        asyncio.run(orch._finish_auto_update_apply())
+
+        assert orch._update_apply_in_flight is False
+
+    def test_finish_clears_the_flag_without_a_session_manager(self):
+        # The early return for a missing session manager must not skip the
+        # clear: the apply is over either way.
+        orch = self._orchestrator()
+        orch._update_apply_in_flight = True
+        orch.sessions = None
+
+        asyncio.run(orch._finish_auto_update_apply())
+
+        assert orch._update_apply_in_flight is False
+
+    def test_finish_clears_the_flag_even_if_resuming_admission_fails(self):
+        orch = self._orchestrator()
+        orch._update_apply_in_flight = True
+        orch.sessions.resume_turn_admission_after_update = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        asyncio.run(orch._finish_auto_update_apply())
+
+        assert orch._update_apply_in_flight is False
 
 
 class TestRecurringAutoUpdateCoordinator:

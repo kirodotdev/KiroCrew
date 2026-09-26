@@ -2082,6 +2082,13 @@ class GatewayOrchestrator:
         # cannot hold the process open.
         self._update_check_task: "asyncio.Task[None] | None" = None
         self._update_apply_deferred = False
+        # True while an automatic apply this gateway launched is mutating our
+        # own install. The stale-asset watchdog reads it: an in-place installer
+        # deletes the static bundle it is replacing, and without this the
+        # watchdog reads that as an external prune, shuts the gateway down, and
+        # the shutdown cancels the installer before it writes its console
+        # scripts.
+        self._update_apply_in_flight = False
         self._pending_update_respawn: Callable[[], str] | None = None
         self._mandatory_update_deferred_at: float | None = None
         self._mandatory_update_deferred_key: str | None = None
@@ -2229,6 +2236,14 @@ class GatewayOrchestrator:
         turns, background = self._in_flight_work_counts()
         return turns + background
 
+    def _update_apply_is_in_flight(self) -> bool:
+        """Report whether an apply WE launched is mutating our own install.
+
+        Read by the stale-asset watchdog so it stands down instead of shutting
+        the gateway down over a gap its own updater created.
+        """
+        return self._update_apply_in_flight
+
     def _live_update_handler_tasks(self) -> list[asyncio.Task[Any]]:
         """Return deduplicated channel handler tasks the restart must preserve."""
         current = asyncio.current_task()
@@ -2368,6 +2383,7 @@ class GatewayOrchestrator:
             self._mandatory_update_deferred_key = None
         sessions = self.sessions
         if sessions is None:
+            self._update_apply_in_flight = True
             return True
         try:
             paused = await sessions.pause_turn_admission_for_update()
@@ -2384,6 +2400,10 @@ class GatewayOrchestrator:
         if busy <= 0:
             self._mandatory_update_deferred_at = None
             self._mandatory_update_deferred_key = None
+            # Only here and in the sessions-less branch above: every other exit
+            # from this method DEFERS the apply, and a flag left set on a
+            # deferral would mute the watchdog while nothing is installing.
+            self._update_apply_in_flight = True
             return True
 
         loop = asyncio.get_running_loop()
@@ -2418,6 +2438,10 @@ class GatewayOrchestrator:
 
     async def _finish_auto_update_apply(self) -> None:
         """Reopen admission when apply returns instead of replacing the process."""
+        # Cleared FIRST, ahead of the sessions-less early return: the apply is
+        # over either way, and a flag surviving this method keeps the watchdog
+        # stood down over a tree nothing is installing into.
+        self._update_apply_in_flight = False
         sessions = self.sessions
         if sessions is None:
             return
@@ -14282,9 +14306,15 @@ class GatewayOrchestrator:
         # install's static assets and triggers graceful shutdown so the
         # supervisor can restart a fresh process. It first drains in-flight
         # backend turns (count_in_flight) so active work isn't killed
-        # mid-prompt by the restart.
+        # mid-prompt by the restart. update_in_progress keeps it from firing on
+        # a gap our OWN installer created: that shutdown would cancel the
+        # installer mid-write and leave a venv with no console scripts.
         _watchdog = asyncio.create_task(
-            run_stale_asset_watchdog(shutdown_event, count_in_flight=self._count_in_flight_work)
+            run_stale_asset_watchdog(
+                shutdown_event,
+                count_in_flight=self._count_in_flight_work,
+                update_in_progress=self._update_apply_is_in_flight,
+            )
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)

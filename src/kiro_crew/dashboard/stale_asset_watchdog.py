@@ -55,6 +55,16 @@ _DRAIN_TIMEOUT_SECS = 120.0
 # external SIGTERM arriving mid-drain.
 _DRAIN_POLL_SECS = 2.0
 
+# Max time the watchdog will stand down for a gateway-hosted update apply
+# (seconds). The stand-down exists because our OWN installer deletes the assets
+# it is replacing, so a vanish during an apply we launched is expected state.
+# It is BOUNDED on purpose: an apply that never reports finishing (a wedged
+# installer, a lost `finally`) must not silently disable the watchdog forever.
+# Comfortably above the installer subprocess's own 300s timeout, so a healthy
+# apply always completes inside the window and only a genuinely stuck one is
+# overridden.
+_UPDATE_SUPPRESS_MAX_SECS = 600.0
+
 # Process exit status the gateway uses when THIS watchdog initiated the
 # shutdown. Non-zero on purpose: the whole point of the shutdown is to be
 # restarted by a supervisor, and ``Restart=on-failure`` (systemd) /
@@ -120,6 +130,8 @@ async def run_stale_asset_watchdog(
     count_in_flight: Callable[[], int] | None = None,
     drain_timeout: float = _DRAIN_TIMEOUT_SECS,
     drain_poll: float = _DRAIN_POLL_SECS,
+    update_in_progress: Callable[[], bool] | None = None,
+    update_suppress_max: float = _UPDATE_SUPPRESS_MAX_SECS,
 ) -> bool:
     """Background loop: check asset presence, trigger shutdown if stale.
 
@@ -150,6 +162,16 @@ async def run_stale_asset_watchdog(
     static-asset serving, so active ACP turns can finish rather than being
     killed mid-prompt when the supervisor restarts a fresh process.
 
+    A vanish caused by an update *this gateway itself launched* is not evidence
+    of an external prune at all — the in-place installer deletes the assets it
+    is replacing. ``update_in_progress`` lets the gateway say so, and while it
+    reports True the watchdog stands down instead of shutting down. Without it
+    the watchdog shuts the gateway down mid-install, and that shutdown cancels
+    the installer task, which kills the installer before it writes its console
+    scripts — the gateway destroying its own install. The stand-down is bounded
+    by ``update_suppress_max`` so an apply that never reports finishing cannot
+    disable the watchdog indefinitely.
+
     Parameters
     ----------
     shutdown_event:
@@ -169,6 +191,16 @@ async def run_stale_asset_watchdog(
         Max seconds to wait for in-flight work to finish. Default 120s.
     drain_poll:
         Seconds between in-flight re-counts while draining. Default 2s.
+    update_in_progress:
+        Optional predicate reporting whether a gateway-hosted update apply is
+        currently mutating this install's own tree. While it returns True a
+        missing asset bundle is expected state, so the watchdog stands down
+        rather than triggering shutdown. ``None`` disables the stand-down
+        (historical behaviour). A predicate that raises is treated as "not
+        updating" — a broken predicate must never wedge shutdown.
+    update_suppress_max:
+        Max seconds of continuous stand-down before the watchdog overrides
+        ``update_in_progress`` and shuts down anyway. Default 600s.
     """
     if not assets_present():
         # Assets were never here — this is likely a dev/source install that
@@ -180,6 +212,59 @@ async def run_stale_asset_watchdog(
         )
         return False
 
+    loop = asyncio.get_running_loop()
+    suppressed_since: float | None = None
+
+    def _update_owns_the_gap() -> bool:
+        """Report whether OUR OWN update apply explains the missing assets.
+
+        True means stand down: the installer we launched is replacing the tree
+        we serve from, so the gap is expected and a shutdown here would cancel
+        that installer mid-write. Bounded by ``update_suppress_max`` — a
+        stand-down that outlives any healthy apply is overridden so a wedged
+        update cannot switch the watchdog off for the rest of the process's
+        life.
+        """
+        nonlocal suppressed_since
+        if update_in_progress is None:
+            return False
+        try:
+            applying = bool(update_in_progress())
+        except Exception:
+            # Same doctrine as count_in_flight: a broken predicate must never
+            # wedge shutdown, so fail towards the watchdog's normal behaviour.
+            logger.debug(
+                "Stale-asset watchdog: update-in-progress predicate failed — "
+                "treating as 'not updating'.",
+                exc_info=True,
+            )
+            suppressed_since = None
+            return False
+        if not applying:
+            suppressed_since = None
+            return False
+        now = loop.time()
+        if suppressed_since is None:
+            suppressed_since = now
+            logger.warning(
+                "Stale-asset watchdog: assets missing while an update apply "
+                "this gateway launched is in flight — expected state, not an "
+                "external prune; standing down for up to %.0fs.",
+                update_suppress_max,
+            )
+            return True
+        held = now - suppressed_since
+        if held >= update_suppress_max:
+            logger.warning(
+                "Stale-asset watchdog: an update apply has claimed the asset "
+                "gap for %.0fs (ceiling %.0fs) — overriding the stand-down so "
+                "a stuck update cannot disable the watchdog.",
+                held,
+                update_suppress_max,
+            )
+            return False
+        return True
+
     while not shutdown_event.is_set():
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
@@ -188,6 +273,8 @@ async def run_stale_asset_watchdog(
             pass
 
         if not assets_present():
+            if _update_owns_the_gap():
+                continue
             # Re-confirm after a short delay: a frontend rebuild in a source
             # install deletes and recreates static/dist/, and an unlucky tick
             # inside that window must not kill a healthy gateway. An update
@@ -235,6 +322,11 @@ async def run_stale_asset_watchdog(
                     "shutting down."
                 )
                 continue
+            # Re-ask right before signalling: an apply can begin inside the
+            # confirm or drain window, and shutting down then is the exact
+            # self-inflicted kill this guard exists to prevent.
+            if _update_owns_the_gap():
+                continue
             logger.critical(
                 "Dashboard static assets vanished — an update likely "
                 "pruned the running install. Initiating graceful shutdown "
@@ -242,6 +334,10 @@ async def run_stale_asset_watchdog(
             )
             shutdown_event.set()
             return True
+        else:
+            # Healthy sample — drop any stand-down window we were tracking so a
+            # later apply gets a full ceiling rather than inheriting this one.
+            suppressed_since = None
     # Loop never entered: the event was already set when the watchdog armed.
     return False
 
