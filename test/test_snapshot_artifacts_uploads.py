@@ -372,6 +372,36 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         assert (home / "artifacts" / "kept.md").is_file(), out
         assert (home / "artifacts" / "imported.md").read_text() == "saved while the restore ran"
 
+    def test_rollback_leaves_a_later_tree_the_restore_never_mutated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A saved rollback copy is not ownership of a target the mutation never reached.
+
+        Both present trees are saved in phase one.  The artifact replacement fails before
+        the uploads pass starts, after a dashboard upload lands.  Recovery must restore the
+        artifact tree it removed without replacing uploads from its older phase-one copy.
+        """
+        home = _home(tmp_path, monkeypatch)
+        bundle = _snapshot(tmp_path, "artifacts", "uploads")
+        real_copytree = snap._copytree_safe
+        failed = False
+
+        def fail_artifacts_after_upload(src, dst, **kwargs):
+            nonlocal failed
+            if Path(dst) == home / "artifacts" and not failed:
+                failed = True
+                (home / "uploads" / "concurrent.bin").write_bytes(b"arrived during restore")
+                raise OSError("disk full")
+            return real_copytree(src, dst, **kwargs)
+
+        monkeypatch.setattr(snap, "_copytree_safe", fail_artifacts_after_upload)
+        rc = _restore(bundle, "replace", "artifacts", "uploads")
+        out = capsys.readouterr().out
+
+        assert rc == 1, out
+        assert (home / "artifacts" / "report.md").read_text() == "# quarterly report\n"
+        assert (home / "uploads" / "concurrent.bin").read_bytes() == b"arrived during restore"
+
     def test_a_hollow_memory_declaration_is_still_refused(self, tmp_path, monkeypatch, capsys):
         """The case the guard was written for, which the narrowing must not reach."""
         home = _home(tmp_path, monkeypatch)
