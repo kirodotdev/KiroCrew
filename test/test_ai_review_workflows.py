@@ -287,6 +287,8 @@ class TestHumanOverrideHandler:
         assert 'select(.external_id | startswith(\\"$lane-pr-$PR-\\"))' in script
         assert 'select(.external_id == \\"$lane-pr-$PR\\")' not in script
         assert "sort_by(.started_at) | last" in script
+        # The default filter=latest returns one check-run per name: nothing to sort.
+        assert "check-runs?check_name=$enc&per_page=100&filter=all" in script
         # The resolved run must be verified to belong to the expected fork
         # lane before anything is re-run: any workflow with checks:write
         # could post a check-run of the same name.
