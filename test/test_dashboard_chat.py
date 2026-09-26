@@ -4095,6 +4095,7 @@ class TestKiroReadinessQueueHandoff:
         client.stream_command = stream
         client.context_usage_pct = MagicMock(return_value=1.0)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.cancel_current = AsyncMock(return_value="acked")
         state.sessions.record_failure = AsyncMock()
         state.conversation_log = MagicMock()
         state.conversation_log.read_messages.return_value = []
@@ -6950,6 +6951,7 @@ class TestTokenPersistenceBackfill:
         client.context_used_tokens = MagicMock(return_value=0)
         client.context_window_tokens = MagicMock(return_value=0)
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.cancel_current = AsyncMock(return_value="acked")
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.generate_session_summary",
             AsyncMock(return_value=None),
@@ -13244,26 +13246,94 @@ class TestOrchestratorPlanGateArming:
         return state
 
     @pytest.mark.asyncio
-    async def test_stage_loop_times_out_a_stage_that_swallows_cancellation(
-        self, tmp_path, monkeypatch
-    ):
-        """The real `_run_chat` CATCHES CancelledError (flushes partial output and
-        returns), so `asyncio.wait_for` would absorb its own deadline and let a
-        half-finished stage advance as a success. The fake here reproduces that
-        exact semantic -- a bare `sleep()` would propagate the cancellation and
-        pass even against the broken implementation, which is why this test uses
-        a swallowing turn."""
+    async def test_running_stage_can_outlast_its_start_budget(self, tmp_path, monkeypatch):
+        """The stage budget gates the next turn; it never cuts productive work."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator.chat_turn_timeout_secs",
+            lambda: 60,
+            raising=False,
+        )
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("productive-long-stage", mode="orchestrator")
+        slot._stage_titles = ["A"]
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        slot._auto_run = True
+
+        async def _productive_stage(s, sl, msg, **kw):
+            await asyncio.sleep(1.05)
+            _mark_stage_consumed(kw)
+            sl.append("assistant", "stage completed", "msg msg-a")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _productive_stage)
+
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=10)
+
+        assert not any("timed out" in m.get("content", "") for m in slot.messages)
+        assert any("All 1 stages complete" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_spent_stage_budget_pauses_before_the_next_stage(self, tmp_path, monkeypatch):
+        """An over-budget completed stage is not confused with the pending stage."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator.chat_turn_timeout_secs", lambda: 60
+        )
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("spent-stage-budget", mode="orchestrator")
+        slot._stage_titles = ["A", "B"]
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=0.05)
+        slot._auto_run = True
+
+        async def _stage_one(s, sl, msg, **kw):
+            await asyncio.sleep(0.06)
+            _mark_stage_consumed(kw)
+            sl.append("assistant", "stage one completed", "msg msg-a")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _stage_one)
+
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=10)
+
+        timeout_cards = [
+            m.get("content", "") for m in slot.messages if "auto-run budget" in m.get("content", "")
+        ]
+        assert len(timeout_cards) == 1
+        assert "Stage 1 used" in timeout_cards[0]
+        assert "paused before Stage 2" in timeout_cards[0]
+        seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
+        assert any("Stage 1" in s for s in seps)
+        assert not any("Stage 2" in s for s in seps)
+
+    @pytest.mark.asyncio
+    async def test_chat_turn_ceiling_still_pauses_a_stage_that_swallows_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        """The independent chat ceiling still catches a genuinely runaway turn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator.chat_turn_timeout_secs",
+            lambda: 0.05,
+            raising=False,
+        )
         from kiro_crew.context_management import OrchestrationTracker
         from kiro_crew.dashboard.chat import _stage_loop
 
         state = self._orch_state()
         slot = _ChatSlot("hang-test", mode="orchestrator")
         slot._stage_titles = ["A", "B"]
-        # 1s budget so the ceiling fires well inside the test's runtime.
-        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=0.05)
         slot._auto_run = True
 
         swallowed = False
@@ -13273,29 +13343,33 @@ class TestOrchestratorPlanGateArming:
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
-                # Exactly what _run_chat does: absorb it and return normally.
                 swallowed = True
                 return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _hang_and_swallow)
 
-        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=30)
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=10)
 
         assert swallowed, "the fake must have absorbed the cancellation (the real path)"
-        assert slot._auto_run is False, "a stage cut at the ceiling must stop auto-run"
-        assert any(
-            "timed out" in m.get("content", "") for m in slot.messages
-        ), "the user must see a timeout card, not a silently-advanced stage"
+        assert slot._auto_run is False, "a cut turn must stop auto-run"
+        assert any("This turn hit" in m.get("content", "") for m in slot.messages)
         seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
-        assert not any("Stage 2" in s for s in seps), "a cut stage must NOT advance to the next one"
+        assert not any("Stage 2" in s for s in seps), "a cut stage must NOT advance"
+        assert slot.stage_boundary.stage == 1
+        assert slot.stage_boundary.awaiting_guidance is True
+        assert any(
+            "[OPTION: Go | Cancel]" in m.get("content", "") for m in slot.messages
+        ), "a timed-out turn must offer an explicit resume-or-cancel checkpoint"
 
     @pytest.mark.asyncio
     async def test_stage_loop_disabled_timeout_does_not_abort_instantly(
         self, tmp_path, monkeypatch
     ):
-        """stage_timeout_seconds=0 means 'disabled' (see is_stage_timed_out), so
-        it must become wait_for(None) — passing 0 through would time out every
-        stage before its turn began."""
+        """stage_timeout_seconds=0 disables only the between-turn start gate.
+
+        The independent chat-turn ceiling remains in force, so zero must not be
+        passed to `_bounded_turn` and cut every stage immediately.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
@@ -13689,7 +13763,7 @@ class TestPythonStageLoop:
 
     @pytest.mark.asyncio
     async def test_stage_timeout_stops_loop(self, tmp_path, monkeypatch):
-        """Stage timeout breaks the loop."""
+        """A spent stage budget blocks the next automatic stage turn."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _stage_loop
@@ -13704,8 +13778,9 @@ class TestPythonStageLoop:
         from kiro_crew.context_management import OrchestrationTracker
 
         tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        tracker.start_stage(1)
         slot._orch_tracker = tracker
-        # Force timeout on first check
+        # Force the prior stage's budget to be spent before Stage 2 starts.
         tracker.is_stage_timed_out = lambda: True
 
         run_chat_mock = AsyncMock()
@@ -13715,9 +13790,41 @@ class TestPythonStageLoop:
 
         # Should NOT call _run_chat (timeout before execution)
         run_chat_mock.assert_not_called()
-        # Should emit timeout message
-        timeout_msgs = [m for m in slot.messages if "timed out" in m.get("content", "")]
+        # Should emit an accurately attributed start-gate message.
+        timeout_msgs = [m for m in slot.messages if "auto-run budget" in m.get("content", "")]
         assert len(timeout_msgs) == 1
+        assert "Stage 1 used" in timeout_msgs[0]["content"]
+        assert "before Stage 2" in timeout_msgs[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_spent_stage_budget_does_not_block_human_approved_go(self, tmp_path, monkeypatch):
+        """The user clicking Go is the attended-stage admission gate."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = _StageManager()
+        slot = self._make_slot(max_stages=3)
+        tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        tracker.start_stage(1)
+        tracker.is_stage_timed_out = lambda: True
+        slot._orch_tracker = tracker
+
+        async def _run_stage_two(s, sl, msg, **kw):
+            _mark_stage_consumed(kw)
+            sl.append("assistant", "stage two completed", "msg msg-a")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _run_stage_two)
+
+        await _stage_loop(state, slot, auto_run=False)
+
+        assert not any("auto-run budget" in m.get("content", "") for m in slot.messages)
+        seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
+        assert any("Stage 2" in s for s in seps)
 
     @pytest.mark.asyncio
     async def test_normal_chat_unaffected(self, tmp_path, monkeypatch):
@@ -13878,6 +13985,34 @@ class TestPythonStageLoop:
 
         run_chat_mock.assert_not_called()
         assert any(entry.get("content") == "unrelated post-login reply" for entry in slot._queue)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_stage_accepts_guidance_without_dropping_retry_boundary(
+        self, tmp_path, monkeypatch
+    ):
+        """Timeout hands the floor back while the interrupted stage stays resumable."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("timed-out-stage-guidance", mode="orchestrator")
+        slot.stage_boundary.arm(1, consumed=True)
+        slot.stage_boundary.awaiting_guidance = True
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={"message": "the build may still be running", "slot": slot.key},
+            )
+            assert response.status == 200
+            assert (await response.json()).get("queued") is not True
+
+        assert slot.stage_boundary.stage == 1
+        assert slot.stage_boundary.awaiting_guidance is True
+        if slot.task is not None:
+            await asyncio.wait_for(slot.task, timeout=1)
+        run_chat_mock.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_pending_stage_queues_stop_prefixed_message_without_escalation(
@@ -18928,6 +19063,7 @@ class TestAcpProcessDiedRecovery:
         state = _make_state(tmp_path)
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         state.sessions.release = MagicMock()
+        state.sessions.cancel_current = AsyncMock(return_value="acked")
         state.sessions.reset = AsyncMock()
         state.sessions.set_approval_policy = MagicMock()
         state.sessions.check_context_usage = MagicMock()
@@ -19279,6 +19415,136 @@ class TestAcpProcessDiedRecovery:
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
             assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+
+    @pytest.mark.asyncio
+    async def test_prelease_cancellation_does_not_cancel_the_current_key_holder(
+        self, tmp_path: Path
+    ) -> None:
+        """A turn waiting for a shared lease owns no native turn to cancel."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        lease_wait_entered = asyncio.Event()
+
+        async def _wait_for_foreign_holder(*args, **kwargs):
+            lease_wait_entered.set()
+            await asyncio.Event().wait()
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_wait_for_foreign_holder)
+
+        task = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(lease_wait_entered.wait(), timeout=1)
+        task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+
+        state.sessions.cancel_current.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unacknowledged_native_cancel_is_visible(self, tmp_path: Path) -> None:
+        """A timed-out native stop must not silently claim the turn is gone."""
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        entered = asyncio.Event()
+
+        async def _stream_until_cancelled(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="work started")
+            entered.set()
+            await asyncio.Event().wait()
+
+        client.stream = _stream_until_cancelled
+        client.stream_command = _stream_until_cancelled
+        state.sessions.cancel_current = AsyncMock(return_value="timeout")
+
+        task = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert state.sessions.cancel_current.await_args.kwargs["wait_ack_timeout"] > 0
+        assert any(
+            "did not acknowledge the stop request" in m.get("content", "") for m in slot.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_outer_cancellation_cancels_the_native_acp_turn(self, tmp_path: Path) -> None:
+        """Cancelling the dashboard runner must also cancel its native ACP turn.
+
+        A global chat-turn ceiling cancels ``_run_chat`` directly. Without this
+        handoff the dashboard reports a timeout while the native tool keeps
+        running and its late result lands only in the discarded ACP transcript.
+        """
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        entered = asyncio.Event()
+
+        async def _stream_until_cancelled(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="work started")
+            entered.set()
+            await asyncio.Event().wait()
+
+        client.stream = _stream_until_cancelled
+        client.stream_command = _stream_until_cancelled
+
+        task = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+
+        call = state.sessions.cancel_current.await_args
+        assert call.args == ("dashboard:pipe-death-slot",)
+        assert call.kwargs["wait_ack_timeout"] > 0
+
+    @pytest.mark.asyncio
+    async def test_second_cancellation_does_not_abandon_native_cancel_or_partial_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """A repeated cancel must not interrupt native cancellation cleanup.
+
+        The stage deadline supplies the first cancellation. Gateway shutdown can
+        supply a second one while ``session/cancel`` is still being sent. That
+        interleave must retain the native cancel task and persist text the user
+        already watched stream instead of abandoning both cleanup obligations.
+        """
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        stream_entered = asyncio.Event()
+        native_cancel_entered = asyncio.Event()
+        release_native_cancel = asyncio.Event()
+        native_cancel_completed = asyncio.Event()
+
+        async def _stream_until_cancelled(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="work started")
+            stream_entered.set()
+            await asyncio.Event().wait()
+
+        async def _gated_native_cancel(*args, **kwargs):
+            native_cancel_entered.set()
+            await release_native_cancel.wait()
+            native_cancel_completed.set()
+            return "acked"
+
+        client.stream = _stream_until_cancelled
+        client.stream_command = _stream_until_cancelled
+        state.sessions.cancel_current = AsyncMock(side_effect=_gated_native_cancel)
+
+        task = asyncio.create_task(_run_chat(state, slot, "test message"))
+        await asyncio.wait_for(stream_entered.wait(), timeout=1)
+        task.cancel()
+        await asyncio.wait_for(native_cancel_entered.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0)
+        release_native_cancel.set()
+        try:
+            await asyncio.wait_for(task, timeout=1)
+        except asyncio.CancelledError:
+            pass
+        await asyncio.wait_for(native_cancel_completed.wait(), timeout=1)
+
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "work started"
+            for m in slot.messages
+        ), "the second cancellation skipped partial-reply persistence"
 
     @pytest.mark.asyncio
     async def test_retry_requeues_via_queue_insert(self, tmp_path: Path) -> None:

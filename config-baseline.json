@@ -1672,7 +1672,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Stage Timeout",
-      "help": "Max seconds per stage before auto-run stops. Default 30 min.",
+      "help": "Max seconds a stage may spend before the next automatic stage turn is admitted. Never interrupts a turn already running. Default 30 min.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1800

@@ -808,8 +808,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     _pending_stage_control = _orchestrator_mode and (
         (_is_go and not _widget_origin) or _pending_escalated_stop
     )
+    _stage_boundary = stage_boundary_for(slot)
     _pending_stage_boundary = (
-        stage_boundary_for(slot).stage is not None and not _pending_stage_control
+        _stage_boundary.stage is not None
+        and not _pending_stage_control
+        and not _stage_boundary.awaiting_guidance
     )
     if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
@@ -1267,7 +1270,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot.key}",
             )
         )
-        # Use Python-controlled stage loop instead of _run_chat
+        # Use Python-controlled stage loop instead of _run_chat. An explicit Go
+        # closes a timeout's guidance pause; the boundary itself remains armed
+        # until the controller reconciles the interrupted stage.
+        stage_boundary_for(slot).awaiting_guidance = False
         if stage_boundary_for(slot).stage is not None:
             _queue_consumed_stage_resume(
                 state,

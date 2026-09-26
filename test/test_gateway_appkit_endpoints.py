@@ -2940,16 +2940,19 @@ class TestNoteEndpoint:
     async def test_a_timed_out_stage_still_writes_a_held_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Same drop via the ceiling, where the cancelled flag is never set.
+        """A globally timed-out stage still flushes a held note.
 
         ``_bounded_turn`` cancels the turn and raises, so the loop exits with
         ``_cancelled`` false -- which is why the fix keys on who owns the task
-        rather than on that flag.
+        rather than on that flag. The stage start budget is deliberately longer
+        than this test's chat-turn ceiling: productive stage work must not be cut
+        by the start gate.
         """
         from kiro_crew.dashboard import chat_orchestrator
         from kiro_crew.dashboard.chat import _stage_loop
 
-        state, slot = self._stage_slot(tmp_path, monkeypatch, timeout=1)
+        state, slot = self._stage_slot(tmp_path, monkeypatch, timeout=60)
+        monkeypatch.setattr(chat_orchestrator, "chat_turn_timeout_secs", lambda: 1)
 
         async def _mock_run_chat(state, slot, message, **kwargs):
             slot._deferred_notes.append(
