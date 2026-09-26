@@ -77,6 +77,115 @@ def test_global_session_binding_matches_equivalent_alias(monkeypatch):
     assert not stored.same_dispatch_binding(replace(requested, memory_store_name="other-store"))
 
 
+def test_project_override_survives_the_wrapper_instead_of_being_restored(tmp_path, monkeypatch):
+    """A private member's turn landing on a same-named project agent must run on
+    the resolver's narrowed projection (unowned template, default store), not on
+    the wrapper's restore of the member's own private context -- that restore is
+    precisely the leak GPT 5.6 flagged at config/loader.py (resolved here in the
+    wrapper, the one place both the dashboard turn and the eager-spawn path read
+    their dispatch bindings from)."""
+    from kiro_crew import execution_context, session_agent_selection
+    from kiro_crew.config.loader import KiroCrewAgentConfig, MemoryStoreConfig, WorkspaceConfig
+
+    cfg = KiroCrewConfig(
+        agents={
+            "default": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+            "dev": KiroCrewAgentConfig(
+                kiro_agent="dev-template", memory_store="dev-private", model="dev-model"
+            ),
+        },
+        default_agent="default",
+        workspaces={"default": WorkspaceConfig(dir="/tmp/ws")},
+        default_workspace="default",
+        memory_stores={
+            "default": MemoryStoreConfig(),
+            "dev-private": MemoryStoreConfig(),
+        },
+        default_memory_store="default",
+    )
+    captured = execution_context.ExecutionContext(
+        member_id="dev-member",
+        store=execution_context.MemoryStoreRef("dev-private", "dev-member"),
+        selection_kind="member",
+        template_id="dev-template",
+        selection_name="dev",
+    )
+    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.member_config_for_id",
+        lambda config, member_id: ("dev", config.agents["dev"]),
+    )
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".kiro" / "agents").mkdir(parents=True)
+    (proj / ".kiro" / "agents" / "dev.json").write_text(
+        json.dumps({"name": "dev"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.kiro_agents_dir", lambda: agents_dir)
+
+    bindings = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:member-shadowed-by-project", "dev", str(proj)
+    )
+
+    assert bindings.resolved_source == "project"
+    assert bindings.kiro_agent == "dev"
+    assert bindings.memory_store_name == "default"
+    assert bindings.execution_context is not None
+    assert bindings.execution_context.member_id is None
+    assert bindings.execution_context.store.store_id == "default"
+
+
+def test_ordinary_member_restore_is_not_regressed_by_the_project_override_fix(
+    tmp_path, monkeypatch
+):
+    """The forge defense the project-override fix must not touch: with no project
+    override in play (no project_dir, or a project_dir that does not declare the
+    member's name), the wrapper still restores the STORED member context over
+    whatever the resolver's plain lookup answered."""
+    from kiro_crew import execution_context, session_agent_selection
+    from kiro_crew.config.loader import KiroCrewAgentConfig, MemoryStoreConfig, WorkspaceConfig
+
+    cfg = KiroCrewConfig(
+        agents={
+            "default": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+            "dev": KiroCrewAgentConfig(
+                kiro_agent="dev-template", memory_store="dev-private", model="dev-model"
+            ),
+        },
+        default_agent="default",
+        workspaces={"default": WorkspaceConfig(dir="/tmp/ws")},
+        default_workspace="default",
+        memory_stores={
+            "default": MemoryStoreConfig(),
+            "dev-private": MemoryStoreConfig(),
+        },
+        default_memory_store="default",
+    )
+    captured = execution_context.ExecutionContext(
+        member_id="dev-member",
+        store=execution_context.MemoryStoreRef("dev-private", "dev-member"),
+        selection_kind="member",
+        template_id="dev-template",
+        selection_name="dev",
+    )
+    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.member_config_for_id",
+        lambda config, member_id: ("dev", config.agents["dev"]),
+    )
+
+    bindings = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:member-no-override", "dev"
+    )
+
+    assert bindings.resolved_source != "project"
+    assert bindings.execution_context is captured
+    assert bindings.memory_store_name == "dev-private"
+    assert bindings.kiro_agent == "dev-template"
+
+
 def _turn_state(tmp_path, monkeypatch):
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "workspace"),

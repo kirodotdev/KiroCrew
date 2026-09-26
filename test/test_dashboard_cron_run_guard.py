@@ -65,7 +65,11 @@ class TestApiCronRun:
             data = await resp.json()
         assert data["ok"] is True
         # A run was started and its task handed to the claim run_job took.
-        state.crons.run_job.assert_called_once_with("j1")
+        # `expect_project_path=""` is passed because this request resolves as
+        # non-owner (a plain TestClient call carries no owner markers) against
+        # an unbound job -- see test_cron_project_bound_job_toctou.py for the
+        # TOCTOU this closes.
+        state.crons.run_job.assert_called_once_with("j1", expect_project_path="")
         state.crons.attach_run_task.assert_called_once()
         assert state.crons.attach_run_task.call_args.args[0] == "j1"
 
@@ -115,7 +119,7 @@ class TestApiCronRun:
             resp = await client.post("/api/crons/just-created/run")
             assert resp.status == 200
         state.crons.get_job_async.assert_awaited_once_with("just-created")
-        state.crons.run_job.assert_called_once_with("just-created")
+        state.crons.run_job.assert_called_once_with("just-created", expect_project_path="")
 
     @pytest.mark.asyncio
     async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
@@ -133,9 +137,13 @@ class TestApiCronRun:
 
         state = _make_state(_make_job("j1"))
 
-        def _claiming_run_job(job_id: str):
+        def _claiming_run_job(job_id: str, expect_project_path: str | None = None):
             # The real run_job claims the job synchronously while the call is
             # evaluated, so the next guard read answers "running".
+            # `expect_project_path` mirrors production's signature: the route
+            # passes it for a non-owner request, and a stub that omitted it
+            # raised TypeError inside the handler, which surfaced as 500/500
+            # rather than the 200/409 this test is about.
             state.crons.is_running.return_value = True
             return _blocked_run(job_id)
 
@@ -150,7 +158,7 @@ class TestApiCronRun:
         finally:
             gate.set()
         # Exactly one run was started despite both requests passing the lookup.
-        state.crons.run_job.assert_called_once_with("j1")
+        state.crons.run_job.assert_called_once_with("j1", expect_project_path="")
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:

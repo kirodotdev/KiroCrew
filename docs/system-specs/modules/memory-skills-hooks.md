@@ -229,6 +229,20 @@ replacement while a writer retains a handle. Startup recovery runs before memory
 consumers open the selected generation. Failures retain the old data and report
 unavailability; no read creates a replacement database.
 
+An imported cron's `project_path` binding is re-validated rather than trusted
+verbatim. `_sanitize_imported_crons` (`portability.py`) re-runs
+`security.resolve_project_path` over every job exactly as `cron_add`/`cron_update`
+would, because `_job_from_record` otherwise accepts an imported binding as a bare
+string with no sensitivity check of its own. A sensitive path, or one that fails to
+resolve at all, has its binding cleared; a path that merely does not exist as a
+directory yet on the target machine is kept, so restoring settings before
+re-cloning a repository does not force every bound job to be re-bound by hand. A
+kept binding is rewritten to its canonical `realpath`, because the fire-time guard
+(`_project_path_still_canonical`) requires the stored string to equal its own
+`realpath` in order to detect a symlink retargeted under a saved binding. Any job
+still naming a directory is imported paused, as a `command`/`script` job is, so
+re-arming a restored project binding is always an explicit human action.
+
 `MemoryStore` keeps Global V1 index placement unchanged:
 `MemoryStore()` uses `<home>/memory_index.db`, while an explicitly supplied
 workspace retains its existing workspace-relative path. V1 FTS supports literal
@@ -1228,7 +1242,12 @@ effective request. Other conditional guides remain guarded discovery pointers.
 Auto relevance and file paths first discovered through tools remain agent-driven:
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
-A project override of a template takes precedence over its global copy. A
+A project override of a template takes precedence over its global copy. The same
+binding resolution also owns the memory boundary: when a project definition
+displaces a configured alias, any captured execution context is projected to an
+unowned template context on the Global store before `ResolvedBindings` is
+returned. Callers consume that returned context, so a separately captured private
+store cannot be combined with the project winner at a later dispatch seam. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global
 agents directory, even with a project bound. Both readers share the same path
@@ -1294,6 +1313,9 @@ resources explicitly declared by the template. Native `manual`, `auto` and
 declared prompt may be inline or a file source. Missing optional root files
 are allowed; an unreadable declared source or malformed/shadowed template
 fails with its name instead of silently substituting a different persona.
+For member-bound project execution, shadow admission checks both the selected
+crew alias and its effective provider template against one project-name
+snapshot; either collision refuses before private memory is bound.
 Template resources cannot import Global V1 memory or another member's state;
 the owner's preferences/projects use the separately validated manual-document reader.
 Declared globs have bounded enumeration and do not follow linked directories.

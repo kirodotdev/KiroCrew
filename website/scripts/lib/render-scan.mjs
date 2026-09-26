@@ -154,6 +154,7 @@ export const ALWAYS_LATIN = [
  */
 export const PRESERVED_REGIONS = [
   /https?:\/\/\S+/g, // urls — may CONTAIN a <…> or {{…}} region, so strip first
+  /\/Users\/you\/projects\/myrepo/g, // canonical project-directory example path
   /\{\{[^}]*\}\}/g, // i18next interpolation
   /\$t\([^)]*\)/g, // i18next nesting
   /<[^>]+>/g, // markup, and the URL-shaped <…> values in this catalog

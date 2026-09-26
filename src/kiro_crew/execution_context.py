@@ -395,6 +395,21 @@ def resolve_member_execution(
     )
 
 
+def execution_for_project_override(
+    parent: ExecutionContext, *, template_id: str
+) -> ExecutionContext:
+    """Project-defined templates run as unowned templates on Global memory."""
+    return ExecutionContext(
+        member_id=None,
+        store=MemoryStoreRef("default"),
+        selection_kind="template",
+        template_id=template_id,
+        memory_mode=parent.memory_mode,
+        app=parent.app,
+        selection_name=template_id,
+    )
+
+
 def execution_for_store(
     store: str, *, memory_mode: str = "persistent", app: str = "", template_id: str = ""
 ) -> ExecutionContext:

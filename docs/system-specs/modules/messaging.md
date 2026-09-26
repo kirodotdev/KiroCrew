@@ -2489,7 +2489,13 @@ answer is not permission: a raised evaluation and a `Decision` without
   keyword-only `session_key=""` and forward it to `runner.start_background`, so
   the same run escalates its approval notices to the same place whichever grammar
   typed it. A caller that omits it keeps the narrow `(path, source=)` call, which
-  is what a duck-typed stand-in still accepts.
+  is what a duck-typed stand-in still accepts. A channel allow-list does not
+  establish ownership of a cron job's project directory, and this shared layer
+  has no authenticated install-owner identity to verify. `cron resume` therefore
+  passes `expect_project_path=""` into the locked enable transition and turns a
+  mismatch into a visible direction to use the owner dashboard or
+  `kirocrew cron` CLI; `cron pause` remains available because it only removes
+  execution permission.
 - **A task spec path is validated before it is read, on the channel path too**: a
   spec's CONTENTS reach the model, so an arbitrary path is an exfiltration
   primitive rather than a usability question (`task run ~/.ssh/id_rsa`). Both

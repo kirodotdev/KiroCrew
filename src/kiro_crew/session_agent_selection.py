@@ -8,7 +8,11 @@ import uuid
 from dataclasses import replace as dataclass_replace
 from typing import Any
 
-from kiro_crew.config.loader import ResolvedBindings, resolve_agent_bindings
+from kiro_crew.config.loader import (
+    RESOLVED_SOURCE_PROJECT,
+    ResolvedBindings,
+    resolve_agent_bindings,
+)
 from kiro_crew.execution_context import (
     ExecutionContext,
     MemoryStoreRef,
@@ -72,7 +76,17 @@ def resolve_session_agent_bindings(
         )
     except StopIteration as exc:
         raise UnknownMemoryStore("Conversation agent selection is unavailable") from exc
-    if execution is not None:
+    # The resolver narrows to an unowned template on a project override
+    # (bindings.resolved_source == RESOLVED_SOURCE_PROJECT): it projects a fresh,
+    # server-derived execution_context (member_id=None, store="default") from the
+    # project's own agent declaration, never from a value the session controls, so
+    # it cannot be forged into naming another member's store. Restoring the STORED
+    # member context over it here would be the leak this fix exists to close: a
+    # private member's chat turn landing on a same-named project agent would run
+    # under the member's own private memory. Every other path keeps the durable
+    # record as the pin against a session that rewrites its own record to claim a
+    # peer's private store.
+    if execution is not None and bindings.resolved_source != RESOLVED_SOURCE_PROJECT:
         bindings.memory_store_name = execution.store.store_id
         bindings.kiro_agent = execution.template_id
         bindings.execution_context = execution

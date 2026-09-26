@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Collection, Generic, Iterator, Sequence, TypeVar
 
 from kiro_crew import agent_state, hooks
 from kiro_crew.agent_files import (
@@ -842,6 +842,15 @@ def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
         _dir_signature(project_kiro_dir(project_dir)),
         _dir_signature(project_agents_dir(project_dir)),
     )
+
+
+def agent_binding_is_shadowed(
+    shadow_names: Collection[str],
+    agent: str,
+    effective: str = "",
+) -> bool:
+    """Whether project names shadow a binding alias or dispatched template."""
+    return agent in shadow_names or effective in shadow_names
 
 
 def project_agent_names(

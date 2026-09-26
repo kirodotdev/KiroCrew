@@ -230,6 +230,588 @@ The cron editor sends empty channel and approval overrides on edit to clear stor
 - Chokepoint string-field gate: `_build_job`/`_update_job_locked` type/length-validate **every** caller-supplied string field through one table (`_CRON_STRING_FIELD_CAPS` — name, message, channel, thread_ts, agent_id, created_by, folder_id, chat_folder_id, session_key, model, command, script, timezone), with caps matching the REST/MCP boundary schemas. Non-string truthy values and over-cap strings raise `ValueError` at the persistence owner regardless of caller; `None`/`""` keep their "not set"/no-op semantics while any other falsy non-string is rejected. An anti-drift test (`test/test_cron_string_field_validation.py`) asserts every persisted str field on `CronJob` is either in the table or in a documented runtime-only exclusion set
 - Async stop: `stop()` is now async, cancels and awaits every run claim's tracked task before returning, then drops the claims
 
+### Project directory (`project_path`) and the project-bound job owner gate
+
+A job's `project_path` (optional, default `""`) binds it to a project directory.
+A bound folder supplies two separable things: it is the run's **working
+directory**, so the project's own `.kiro/steering` and skills apply, and it is a
+**roster scope**, so that folder's `.kiro/agents/*.json` definitions are offered
+alongside the global roster — as a chat session opened in that folder would see
+them. An explicitly bound folder outranks the resolved agent's configured
+`workspace`, the same "an explicit or resumed cwd wins" rule `session.md` states
+for member startup: the person binding it holds the owner gate below and said so
+deliberately, where a configured workspace is only a default.
+
+**Precedence inside a bound folder.** A project definition WINS over a
+same-named global alias — a project's agents join the crew as subject-matter
+experts for that project. This follows the scope precedence of the layer
+underneath rather than choosing against it: kiro-cli searches
+`<project>/.kiro/agents` before `~/.kiro/agents` and resolves a same-name
+conflict in the project's favour, and the fire runs with the bound folder as its
+cwd. The folder therefore decides which definition answers whatever this step
+prefers, so the step matches it instead of advertising the other one. The
+precedence is contextual, not global: outside that folder the global alias is
+untouched, so a chat session opened in the folder and a cron bound to it resolve
+the same name the same way. The cost is accepted deliberately — a same-named
+global agent is unreachable in that folder.
+
+Step 1 runs only for a bound job, so an UNBOUND job resolves a collision the way
+`test_alias_still_wins_over_a_project_agent` pins it: with no folder there is no
+declaration of intent, and an alias must not be displaced by a file that happens
+to share its name. Binding the folder is that declaration — an owner passed the
+owner-gated `project_path` and pointed the job at a checkout that declares this
+name.
+
+The job form makes the override visible rather than leaving it to be inferred: on
+a collision the picker offers the PROJECT row (the one dispatch resolves) and
+marks it as overriding the configured agent, so the list never advertises an
+agent that cannot answer. It offers ONE row per name, not both — `agent_id` is a
+bare name, so a second row would be a choice the job could not record, and
+"resolve this name globally even inside the folder" is not enforceable anyway
+for the cwd reason above. Unbinding the folder is the supported way back to the
+global agent, and `""` is documented as global-only.
+
+The explanation is VISIBLE on the row, not behind a hover. The badge is a 10px
+chip; a native `title` tooltip needs a mouse resting precisely on it and does not
+exist on touch at all, and this marker is the only signal in the whole feature
+that tells a user why their configured agent is missing from the list. So a
+shadowed row spends its description line on the override instead of the template
+name it would otherwise repeat — free, because a project row has no description
+of its own.
+
+`GET /api/agents?project_path=` decides which row that is, and the frontend only
+labels the result. On a collision the endpoint emits the project row and
+suppresses the shadowed global one, mirroring `agent_discovery.list_agents`,
+which documents the same rule: a row that cannot run in this directory is not
+offered. Leaving the choice to the picker's own dedup is what previously let the
+two disagree — the roster served the global row while the fire ran the project
+file — so the resolution and the roster now have one owner. The project row is
+still the shared default record under a project tag: `scope` is what says
+`project` (`source` reads `kirocrew` on it), and it carries no description,
+because `project_agent_names` returns names only and there is no per-agent config
+on disk to read without a second scan. It deliberately does NOT inherit the
+shadowed alias's record — see *What each layer supplies* below for why a project
+file must not land on a crew's private memory store.
+
+**What each layer supplies.** The resolved name supplies infrastructure: a
+configured crew's `memory_store`, `model` and effort when the name is a crew,
+otherwise `default_agent`'s (`_materialized_kiro_agent` grafts the default
+bindings onto any agent the directory declares). The project definition supplies
+steering, skills and identity. The folder supplies cwd. A project agent
+therefore runs on the default crew's memory unless the job names a crew, and two
+projects' same-named experts share that store.
+
+A won override carries the shadowed alias's INFRASTRUCTURE away with it: once a
+project file beats a same-named crew there is no `config.agents` record in play,
+so bindings land on `default_agent`'s exactly as a project-only agent's do. That
+is the safe direction as well as the consistent one — a project file is writable
+by anyone who can write that checkout, or land a branch in it, so letting one
+inherit the shadowed crew's PRIVATE memory store would turn "add a file to a
+repo" into a read of that crew's private memory. The sibling
+`private_template_shadowed` / `parent_identity_changed` codes exist because the
+codebase already treats project-file shadowing of a crew template as a hazard.
+At fire time, both the single-agent and sequence paths pass the captured job
+execution context into `resolve_agent_bindings`. When a project definition wins,
+the resolver projects that context onto an unowned template execution using the
+Global store and returns the projected context with the other bindings. Dispatch
+consumes that returned context rather than selecting a store independently, so
+workspace, template and memory provenance cross one resolution boundary. A
+member-bound job keeps its captured lineage, and a non-override fire keeps an
+explicitly selected job store.
+
+**The collision is judged on the name the fire DISPATCHES, not only on the one it
+requested.** The resolver's probe compares the requested name (and, under the
+member opt-out, that name's effective provider template) against the project's
+declarations — but for a carrier-bearing fire the dispatched template is read off
+the carrier (`ResolvedBindings.kiro_agent` is `execution_context.template_id`),
+and a job naming no agent at all is probed as the DEFAULT with `agent_name=None`,
+which reaches no project probe. So the name the backend actually activates can be
+one the resolver never compared, while the cwd is the bound folder and kiro-cli
+resolves that template project-first. `_project_dispatch_execution` therefore
+re-checks the dispatched template against the warmed project name set
+(`_unshadowed_dispatch_execution`) and re-points a captured PRIVATE store onto the
+Global one when the checkout declares it — the same "a project file must not
+inherit a crew's private memory" ruling as the alias-name collision, reached
+through the template name. It re-points the STORE only: the project's file is what
+runs, so the template stays dispatched and the fire is not skipped. A member-bound
+execution is left alone because the resolver already refuses that collision by
+name, and a re-point here would silently answer a case the stated rule refuses.
+The read is the cache `warm_project_agent_names` populated one step earlier and
+performs no syscalls, because this runs on the event loop; a COLD cache therefore
+leaves the execution unchanged rather than scanning a checkout on the loop, which
+is `_project_declares_agent`'s own on-loop rule and the documented residual of it.
+
+**A project agent requires its folder.** A global agent may be bound to a folder
+or not; a project agent exists only within its folder, so clearing the folder
+invalidates the job rather than silently reassigning it to a global default.
+
+Validation (`CronService._validate_project_path`, shared with the frontend's
+resolver via `security.resolve_project_path`) requires an absolute path (or
+`~`-prefixed), not a sensitive path, and an existing directory; an invalid value
+raises `ValueError` at `add_job`/`update_job` and nothing is persisted (same
+create-path-owner contract as `timezone`/`skip_dates` above).
+
+**A fourth gate refuses a directory that could never fire.** A directory that
+CONTAINS the Kiro Crew data home clears all three checks above —
+`is_sensitive_path` answers the *inside* direction, so an ancestor of the data
+home is not itself sensitive — and then the fail-closed macOS voice-runtime spawn
+guard raised on EVERY fire, spending an auto-pause strike each time until the job
+paused itself. So `_validate_project_path` ends on the same
+`sandbox.voice_runtime_workspace_conflict` pre-flight the four sibling
+directory-choice surfaces already run (`chat_folders._folder_project_overlap_denied`,
+the chat project endpoint, `set_project`, `session_directive_apply`), sharing
+`_lexical_runtime_overlap` with the guard so the two cannot drift. Three
+properties are deliberate. It is **last**, so no path that refuses today changes
+its sentence and only a directory that would otherwise SAVE can reach it. It is
+**Darwin-gated inside the helper**, matching the guard: every spawn-time guard
+early-returns off macOS, so this configuration fires fine on Linux and Windows
+and refusing it there would delete a working setup to prevent a harm that cannot
+happen. And its message is **value-free** (`_PROJECT_PATH_OVERLAPS_DATA_HOME`)
+rather than the shared guard message the four pickers surface verbatim, which
+names both absolute paths: this surface's contract is that a rejected
+`project_path` never rides back out in the body, and keeping it so means that
+property does not depend on the owner gate's ordering holding forever. The
+guard's own remedy sentence is reused, and the three relationship variants
+(contains / inside / alias) collapse into one sentence because the remedy is the
+same for all three. The denial is SEL-audited like the sensitive-path one. On
+update the bar
+applies to a value that DIFFERS from the stored one: presence is not a change,
+the convention the sibling `chat_folder_id` transition follows. The job form
+resubmits `project_path` unchanged on every edit, and once the bound folder has
+been moved or deleted — the state the fire-time vanished-directory skip reports —
+re-validating the equal value would refuse every unrelated edit (a rename, a
+schedule change, a retarget of the agent) with the existing-directory error
+instead of saving it. `GET /api/agents`
+gained a `project_path` query-param fallback (`dashboard/handlers/agents.py`) for
+the Schedule page's job form, which has no live chat session to key project scope
+off of. The save-time agent probe (`_agent_unresolvable_response`) resolves the
+raw submitted folder through the same `resolve_project_path` before handing it to
+`resolve_agent_bindings`: the store persists the `realpath(expanduser)` form and
+the roster endpoint lists from it, while the discovery layer joins `.kiro/agents`
+onto whatever string it is given, so a raw `~/...` would probe a relative
+directory literally named `~` and refuse the project agent the picker had just
+offered.
+
+At fire time, `slack/gateway.py` resolves `job.project_path` through the existing
+project-agent-discovery path (`resolve_agent_bindings`) before launching, and
+re-checks the folder's canonical path (`_project_path_still_canonical`, an exact
+`realpath` string match) on every fire — a folder that existed at save time but
+is gone, or whose canonical form changed, by fire time is a normal failure, not a
+run against the wrong (global) agent: the job is skipped, `last_status="error"`
+names the missing/changed folder, and no auto-pause strike is spent (mirrors the
+"overlapping run" refusal elsewhere in this file).
+
+**A skipped one-shot is parked, never deleted and never re-fired.** Both skip
+conditions (folder gone, agent unresolvable) are permanent until an operator
+acts, and every `delete_after_run` job is an `at` job whose due time has passed
+by the time it is skipped — `_is_due` answers True for it on every scan and
+`_next_wake_secs` yields `0.0`, so a skipped one-shot left enabled would re-enter
+the fire path with no delay (the zero-delay refire loop the fire-time governance
+denial already parks against). `_mark_fire_skipped` therefore disables an `at`
+job exactly as the denial does, and `_merge_job_result` propagates that park to
+disk as `user_paused` (the persisted spelling `enabled` is re-derived from on
+reload, so an in-memory park alone would come back live). `run_never_started`
+still retains the one-shot — it is not consumed by a run it never had — so the
+job survives, disabled and discoverable, for the operator to fix the agent or
+folder and re-enable. The park is one-shot-only: a recurring job waits for its
+next slot and resumes on its own once the name resolves. Pool starvation, which
+shares the `run_never_started` marker, does NOT park: it self-heals, and that
+job stays enabled and simply retries.
+
+**Validity is checked twice, and never falls back.** The agent name is validated
+when the job is saved AND re-checked on every fire, through the same resolver
+dispatch itself uses (`resolve_agent_bindings`.`requested_resolved`) rather than
+a roster listing — a listing is built from `config.agents` plus project scope and
+omits app-registered agents under `~/.kiro/agents/`, which are legitimately
+dispatchable, so validating against one would refuse valid jobs. An unresolvable
+agent is a skipped run: `last_status="error"` naming the agent, no auto-pause
+strike, and never a silent fall back to the default agent — the same shape as the
+missing-folder case above. Three values stay valid: an empty agent (meaning the
+default), a member-bound job's provider template, and every entry of
+`agent_sequence`.
+
+The save-time half lives on the REST surface (`dashboard/handlers/cron.py`,
+`_agent_unresolvable_response`), refusing `POST /api/crons` and
+`PATCH /api/crons/{id}` with `400 unknown_agent` — validated BEFORE `add_job` for
+the same reason as `model`, so a rejected value cannot leave an orphaned job a
+retried create would duplicate. A member-bound job is skipped there entirely:
+its `agent_id` is the member's provider template rather than a selectable name,
+and the member itself is validated against `config.agents` by
+`resolve_cron_memory` before the job can persist. A PATCH re-validates only when
+the submitted agent or folder differs from the persisted binding. The dashboard
+may include the selected agent on every edit; an equal value does not move the
+binding. This keeps a job whose agent was deleted editable, since renaming it —
+or clearing the stale agent, which is the repair — is not refused by the stale
+selection. A probe failure is not a refusal: the
+fire-time check is the guarantee, so a transient config-read error lets the save
+through rather than blocking a legitimate edit. `agent_sequence` is not settable
+through these handlers (it is response-only there), so it is validated at fire
+time only. **The probe does not run for a non-owner's edit of a bound job.** Its
+refusal names the folder it resolved against, and the store refuses that caller's
+whole edit with 403 under the write lock (below) — but a probe answered first
+would hand the non-owner that folder in a 400, and its 400-versus-403 split would
+answer whether the folder declares the submitted name. A non-owner's edit of an
+UNBOUND job is still probed: no folder is in play and the wording has none. The
+store re-decides the binding under its lock either way, so a bind landing between
+the handler's read and the write is refused there, and an unbind landing in that
+gap leaves the edit to the fire-time check.
+
+The fire-time half is scoped to a PROJECT-BOUND job, and the boundary is a
+contract rather than an optimization. A job carrying a captured
+`execution_context` is dispatched from that frozen record precisely so a fire
+cannot re-derive its identity from mutable configuration mid-flight, and
+`test/test_cron_execution_capture_async.py` pins both halves of that: a
+carrier-bearing fire reads no configuration at all, and a global job whose
+`agent_id` is not a `config.agents` alias still fires on its captured template.
+Loading configuration to validate a job with no folder would break the first;
+refusing that job would break the second. Nothing is lost, because a folder is
+the only place a project definition can shadow the name — so it is the only place
+the silent substitution the refusal exists to stop can occur. The one addition to
+that scope is the unbound `delete_after_run` one-shot with an explicit agent: a
+vanished agent there must take the named skip rather than let a completed-looking
+callback consume scheduled work that never ran. **Both fire paths apply the same
+scope.** The `agent_sequence` pass pre-resolves every member and refuses on the
+same condition (`job.project_path` or the unbound one-shot); an unbound recurring
+sequence whose member is not a `config.agents` alias — an app-registered agent, a
+crew name the host never aliased — dispatches its members as captured, exactly as
+the single-agent path lets a global job fire (pinned by
+`TestUnboundSequenceJobIsNotFireTimeValidated` in
+`test/test_cron_gateway_integration.py`). Within that scope
+the check is still wider than the dispatch assignment beside it: a member-bound
+job in a folder is validated even though only a non-member job takes its
+resolved agent, model and crew alias from the result. A global job keeps its raw
+name, no alias model, and a `None` crew alias so `resolve_crew_identity`'s
+crew-namespace fallback still applies — `""` there is the explicit no-crew
+opt-out, which would suppress the crew effort/watchdog resolution a bare
+crew-name job relies on.
+
+**Member-bound jobs keep their own lineage.** Only the crew editor's wake
+section binds `member_id` (`CrewWakeSection`); the Schedule page records its
+selection in `agent_id` and never sets `member_id`. Project precedence does NOT
+apply to a member-bound job: substituting a same-named project definition would
+re-base the member onto a different parent template and trip the
+`parent_identity_changed` guard in `agent_capabilities`, whose descriptor
+includes the parent's `scope`. Such a job still honors its folder as cwd — the
+folder always supplies cwd, and supplies *definitions* only for jobs that are
+not member-bound.
+
+**A project file matching the alias or dispatched template shadows the fire, so
+the job is refused rather than resolved.** Keeping the member's own lineage
+(above) answers what `resolve_agent_bindings` reports; it does not change what
+the actual fire runs. The fire's cwd is the bound folder, and the backend
+resolves the provider template project-first regardless of which crew alias
+selected it. So when a member-bound job's bound folder declares either the
+alias or the effective provider-template name, resolving to the alias would
+silently advertise the member's own (private memory) bindings for a template
+that the fire itself resolves to the project's file.
+A project's `.kiro/agents` definition is writable by anyone who can land a
+branch into that folder, so this would turn "land a branch" into a read of
+that member's private memory — the same hazard the `private_template_shadowed`
+capability check exists for (a project/local definition outranking a private
+one). `_resolve_agent_selection` refuses in exactly that shape: it reports the
+name unresolved (`requested_resolved=False`) rather than resolving it, so the
+job takes the same named skip MECHANISM (`_mark_fire_skipped` +
+`_agent_unresolved_message`) that any other unresolvable cron agent takes — no
+parallel refusal path. The declaration probe runs for either "an alias was
+matched" or "the caller opted out of the override", NOT the alias alone. For
+the member opt-out, that one project-name-set lookup checks both the selected
+alias and its effective provider template; the backend can resolve either name
+against the bound cwd. A member-bound job's agent name may also be the provider
+TEMPLATE directly, which resolves by materialization rather than as a
+`config.agents` alias, so the opt-out remains part of the probe gate. Scoping
+the wider pair check to the opt-out keeps it cheap — every ordinary and
+app-bound resolution keeps the override allowed and reaches no additional
+project filesystem I/O, which that path is pinned filesystem-free for. The
+wording branches on `RESOLVED_SOURCE_MEMBER_SHADOWED`: for this one refusal the
+ordinary "not found in project directory" would state the opposite of the fact,
+since the agent being present in that directory is the whole reason the fire
+refused, and would send the operator to add a file that is already there. The branch names the
+shadowed Crew Member and the two real remedies (rename the project's agent, or
+unbind the member), and it states the collision in PLAIN WORDS FIRST — "This job
+is bound to a Crew Member, and its project directory defines an agent with the
+same name" — then the consequence, then the remedies. It used to open on
+"would shadow … under the member's own private memory", which put internal
+vocabulary at the one moment the operator most needs plain words, for a state
+rare enough that they have never read it before; a remedy read before the state
+it repairs repairs nothing. That string is the only signal there is — these skips spend
+no auto-pause strike by design, so nothing else escalates — so it is rendered
+VISIBLY: `SchedulePage.tsx`'s Last Error panel was gated on `job.script`, which
+left a message job's reason reachable only as the status cell's `title`
+attribute (a hover tooltip, and no signal at all in the desktop app). The panel
+now shows for every job kind, keeping the `font-mono` log styling only for a
+script's captured output.
+
+**Every skip reason names a next step.** All three branches end with an action,
+not just a diagnosis: the shadow refusal names its two remedies, the
+missing-agent branch names the `.kiro/agents/` convention to create the file
+under rather than only the fact that the folder lacks it, and the unconfigured
+branch says to pick another agent or restore that one. An operator should not
+have to know the `.kiro/agents/` convention to act on a skipped job. **No skip
+reason names the folder itself** — not the vanished-directory skip, not either
+bound-agent branch. `last_error` is read past the owner boundary (the table
+below), so the folder would reach a non-owner through it; the reason stays
+readable there because it is the only diagnosis a skip leaves, the owner reads the
+folder off the job (owner view carries `project_path`), and each skip's log line
+carries the folder for the operator. What the skip builders promise, the ONE
+opaque writer cannot: `str(exc)` is stored verbatim, and the macOS voice-runtime
+spawn guard raises naming the workspace. So the field keeps its readability and
+loses only the host path, and only for a non-owner — see the table's
+`last_error` row.
+
+**The picker says which agents the folder supplied.** A project row carries
+`scope: "project"` from the roster endpoint, and `AgentSelector` renders a
+`from this folder` marker off that field — NOT off `source`, which reads
+`kirocrew` on a project row exactly as it does on a configured one, so without
+this a folder-supplied agent was visually identical to a global one and nobody
+could anticipate which picks vanish when the directory is cleared. The
+`overrides global` chip covers only COLLIDING rows, a strict subset.
+
+**A reset selection is announced, not just performed.** When a directory change
+clears an agent the new folder cannot resolve, the form names the cleared agent
+beside the Agent field. The reset itself is correct — saving a name the folder
+cannot resolve would fire the default agent silently — but doing it without
+acknowledgment meant a deliberate pick disappeared between a keystroke and
+Save. **The announcement has to OUTLIVE the roster settling, which is a
+constraint on the effect rather than on the copy.** Emptying the field runs the
+clear-on-unbind branch twice — once when `projectPath` empties, then again when
+the 250ms-debounced mirror settles and `enabled: !!debouncedProjectPath` turns
+the roster query off, moving `projectAgentsData` to `undefined` and so changing a
+dependency. The second run sees the agent the first already cleared, computes
+"nothing was cleared", and would write the reset name back to `''` — erasing its
+own notice after ~250ms. The branch is therefore guarded to act on the TRANSITION
+into the empty state (`unbindHandledRef`), re-armed by any bound path so a later
+clear still announces itself. A test that reads the notice synchronously cannot
+see this: it passes against the erasing version, which is why the regressions in
+`website/src/test/JobForm.projectOnlyAgentReset.test.tsx` read it AFTER the
+debounce.
+
+**A reset a path EDIT caused is undone when the finished path defines the name
+again.** The debounce above only protects a path typed faster than 250ms;
+hand-editing a bound job's directory pauses longer, so an intermediate path
+becomes a roster identity of its own — and `GET /api/agents?project_path=`
+answers an unusable path with HTTP 200 and the configured agents alone, so that
+roster legitimately lacks the pick and the reconcile clears it. Clearing on what
+is known is right; leaving it cleared once the FINISHED path loads a roster that
+DOES define the name is not, and made every path edit on a bound job force a
+re-pick. The reconcile therefore remembers the name it took away
+(`editClearedAgentRef`) and restores it when a later settled roster resolves it
+and the user has not chosen since — restoring needs no judgement about whether a
+path was "half typed", a question the endpoint cannot answer anyway since an
+unusable path and a usable one with no agents are the same 200. Two bounds keep
+this from overriding an operator: a deliberate pick drops the remembered name
+(`pickAgent`), and so does emptying the field, whose own clear is an ended
+gesture with no later roster to land against and stands announced. While a
+restore is pending the notice is WITHHELD from the `''` write rather than erased
+— the reset it describes is still in force, and a further intermediate settle
+erasing it is the same defect as the double-run above, leaving an operator whose
+finished path never does define the name with no acknowledgment at all.
+
+**Session reuse tracks which definition won.** A persistent job reuses its
+session, so `_cron_session_binding` records the resolved identity — the folder,
+the resolved agent, the crew alias, and which source answered — and resets the
+session when any of them changes. Recording the name alone is insufficient once
+a project definition can outrank a global alias: both spell the same name, so
+adding or removing `<folder>/.kiro/agents/<name>.json` would otherwise leave a
+warm session running the definition it started with. Whether an *edited*
+definition takes effect inside a live session is kiro-cli's concern, not this
+key's: the contract here is only that the agent exists and that the identity
+which won is the one the session was built for.
+
+**A cleared `project_path` cannot resurrect the directory it was unbound from,
+and the reason is not this cache.** `session_allocation`'s resume path restores a
+key's STORED cwd when the caller passes none, and a cleared binding is exactly
+that caller — the fire passes `cwd=job.project_path or cwd`, so it passes
+nothing. That branch is guarded by `resume_sid`, and `"cron:"` is a member of
+`session._STATELESS_PREFIXES`, so `is_stateless` holds for every cron key
+(stable, per-fire `uuid4`, and `cron:<job id>:<agent>` alike), the persisted sid
+is never read, and the restore is unreachable. Both halves of that guard are
+load-bearing: `is_stateless` is `prefix AND NOT _is_continuable_key`, and the
+continuable set is written only by the subagent machinery (a conversation key),
+whose fallback `_keep_recorded_on_disk_impl` answers `False` for any key
+`subagent_id_from_conversation_key` does not parse. The continuity a persistent
+cron job does have is `build_cron_session_context` prepending `job.last_result`
+to the prompt, NOT a native resume, which is why the prefix is stateless and why
+making a cron key resumable would double that context as well as revive the stale
+directory. Pinned by CONSEQUENCE, not by asserting the tuple's contents, in
+`test/test_cron_cleared_project_path_no_stale_cwd.py`, whose control arms the
+same restore on a `dashboard:` key and requires it to fire.
+
+Consequently `_cron_session_binding` being process state, and the re-root being a
+plain `reset`, cost nothing. The stale thing the re-root exists to correct is a
+LIVE warm session. Gateway restart still empties that session and this map
+together, so the next fire cold-starts at the default project directory. Runtime
+lifecycle eviction is deliberately different: permanent job removal can erase
+metadata while a provider remains live for a committed subagent completion.
+Ordinary pruning is not the same case: it retains a key while work is pending or
+injecting, and a key with neither is reset by the fire's normal cleanup. The
+read-site rule still covers an unexpectedly live pruned key (for example after a
+reset failure) and any future metadata-removal site. Both dispatch paths treat an
+absent entry as a normal first fire only when `SessionManager.has_session(key)` is
+false; an absent entry beside a live key resets before acquisition, so a later job
+reusing the key cannot inherit the evicted job's cwd, agent, or memory context. A
+`reset` that keeps the resume sid is inert here, because for a cron key no sid is
+ever consulted. **Residual, stated rather than implied:** were `"cron:"` dropped
+from `_STATELESS_PREFIXES`, or a cron key marked continuable, a cleared `project_path`
+WOULD resume into the unbound directory, and neither this cache nor the fire-time
+canonical re-check would catch it — the named test is the guard, and its failure
+message says which of the two changed.
+
+Retention is atomic across a fire's candidate snapshot. Both the single-agent
+and sequence paths share `_CRON_SESSION_BINDING_LIMIT` (4096 entries), and every
+retained folder, agent, crew alias and source is checked at the retention
+point against `_CRON_SESSION_BINDING_STRING_LIMIT` (`MAX_SHORT_STRING`, 500
+characters). The KEY carries its own `_CRON_SESSION_KEY_LIMIT` instead, derived
+from the parts that compose it, because a sequence key is `cron:<job id>:<agent>`
+and an agent name may itself reach the field cap — sharing the field cap would
+refuse a valid maximal key, and since a refused snapshot defers the fire, that
+job would stop firing silently and permanently. A refused snapshot writes neither
+this cache nor CronService's active-session registry. Refused entries increment a
+cumulative overflow count, and one warning states the candidate count, stored
+count, cap, invalid-string count and cumulative refusal count for that snapshot.
+
+A fire prunes the job's other keys before admission, which is what bounds the
+population over TIME rather than merely by job count. A job without
+`persistent_session` takes a key from `build_cron_session_context` carrying a
+fresh `uuid4` per fire (see `cron_session_key_is_stable`), so without this the
+cache would gain one entry every fire, forever — reached by neither the count
+ceiling (each fire adds one, under the cap for a long while) nor deletion
+eviction (the job still exists). The prune is keyed on the job-id prefix rather
+than the exact key, so it retires the previous fire's key as a consequence of
+that shape rather than by special-casing it.
+
+A sequence fire removes keys for agents outside its current sequence before
+admission. A key with pending subagent work or an in-progress completion
+injection is retained: keeping that prior identity is what makes a later fire
+retry the required stale-session reset. Such retained keys still consume the
+shared count budget, so capacity refuses the new snapshot rather than discarding
+deferral state. Permanent job removal follows `CronService._remove_job_rows`, which stages the
+job ids beside the cache filter. The atomic `_save` is the single publication
+boundary: only after the store replace succeeds does it retire the job's exact
+active-session rows and notify the gateway observer, which schedules eviction
+of the job's single and sequence binding keys on the owning loop. A failed save
+publishes neither side effect, so cancel/reaper retain the exact live-session
+handle while the durable job row still exists. Centralizing publication at the
+save boundary also covers every future sanctioned structural-removal caller;
+no caller-specific rollback block has to reconstruct an evicted handle or undo
+an observer action. That observer removes metadata but does not reset the provider:
+a deleted job may still own a committed subagent completion, and its completion
+path retains the existing pending/injecting guard around teardown. If the same
+job id is later minted again, the live-without-metadata read above resets before
+acquiring, so retention records the new tuple only against the new provider.
+
+**Owner-only authorization gate.** A project-bound job carries a filesystem-read
+capability (its agent runs with that folder's contents and any project-scoped
+agent definitions visible), so an arbitrary allow-listed dashboard token must not
+inherit it for free. `dashboard/handlers/cron.py` gates every route that creates,
+edits, manually runs, or re-enables a project-bound job behind
+`is_owner_dashboard_request(request)`, refusing a non-owner with 403 and a
+machine-readable `code`:
+
+| Gate | Route | `code` |
+|---|---|---|
+| Create-path `project_path` | `POST /api/crons` | `project_path_owner_required` |
+| Update job-level (any field on an already-bound job) | `PATCH /api/crons/{id}` | `project_bound_job_owner_required` |
+| Update field-level (`project_path` itself) | `PATCH /api/crons/{id}` | `project_path_owner_required` |
+| Manual run | `POST /api/crons/{id}/run` | `project_bound_job_owner_required` |
+| Re-enable | `POST /api/crons/{id}/enable` | `project_bound_job_owner_required` |
+
+**Messaging resume refuses project-bound jobs rather than guessing ownership.**
+The shared `messaging.commands.cron_command_reply` receives channel/caller text
+for audit attribution, but no authenticated install-owner identity it can compare
+to the folder. It therefore calls `enable_job_async` with
+`expect_project_path=""` for `resume`: the locked transition succeeds only while
+the job is unbound, and `CronPendingMismatch` becomes a named, user-visible
+refusal directing the caller to the owner dashboard or `kirocrew cron` CLI and
+records the denial in SEL with channel/caller attribution.
+This same precondition closes an unbound-to-bound race without a separate read.
+`pause` remains available because it removes execution permission rather than
+granting it. The enable path holds no run claim, so this refusal has no execution
+claim to release.
+
+The **PATCH job-level gate is deliberately broader than the field it protects**:
+it refuses EVERY field of an already-bound job to a non-owner, not just
+`project_path` — renaming, re-scheduling, or editing the message of a bound job
+is also owner-only, since any of those changes what fires or how, on a job that
+already carries the folder capability. Clearing `project_path` back to `""`
+(un-binding) is not itself owner-gated on an already-UNBOUND job (the field-level
+check short-circuits when the stored `project_path` is falsy — the job never had
+the capability to protect), but re-binding or editing a job that already has one
+always is. Every owner-authorized `project_path` field submission is SEL-audited
+by the field's presence, including an empty-string clear; truthiness would drop
+the audit event for the privileged transition that removes project scope.
+
+The **cron list keeps the path on that same owner boundary**. `GET /api/crons`
+serializes a stored `project_path` only for `is_owner_dashboard_request`; a
+non-owner row carries `null`, matching the owner-only secret-grant metadata in
+the same payload. `JobForm.parseJobDefaults` already maps null or an absent field
+to `projectPath: ""`, so the redaction renders a normal unbound form rather than
+a broken or misleading path value.
+
+**Every channel that could carry the folder, and why each stays on that
+boundary.** Gating the one list field is not enough on its own: the same
+absolute path can ride out in an error body answered before the owner gate, or
+inside a persisted string a non-owner reads through an ungated route. The rule is
+that a non-owner learns neither a job's `project_path` nor its
+`<path>/.kiro/agents/` layout from any response body; a log line or SEL record may
+carry it, because those are the operator's own surfaces.
+
+| Channel | Reaches a non-owner? | Why it is on the boundary |
+|---|---|---|
+| `GET /api/crons` → `project_path` | yes | Serialized only for `_owner_view`; `null` otherwise. |
+| `GET /api/crons` → `last_error` (and the status cell's tooltip / the Last Error panel in `SchedulePage.tsx` that render it) | yes, ungated, host paths stripped for a non-owner | No persisted skip reason names the folder: `_agent_unresolved_message`'s two bound branches and the vanished-directory skip carry the reason and the `.kiro/agents/` convention, never the path. The opaque writer does: the LLM fire path stores `str(exc)` verbatim, and one exception genuinely composes an absolute path into itself — the fail-closed macOS voice-runtime spawn guard (`sandbox.assert_voice_runtime_outside_agent_workspace`) raises naming the agent's workspace, which for a project-bound job IS `job.project_path`. The credential/exfil passes every sibling field takes do not strip a path (CWE-209), so this field and its `last_result` neighbour take one further pass for a non-owner only: `_redacted_run_text` in `handlers/cron.py` adds `redact_local_paths`, leaving the reason and its remedy readable with `[redacted-path]` in place of the host path. Owner bytes are unchanged — the owner is the operator, and an unconditional pass would cost a script job's traceback its most useful line. |
+| `GET /api/crons` → `last_result` | yes, ungated, host paths stripped for a non-owner | Written from the agent's own output, which the fire redacts at the boundary; no fire path composes the folder into it, and a skip clears it. But the agent runs WITH the bound folder as its cwd, so its own prose names that folder routinely — the same `_redacted_run_text` pass for the same reader, on the same reasoning. |
+| `GET /api/crons/{id}/history`, `/history/{run_id}`, `GET /api/crons/history` → `summary` / `error` / `trace` | yes, ungated, host paths stripped for a non-owner | These rows are BUILT from the same strings — `error=terminal.last_error` on the run path, `summary=`/`error=` from `job.last_error` on the reaper and cancel paths — so the path-free skip reasons apply AND so does the path-bearing guard exception. All three routes take `_redacted_run_text` on the same reader boundary; gating the list alone would leave the folder reachable one route over. `job_name` is owner-authored rather than run-outcome text and stays on the sibling credential/exfil pass. |
+| `PATCH /api/crons/{id}` 400 `unknown_agent` (the save-time probe, whose wording names the folder) | no | The probe is skipped for a non-owner on a bound job, so the store's 403 answers first; a non-owner's unbound-job probe has no folder to name. |
+| `POST /api/crons` 400 `unknown_agent` | no | A non-owner submitting a folder is refused 403 `project_path_owner_required` before the probe runs. |
+| `PATCH`/`POST` 400 `invalid_project_path` / store `ValueError` bodies | value-free | `validate_string_field` reports only the field and rule; `_validate_project_path` raises fixed sentences (`must be an absolute path`, `refers to a sensitive path`, `must be an existing directory`, and the data-home overlap below) with no value. |
+| 403 `project_path_owner_required`, 403 `project_bound_job_owner_required`, 409 `stale_project_binding` | value-free | Fixed sentences. The 403 does say the job IS bound — that is the gate's own existence, not the folder. |
+| `GET /api/agents?project_path=` | no | Read-side owner gate: a non-owner's parameter is ignored (`handlers/agents.py`). |
+| `cron_list` (MCP) / `!cron` replies (messaging) | session-scoped | Show `last_error`, so the path-free strings apply; a job is visible only to its owning session. |
+| `kirocrew cron list` / `crons.json` | operator only | The CLI reads the store directly; the store itself is under the crew data-home fence. |
+| SEL `resources=<path>` on every project-path decision | audit log | Owner-only file; disclosure there is the record the gate exists to leave. |
+| `logger.info` on the three skips (`Cron '<name>' (project '<path>'): ...`, `project directory '<path>' no longer exists`) | log stream, redacted | Every folder rides through `redact_local_paths` before the `logger.info` call, so the raw path itself never reaches the log record. The gateway log stream is NOT owner-scoped: the WS `subscribe_logs` handler in `dashboard/ws.py` gates on `_is_dashboard_user` alone, which is set for any authenticated dashboard token including a non-owner `!dashboard` Slack subject (`app == ""`), and never calls `is_owner_dashboard_request`. So a folder logged unredacted there would reach exactly the non-owner the project-path owner gate exists to keep it from — the log stream is a dashboard-*user* surface, not an owner-only one, and the widening this row once parked as "a log-stream decision, not a cron one" is answered by redacting at the cron site instead of widening the log gate. |
+| Frontend `JobForm.tsx` save errors | derived | Renders the 400 body beside the field; a non-owner's body has no folder to render. |
+
+Pinned by `TestTheSkipMessageNamesTheRealReason::test_no_persisted_skip_reason_names_the_bound_folder`
+(every persisted skip builder),
+`test/test_cron_run_text_path_disclosure.py` (all four run-outcome routes, for
+both readers — including that the owner's bytes do not change) and
+`TestProjectBoundJobUpdateOwnerGate::test_non_owner_agent_change_on_a_bound_job_is_refused_before_the_probe`
+(the probe ordering).
+
+**The PATCH job-level refusal is decided in the store, under the write's own
+lock** (`refuse_project_bound` → `CronProjectBoundDenied` → 403). `api_cron_update`
+issues NO read of its own for it, for two reasons. The weaker one is a contract:
+`test/test_cron_chat_folder.py::test_the_handler_makes_no_extra_read_of_its_own`
+pins that the handler adds no query, because a second read re-opens the race the
+locked update's own transition sink exists to close. The stronger one is that the
+authorization is sounder atomically — a caller-side snapshot is taken outside the
+lock the mutation later acquires, so a concurrent owner bind landing in that gap
+let a non-owner's already-cleared request execute against a binding nothing had
+checked it against. Only the two decisions that genuinely need the stored record
+still read it: a non-owner never does, and an owner does so only when the PATCH
+moves the binding, where the unchanged half of a partial edit has to come from
+the stored job. A missing job still answers 404, from the update's own falsy
+return.
+
+**TOCTOU precondition (`expect_project_path`).** The run and enable paths still
+authorize from a snapshot read outside any lock, so they keep the
+compare-and-swap: `api_cron_run`/`api_cron_enable` pass `expect_project_path` (the
+exact snapshot value, or the `_UNSET` sentinel when the enable path never fetched
+the job) into the persistence layer, and the write is rejected with 409
+`stale_project_binding` if the job's `project_path` no longer matches what the
+authorization decision was made against. Every response the gate returns includes
+the corresponding error `code` above so a client can distinguish "you are not the
+owner" from "the job changed under you, retry."
+
+Tests: `test/test_cron_project_path_owner_gate.py` (create/update field-level
+gate, including the empty-string-clearing edge case),
+`test/test_cron_project_bound_job_owner_gate.py` (job-level gate on
+update/run/enable), `test/test_cron_project_bound_job_toctou.py` (the race simulations: the update
+path's store-side refusal with the bind landing immediately before the lock, and
+the enable path's compare-and-swap), `test/test_agents_project_path_owner_gate.py`
+(the `GET /api/agents?project_path=` read-path owner gate).
+
 ### Result delivery order, and the delivery-agnostic dedup anchor
 
 A finished `message` cron fans out to three surfaces, in this order:

@@ -53,6 +53,26 @@ _ALT_SLASH_KEY = "Kx3Q51tPusV/D0URlGfMmNbVc7Z8yJhLpQrStUwZ"
 _NO_SLASH_KEY = "Kx3Q51tPusVkD0URlGfMmNbVc7Z8yJhLpQrStUwZ"
 
 
+class TestProjectPathVerdict:
+    def test_sensitive_path_is_not_probed_for_directory_existence(self, monkeypatch) -> None:
+        """Sensitivity refusal precedes any directory-existence probe."""
+        isdir_calls: list[str] = []
+        monkeypatch.setattr(security.os.path, "realpath", lambda path: path)
+        monkeypatch.setattr(security.os.path, "expanduser", lambda path: path)
+        monkeypatch.setattr(security, "is_sensitive_path", lambda path: True)
+        monkeypatch.setattr(
+            security.os.path,
+            "isdir",
+            lambda path: isdir_calls.append(path) or True,
+        )
+
+        verdict = security.resolve_project_path("/synthetic/credentials-dir")
+
+        assert verdict.sensitive is True
+        assert verdict.is_dir is False
+        assert isdir_calls == [], "a sensitive project path was probed with os.path.isdir"
+
+
 class TestRedactCredentials:
     """Tests for redact_credentials()."""
 

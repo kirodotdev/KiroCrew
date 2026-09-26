@@ -54,6 +54,7 @@ from kiro_crew import (
     work_root,
 )
 from kiro_crew.acp.client import AcpError, AcpProcessDied
+from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.autonudge import (
@@ -90,10 +91,13 @@ from kiro_crew.config.loader import (
     CRED_WECOM_BOT_ID,
     CRED_WECOM_SECRET,
     CRED_WEIXIN_TOKEN,
+    RESOLVED_SOURCE_MEMBER_SHADOWED,
+    RESOLVED_SOURCE_PROJECT,
     _session_work_dir,
     build_provider_factory,
     config_dir,
     data_home,
+    resolve_agent_bindings,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
@@ -151,10 +155,7 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
     resolve_dashboard_host,
 )
-from kiro_crew.dashboard.stale_asset_watchdog import (
-    run_stale_asset_watchdog,
-    shutdown_exit_code,
-)
+from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog, shutdown_exit_code
 from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -174,6 +175,7 @@ from kiro_crew.embeddings import (
     start_background_model_download,
     store_embedding_space_is_stale,
 )
+from kiro_crew.execution_context import ExecutionContext, member_config_for_id
 from kiro_crew.executors import (
     CronQueueTimeout,
     configure_default_executor,
@@ -213,16 +215,9 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.mcp_cron import vet_job_at_fire_time
 from kiro_crew.mcp_gateway import is_gateway_supported
-from kiro_crew.mcp_gateway.manager import (
-    GatewayManager,
-    GatewaySpec,
-)
+from kiro_crew.mcp_gateway.manager import GatewayManager, GatewaySpec
 from kiro_crew.mcp_gateway.resolve_once import prefetch as resolve_prefetch
-from kiro_crew.mcp_gateway.rewriter import (
-    default_socket_path,
-    resolve_overlay_dir,
-    rewrite_agents,
-)
+from kiro_crew.mcp_gateway.rewriter import default_socket_path, resolve_overlay_dir, rewrite_agents
 from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging import (
@@ -317,15 +312,11 @@ from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_local_paths,
 )
 from kiro_crew.sel import sel
 from kiro_crew.service.common import restart_command_hint
-from kiro_crew.session import (
-    HEARTBEAT_KEY,
-    SessionBusyError,
-    SessionClosingError,
-    SessionManager,
-)
+from kiro_crew.session import HEARTBEAT_KEY, SessionBusyError, SessionClosingError, SessionManager
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.format import (
@@ -368,7 +359,7 @@ from kiro_crew.subagent_completion_meta import (
 )
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.tunnel import set_publish_disabled
-from kiro_crew.validation import CHANNEL_ID_RE
+from kiro_crew.validation import CHANNEL_ID_RE, MAX_SHORT_STRING
 from kiro_crew.wecom.gateway import warn_if_channel_uncredentialed
 
 if TYPE_CHECKING:
@@ -602,6 +593,27 @@ _MARKER_WRITE_WAIT_SECS = 5.0
 # approvals are NOT background: they route to the dashboard where the spawning
 # human is present (via the parent slot), so they keep the long interactive window.
 _BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", "autonudge", ""})
+
+# Hard ceiling for the one population retained by both cron dispatch paths.
+# 4096 supports large schedule registries and multi-agent sequences while keeping
+# key plus four identity fields bounded to about 10 million retained characters.
+# Per-job pruning does not impose a global ceiling: restored stores can contain an
+# arbitrary job count and sequence width, and pending obsolete keys are retained.
+_CRON_SESSION_BINDING_LIMIT = 4096
+# The writer caps cron identity fields at MAX_SHORT_STRING, but restored/imported
+# records reach _job_from_record's type-only selector/list readers without that
+# length gate. Resolved agent/execution identities can therefore reach this
+# in-memory sink without passing _CRON_STRING_FIELD_CAPS; enforce the cap here too.
+_CRON_SESSION_BINDING_STRING_LIMIT = MAX_SHORT_STRING
+# The KEY is not a persisted field -- it is DERIVED, as "cron:" + a uuid4-derived
+# job id + ":" + an agent name that is itself capped at the field limit.
+# Bounding it at the field limit would therefore refuse a legitimate maximal
+# sequence key, and a refused admission DEFERS the fire: a long-but-valid agent
+# name would stop the job silently and forever. So the key's cap is derived from
+# what composes it rather than shared with it. The id term is a full uuid4 hex
+# (32) rather than today's ``[:8]`` slice so that widening the id cannot silently
+# turn a valid key into a permanent defer.
+_CRON_SESSION_KEY_LIMIT = len("cron:") + 32 + len(":") + _CRON_SESSION_BINDING_STRING_LIMIT
 
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
@@ -925,6 +937,191 @@ def _bare_tool_name(title: str) -> str:
     if name.startswith("@") and "/" in name:
         name = name.rsplit("/", 1)[-1]
     return name.strip()
+
+
+def _project_path_still_canonical(project_path: str) -> bool:
+    """Whether *project_path* is still the SAME path string after resolving symlinks.
+
+    A bare ``os.path.isdir`` check is a TOCTOU: it passes as long as
+    something is a directory at this path string right now, even if the
+    original directory was deleted and a symlink to an unrelated checkout
+    now occupies the same path between when the job was saved and this fire.
+    ``project_path`` is already the ``realpath``-resolved value
+    ``CronService._validate_project_path`` stored at save time (see
+    ``cron.py``), so re-resolving it now and requiring an EXACT match against
+    the stored string catches exactly that: a symlink retargeted to point
+    somewhere else. It does NOT catch every swap — the original directory
+    deleted and a plain, non-symlinked directory recreated at the identical
+    literal path re-resolves to the same string and passes here, since
+    ``realpath`` has nothing to distinguish "same inode" from "same path,
+    different directory" once no symlink is involved. Detecting that case
+    would need an identity check (e.g. a stored inode/device pair), which
+    this function does not attempt. Synchronous filesystem I/O — callers on
+    the event loop MUST run this via ``asyncio.to_thread``, exactly like the
+    sibling checks in ``cron.py``.
+    """
+    if not os.path.isdir(project_path):
+        return False
+    return os.path.realpath(project_path) == project_path
+
+
+def _mark_fire_skipped(job: Any, message: str) -> None:
+    """Record a fire refused BEFORE any session was acquired.
+
+    Shared by the two fire paths (the ``agent_sequence`` pass and the
+    single-agent pass), which each reach this state twice: a bound directory
+    that vanished, and an agent name that fails to resolve. The writes are one
+    fact -- "this fire did not run, and here is why" -- so they belong
+    together: ``run_never_started`` is what keeps the skip out of the
+    auto-pause strike count (``CronJob.record_failure`` is deliberately NOT
+    called), and a caller that set only some of them would spend a strike on a
+    refusal the operator cannot act on.
+
+    A one-shot (``"at"``) job is additionally PARKED disabled, exactly as the
+    fire-time governance denial parks one (``cron.py`` ``_execute``). Both of
+    these conditions are permanent until an operator acts -- the folder does
+    not come back and the agent does not reappear on its own -- and a past-due
+    ``at`` job left enabled is due again on every scan (``_is_due`` has no
+    ``last_run_ts`` guard for ``"at"``, and ``_next_wake_secs`` yields ``0.0``
+    for it), so the timer would re-enter this path with no delay: a zero-delay
+    refire loop that takes the store lock, re-reads the store and rewrites
+    ``last_error`` on every pass. ``run_never_started`` alone cannot park it:
+    that marker is shared with pool starvation, which self-heals and must NOT
+    park, and the ``_execute`` park is keyed on ``fire_time_denied``, which
+    every ``delete_after_run`` one-shot also needs to stay retained (the
+    retention is what ``run_never_started`` still carries here). Parking rather
+    than deleting keeps the job discoverable so the operator can fix the agent
+    or folder and re-enable it. Recurring jobs are untouched: they wait for
+    their next slot and resume on their own once the name resolves again.
+
+    The EXIT stays with the caller. The sequence pass returns immediately while
+    the single-agent pass first clears a stale session key, and folding those
+    two into one helper would have to branch on which path called it.
+    """
+    job.clear_carried_result()
+    job.last_status = "error"
+    job.last_error = message
+    job.run_never_started = True
+    if job.schedule.kind == "at":
+        job.enabled = False
+
+
+def _audit_member_shadow_refusal(job: Any, resolved_source: str) -> None:
+    """Best-effort SEL denial for a private-memory member-shadow refusal."""
+    if resolved_source != RESOLVED_SOURCE_MEMBER_SHADOWED:
+        return
+    try:
+        sel().log_api_access(
+            caller=f"cron:{job.id}",
+            operation="cron.fire.project_bound_job",
+            outcome="denied",
+            source="cron",
+            resources=job.id,
+            error=RESOLVED_SOURCE_MEMBER_SHADOWED,
+        )
+    except Exception:
+        logger.debug("SEL logging failed for cron fire member-shadow denial", exc_info=True)
+
+
+def _agent_unresolved_message(job: Any, agent_name: str, resolved_source: str = "") -> str:
+    """Why a fire is being skipped when *agent_name* resolves to nothing.
+
+    Says whether the name was looked up in a bound directory, because that is
+    where the operator has to add or fix the agent file; without one the name is
+    simply gone from the configured agents. Single-sourced so the two fire paths
+    cannot drift on the wording a job's ``last_error`` shows.
+
+    The directory's PATH is deliberately not in the string. ``last_error`` is
+    persisted and read past the owner boundary -- ``GET /api/crons`` serializes it
+    for every dashboard token while withholding ``project_path`` from a non-owner,
+    the run-history routes serialize the same string as a run's ``summary`` and
+    ``error`` with no owner gate, and ``cron_list`` shows it in chat -- so a path
+    here, or the ``<path>/.kiro/agents/`` layout, would hand a non-owner the value
+    those gates exist to protect. The REASON is kept readable there on purpose: it
+    is the only diagnosis a skip leaves. The owner reads the folder off the job
+    itself (owner view carries ``project_path``), and the fire's log line carries it
+    for the operator.
+
+    ``RESOLVED_SOURCE_MEMBER_SHADOWED`` gets its OWN sentence because for that
+    one refusal the default wording is not merely vague but false, and falsely
+    actionable: the agent IS in the bound directory -- its being there is the
+    whole reason the fire refused -- so "not found in project directory" would
+    send the operator to add a file that already exists, when the remedies are
+    the opposite (rename the project's file, or unbind the member). This is the
+    only signal they get, since the skip spends no auto-pause strike.
+
+    That branch leads with the plain FACT and keeps the mechanism out of its
+    opening (UX Review): state first, then the consequence, then the two
+    remedies. Internal vocabulary in the opening clause -- shadowing, a member's
+    private memory -- spends the one moment the operator most needs plain words,
+    on a state rare enough that they are reading it for the first time, and a
+    remedy read before the state it repairs repairs nothing.
+
+    Every branch names a NEXT STEP, not just a diagnosis (UX Review): the shadow
+    sentence already did, and an operator reading "not found in this job's
+    project directory" still has to work out that an agent file goes in
+    ``.kiro/agents/`` under it. Naming that convention costs one clause and
+    removes the guess.
+    """
+    if resolved_source == RESOLVED_SOURCE_MEMBER_SHADOWED:
+        return (
+            f"This job is bound to a Crew Member, and its project directory "
+            f"defines an agent with the same name ({agent_name!r}). The run was "
+            f"skipped instead of letting that agent run with the member's own "
+            f"memory. Rename the project's agent or unbind the member."
+        )
+    if job.project_path:
+        return (
+            f"Agent {agent_name!r} not found in this job's project directory. Add "
+            f"it under that directory's .kiro/agents/ or pick another agent."
+        )
+    return (
+        f"Agent {agent_name!r} is no longer configured. Pick another agent for "
+        f"this job, or restore that one in your agent settings."
+    )
+
+
+async def _project_directory_vanished(job: Any) -> bool:
+    """Whether *job*'s bound directory is gone, marking the skip when it is.
+
+    Recomputed fresh from disk on every fire and the SOLE source of the
+    missing-directory decision -- nothing persists it, so a directory that comes
+    back needs no repair step. Returns False for an unbound job, which is what
+    lets both fire paths call this unconditionally instead of each guarding on
+    ``job.project_path`` first.
+
+    The persisted reason does not name the path, for the reason
+    :func:`_agent_unresolved_message` gives; the log line names it in redacted
+    form. The gateway log stream is a dashboard-*user* surface: the WS
+    ``subscribe_logs`` handler admits any socket with ``_is_dashboard_user``
+    set, which is every authenticated dashboard token -- including a
+    non-owner ``!dashboard`` Slack subject -- not only the identity
+    ``is_owner_dashboard_request`` checks for the cron rows themselves. The
+    raw folder is therefore reachable by the same non-owner the project-path
+    owner gate exists to keep it from, so it is stripped through
+    :func:`~kiro_crew.security.redaction.redact_local_paths`, the same pass
+    every other subprocess/OS-error surface that can reach a browser applies.
+
+    Offloaded with ``asyncio.to_thread`` because the probe does synchronous
+    filesystem I/O and both callers are on the event loop.
+    """
+    if not job.project_path:
+        return False
+    if await asyncio.to_thread(_project_path_still_canonical, job.project_path):
+        return False
+    safe_path, _ = redact_local_paths(job.project_path)
+    safe_name = redact_log_via_context(job.name)
+    logger.info(
+        "Cron '%s': project directory %s no longer exists, skipping run",
+        safe_name,
+        safe_path,
+    )
+    _mark_fire_skipped(
+        job,
+        "This job's project directory no longer exists at its saved path. Restore "
+        "the folder or pick another project directory.",
+    )
+    return True
 
 
 class _GateTally:
@@ -1634,6 +1831,28 @@ async def _cron_stream_with_posttoken_resume(
             msg = _CRON_POSTTOKEN_CONTINUE_MSG
 
 
+def _cron_crew_alias(config: KiroCrewConfig, member: str, resolved_alias: str) -> str:
+    """Return the config.agents name for a cron member, or its safe fallback."""
+    if not member:
+        return resolved_alias
+    agents = getattr(config, "agents", {})
+    if member in agents:
+        return member
+    try:
+        alias, _ = member_config_for_id(config, member)
+        return alias
+    except ValueError:
+        # A member can be deleted between persistence and fire. This is an
+        # expected stale-record path, so keep it diagnosable at DEBUG without
+        # emitting a routine traceback; resolved_alias preserves dispatch.
+        logger.debug(
+            "cron member identity %r is missing or ambiguous; using resolved alias %r",
+            member,
+            resolved_alias,
+        )
+        return resolved_alias
+
+
 def _result_hash(text: str) -> str:
     """Normalize volatile data and return a 16-hex-char SHA-256 prefix.
 
@@ -2031,6 +2250,39 @@ class GatewayOrchestrator:
         # Wave accounting for the completion digest (batch_id -> progress).
         self._batch_progress: dict[str, dict] = {}
         self._cron_injecting: dict[str, int] = {}  # parent_key → pending injection count
+        # cron session key -> the (cwd, agent, crew_alias, resolved_source) it was
+        # last fired with. A live persistent session (job.persistent_session defaults
+        # True) is reused as-is by SessionManager.get_or_create regardless of
+        # the cwd/agent arguments passed to THIS call -- editing a job's
+        # project_path or agent binding between runs would otherwise silently
+        # run the stale provider under the old cwd and the old agent's
+        # permissions until an idle eviction or gateway restart cold-starts
+        # it. The crew alias is part of the identity too (GPT 5.6 Review F1
+        # follow-up): two different aliases can share a kiro_agent template,
+        # so (cwd, agent) alone could see "no mismatch" across an alias
+        # switch and reuse the wrong alias's runtime/memory/effort namespace.
+        # ``resolved_source`` closes the last blind spot, which is what makes the
+        # project-agent precedence true in STEADY STATE and not merely at cold
+        # start: dropping a ``<project>/.kiro/agents/<name>.json`` beside a
+        # same-named alias (or deleting it) changes WHICH definition answers while
+        # cwd and the requested name both stay put, and on a host whose
+        # default_agent is that same crew and whose template is spelled like it,
+        # the resolved agent and alias are identical too -- so without the tag a
+        # job firing every few minutes would keep running the losing definition
+        # until an eviction. Resolution itself is already fresh every fire.
+        # Checked at fire time in both cron paths below; a mismatch resets
+        # the session before acquiring it. In-memory only and deliberately
+        # not persisted: it is re-derived from the very next fire. An absent
+        # entry is a normal first fire only when no session is live. If the key
+        # is still live, absence means pruning or job-removal eviction separated
+        # the proof from the provider, so the read site resets before acquisition.
+        self._cron_session_binding: dict[str, tuple[str, str, str | None, str]] = {}
+        # Cumulative refused entries. Each candidate snapshot emits one warning
+        # with this count, so overflow is visible without one log per field.
+        self._cron_session_binding_overflow_count = 0
+        # Job removal runs in CronService's store worker. Its observer schedules
+        # eviction back onto this owning loop rather than mutating the map there.
+        self._cron_binding_loop: asyncio.AbstractEventLoop | None = None
         self._running_script_ids: set[str] = (
             set()
         )  # job IDs with in-flight script/command execution
@@ -2099,6 +2351,96 @@ class GatewayOrchestrator:
         # lives beside the rest of the data home for the life of the process.
 
         self._mcp_resolve_home: str = str(config_dir())
+
+    def _retain_cron_session_bindings(
+        self,
+        bindings: Mapping[str, tuple[str, str, str | None, str]],
+    ) -> bool:
+        """Atomically retain one bounded snapshot of cron binding identities."""
+        if not bindings:
+            return True
+        invalid_entries = 0
+        for key, binding in bindings.items():
+            # The key carries its own derived cap; the four identity fields carry
+            # the sink cap above. See the constants for why both remain necessary.
+            if not isinstance(key, str) or len(key) > _CRON_SESSION_KEY_LIMIT:
+                invalid_entries += 1
+                continue
+            if any(
+                value is not None
+                and (not isinstance(value, str) or len(value) > _CRON_SESSION_BINDING_STRING_LIMIT)
+                for value in binding
+            ):
+                invalid_entries += 1
+        new_entries = sum(key not in self._cron_session_binding for key in bindings)
+        count_overflow = len(self._cron_session_binding) + new_entries > (
+            _CRON_SESSION_BINDING_LIMIT
+        )
+        if invalid_entries or count_overflow:
+            refused = len(bindings)
+            self._cron_session_binding_overflow_count += refused
+            # One statement covers the whole admission snapshot; logging each
+            # rejected key or field would amplify an attacker-controlled batch.
+            logger.warning(
+                "Cron session binding retention refused %d entr%s "
+                "(stored=%d, limit=%d, invalid_strings=%d, refused_total=%d)",
+                refused,
+                "y" if refused == 1 else "ies",
+                len(self._cron_session_binding),
+                _CRON_SESSION_BINDING_LIMIT,
+                invalid_entries,
+                self._cron_session_binding_overflow_count,
+            )
+            return False
+        self._cron_session_binding.update(bindings)
+        return True
+
+    def _cron_session_binding_requires_reset(
+        self,
+        key: str,
+        binding: tuple[str, str, str | None, str],
+    ) -> bool:
+        """Reset a mismatched binding, or an untracked key that is still live."""
+        prior = self._cron_session_binding.get(key)
+        if prior is not None:
+            return prior != binding
+        sessions = self.sessions
+        return sessions is not None and sessions.has_session(key) is True
+
+    async def _prune_cron_session_bindings(self, job_id: str, keep: set[str]) -> None:
+        """Drop obsolete keys for one job without losing deferred-reset state."""
+        prefix = f"cron:{job_id}"
+        for key in tuple(self._cron_session_binding):
+            if key in keep or not (key == prefix or key.startswith(f"{prefix}:")):
+                continue
+            has_pending = bool(
+                self.subagent_mgr and await _subagent_work_pending(self.subagent_mgr, key)
+            )
+            if has_pending or self._cron_injecting.get(key, 0) > 0:
+                continue
+            self._cron_session_binding.pop(key, None)
+            cron_svc = getattr(self, "cron_svc", None)
+            if cron_svc is not None:
+                cron_svc.clear_active_session_key(job_id, key)
+
+    def _evict_removed_cron_session_bindings(self, removed_ids: frozenset[str]) -> None:
+        """Evict every single-agent and sequence key for removed cron jobs."""
+        prefixes = tuple(f"cron:{job_id}" for job_id in removed_ids if job_id)
+        if not prefixes:
+            return
+        for key in tuple(self._cron_session_binding):
+            if any(key == prefix or key.startswith(f"{prefix}:") for prefix in prefixes):
+                self._cron_session_binding.pop(key, None)
+
+    def _cron_jobs_removed(self, removed_ids: set[str]) -> None:
+        """Hand CronService's worker-thread removal notice to the owning loop."""
+        loop = self._cron_binding_loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            self._evict_removed_cron_session_bindings,
+            frozenset(removed_ids),
+        )
 
     def _in_flight_work_counts(self) -> tuple[int, int]:
         """Return ``(turns, background)`` that a restart would interrupt.
@@ -4449,7 +4791,10 @@ class GatewayOrchestrator:
             session_key, msg = build_cron_session_context(job)
 
             from kiro_crew.cron import resolve_cron_memory
-            from kiro_crew.execution_context import execution_for_store, execution_from_record
+            from kiro_crew.execution_context import (
+                execution_for_store,
+                execution_from_record,
+            )
 
             # Snapshot the job before yielding; reloading a cron cannot rebind it.
             cron_agents = list(job.agent_sequence)
@@ -4605,6 +4950,110 @@ class GatewayOrchestrator:
                 except Exception:
                     logger.debug("cron agent resolve failed for %r", alias, exc_info=True)
                     return None, None, None
+
+            def _unshadowed_dispatch_execution(
+                bindings, execution: ExecutionContext
+            ) -> ExecutionContext:
+                """Drop a private store when the checkout declares the DISPATCHED name.
+
+                ``_project_dispatch_execution``'s own projection answers the
+                collision the RESOLVER can see: the requested NAME (its alias half)
+                and, under the member opt-out, that name's template. Neither is
+                necessarily the name the backend activates. ``kiro_agent`` is read
+                off the carrier for a carrier-bearing fire
+                (``resolve_agent_bindings``: ``execution_context.template_id``), and
+                a job naming no agent at all is probed as the DEFAULT with
+                ``agent_name=None``, which reaches no project probe at all -- so the
+                dispatched template can be a name nothing compared, while the cwd is
+                the bound folder and the backend resolves that template
+                project-first. The project's own file then answers the turn under
+                whatever store the carrier names, and that file is writable by
+                anyone who can land a branch in the checkout: exactly the hazard the
+                projection exists for, arrived at through the template name.
+
+                Re-points the STORE only. The project file IS what runs, so the
+                template stays dispatched and the fire is not skipped -- the
+                alias-name collision's own ruling, that a winning project
+                definition carries the crew's infrastructure away and lands on
+                Global memory, rather than the member opt-out's refusal.
+
+                Three cases return unchanged, each for its own reason:
+
+                * **No folder** -- nothing can declare a competing definition.
+                * **A member-bound execution** -- the resolver REFUSES that
+                  collision (``RESOLVED_SOURCE_MEMBER_SHADOWED``, pair-checked on
+                  the template) before this is reached, and silently re-pointing a
+                  member's store here would answer a case the stated rule refuses,
+                  re-basing the member onto a different parent template.
+                * **Global already** -- there is no private silo to withhold.
+
+                A COLD name cache leaves the execution alone, mirroring
+                ``_project_declares_agent``'s on-loop rule rather than inventing a
+                stricter one here: this runs on the event loop, the warm above is
+                what makes the read a hit, and a cold read must not become a
+                filesystem access on the loop.
+                """
+                from kiro_crew.agent_discovery import (
+                    agent_binding_is_shadowed,
+                    cached_project_agent_names,
+                )
+                from kiro_crew.execution_context import execution_for_project_override
+                from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+                if (
+                    not job.project_path
+                    or execution.member_id is not None
+                    or execution.store.store_id == DEFAULT_MEMORY_STORE
+                ):
+                    return execution
+                names = cached_project_agent_names(job.project_path)
+                if names is None or not agent_binding_is_shadowed(names, bindings.kiro_agent):
+                    return execution
+                # Redacted like every other project-path log line on this path: the
+                # WS log subscription admits any dashboard USER socket, not only the
+                # owner the cron rows themselves are gated on.
+                _shadow_safe_path, _ = redact_local_paths(job.project_path)
+                logger.info(
+                    "Cron '%s' (project %s): the bound directory declares %r, so the "
+                    "run keeps Global memory instead of the captured store",
+                    redact_log_via_context(job.name),
+                    _shadow_safe_path,
+                    bindings.kiro_agent,
+                )
+                return execution_for_project_override(execution, template_id=bindings.kiro_agent)
+
+            def _project_dispatch_execution(bindings) -> ExecutionContext:
+                """Use the execution identity normalized by the binding resolver.
+
+                A caller that handed ``resolve_agent_bindings`` this job's own
+                ``cron_execution`` gets it back already normalized -- including
+                the project-override projection -- so that answer is returned
+                untouched. The sequence path deliberately passes NO carrier (a
+                job-level execution cannot speak for an individual sequence
+                member; see its pre-resolve pass), which means the resolver had
+                nothing to project and the projection has to be applied here
+                instead, from the same helper the resolver uses. Letting a
+                project-defined member fall through to ``cron_execution`` would
+                run it under the job's execution, and that can name a Crew
+                Member's PRIVATE store -- while a project's ``.kiro/agents``
+                file is writable by anyone who can land a branch in that
+                checkout. ``bindings.kiro_agent`` is the same
+                ``passthrough or default_agent`` value the resolver's own
+                projection uses for the template.
+
+                Either answer is then checked against the name the fire actually
+                DISPATCHES, which the resolver's collision probe does not always
+                see -- see :func:`_unshadowed_dispatch_execution`.
+                """
+                if bindings.execution_context is not None:
+                    return _unshadowed_dispatch_execution(bindings, bindings.execution_context)
+                if bindings.resolved_source == RESOLVED_SOURCE_PROJECT:
+                    from kiro_crew.execution_context import execution_for_project_override
+
+                    return execution_for_project_override(
+                        cron_execution, template_id=bindings.kiro_agent
+                    )
+                return _unshadowed_dispatch_execution(bindings, cron_execution)
 
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
@@ -5459,25 +5908,50 @@ class GatewayOrchestrator:
             async def _acquire_with_model_fallback(
                 key: str,
                 agent_id: str | None,
-                cwd: str | None = None,
+                alias_model: str = "",
                 crew_agent: str | None = None,
+                cwd: str | None = None,
+                execution_context: ExecutionContext | None = None,
             ) -> "tuple[LLMProvider, bool, bool, bool]":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded).
 
-                ``agent_id`` is the RESOLVED kiro agent mode (an alias must be
-                collapsed via _resolve_cron_agent before this call), ``cwd``
-                is that agent's workspace so the session runs in the right tree,
-                and ``crew_agent`` is the original alias so prepare_runtime
-                resolves the member identity (its capability gates, model /
-                reasoning-effort pins, and watchdog windows).
-                """
+                ``agent_id`` is the RESOLVED kiro agent mode — an alias must be
+                collapsed before this call, via ``resolve_agent_bindings`` for a
+                project-bound job or ``_resolve_cron_agent`` for any other — and
+                ``cwd`` is the tree that session runs in: the job's project
+                folder when it has one, otherwise the resolved alias's own
+                workspace.
+
+                *alias_model* is the resolved Kiro Crew alias's own configured
+                model (``ResolvedBindings.model``) — used only when
+                ``job.model`` (the job-level pin, which outranks it) is unset.
+                Without this, substituting a project-scoped alias's
+                ``kiro_agent`` name here (done so the raw kiro-cli agent
+                actually runs, per resolve_agent_bindings) would silently drop
+                that alias's own model tier, since ``get_or_create`` sees only
+                the bare kiro_agent name and falls through to whatever THAT
+                agent defaults to instead.
+
+                *crew_agent* is the Kiro Crew alias the session runs AS:
+                ``ResolvedBindings.resolved_alias`` for a project-bound job, and
+                the identity-resolved alias ``_resolve_cron_agent`` returns for
+                every other. It is what ``crew_pinned_effort``/
+                ``resolve_session_effort``, the member-capability gates and the
+                watchdog windows resolve against (see
+                ``dashboard/chat_runner.py``'s identical
+                ``crew_agent=crew_alias`` pattern). Substituting the bare
+                ``kiro_agent`` name into ``agent=`` without also passing this
+                would run the session under the wrong crew-specific reasoning
+                effort and watchdog settings.
+
+                Returns (client, is_new, resumed, downgraded)."""
 
                 assert self.sessions is not None
                 from kiro_crew.execution_context import bind_session_execution
 
-                await asyncio.to_thread(bind_session_execution, key, cron_execution)
+                dispatch_execution = execution_context or cron_execution
+                await asyncio.to_thread(bind_session_execution, key, dispatch_execution)
                 modes = getattr(self.ctx_builder, "_session_memory_modes", None)
                 if isinstance(modes, dict):
                     # A separately scheduled run is durable work, not a child
@@ -5487,12 +5961,15 @@ class GatewayOrchestrator:
                     from kiro_crew.workflows.registry import _await_owned
 
                     publication = asyncio.create_task(
-                        asyncio.to_thread(bind_session_memory_mode, key, cron_execution.memory_mode)
+                        asyncio.to_thread(
+                            bind_session_memory_mode, key, dispatch_execution.memory_mode
+                        )
                     )
                     admitted_mode = await _await_owned(publication)
                     modes[key] = (
                         strictest((admitted_mode, modes.get(key, "persistent"))) or "persistent"
                     )
+                _model = job.model or alias_model or None
                 try:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
@@ -5500,25 +5977,25 @@ class GatewayOrchestrator:
                         crew_agent=crew_agent,
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
-                        model=job.model or None,
+                        model=_model,
+                        cwd=job.project_path or cwd,
                         extra_env=_cron_extra_env(),
-                        cwd=cwd,
                     )
                     return client, is_new, resumed, False
                 except Exception as model_exc:
-                    if not job.model:
+                    if not _model:
                         raise
                     # Only fall back when the failure plausibly implicates the
                     # pinned model; unrelated session-creation errors (provider
                     # spawn, missing factory, transient I/O) must propagate so
                     # they are not misreported as a model downgrade.
                     _err = str(model_exc).lower()
-                    if "model" not in _err and job.model.lower() not in _err:
+                    if "model" not in _err and _model.lower() not in _err:
                         raise
                     logger.warning(
                         "Cron '%s': model %r unavailable (%s); retrying with default",
                         job.name,
-                        job.model,
+                        _model,
                         model_exc,
                     )
                     client, is_new, resumed = await self.sessions.get_or_create(
@@ -5527,8 +6004,8 @@ class GatewayOrchestrator:
                         crew_agent=crew_agent,
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
+                        cwd=job.project_path or cwd,
                         extra_env=_cron_extra_env(),
-                        cwd=cwd,
                     )
                     return client, is_new, resumed, True
 
@@ -5545,11 +6022,227 @@ class GatewayOrchestrator:
             if agent_sequence_dispatches(agents):
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
+                # Same missing-folder skip as the single-agent path below,
+                # checked once here since job.project_path is constant across
+                # every member of the sequence — see that path's comment for
+                # the full rationale (a vanished path must not silently run
+                # ANY sequence member against the wrong, global-fallback
+                # agent).
+                if await _project_directory_vanished(job):
+                    return None
                 result_text = "_No response._"
                 _seq_downgraded = False
                 # Run-scoped: a sequence where one agent got a tool through has
                 # done work, even if a later agent was blocked outright.
                 _gate = _GateTally()
+                # Pre-resolve EVERY sequence member's agent against
+                # job.project_path in one pass BEFORE any session is acquired
+                # or any turn runs — mirroring the missing-folder check above.
+                # Resolving inside the per-agent loop (the previous shape) let
+                # an early member run a REAL turn, then abort the whole run
+                # with run_never_started=True when a LATER member's agent
+                # could not be found — mislabeling a run that already did
+                # work as never having started at all, which defeats
+                # auto-pause failure accounting and would wrongly suppress a
+                # delete_after_run job's one-shot consume. Resolving everyone
+                # first means an unresolvable member is caught before
+                # anything executes, so the abort is always honest.
+                _resolved_seq_agents: dict[str, tuple[str, str, str | None]] = {}
+                _seq_sources: dict[str, str] = {}
+                _seq_stores: dict[str, str] = {}
+                _seq_executions: dict[str, ExecutionContext] = {}
+                if job.project_path:
+                    await warm_project_agent_names(
+                        job.project_path, operation="cron_fire", source="cron"
+                    )
+                _seq_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                for agent in agents:
+                    # Offloaded: when `agent` names a real config.agents
+                    # alias (not just a project-materialized agent),
+                    # resolve_agent_bindings's alias_hit path calls
+                    # require_member_memory_store(require_directory=True)
+                    # -- real os.scandir/open/read/fstat syscalls on the
+                    # member's memory-store directory, not the pure
+                    # in-memory cache read _project_declares_agent uses.
+                    # Same load as the sibling
+                    # `_seq_cfg = await asyncio.to_thread(KiroCrewConfig.load)`
+                    # two lines up, and chat_runner.py's identical
+                    # "private memory validation ... access files, resolve
+                    # off-loop" precedent.
+                    #
+                    # allow_project_override is the member-bound opt-out: a
+                    # member keeps its global lineage, because substituting a
+                    # same-named project definition would re-base it onto a
+                    # different parent template and trip
+                    # parent_identity_changed. The folder still supplies cwd.
+                    #
+                    # NO execution_context here, unlike the single-agent path.
+                    # A carrier makes the resolver answer FROM it -- kiro_agent
+                    # becomes execution_context.template_id and the store
+                    # becomes execution_context.store -- which is right there,
+                    # where the carrier IS the job's one agent identity, and
+                    # wrong here: a sequence's carrier is job-level
+                    # (`job.agent_id or "kirocrew"`, and agent_id is dormant
+                    # once agent_sequence_dispatches), so passing it returned
+                    # that ONE template for EVERY member and ran each of them
+                    # as the default agent under its tools and permissions --
+                    # the silent substitution the refusal below exists to
+                    # prevent. Each member's identity has to come from its own
+                    # alias/passthrough. The dispatch execution is carried
+                    # separately in `_seq_executions`, via
+                    # `_project_dispatch_execution`, which re-applies the
+                    # projection the carrier-less resolution could not.
+                    _seq_bindings = await asyncio.to_thread(
+                        resolve_agent_bindings,
+                        _seq_cfg,
+                        agent or None,
+                        job.project_path or None,
+                        allow_project_override=not job.member_id,
+                    )
+                    # The refusal has the single-agent path's scope (see its
+                    # `_validate_unbound_one_shot`): a PROJECT-BOUND job, where a
+                    # project definition can shadow the name, plus an unbound
+                    # delete-after-run one-shot, whose vanished member must not
+                    # consume scheduled work that never ran. An unbound recurring
+                    # sequence dispatches its members as captured -- an
+                    # app-registered agent or an un-aliased crew name is not a
+                    # `config.agents` alias and must keep firing, exactly as the
+                    # single-agent path lets a global job fire on its captured
+                    # template. A member-bound job in a folder is validated
+                    # like any other bound job.
+                    _seq_validate_unbound_one_shot = bool(
+                        job.delete_after_run and agent and not job.project_path
+                    )
+                    if not _seq_bindings.requested_resolved and (
+                        job.project_path or _seq_validate_unbound_one_shot
+                    ):
+                        _seq_skip_why = _agent_unresolved_message(
+                            job, agent, _seq_bindings.resolved_source
+                        )
+                        # Logged from the SAME string the job's last_error
+                        # carries, so a reader of the logs and a reader of the
+                        # job cannot be told two different stories -- the
+                        # shadow refusal in particular must not read as "not
+                        # found" here while reading correctly there. The folder
+                        # rides beside it here and nowhere else: the persisted
+                        # string is read past the owner boundary, the log is
+                        # the operator's (see _agent_unresolved_message). It is
+                        # still redacted before logging: the WS log
+                        # subscription admits any `_is_dashboard_user` socket,
+                        # not only `is_owner_dashboard_request`, so "the
+                        # operator's" surface is not owner-scoped either.
+                        _seq_safe_path, _ = redact_local_paths(job.project_path)
+                        _seq_safe_name = redact_log_via_context(job.name)
+                        _seq_safe_why = redact_log_via_context(_seq_skip_why)
+                        logger.info(
+                            "Cron '%s' (project %s): %s, skipping run",
+                            _seq_safe_name,
+                            _seq_safe_path,
+                            _seq_safe_why,
+                        )
+                        _audit_member_shadow_refusal(job, _seq_bindings.resolved_source)
+                        _mark_fire_skipped(job, _seq_skip_why)
+                        if self.cron_svc is not None:
+                            # No session key is minted this run -- the
+                            # resolve failure is caught BEFORE any
+                            # session is acquired (see the comment on the
+                            # pre-resolve pass above). This clears any
+                            # STALE key a prior run left registered, so
+                            # the reaper does not target a session that
+                            # maps to no live run.
+                            _stale_key = self.cron_svc.get_active_session_key(job.id)
+                            if _stale_key is not None:
+                                self.cron_svc.clear_active_session_key(job.id, _stale_key)
+                        return None
+                    if job.project_path:
+                        # Only a project-bound job takes its dispatch identity
+                        # from the resolution. A global job keeps the raw name,
+                        # no alias model, and -- load-bearing -- a None crew
+                        # alias, so resolve_crew_identity's crew-namespace
+                        # fallback still applies ("" is the explicit no-crew
+                        # opt-out). Validation above is deliberately WIDER than
+                        # this assignment: every job is checked, only a bound
+                        # one is re-pointed.
+                        _resolved_seq_agents[agent] = (
+                            _seq_bindings.kiro_agent,
+                            _seq_bindings.model,
+                            # crew_agent is a config.agents NAME, while
+                            # member_id is its persisted (lossy) identity.
+                            # Resolve the ID back to its name; if the member was
+                            # deleted or became ambiguous, preserve the current
+                            # safe fallback instead of crashing the fire.
+                            _cron_crew_alias(
+                                _seq_cfg,
+                                job.member_id,
+                                _seq_bindings.resolved_alias,
+                            ),
+                        )
+                    # Recorded for EVERY job, bound or not: this feeds the
+                    # session-reuse key, which must notice a definition change
+                    # even where dispatch is unchanged.
+                    _seq_sources[agent] = _seq_bindings.resolved_source
+                    # The alias's own store, for the same reason as the single-agent
+                    # site: carrying its kiro_agent without its silo would run it
+                    # under the DEFAULT store on every fire. Bound jobs only, so an
+                    # unbound job's dispatch is untouched.
+                    if job.project_path:
+                        _seq_stores[agent] = _seq_bindings.memory_store_name
+                        _seq_executions[agent] = _project_dispatch_execution(_seq_bindings)
+                # Preflight every sequence binding before any active-session
+                # registration, session acquisition, or turn. Obsolete sequence
+                # keys are dropped here so an edited agent list does not retain
+                # identities forever; pending/injecting keys stay until their
+                # deferred reset completes.
+                _seq_binding_snapshot: dict[str, tuple[str, str, str | None, str]] = {}
+                _seq_expected_keys = {f"cron:{job.id}:{agent}" for agent in agents}
+                await self._prune_cron_session_bindings(job.id, _seq_expected_keys)
+                for agent in agents:
+                    _seq_check_key = f"cron:{job.id}:{agent}"
+                    _seq_check_agent, _, _seq_check_crew_alias = _resolved_seq_agents.get(
+                        agent, (agent, "", None)
+                    )
+                    _seq_check_binding = (
+                        job.project_path or "",
+                        _seq_check_agent or "",
+                        _seq_check_crew_alias,
+                        _seq_sources.get(agent, ""),
+                    )
+                    _seq_binding_snapshot[_seq_check_key] = _seq_check_binding
+                    if not self._cron_session_binding_requires_reset(
+                        _seq_check_key,
+                        _seq_check_binding,
+                    ):
+                        continue
+                    _seq_check_pending = bool(
+                        self.subagent_mgr
+                        and await _subagent_work_pending(self.subagent_mgr, _seq_check_key)
+                    )
+                    _seq_check_injecting = self._cron_injecting.get(_seq_check_key, 0) > 0
+                    if _seq_check_pending or _seq_check_injecting:
+                        logger.info(
+                            "Cron '%s': deferring fire, binding changed while "
+                            "subagents pending on %s",
+                            job.name,
+                            _seq_check_key,
+                        )
+                        _defer_cron_before_dispatch(job, "binding changed while subagents pending")
+                        return None
+
+                # Every stale session is reset before the identity snapshot is
+                # replaced. A later acquisition failure is therefore safe: the
+                # retained identity names what the next cold acquisition builds.
+                for _seq_key, _seq_binding in _seq_binding_snapshot.items():
+                    if self._cron_session_binding_requires_reset(_seq_key, _seq_binding):
+                        await self.sessions.reset(_seq_key)
+                        if self.cron_svc is not None:
+                            self.cron_svc.clear_active_session_key(job.id, _seq_key)
+                if not self._retain_cron_session_bindings(_seq_binding_snapshot):
+                    _defer_cron_before_dispatch(
+                        job,
+                        "cron session binding retention capacity unavailable",
+                    )
+                    return None
+
                 for agent in agents:
                     agent_session_key = f"cron:{job.id}:{agent}"
                     if self.cron_svc is not None:
@@ -5572,12 +6265,42 @@ class GatewayOrchestrator:
                         _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
 
                     try:
-                        # Collapse an alias (e.g. a channel-bound agent) to its
-                        # real kiro mode + workspace; keep the session key on the
-                        # ORIGINAL alias so per-agent keys stay stable.
-                        _seq_kagent, _seq_cwd, _seq_crew = _resolve_cron_agent(agent)
+                        # Look up this member's pre-resolved agent + model +
+                        # crew alias from the pass above — no-op (cheap) for
+                        # the common case of no project_path, where the dict
+                        # is empty and the raw name is used unchanged with no
+                        # alias model, and crew identity left to
+                        # resolve_crew_identity's namespace fallback (None, not
+                        # "" — "" is the explicit no-crew opt-out).
+                        _resolved_seq_agent, _seq_alias_model, _seq_crew_alias = (
+                            _resolved_seq_agents.get(agent, (agent, "", None))
+                        )
+                        # Resolved by resolve_agent_bindings in the pre-pass above
+                        # (not derived from the kiro-cli agent name), hoisted here so
+                        # the dispatch call reads like its single-agent sibling.
+                        _seq_store = _seq_stores.get(agent, "")
+                        _seq_execution = _seq_executions.get(agent, cron_execution)
+                        # The pre-resolve pass above only fills those dicts for a
+                        # PROJECT-BOUND job, because only there can a project
+                        # definition shadow the name. A job with no folder still
+                        # needs its alias collapsed to a real kiro mode — a
+                        # channel-bound agent like "in-3d" is not a kiro-cli
+                        # mode and is rejected outright — so that case falls to
+                        # _resolve_cron_agent, which also anchors the alias's own
+                        # workspace as cwd. The session key stays on the ORIGINAL
+                        # alias either way so per-agent keys remain stable.
+                        _seq_cwd: str | None = None
+                        if not job.project_path:
+                            _seq_kagent, _seq_cwd, _seq_crew = _resolve_cron_agent(agent)
+                            _resolved_seq_agent = _seq_kagent or _resolved_seq_agent
+                            _seq_crew_alias = _seq_crew
                         client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, _seq_kagent or agent, _seq_cwd, _seq_crew
+                            agent_session_key,
+                            _resolved_seq_agent,
+                            _seq_alias_model,
+                            _seq_crew_alias,
+                            cwd=_seq_cwd,
+                            execution_context=_seq_execution,
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
@@ -5598,19 +6321,33 @@ class GatewayOrchestrator:
                         # once; the finally re-arms it if the turn never lands.
                         _seq_reinjection = consume_reinjection(self.sessions, agent_session_key)
                         # Off-loop: build_message embeds the episodic query.
+                        # Pass the pre-resolved kiro_agent name (same as
+                        # _acquire_with_model_fallback above), not the raw
+                        # sequence-member name: build_message's own agent
+                        # lookup (_load_agent_prompt) matches against a
+                        # config file's name/stem, and for a project-scoped
+                        # member that is a Kiro Crew alias whose kiro_agent
+                        # differs from the alias, the raw name would build the
+                        # prompt for the wrong (or a nonexistent) agent while
+                        # the actual session runs under the resolved one.
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
                             msg,
                             is_new,
                             agent_session_key,
                             interactive=False,
-                            agent=agent,
-                            memory_store=cron_memory_store or None,
-                            execution_context=cron_execution,
+                            agent=_resolved_seq_agent,
+                            memory_store=(
+                                _seq_execution.store.legacy_name or None
+                                if _seq_execution is not cron_execution
+                                else cron_memory_store or _seq_store or None
+                            ),
+                            execution_context=_seq_execution,
                             context_provider=client,
                             resumed=_resumed,
                             needs_reinjection=_seq_reinjection,
                             minimal_context=job.minimal_context,
+                            project=job.project_path or None,
                         )
                         # Wall clock for the cron agent turn: acp never assigns
                         # TurnUsage.duration_ms, so the row falls back to this.
@@ -5735,10 +6472,6 @@ class GatewayOrchestrator:
                 return result_text
 
             # ── Single-agent path (existing behavior) ──
-            # Tell the reaper which key to target if this run hangs.
-            if self.cron_svc is not None:
-                self.cron_svc.register_active_session_key(job.id, session_key)
-
             _acquired = False
             _model_downgraded = False
             # Set when the gate verdict below already counted this run, so the
@@ -5757,12 +6490,297 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                # Collapse an alias (channel-bound agent) to its real kiro mode
-                # + workspace before dispatch; falls back to the raw value when
-                # it is already a real mode or unset.
-                _single_kagent, _single_cwd, _single_crew = _resolve_cron_agent(cron_agent or None)
+                # cron_agent (resolve_cron_memory's second return value: plain
+                # job.agent_id, or -- when job.member_id is set -- that Crew
+                # Member's own kiro_agent, job.agent_id still winning if it
+                # names one) is the base identity; it is only meaningful once
+                # resolved against job.project_path — the same two-step
+                # discovery+resolve chat_runner.py uses for a dashboard slot's
+                # project agents (warm the on-demand index, then look the name
+                # up against it). A job with no project_path (the common case)
+                # takes the cheap path: warm_project_agent_names/
+                # resolve_agent_bindings are both no-ops on an empty project
+                # dir, so this adds no cost to a global-agent job.
+                _resolved_agent_id = cron_agent or None
+                _alias_model = ""
+                # None (not "") so a non-project crew job keeps
+                # resolve_crew_identity's crew-namespace fallback: "" is the
+                # explicit "no crew" opt-out, which would suppress the crew
+                # effort/watchdog resolution a bare crew-name cron job relies
+                # on. Only the project_path branch below sets a concrete alias.
+                _alias_crew_agent: str | None = None
+                # The tree this session runs in. A project-bound job runs in its
+                # folder (set inside _acquire_with_model_fallback, which prefers
+                # job.project_path); a job with no folder is anchored to its
+                # resolved alias's own workspace by the else-branch below.
+                _dispatch_cwd: str | None = None
+                # Set by the validation below for a PROJECT-BOUND job -- it feeds
+                # the session-reuse key, which must notice a definition change even
+                # where dispatch is unchanged. Left "" for a job with no folder:
+                # nothing there can drift, because no project definition competes
+                # for the name.
+                _resolved_source = ""
+                _dispatch_execution = cron_execution
+                # The resolved alias's own memory store, threaded for the same
+                # reason as _alias_model beside it: substituting a project-scoped
+                # alias's kiro_agent here without also carrying its store would
+                # run the alias under the DEFAULT silo, silently and on every
+                # fire. Empty unless a bound alias names one; an explicit
+                # job.memory_store or a member binding still outranks it, because
+                # resolve_cron_memory's value is preferred below.
+                _alias_store = ""
+                # A vanished directory degrading silently to the global binding
+                # (warm_project_agent_names / resolve_agent_bindings both no-op on
+                # a missing dir) would run the WRONG agent with no visible sign
+                # beyond a list-page badge, which is not an acceptable failure mode
+                # for a project-scoped job: the whole point of setting a project
+                # directory is that THIS run uses that project's agent. Per explicit
+                # product decision the fire is SKIPPED instead -- the same
+                # deliberately-neutral shape as the overlapping-run refusal just
+                # above, and _mark_fire_skipped is what keeps it out of the
+                # auto-pause budget.
+                if await _project_directory_vanished(job):
+                    if self.cron_svc is not None:
+                        # No session key was minted this run, so clear any STALE
+                        # key a prior run left registered -- otherwise the reaper
+                        # targets a session that maps to no live run.
+                        _stale_key = self.cron_svc.get_active_session_key(job.id)
+                        if _stale_key is not None:
+                            self.cron_svc.clear_active_session_key(job.id, _stale_key)
+                    return None
+                # An unbound recurring job keeps its captured execution without a
+                # config reread (execution_context.py's immutable-carrier
+                # contract). A delete-after-run job is different: if its explicit
+                # agent vanished, treating the callback as completed consumes the
+                # one-shot forever. Validate that narrow shape at fire time so it
+                # takes the same named never-started skip as a project-bound job.
+                _validate_unbound_one_shot = bool(
+                    job.delete_after_run and job.agent_id and not job.project_path
+                )
+                if job.project_path:
+                    await warm_project_agent_names(
+                        job.project_path, operation="cron_fire", source="cron"
+                    )
+                if job.project_path or _validate_unbound_one_shot:
+                    _cfg_for_bindings = await asyncio.to_thread(KiroCrewConfig.load)
+                    # Offloaded for the same reason as the sequential-loop
+                    # equivalent above: cron_agent naming a real config.agents
+                    # alias reaches require_member_memory_store's real
+                    # filesystem syscalls via resolve_agent_bindings's
+                    # alias_hit path, not just the pure-cache
+                    # _project_declares_agent read -- matches the sibling
+                    # load a few lines up and chat_runner.py's identical pattern.
+                    #
+                    # Scoped to PROJECT-BOUND jobs plus the narrow unbound
+                    # delete-after-run guard above. A recurring job carrying a
+                    # captured `execution_context` is dispatched from that frozen
+                    # record precisely so a fire cannot re-derive its identity from
+                    # mutable configuration mid-flight (execution_context.py;
+                    # test_cron_execution_capture_async.py pins BOTH halves -- a
+                    # carrier-bearing recurring fire reads no config at all, and a
+                    # global recurring job whose agent_id is not a config alias
+                    # still fires on its captured template). The one-shot exception
+                    # asks only whether the explicit name still resolves; it does
+                    # not re-point dispatch. Without it, returning normally consumes
+                    # scheduled work that never ran. Project-bound jobs still need
+                    # resolution because a project definition can shadow the name.
+                    # allow_project_override is the member-bound opt-out -- a member
+                    # keeps its global lineage, since substituting a same-named
+                    # project definition would re-base it onto a different parent
+                    # template and trip parent_identity_changed. The folder still
+                    # supplies cwd.
+                    # `cron_agent` is the execution's `template_id`, which falls back
+                    # to the literal "kirocrew" when the job named no agent at all --
+                    # a SYNTHESIZED default, not an operator selection. Validating
+                    # that fallback would make every default-agent job in a folder
+                    # skip on any host where "kirocrew" is not itself a
+                    # `config.agents` alias, which is the ordinary case:
+                    # `requested_resolved` is False for a name that is neither an
+                    # alias hit nor a passthrough, so the guard below would refuse
+                    # the job the picker describes as "Leave default for the primary
+                    # agent". Pass None instead, which is what makes
+                    # `requested_resolved` answer for the DEFAULT (loader.py:
+                    # `(not agent_name) or alias_hit or ...`) -- the same invariant
+                    # the save-time check states as "an empty agent means the
+                    # default, which always resolves". `job.member_id` keeps a
+                    # member-bound job on `cron_agent`, because there it is the
+                    # member's real provider template rather than a fallback.
+                    _requested_agent = cron_agent if (job.agent_id or job.member_id) else None
+                    _bindings = await asyncio.to_thread(
+                        resolve_agent_bindings,
+                        _cfg_for_bindings,
+                        _requested_agent,
+                        job.project_path,
+                        execution_context=cron_execution,
+                        allow_project_override=not job.member_id,
+                    )
+                    if not _bindings.requested_resolved:
+                        # cron_agent (job.agent_id, or the Crew Member's own
+                        # kiro_agent when job.member_id is set -- see
+                        # resolve_cron_memory) named a specific agent, but
+                        # resolve_agent_bindings could not find it in the active
+                        # global/project scope (the definition was removed, or
+                        # never existed) -- so _bindings.kiro_agent is now the
+                        # DEFAULT agent's binding, not the one this job asked for.
+                        # Running anyway would execute the prompt under the
+                        # default agent's tools and permissions with no indication
+                        # anything was substituted.
+                        # Same neutral shape as the missing-folder skip above: a
+                        # skip is a normal failure, not a task defect, so no
+                        # auto-pause strike is spent.
+                        _skip_why = _agent_unresolved_message(
+                            job, cron_agent, _bindings.resolved_source
+                        )
+                        # Same single-sourcing as the sequence-path exit
+                        # above, including the same redaction before logging.
+                        _safe_path, _ = redact_local_paths(job.project_path)
+                        _safe_name = redact_log_via_context(job.name)
+                        _safe_why = redact_log_via_context(_skip_why)
+                        logger.info(
+                            "Cron '%s' (project %s): %s, skipping run",
+                            _safe_name,
+                            _safe_path,
+                            _safe_why,
+                        )
+                        _audit_member_shadow_refusal(job, _bindings.resolved_source)
+                        _mark_fire_skipped(job, _skip_why)
+                        if self.cron_svc is not None:
+                            # No session key was minted this run -- see the
+                            # comment on the sequence-path exit above.
+                            _stale_key = self.cron_svc.get_active_session_key(job.id)
+                            if _stale_key is not None:
+                                self.cron_svc.clear_active_session_key(job.id, _stale_key)
+                        return None
+                if job.project_path:
+                    _resolved_source = _bindings.resolved_source
+                    # A member-bound job in a folder IS still validated above: the
+                    # folder is an explicit claim that the agent lives there. A
+                    # recurring member-bound job with NO folder is not; its
+                    # cron_agent is the member's PROVIDER TEMPLATE (see
+                    # resolve_cron_memory), not a name selected for fresh
+                    # resolution. The explicit-agent delete-after-run exception is
+                    # validated above solely to preserve the one-shot if that
+                    # template disappeared.
+                    #
+                    # Only a project-bound job takes its dispatch identity from the
+                    # resolution. A global job keeps cron_agent, no alias model, and
+                    # -- load-bearing -- a None crew alias, so
+                    # resolve_crew_identity's crew-namespace fallback still applies
+                    # ("" is the explicit no-crew opt-out, which would suppress the
+                    # crew effort/watchdog resolution a bare crew-name job relies
+                    # on).
+                    _resolved_agent_id = _bindings.kiro_agent
+                    _alias_model = _bindings.model
+                    _alias_store = _bindings.memory_store_name
+                    _dispatch_execution = _project_dispatch_execution(_bindings)
+                    # crew_agent consumers key config.agents by NAME, not by
+                    # the persisted member_id field. Resolve the ID back to its
+                    # name; a stale/ambiguous ID keeps resolved_alias so a
+                    # deleted member cannot crash this fire.
+                    _alias_crew_agent = _cron_crew_alias(
+                        _cfg_for_bindings,
+                        job.member_id,
+                        _bindings.resolved_alias,
+                    )
+                else:
+                    # No folder, so nothing above resolved this job's agent --
+                    # and an alias is still not a kiro-cli mode. A cron created
+                    # in a Slack channel carries that channel's ALIAS (e.g.
+                    # "in-3d") in job.agent_id, which kiro-cli rejects outright
+                    # ("Agent mode 'in-3d' is not available ..."), so collapse it
+                    # to its kiro_agent and anchor the alias's own workspace as
+                    # cwd. _resolve_cron_agent returns (None, None, None) for a
+                    # name that is already a real mode or is unset, which leaves
+                    # every default above untouched -- including the None crew
+                    # alias the crew-namespace fallback depends on.
+                    _single_kagent, _single_cwd, _single_crew = _resolve_cron_agent(
+                        cron_agent or None
+                    )
+                    if _single_kagent:
+                        _resolved_agent_id = _single_kagent
+                    _dispatch_cwd = _single_cwd
+                    _alias_crew_agent = _single_crew
+                # A live persistent session ignores the cwd/agent passed to
+                # get_or_create below and is reused exactly as it last was --
+                # see _cron_session_binding's own comment. Reset it first
+                # when THIS fire's binding differs from the last one that
+                # actually acquired it, so an edited project_path/agent_id
+                # takes effect on the very next fire instead of only after
+                # an idle eviction or gateway restart. Deferred exactly like
+                # the two sibling reset call sites in this file (the
+                # sequential-path exit and this same path's own `finally`)
+                # when a prior fire's subagent completion is still running,
+                # queued, or mid-injection into this same session_key --
+                # resetting out from under it would tear down the context a
+                # pending completion is about to inject into and misroute
+                # that completion into whatever cold-started next.
+                #
+                # GPT 5.6 Review F1 (UPHOLD-FENCED): merely skipping the
+                # reset and proceeding to acquire below would run THIS fire
+                # on the old (stale) session under the OLD cwd/agent binding
+                # -- a real, non-recoverable exposure window, not just a
+                # later-fire self-correction. Skip the fire entirely instead:
+                # defer it before any session acquisition, exactly like the
+                # existing gateway-admission-closed deferrals elsewhere in
+                # this function, so the retained/undispatched job is retried
+                # on its next natural fire once the pending work has drained
+                # and the reset can actually happen.
+                #
+                # GPT 5.6 Review F1 (UPHOLD-FENCED, follow-up): the identity
+                # tuple must also carry the resolved CREW alias, not just
+                # (project_path, kiro_agent). Two different crew aliases can
+                # resolve to the same kiro_agent template, so a job switching
+                # between them would otherwise produce an IDENTICAL tuple --
+                # "no mismatch" -- and skip the reset entirely, letting the
+                # new alias's turn run on the old alias's still-live session
+                # and inherit its memory/effort/crew-identity namespace.
+                # _alias_crew_agent is deliberately NOT coerced to "" here:
+                # None (left to resolve_crew_identity's namespace fallback)
+                # and "" (the explicit no-crew opt-out) are two DIFFERENT
+                # crew identities, and collapsing them would hide exactly
+                # the kind of switch this fix exists to catch.
+                _binding_now = (
+                    job.project_path or "",
+                    _resolved_agent_id or "",
+                    _alias_crew_agent,
+                    _resolved_source,
+                )
+                await self._prune_cron_session_bindings(job.id, {session_key})
+                if self._cron_session_binding_requires_reset(session_key, _binding_now):
+                    _binding_has_pending = bool(
+                        self.subagent_mgr
+                        and await _subagent_work_pending(self.subagent_mgr, session_key)
+                    )
+                    _binding_has_injecting = self._cron_injecting.get(session_key, 0) > 0
+                    if _binding_has_pending or _binding_has_injecting:
+                        logger.info(
+                            "Cron '%s': deferring fire, binding changed while "
+                            "subagents pending on %s",
+                            job.name,
+                            session_key,
+                        )
+                        _defer_cron_before_dispatch(job, "binding changed while subagents pending")
+                        return None
+                    await self.sessions.reset(session_key)
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id, session_key)
+                if not self._retain_cron_session_bindings({session_key: _binding_now}):
+                    _defer_cron_before_dispatch(
+                        job,
+                        "cron session binding retention capacity unavailable",
+                    )
+                    return None
+                # Admission above gates the reaper's parallel active-key store:
+                # a refused binding must not gain a second, unbounded identity.
+                if self.cron_svc is not None:
+                    self.cron_svc.register_active_session_key(job.id, session_key)
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, _single_kagent or cron_agent or None, _single_cwd, _single_crew
+                    session_key,
+                    _resolved_agent_id,
+                    _alias_model,
+                    _alias_crew_agent,
+                    cwd=_dispatch_cwd,
+                    execution_context=_dispatch_execution,
                 )
                 _acquired = True
                 # Same identity publish as the sequential site above — the
@@ -5787,12 +6805,17 @@ class GatewayOrchestrator:
                     is_new,
                     session_key,
                     interactive=False,
-                    agent=cron_agent or None,
-                    memory_store=cron_memory_store or None,
-                    execution_context=cron_execution,
+                    agent=_resolved_agent_id,
+                    memory_store=(
+                        _dispatch_execution.store.legacy_name or None
+                        if _dispatch_execution is not cron_execution
+                        else cron_memory_store or _alias_store or None
+                    ),
+                    execution_context=_dispatch_execution,
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
+                    project=job.project_path or None,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )
@@ -6507,7 +7530,12 @@ class GatewayOrchestrator:
 
         self._cron_reconciled = False
         self._cron_armed = False
-        self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
+        self._cron_binding_loop = asyncio.get_running_loop()
+        self.cron_svc = await CronService.create(
+            base_dir=data_home(),
+            on_job=_cron_callback,
+            on_jobs_removed=self._cron_jobs_removed,
+        )
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
         if self._no_crons:
@@ -14062,13 +15090,8 @@ class GatewayOrchestrator:
         # request.
         if not self._test_mode:
             with contextlib.suppress(Exception):
-                from kiro_crew.agent import (
-                    prime_ceiling_projection,
-                    reproject_for_ceiling_change,
-                )
-                from kiro_crew.dashboard.tailnet_serve import (
-                    revoke_if_governance_now_pins_off,
-                )
+                from kiro_crew.agent import prime_ceiling_projection, reproject_for_ceiling_change
+                from kiro_crew.dashboard.tailnet_serve import revoke_if_governance_now_pins_off
                 from kiro_crew.platform.policy_distribution import (
                     register_post_install_hook,
                     start_refresher,

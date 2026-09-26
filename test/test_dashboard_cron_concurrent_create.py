@@ -21,13 +21,35 @@ save when any optional field was set) and pass against the remediation.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers import api_crons_create
+
+
+@pytest.fixture(autouse=True)
+def _agents_resolve():
+    """Make every agent name resolve.
+
+    These tests are about the locked create transaction -- one save, no lost
+    concurrent write -- but the handler now validates the agent before add_job, so
+    the arbitrary names below ("agent-a", "researcher", ...) would 400 out before
+    reaching the code under test. See test_cron_agent_validation.py for the
+    validation's own coverage.
+
+    Patched at ``dashboard.handlers.cron``, NOT at ``config.loader``: the handler
+    imports the resolver at MODULE level, so it holds its own reference bound at
+    import time and patching the defining module does not reach it. That patch
+    silently no-ops and every create here 400s on a real resolution.
+    """
+    with patch(
+        "kiro_crew.dashboard.handlers.cron.resolve_agent_bindings",
+        return_value=MagicMock(requested_resolved=True),
+    ):
+        yield
 
 
 def _create_request(body: dict, crons: CronService) -> MagicMock:
@@ -97,9 +119,7 @@ class TestCreateSingleLockedSave:
 
         crons._save = _counting_save  # type: ignore[method-assign]
 
-        request = _create_request(
-            {"name": "plain", "message": "ping", "every": 3600}, crons
-        )
+        request = _create_request({"name": "plain", "message": "ping", "every": 3600}, crons)
         resp = await api_crons_create(request)
         assert resp.status == 200
         assert save_calls["n"] == 1
@@ -134,9 +154,7 @@ class TestConcurrentCreatesNoDataLoss:
             crons,
         )
 
-        resp_a, resp_b = await asyncio.gather(
-            api_crons_create(req_a), api_crons_create(req_b)
-        )
+        resp_a, resp_b = await asyncio.gather(api_crons_create(req_a), api_crons_create(req_b))
         assert resp_a.status == 200
         assert resp_b.status == 200
 

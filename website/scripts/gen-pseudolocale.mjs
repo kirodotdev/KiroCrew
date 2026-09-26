@@ -90,6 +90,7 @@ const PRESERVE = [
   /<[^>]+>/g, // markup, and the URL-shaped `<…>` values in this catalog
   /\$t\([^)]*\)/g, // i18next nesting
   /https?:\/\/\S+/g, // urls
+  /\/Users\/you\/projects\/myrepo/g, // canonical project-directory example path
 ]
 
 /** The masking sentinel, as a non-global regex so `.test()` carries no `lastIndex`. */

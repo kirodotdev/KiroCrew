@@ -313,6 +313,7 @@ def _make_gw():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()

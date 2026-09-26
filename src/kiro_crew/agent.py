@@ -49,6 +49,7 @@ from kiro_crew.agent_discovery import (
     AmbiguousAgentSpecError,
     _declared_project_agent_name,
     _read_agent_spec,
+    agent_binding_is_shadowed,
     project_agent_files,
     project_agent_name,
     project_agent_names,
@@ -7479,7 +7480,7 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     shadow_names = project_agent_names(
         project_dir, operation="require_fork_governance", source="unknown"
     )
-    if agent in shadow_names or effective in shadow_names:
+    if agent_binding_is_shadowed(shadow_names, agent, effective):
         raise ForkGovernanceUnresolved(
             f"agent {agent!r} is a private template copy, but the session's "
             "project declares its own agent spec with that name; the backend "
