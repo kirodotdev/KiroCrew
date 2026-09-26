@@ -5631,6 +5631,81 @@ def _flush_segment(
     # dashboard-surfaced copy of the widget, so it must not persist a credential
     # the segment redaction just stripped out of chat.
     _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+    # Shadow-score the options this segment offers. Detached and read-only: it
+    # neither delays this flush nor changes a byte of the message just appended.
+    _schedule_options_rank(state, slot, redacted, last_msg)
+
+
+def _schedule_options_rank(
+    state: DashboardState,
+    slot: _ChatSlot,
+    text: str,
+    message: dict,
+) -> None:
+    """Fire-and-forget ``options.rank`` scoring of a finalized segment's chips.
+
+    Runs only for an owner's own dashboard turn: the slot is not restricted
+    (incognito / temporary), not a member or remote slot, runs on a ``dashboard:``
+    session, and the session's latest dashboard send was the owner's
+    (``options_rank.is_owner_turn``). Everything past the cheap checks here runs in
+    the detached task, which refuses before any request when the ``options_text``
+    scope is not granted.
+
+    *message* is the row just appended. The task gets a copy of the rows BEFORE it,
+    which are read for the session's earlier offered-then-picked pairs, and never
+    the row itself, so nothing the task does can reach the stored message.
+    """
+    if "[OPTIONS:" not in text or getattr(slot, "is_restricted", False):
+        return
+    if getattr(slot, "mode", "") == "member" or getattr(slot, "is_remote", False):
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        session_key = effective_session_key(slot)
+        if not session_key.startswith("dashboard:"):
+            return
+        from kiro_crew.decisions.points import options_rank
+
+        if not options_rank.is_owner_turn(session_key):
+            return
+        labels = options_rank.labels_of(text)
+        if len(labels) < 2:
+            return
+        rows = slot.messages
+        end = len(rows)
+        for index in range(len(rows) - 1, -1, -1):
+            if rows[index] is message:
+                end = index
+                break
+        history = [
+            {"role": row.get("role"), "content": row.get("content")}
+            for row in rows[max(0, end - 40) : end]
+        ]
+        task = asyncio.create_task(options_rank.rank_options(session_key, text, labels, history))
+    except Exception:
+        logger.debug("options.rank: not scheduled", exc_info=True)
+        return
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _note_options_rank_turn(slot: _ChatSlot, *, user_turn: bool) -> None:
+    """Tell ``options.rank`` that a turn nobody typed is starting on *slot*.
+
+    A typed turn needs no note: the send path already recorded whether the owner
+    typed it. Never raises.
+    """
+    if user_turn:
+        return
+    try:
+        from kiro_crew.decisions.points import options_rank
+
+        options_rank.note_turn(effective_session_key(slot), user_turn=False)
+    except Exception:
+        logger.debug("options.rank: turn not noted", exc_info=True)
 
 
 def _schedule_widget_registration(
@@ -9367,6 +9442,11 @@ async def _run_chat(
     # turn no dispatch claimed is a user turn -- never a guess read off the
     # message, which the user writes.
     _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
+    # A turn nobody typed ends the owner's claim on the session for ``options.rank``,
+    # so its reply's chips are not scored as an answer to the owner.
+    _note_options_rank_turn(
+        slot, user_turn=_crew_log_actor == "user" and _directive_user_origin is True
+    )
     # A set_project directive can update the slot while this turn is still
     # streaming. Heartbeats describe coding done during this turn, so bind
     # their project to the same start-of-turn state as the actor above.

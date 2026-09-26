@@ -490,6 +490,13 @@ export interface DecisionsConsentData {
    */
   nudge_evidence?: boolean
   /**
+   * Whether the owner consented to sending A FINALIZED REPLY AND THE OPTIONS IT OFFERS
+   * -- with the session's earlier picks and its goal -- the category `options.rank`
+   * needs. Absent reads as not consented, on the same terms as the scopes above: none
+   * of them covers an agent-written reply or its suggested next steps.
+   */
+  options_text?: boolean
+  /**
    * One row per decision point this GATEWAY ships, projected from the seam's own
    * registry (`decisions/gate.py`). The card lists these rather than an array
    * written here, so a build that ships another point lights up a row with no

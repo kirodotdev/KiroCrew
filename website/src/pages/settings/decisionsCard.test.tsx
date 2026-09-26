@@ -56,12 +56,14 @@ const pointsOf = (
   memoryText = false,
   judgeProvider = 'auto',
   nudgeEvidence = false,
+  optionsText = false,
 ) => {
   const granted: Record<string, boolean> = {
     tool_args: toolArgs,
     compaction,
     memory_text: memoryText,
     nudge_evidence: nudgeEvidence,
+    options_text: optionsText,
   }
   const status = (scope: string | null) =>
     !enabled ? 'off' : scope && !granted[scope] ? 'needs_scope' : 'active'
@@ -92,6 +94,7 @@ const pointsOf = (
       lane: judgeLane,
       status: judgeLane === 'jev' ? status('nudge_evidence') : 'active',
     },
+    { id: 'options.rank', needs_scope: 'options_text', status: status('options_text') },
   ]
 }
 
@@ -113,12 +116,16 @@ const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = 
   memory_text: false,
   // The wake judge's evidence scope, false on the same terms.
   nudge_evidence: false,
+  // The option ranker's scope, false on the same terms.
+  options_text: false,
   points: pointsOf(
     enabled,
     overrides.tool_args === true,
     overrides.compaction === true,
     overrides.memory_text === true,
     overrides.nudge_evidence === true,
+    false,
+    overrides.options_text === true,
   ),
   ...overrides,
 })
@@ -138,6 +145,7 @@ const SCOPE_POINT: Record<string, string> = {
   compaction: 'Which tool calls a compaction would keep (measured only)',
   memory_text: 'Which recalled memories reach the prompt',
   nudge_evidence: 'Quiet check-ins: wake or skip',
+  options_text: 'Which suggested next step you will pick (measured only)',
 }
 
 /** The accessible name of each scope's consent switch, as the card labels it. */
@@ -147,9 +155,10 @@ const SCOPE_SWITCH: Record<string, string> = {
   memory_text:
     'Also send snippets of recalled memories so Jev can drop the ones that do not help',
   nudge_evidence: 'Also send what a watching loop has found so Jev can skip a turn',
+  options_text: 'Also send replies and their suggested next steps so Jev can guess your pick',
 }
 
-type ScopeName = 'tool_args' | 'compaction' | 'memory_text' | 'nudge_evidence'
+type ScopeName = 'tool_args' | 'compaction' | 'memory_text' | 'nudge_evidence' | 'options_text'
 
 /**
  * Open the panel that owns a scope and hand back its switch.
@@ -422,6 +431,7 @@ describe('Decisions (Jev) preview card', () => {
       expect.stringContaining('Which tool calls a compaction would keep'),
       expect.stringContaining('Which recalled memories reach the prompt'),
       expect.stringContaining('Quiet check-ins: wake or skip'),
+      expect.stringContaining('Which suggested next step you will pick'),
     ])
     expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
   })
@@ -524,8 +534,8 @@ describe('Decisions (Jev) preview card', () => {
 
     // End and Home are the ends of the PROJECTED list, whatever the gateway sent.
     fireEvent.keyDown(pointRow('Automatic skill choice'), { key: 'End' })
-    await waitFor(() => expect(panel()).toContain('nudge.wake'))
-    fireEvent.keyDown(pointRow('Quiet check-ins: wake or skip'), {
+    await waitFor(() => expect(panel()).toContain('options.rank'))
+    fireEvent.keyDown(pointRow('Which suggested next step you will pick'), {
       key: 'Home',
     })
     await waitFor(() => expect(panel()).toContain('skills.select'))
@@ -1802,6 +1812,7 @@ describe('a refused scope write says so', () => {
       2: 'Two further categories',
       3: 'Three further categories',
       4: 'Four further categories',
+      5: 'Five further categories',
     }
     const note = screen.getByText(/leave this machine/i).textContent ?? ''
     expect(note).toContain(COUNT_WORD[scoped.length])
@@ -1810,6 +1821,7 @@ describe('a refused scope write says so', () => {
     expect(note).toContain('the conversation and tool-call inputs')
     expect(note).toContain('short snippets of the memories recalled')
     expect(note).toContain('the recent messages of the sessions a watching loop reads')
+    expect(note).toContain('a reply together with its suggested next steps')
   })
 
   it('says WHICH switch could not be saved', async () => {
@@ -1904,5 +1916,67 @@ describe("the wake judge's point on the card", () => {
     stubGateway(consentOf(false))
     renderSection()
     expect(await scopeSwitchOnPanel('nudge_evidence')).toBeNull()
+  })
+})
+
+describe("the option ranker's point on the card", () => {
+  /* The row and its switch are drawn generically from the gateway's point list, so
+   * what these assert is that every piece the lookup needs is registered: the
+   * point's plain-words name, the scope's label and description, and its granted
+   * position. A missing one renders a raw id or a switch that always reads off.
+   */
+
+  it('names the point in plain words rather than as a raw id', async () => {
+    stubGateway(consentOf(true))
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow(SCOPE_POINT.options_text)).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('tab', { name: /^options\.rank$/ })).not.toBeInTheDocument()
+  })
+
+  it('draws the options_text switch off for a keystone that never recorded it', async () => {
+    stubGateway(consentOf(true))
+    renderSection()
+    const toggle = await openScope('options_text')
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('shows the switch already on when the scope is granted', async () => {
+    stubGateway(consentOf(true, { options_text: true }))
+    renderSection()
+    const toggle = await openScope('options_text')
+    await waitFor(() => {
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+    })
+  })
+
+  it('grants the scope through the consent route, naming only itself', async () => {
+    stubGateway(consentOf(true))
+    const scopeSave = vi.spyOn(api, 'saveDecisionsScope').mockResolvedValue(
+      consentOf(true, { options_text: true }),
+    )
+    renderSection()
+    const toggle = await openScope('options_text')
+    toggle.click()
+    await waitFor(() => {
+      expect(scopeSave).toHaveBeenCalledWith('options_text', true)
+    })
+  })
+
+  it('states what it sends and that nothing the owner sees changes', async () => {
+    stubGateway(consentOf(true))
+    renderSection()
+    await openScope('options_text')
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('the steps you picked earlier in the session')
+    expect(body).toContain('the reply and its buttons stay exactly as written')
+    expect(body).toContain('Passwords and keys are replaced')
+  })
+
+  it('withholds the switch entirely while Decisions consent is off', async () => {
+    stubGateway(consentOf(false))
+    renderSection()
+    expect(await scopeSwitchOnPanel('options_text')).toBeNull()
   })
 })

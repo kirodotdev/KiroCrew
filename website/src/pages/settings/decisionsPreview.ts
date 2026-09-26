@@ -84,6 +84,15 @@ export const DECISIONS_MEMORY_POINT = 'memory.recall'
 export const DECISIONS_NUDGE_WAKE_POINT = 'nudge.wake'
 
 /**
+ * The SHADOW point that scores the `[OPTIONS:]` chips a finalized reply offers.
+ *
+ * Named here because the cross-layer guard requires it: a point is an egress path,
+ * so some surface has to be able to say what was sent for it. Its answer is measured
+ * against the owner's next pick and changes nothing the owner or the agent sees.
+ */
+export const DECISIONS_OPTIONS_RANK_POINT = 'options.rank'
+
+/**
  * Config path of the sampling share. One of the six `decisions.*` values the config
  * PATCH accepts, beside the three `model_route` tiers and the two `nudge_wake` keys;
  * the address and the credential are deliberately not among them.
@@ -288,6 +297,13 @@ export interface DecisionsView {
    */
   nudgeEvidence: boolean
   /**
+   * Whether the owner granted the option ranker's scope: a finalized reply, the
+   * options it offers, this session's earlier picks and its goal. An exact literal
+   * `true` on the same terms as the scopes above, so a keystone written before this
+   * scope existed reads false and the card draws the switch off.
+   */
+  optionsText: boolean
+  /**
    * The prior-conversation CEILING the owner reviewed, in characters.
    *
    * From the KEYSTONE, not from `config.json`. The two differ exactly when an agent
@@ -318,6 +334,7 @@ const UNSUPPORTED: DecisionsView = {
   compaction: false,
   memoryText: false,
   nudgeEvidence: false,
+  optionsText: false,
   historyBudget: 0,
   points: [],
 }
@@ -370,6 +387,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
       compaction: false,
       memoryText: false,
       nudgeEvidence: false,
+      optionsText: false,
       historyBudget: 0,
     }
   }
@@ -394,6 +412,9 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
   // `compaction` on purpose: that yes covered the owner's OWN transcript at their own
   // agent's compaction, and this one covers rows from sessions the loop watches.
   const nudgeEvidence = root.nudge_evidence === true
+  // An exact `true` again, read on its own: this scope covers a reply and the options
+  // it offers, which none of the scopes above stands for.
+  const optionsText = root.options_text === true
   // A whole non-negative number or nothing: an older gateway omits the field, and a
   // value nobody can read back as a budget is not one. 0 either way, which is the
   // shipped default and the least that can leave.
@@ -409,6 +430,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
     compaction,
     memoryText,
     nudgeEvidence,
+    optionsText,
     historyBudget,
   }
 }

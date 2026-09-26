@@ -277,6 +277,34 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
         )
 
 
+def _note_options_rank_send(
+    request: web.Request, slot: Any, message: str, request_app: str
+) -> None:
+    """Record a dashboard send for the shadow ``options.rank`` point. Never raises.
+
+    A restricted (incognito / temporary) slot is skipped outright. Otherwise the
+    owner is the sender only for a request with no app token that
+    ``is_owner_dashboard_request`` attributes to the owner, on a slot that runs on a
+    ``dashboard:`` session. Any other send still clears the session's pending
+    record, unlabelled, because it is not the owner's pick. The call is an
+    in-memory update plus a detached row write; it does not touch the message.
+    """
+    if getattr(slot, "is_restricted", False):
+        return
+    try:
+        from kiro_crew.decisions.points import options_rank
+
+        session_key = effective_session_key(slot)
+        owner = (
+            not request_app
+            and session_key.startswith("dashboard:")
+            and is_owner_dashboard_request(request)
+        )
+        options_rank.note_send(session_key, message, owner=owner)
+    except Exception:
+        logger.debug("options.rank: send not recorded", exc_info=True)
+
+
 def _app_slot_is_local_user_session(slot: Any) -> bool:
     """A USER-origin, dashboard-run slot: the only kind the grant reaches.
 
@@ -789,6 +817,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": "message is required", "code": "message_required"}, status=400
         )
+
+    # The label ``options.rank`` measures its last recommendation against: the next
+    # message sent into this session, attributed to the owner or not. Placed above
+    # every dispatch branch so a steered, queued and fresh send are all recorded.
+    _note_options_rank_send(request, slot, message, request_app)
 
     _pending_control_text = message.strip().lower()
     _pending_control_words = _pending_control_text.split()
