@@ -168,6 +168,8 @@ See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
 ## Memory (`memory.py`)
 
+A mutating method of this module that the consolidator will call follows *Adding a store method the consolidator writes through* (under Consolidation): `admit` threaded and asked ahead of each mutation, the method listed in the inventory, the gate verb that fronts it.
+
 Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:
 - `preferences.md` — learned user preferences (V1 legacy consolidation may replace the file; V2 is owner-managed)
 - `projects.md` — active project context (V1 legacy consolidation may replace the file; V2 is owner-managed). Its `# Active Projects` header contract is owned by `memory.normalize_projects_document(content, *, today=)`, which `MemoryStore.write_projects`, `MemoryStore.write_private_profile_validated` and the dashboard's `_validate_private_profile_update` all call before writing. The three used to carry their own copy, and the dashboard one lives in a different package from the two store ones, so a change to either pair could not see the other. `today` is a parameter rather than read inside, so each write keeps its own single clock read. The two branches trim ASYMMETRICALLY, and that is the shipped contract rather than an oversight: an already-headed document is written as `content.strip() + "\n"`, while an unheaded one wraps the RAW content, so surrounding whitespace survives in exactly one of the two branches.
@@ -326,7 +328,11 @@ Storage failure rolls back the whole pass. Verified corrections compare their
 pre-extraction record revision in that transaction. Embeddings are deferred for
 maintenance and cannot hold the write lock during provider inference. Before a
 retry calls a provider, a committed receipt recovers a lost transcript progress
-acknowledgement and leaves later appended messages pending.
+acknowledgement and leaves later appended messages pending. The optional `admit`
+hook is called before each mutation and once more before the commit; the
+consolidator hands in its write gate's per-mutation check (in-memory records
+only, so the transaction still performs no provider, transcript or filesystem
+operation), and a raise there rolls the transaction back whole.
 
 The following file-oriented flow and independent writes describe V1.
 
@@ -388,7 +394,270 @@ Idle detection: `_last_activity[key]` updated on every `maybe_consolidate()` cal
 
 **Both paths write to the session's captured store.** `_consolidate` captures the
 canonical execution context before its first await and refuses incognito or
-temporary sessions before reading their transcripts. V2 uses that context's exact
+temporary sessions before reading their transcripts. The durable records are read
+by ONE resolver, `resolve_consolidation_target` (module-level in
+`history_consolidation.py`), which the dashboard's `POST /api/memory/consolidate`
+asks as well, so a source known to one caller is known to the other by
+construction (a route test pins this by substitution: a verdict from a source the
+route has never heard of still refuses at the route). Three sources, and their
+ORDER is a privacy contract -- a mode already known without opening the transcript
+refuses first, and only an unknown one reads the header: the execution record;
+then, for a channel thread, the session map's `temporary` / `incognito` flag
+(`SessionMap.set_flag`, keyed by the live `slack:<ts>` key), read through the
+consolidator's `SessionManager` the way the dashboard reads it
+(`privacy_mode.hydrate` + the trackers) after unfolding a transcript stem to its
+live key (`channel_thread_mode`; the unfold is a walk over the map under its lock
+and runs only for a key that can BE a stem -- a key still carrying `:`, or a
+legacy bare Slack ts, is never one, so the write gate's per-mutation tier does
+not pay the walk); last, the transcript header's `memory_mode`,
+read normalized (`history.transcript_privacy_mode`: the shared predicate's
+`lower()` and set, returning the mode, so a header spelled `Temporary` refuses
+AS `temporary` and that is the mode the SEL record, the memo, the route's 403
+body and the tab's tally carry),
+which `privacy_mode.apply_mode` stamps for a channel thread (tighten-only, upserted
+so a thread flagged before its first turn gets a metadata-only header that
+`ConversationLog.append` then keeps) so a transcript read never depends on the
+session map -- and, because that header read is an await while the modifier
+writes its flag synchronously and its header afterwards, the map flag is read
+once more after the header read, before an unrestricted verdict: a modifier
+landing during the read is caught by that second dict lookup, whose restricted
+answer wins (the execution record is not re-read; a slot's mode is fixed at
+creation). A restricted session whose mode is known is thus refused without the
+resolver or the pass behind it opening its transcript, not even for the header
+(`test_restricted_consolidation_never_reads_transcript_or_opens_memory`); the
+scope is the pass -- `consolidate_session` (the session-end hooks) and the CLI's
+`consolidate_now` read the transcript for their own pre-checks (unconsolidated
+count, sensitive-session scan) before scheduling it, and write nothing. The two
+records serve two readers -- the map flag is what the channel's inbound gate
+hydrates from per message, the header is what every memory reader refuses on --
+and a privacy flag keeps its map entry alive through `SessionMap.prune` and the
+per-read repair, both of which run under the map lock on the event loop and read
+no transcript, and through every other path: no step removes a privacy-flagged
+row, whatever the header says, because the gate hydrates from the map alone and
+a removed row leaves it reading the thread as persistent after the next restart.
+The header is ensured by `SessionMap.stamp_privacy_headers`, which the session
+pool's `start_pool` runs right after `prune` (awaited in place by a blocking
+start; inside the already-scheduled task by a non-blocking one, so a live-config
+apply or a background-session restart never waits on it): every flagged row is named under
+the lock, and on a worker thread its existing transcript's header gets the mode
+copied in where it is missing or weaker (tighten-only, never creating a
+transcript); a flag tightened during the probe is re-stamped by the next pass,
+and a header that already records the mode costs no write (`needs_tightening`).
+The rows are capped at `SessionMap.PRIVACY_ROW_CAP` (the trackers' `PRIVACY_LRU_MAX`),
+held by refusing a NEW flag fail-closed -- the modifier tells the user the
+message was not processed and does not run it -- never by evicting a retained
+row. Retiring those rows needs the gate to read the header, a separate change. Every
+refusal goes
+through `_refuse_restricted`: a debug line naming the source, and the SEL denial
+the dashboard route records for the same target (`memory.consolidate` /
+`denied` / `restricted_target_session:<mode>:<key>`, `source="background"`,
+`caller="history_consolidator"`), one record per refusal -- nothing is windowed,
+counted or folded, because an audit event that is sometimes not written is a
+gap the reader cannot see. The volume is solved where it arises: a refused key
+is memoed in `_restricted_refused` (bounded by `_RESTRICTED_REFUSAL_MEMO_MAX`,
+oldest evicted with a debug line; an evicted key costs one more refused attempt
+and one more SEL row before it is memoed anew), and the two automatic entry points
+(`check_idle_sessions`, `maybe_consolidate`) skip a memoed key before any read
+or task, so the idle sweep attempts a restricted session once per process
+rather than once per 60 s tick; the explicit triggers (`consolidate_session`,
+`consolidate_now`, the dashboard route) ignore the memo, so a Summarize-now
+aimed at the session is attempted and audited every time. Only a COMMITTED
+restriction is memoed: a mode standing provisionally
+(`privacy_mode.is_provisional` on the live channel key -- a Telegram reservation
+whose steer has not landed, a commit or a release in flight) is refused and
+audited but not remembered, because a reservation the steer's failure then
+releases would otherwise leave the now-persistent session skipped by every
+automatic sweep for the life of the process. The mode is resolved
+once before the pass's snapshot, and from there the re-check lives IN the write
+path rather than at each write site: every durable write of the pass is a verb
+of `_WriteGate` (`set_semantic`, `propose_semantic_delete`, `delete_semantic`,
+`write_episodic`, `write_lesson`, the lesson file's `save`, `append_history`,
+`write_preferences`, `write_projects`, `stage_skill_candidate`,
+`create_auto_skill`, `update_auto_skill`, `mark_consolidated`,
+`apply_consolidation` -- each the store's own verb, admitting NOTHING itself),
+and every batch of them is dispatched through the gate (`run` on the embed pool,
+`run_in_thread` on a worker). Two tiers by cost: `admit`, before EVERY mutation
+on whatever thread performs it, reads the in-memory records only
+(`restricted_in_memory`: the live execution registry, a channel thread's
+trackers and map flag -- `privacy_mode.recorded_mode`, the read-only form of
+the hydrate that marks nothing from a worker -- dict lookups, no file read);
+`boundary`, before every dispatch, runs the full resolution with the
+transcript header, off the loop -- and once more directly ahead of the skill
+pass, which hands the FULL transcript to a model: a transcript that just turned
+private is not disclosed to it either, durable write or not. An admission is a
+point-in-time verdict, not a token: no TTL, no counter, no lease, it holds for
+the statement that follows it and for nothing after. Taken at the verb it
+cannot hold, because between the verb and the write the store waits on its own
+lock (the history file's `.append.lock`, the database's `_db_lock`, the
+lesson file's lock, the transcript lock) or embeds for seconds, and a mode that
+lands in that wait lets the write follow the restriction. So every verb hands
+`admit` INTO the store as the method's `admit` hook, and the store asks it as
+the LAST step inside its own critical section -- after the lock is granted,
+after every read and embedding, immediately before the mutation with nothing
+between them, and again before the commit where it owns a transaction -- so
+there is exactly one admission site per mutation and it sits where the
+mutation is decided. A raise there unwinds through the store's own rollback or
+leaves its file untouched: the store is byte-identical. The pre-commit
+admission has ONE home in the vector store, `VectorMemoryStore._commit_admitted(admit)`:
+every fronted method ends its transaction there (the structural test holds it
+by name -- no `.commit()` of their own, no `with self.db` standing in for a
+transaction), because the commit is the step that makes every mutation of the
+transaction durable at once. The store's connection is autocommit, so
+`with self.db:` opens no transaction: the deletion proposal and the tombstone,
+which asked once and let that context "commit", were durable the moment their
+statement ran, and a mode landing between the admission and that point
+persisted them; both now open `BEGIN IMMEDIATE` explicitly and end in the
+helper. The V1 episodic cap
+eviction is one of those mutations: `write_episodic` makes room
+(`_evict_for_episodic_cap`) INSIDE that transaction, after the admission and
+before the insert, so a refused row unwinds the tombstones with it -- evicted
+ahead of the transaction, an existing episode was gone for a row that never
+landed. So is the FAISS dedup's outcome: the step only DECIDES ahead of the
+transaction, and the tombstone of the shorter near-duplicate a longer text
+merges away (`_tombstone_episodic_row`, commit-free) and the event of a write
+a duplicate turns away both land inside it, after the first admission -- as a
+transaction of its own ahead of the admission, the deletion had committed when
+the hook refused the row it was replacing. A mutation of OTHER rows made after
+a row's transaction closed and behind a lock of its own -- the lessons a new
+lesson supersedes (`delete_semantic`), the episodes a semantic value retires
+(`_retire_stale_episodic`), the vectors backfilled onto rows met in a dedup
+scan -- carries the hook and asks it under that lock; a row's own completion
+(its audit event, its facets, the FAISS mirror) is dominated by the row's
+admission and never refused apart from it, since a refusal after the commit
+would leave a half-row and record a denial the row's admission already answered.
+What holds this is the behaviour: `test/test_consolidation_write_gate.py` drives
+real stores -- another writer holding the lock, the mode tightening inside an
+embedding, between two in-store admissions, after a rollback, between two
+files of one skill candidate -- and asserts the refusal and the byte-identical
+store; a listed inventory of the store methods the consolidator writes through
+(below) holds the shape by name. A write the store's own validation REFUSES still
+writes a row -- its audit event, carrying the refused value's first 200 bytes
+(the semantic rejection event) or the refused episode's redacted text (the
+injection trail) -- and that row is a content-bearing mutation like the one it
+stands in for: the store asks the hook immediately ahead of it, under the lock
+it writes under, so a session whose mode tightened before the item reached the
+store gets no audit row with its text (the gate's own audit line is the
+refusal's only record), and a refused audit leaves the audit-once set
+untouched, so the retry audits. An admission holds for the mutation it is
+IMMEDIATELY ahead of and for nothing else: a rollback ends the transaction it
+was taken in, and a write that landed is a separately durable step the next
+write cannot ride. So the skip a duplicate turns a write into (the semantic
+`conflict_skip`, the episodic dedup skip) writes its one row -- the event --
+inside the admitted transaction and asks again ahead of that transaction's
+commit, never as a transaction of its own after a rollback (where the event
+committed the refused text under an admission the rollback had spent); and
+each file the skill stager writes (`SKILL.md`, every script, `.meta.json`), and
+the skill creator's one content write after it makes the directory, asks the
+admission immediately ahead of itself, a refusal between two of them removing
+the claimed directory with what landed in it, so the store is as it was. The
+creator CLAIMS its directory the way the stager claims its pending one --
+`mkdir(exist_ok=False)`, the one atomic step two same-slug creations cannot
+both win: the loser reports "already exists" and touches nothing -- and a
+refusal removes only the empty claim this call made (`rmdir`), never a
+directory another creation owns (a blind `rmtree` on refusal deleted the skill
+a concurrent creation had just written).
+
+#### Adding a store method the consolidator writes through
+
+Every store method the consolidator can reach is a taxed method: it takes the
+gate's `admit` hook and asks it inside its own critical section, immediately
+ahead of each mutation and any commit it owns. A contributor adding one -- to
+`vector_memory.py`, `memory.py`, `learn.py`, `skills.py` or `history.py` --
+does three things, in the same change:
+
+1. **Thread `admit` through the method** (`admit: Callable[[], None] | None =
+   None`, the store's own parameter shape), and ask it as the LAST step before
+   each mutation, under the lock the mutation is made under, and again ahead of
+   the commit where the method owns a transaction. A refusal raises there and
+   leaves the store byte-identical (the transaction's own rollback, or a file
+   never written); nothing between the admission and the mutation, and no
+   admission reused across a rollback or across two separately durable writes
+   (each file of a skill candidate asks for itself).
+2. **List it in the inventory** -- `STORE_METHODS` in
+   `test/test_consolidation_write_gate.py` under its module and class; a public
+   helper the method hands the hook to for a mutation of its own goes in
+   `HANDED_ON` instead.
+3. **Add the gate verb that fronts it** -- a public method of `_WriteGate` in
+   `history_consolidation.py`, named like the store method, that calls the store
+   method with `admit=functools.partial(self.admit, "<the write, named>")` --
+   so the consolidator reaches the store only through the gate and the store
+   asks the gate's tier at its own mutation (the test derives the verb list from
+   that class: its public methods that are neither a tier nor a dispatcher).
+
+`TestTheListedInventoryIsTheStoresHookBearingMethods` names whichever of the
+three is missing: a method that takes the hook but is not listed, a listed
+method that never asks or hands on the hook, a verb without its store method.
+It compares NAMES only -- the listed methods against the class's public methods
+whose signature carries `admit`, and the fronted list against the gate's verbs
+-- and derives nothing through helpers; what the method DOES with the hook is
+held by the behaviour tests above on real stores. This section is where the
+rule lives; the test is its second home, not its first.
+
+**The listed inventory** (`STORE_METHODS` and `HANDED_ON` in
+`test/test_consolidation_write_gate.py`, held by
+`TestTheListedInventoryIsTheStoresHookBearingMethods`). Per store module --
+`vector_memory.py`, `memory.py`, `learn.py`, `skills.py`, `history.py` -- the
+inventory names the class and the public methods the consolidator writes
+through, each of which takes the gate's `admit` hook and asks it inside its own
+critical section immediately ahead of every mutation and any commit it owns:
+`VectorMemoryStore.set_semantic` / `propose_semantic_delete` / `delete_semantic`
+/ `write_episodic` / `write_lesson` / `append_history` / `apply_consolidation`,
+`MemoryStore.append_history` / `write_preferences` / `write_projects`,
+`LessonStore.save`, `SkillsLoader.stage_skill_candidate` / `create_auto_skill` /
+`update_auto_skill`, `ConversationLog.mark_consolidated`; `HANDED_ON` names the
+public hook-bearing helpers a fronted method hands the hook to for a mutation of
+their own (`log_reject_event`; `LessonStore.save_or_enrich`, the explicit-refinement
+path no automatic writer reaches, takes no hook). One structural test holds the
+three agreements by NAME and derives nothing through helpers: the listed
+methods are exactly the class's public methods whose signature carries
+`admit`; each of them asks or hands on the hook somewhere in its body; and the
+fronted list is exactly the gate's verbs (the three steps a contributor takes
+are the numbered list above).
+
+The same rule reaches the consolidator's own CONSUME-ONCE
+markers -- the in-memory per-session state a pass writes so an unchanged
+window is not re-evaluated: the skill-detection `(rotation generation, message
+count)` marker, the idle throttle, the preference offset. A marker is consumed
+by the committed pass, never by the attempt: the skill marker is recorded after
+the skill write returns, so a refusal there (which raises past it) leaves it
+for the retry -- recorded ahead of the write, a provisional mode that then
+released left an unchanged transcript that skipped detection on the next pass
+and lost the candidate for the process; the two throttles are set by the
+done-callbacks only when the pass's result is not the refusal sentinel.
+`TestAMarkerIsConsumedByTheCommittedPass` derives every `self._<dict>[key] =`
+in the module and requires the admission decision ahead of each in the same
+function (every gate dispatch before it, no `try` around the dispatch, or the
+sentinel test over it), with the idle clock and the refusal memo the only
+listed non-consumptions, each admitted in its one writer. A member (V2) store publishes a span in one transaction, whose
+`admit` hook is called before each mutation and once more before the commit,
+so nothing partial commits. Either tier
+raises `_ModeTightened`, which unwinds the batch or transaction in flight up to
+`_consolidate`, the one place it is caught: the pass ends with the same SEL
+denial and memo entry as a verdict before the snapshot, no retry attempt
+charged. So a modifier landing while a pass is in flight -- during the model
+call, inside an earlier write of the same pass, between two rows of one batch,
+inside the member transaction, between a created skill and its refinement --
+stops the next write, and the offset does not advance; every modifier path
+writes a record one of the tiers reads (the channel modifier's tracker and map
+flag before its awaited header write; a dashboard or API slot's mode is fixed at
+creation in its execution record). A switch that lands after a write completed
+is not retroactive -- nothing purges, the existing design line. The invariant is
+pinned structurally rather than by a list of sites
+(`test/test_consolidation_write_gate.py`, over the module's syntax tree): the
+gate's verbs are the inventory, no verb is called or handed to an executor
+anywhere else, every verb hands `admit` into its store method and admits nothing
+itself, every store method those verbs front (read off `vector_memory.py`,
+`memory.py`, `learn.py`, `skills.py`, `history.py`) asks the hook inside the
+lock block its mutation sits in and ahead of that mutation on its own branch,
+both dispatchers resolve first, the
+batch helpers (`_write_structured_memory`, `_save_lessons`,
+`_process_auto_skills`) are dispatched only through the gate and take it with no
+default, and outside the gate a store is only ever read (an allowlist of reads,
+each with its reason; the one write reached outside is the abandon marker,
+transcript bookkeeping for a span that was never extracted). This is the memory-mode
+choke point every entry point inherits (idle sweep, `maybe_consolidate`, expiry
+sweep, dashboard trigger, CLI); the dashboard trigger adds its own target-side 403
+in front of it (see the route table below). V2 uses that context's exact
 member store and commits learned records, history and the retry receipt in one
 SQLite transaction. V1 retains `context.store_of_session(log, key)` and its
 Markdown and lesson fallback behavior. See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
@@ -429,6 +698,8 @@ a pass already running finishes on the values it read and the next one uses the
 new ones.
 
 ## Vector Memory (`vector_memory.py`)
+
+A mutating method of this module that the consolidator will call follows *Adding a store method the consolidator writes through* (under Consolidation): `admit` threaded and asked ahead of each mutation, the method listed in the inventory, the gate verb that fronts it.
 
 The semantic and episodic list endpoints accept optional `q` text search, capped
 at 2,000 characters. Filtering occurs inside the selected store before
@@ -808,7 +1079,7 @@ silently: were detection ever bypassed on a crew file, v1's
 **Timestamps are TEXT ISO-8601, never the `REAL` a numeric schema would reach for.**
 Seven sites rank `created_at` / `updated_at` by lexicographic string comparison and two
 more parse them with `datetime.fromisoformat`; one of the seven is
-`_enforce_episodic_cap`, the episodic CAP EVICTION, where a wrong order tombstones the
+`_evict_for_episodic_cap`, the episodic CAP EVICTION, where a wrong order tombstones the
 wrong memories. SQLite also sorts REAL before TEXT, so a mixed column is worse than
 either choice on its own.
 
@@ -870,8 +1141,8 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection, relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, on the reasoning that long texts dilute cosine scores. **Neither value is tuned, and the two classes it separates overlap** — measured, both are looser than the best achievable cut and the long-text relaxation is about twice the dilution it compensates for. Do not read 0.55 as a discovered boundary: [The admission gate is a loose cut, not a tuned one](#the-admission-gate-is-a-loose-cut-not-a-tuned-one) carries the measurement and the harness that produced it. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Admission runs BEFORE the decay ranking, MMR, and the `limit` cut: `get_episodic_context()` calls `search_episodic(relevance_filter=True)`, which drops sub-threshold candidates first, so a highly relevant but old memory cannot be ordered past `limit` by a cluster of recent-but-irrelevant rows that the gate would then remove — a case that otherwise returned empty context while an exact match sat in the store. `search_episodic()` defaults to `relevance_filter=False` and returns the full ranked set for dashboard/API/CLI use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
 - **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors. Inside that rung the per-row dot product itself has two rungs, guarded by `_HAS_NUMPY` exactly as `_stored_similarity_scorer` is: the query vector is converted once outside the row loop, then numpy does the products where it is installed and `struct.unpack` + `sum` does them where it is not. The numpy resident and per-call rungs dot in float32, matching the stored dtype. The FAISS path verifies each candidate against its current SQLite vector and recomputes cosine with Python arithmetic and norm division; these paths share the admission policy but do not promise bit-identical floating-point results.
 - **Resident scoring set (the middle rung, with numpy)**: scoring reads only the embedding, `tags`, `importance`, `created_at` and the text LENGTH, and none of that changes between two searches with no write in between — so `_EpisodicScoringSet` holds those columns as numpy arrays and the search resolves row BODIES (`text`, `conversation_id`, `last_accessed_at`) for the ranked pool only, through the same `_get_episodic_batch` the FAISS path uses. Decay is a vectorized expression over the cached arrays, not a per-row Python dict build. Filtering still runs across the FULL population before `limit` — `tag_filter` and the relevance gate are masks over the cached arrays, never a top-k window, because a tag matching few rows would otherwise miss the pool entirely and return nothing where it returns hits today. The pool handed to MMR stays `_MMR_MAX_POOL`-bounded rather than `limit`, since the rerank reads each candidate's text.
-- **Scoring-set invalidation**: the validity token is `(in-process generation, PRAGMA data_version)`. `_invalidate_episodic_scoring()` bumps the generation and is called by **every** writer that changes which rows are scored or what they score as — `write_episodic`, `delete_episodic`, `_delete_episodic_row`, `_enforce_episodic_cap`, `_retire_stale_episodic`, `reconcile_embedding_space`, and `backfill_missing_embeddings`. Two of those are traps a naive append-only cache falls into: the backfill rebuilds the FAISS index only `if _HAS_FAISS`, which is False on exactly the install this rung serves, and a body lookup can never repair it (it drops ids that vanished but cannot surface ids that appeared, so recall degrades with no error); and `PRAGMA data_version` is the only in-band signal that a SECOND PROCESS committed to the same file, and both the scoring cache and FAISS search check it. Persisted FAISS loading additionally verifies database and index-file digests. `_touch_last_accessed` is deliberately NOT a writer here — `last_accessed_at` is never scored and is re-read per search with the bodies. A ratchet test (`test_every_episodic_writer_invalidates_the_scoring_set`) fails on a new `episodic_memories` writer that skips the hook. The set is bounded by `_EPISODIC_SCORING_MAX_BYTES` (64 MiB, ~10 MiB for 2,600 rows at dim 1024) and is disabled outright on an sqlite with no `data_version` pragma; either way the rung falls back to reading the population per call.
-- **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries, overridden by `memory.episodic_max_count`. For V1, `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. The gateway passes the configured value as `episodic_max` when it builds the store, and `reconfigure` re-pushes it, so raising the cap stops evicting on the next write and lowering it trims on the next one — the key was parsed and dropped before, which silently pinned every install to the built-in 10,000. V2 bypasses capacity eviction and retains the stored episodes.
+- **Scoring-set invalidation**: the validity token is `(in-process generation, PRAGMA data_version)`. `_invalidate_episodic_scoring()` bumps the generation and is called by **every** writer that changes which rows are scored or what they score as — `write_episodic`, `delete_episodic`, `_delete_episodic_row`, `_evict_for_episodic_cap`, `_retire_stale_episodic`, `reconcile_embedding_space`, and `backfill_missing_embeddings`. Two of those are traps a naive append-only cache falls into: the backfill rebuilds the FAISS index only `if _HAS_FAISS`, which is False on exactly the install this rung serves, and a body lookup can never repair it (it drops ids that vanished but cannot surface ids that appeared, so recall degrades with no error); and `PRAGMA data_version` is the only in-band signal that a SECOND PROCESS committed to the same file, and both the scoring cache and FAISS search check it. Persisted FAISS loading additionally verifies database and index-file digests. `_touch_last_accessed` is deliberately NOT a writer here — `last_accessed_at` is never scored and is re-read per search with the bodies. A ratchet test (`test_every_episodic_writer_invalidates_the_scoring_set`) fails on a new `episodic_memories` writer that skips the hook. The set is bounded by `_EPISODIC_SCORING_MAX_BYTES` (64 MiB, ~10 MiB for 2,600 rows at dim 1024) and is disabled outright on an sqlite with no `data_version` pragma; either way the rung falls back to reading the population per call.
+- **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries, overridden by `memory.episodic_max_count`. For V1, `_evict_for_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. The gateway passes the configured value as `episodic_max` when it builds the store, and `reconfigure` re-pushes it, so raising the cap stops evicting on the next write and lowering it trims on the next one — the key was parsed and dropped before, which silently pinned every install to the built-in 10,000. V2 bypasses capacity eviction and retains the stored episodes.
 
 Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results for explicit readers. Fresh V1 session construction carries a query-ranked episodic slice inside the budgeted `[Memory activity]` block (`MemoryStore.get_activity_context`, capped at `_EPISODIC_INJECT_CAP`) while `memory.inject_activity` is on; warm turns and V2 construction do not query episodic fragments. Agent retrieval uses `memory_recall`, whose response includes only rows fitting the tool's total cap, including wrappers. Explicit Python callers may still request episodic context through `MemoryStore.get_context(include_activity=True, query=...)`.
 
@@ -1885,7 +2156,7 @@ not coordinate, so reason about them separately:
    scores `0.9 × 0.94 × 0.407 ≈ 0.34`, so it likely loses its top-8 slot to
    newer matches; an entry at cosine 0.4 can hold a slot on score yet still be
    dropped at injection time by the threshold.
-3. **Cap eviction**: `_enforce_episodic_cap()`, above. Independent of age
+3. **Cap eviction**: `_evict_for_episodic_cap()`, above. Independent of age
    except as a tiebreak.
 
 ### In-Process Embedder (`embeddings.py`)
@@ -2305,7 +2576,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | POST | `/api/memory/migrate` | Migrate markdown → structured memory (gated) |
 | POST | `/api/memory/import` | Import from JSON export (gated) |
 | POST | `/api/memory/promote` | Promote repeated episodic patterns to semantic facts, tombstoning the rows folded in (gated) |
-| POST | `/api/memory/consolidate` | Trigger consolidation for one session (restricted-mode check only) |
+| POST | `/api/memory/consolidate` | Trigger consolidation for one session. Gated on the caller like every write, and additionally on the TARGET: the body's `key` is resolved through `resolve_session_memory_mode` (live slot first, then the persisted execution record and transcript header) and a temporary or incognito target is 403 `restricted_target_session` (the body carries the target's `mode` as a field, which the Memory tab's tally names) before the running claim or any transcript read. When that live resolution does not refuse, the route asks `resolve_consolidation_target` -- the ONE resolver `_consolidate` asks too -- under the key exactly as the consolidator will read it, so whatever the background path would refuse (execution record, transcript header, session-map flag) is 403 here instead of 200 for a pass the consolidator refuses; a stem the map cannot unfold, or an entry the map no longer holds, is refused from its header like the mapped case. A key no durable record calls restricted proceeds |
 | GET | `/api/memory/context-preview?q=` | Preview injected semantic + episodic context |
 | GET | `/api/memory/observability?q=` | `stats` + `rejections` + `context_preview`, plus `reads` — the read-volume counters (see above). `reads` is resolved LAST, so it INCLUDES the reads this request itself performed; that is what lets a caller issue the same `q` twice and compare the two objects |
 | GET | `/api/memory/recall?q=` | V2 task recall with evidence. Explicit `store` requires the dashboard owner; the authenticated MCP path uses the owning session's canonical execution context and requires memory reads to be allowed. Invalid or unavailable member memory returns an explicit error |
@@ -2688,6 +2959,8 @@ concurrent native write from being duplicated.
 
 ## Lessons (`learn.py` → `vector_memory.py`)
 
+A mutating method of this module that the consolidator will call follows *Adding a store method the consolidator writes through* (under Consolidation): `admit` threaded and asked ahead of each mutation, the method listed in the inventory, the gate verb that fronts it.
+
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
 
 1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. The value is a mapping `{"rule", "category", "negative"}`, plus `"repo_scope"` when the lesson is restricted to one repository — the NOT-clause is a separate field; legacy in-band `"rule — NOT: negative"` rows stay readable without migration. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block. A scoped lesson is gated by `project_scope.project_scope_satisfied` against the session's active project BEFORE the shown/omitted counts are computed, using the same rule as a skill's `repo_scope`.
@@ -2913,6 +3186,8 @@ workspace Markdown, JSONL fallback and separate FTS; its startup context is the
 bounded admission described above, with earlier activity behind `memory_recall`.
 
 ## Skills (`skills.py`)
+
+A mutating method of this module that the consolidator will call follows *Adding a store method the consolidator writes through* (under Consolidation): `admit` threaded and asked ahead of each mutation, the method listed in the inventory, the gate verb that fronts it.
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
 

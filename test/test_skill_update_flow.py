@@ -64,7 +64,12 @@ class FakeLoader:
         base_version=None,
         scripts=None,
         source="consolidation",
+        admit=None,
     ):
+        # The gate hands its per-mutation admission into the store; the real
+        # loader asks it under its own lock immediately before the write.
+        if admit is not None:
+            admit()
         self.staged.append(
             {
                 "slug": slug,
@@ -188,6 +193,7 @@ async def test_stage_update_uses_merged_body():
             description="new desc",
             triggers="new",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -230,6 +236,7 @@ async def test_stage_update_merge_failure_falls_back_to_candidate():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -260,6 +267,7 @@ async def test_stage_update_oversize_merge_falls_back():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -285,6 +293,7 @@ def test_stage_update_no_loop_skips_merge():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -320,6 +329,7 @@ def test_process_routes_update(monkeypatch):
                 }
             },
             "sess",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -351,6 +361,7 @@ def test_process_dup_still_rejects(monkeypatch):
                 }
             },
             "sess",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -383,7 +394,9 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
     ctx = _sel_recorder(recorded)
     try:
         # result carries a history_entry but new_skill is absent (model declined).
-        c._process_auto_skills({"history_entry": "did some work"}, "sess")
+        c._process_auto_skills(
+            {"history_entry": "did some work"}, "sess", gate=c._write_gate("sess")
+        )
     finally:
         ctx.stop()
     assert loader.staged == []
@@ -404,7 +417,7 @@ def test_process_null_new_skill_emits_skipped_audit(monkeypatch):
     recorded: list[dict] = []
     ctx = _sel_recorder(recorded)
     try:
-        c._process_auto_skills({"new_skill": None}, "sess")
+        c._process_auto_skills({"new_skill": None}, "sess", gate=c._write_gate("sess"))
     finally:
         ctx.stop()
     assert loader.staged == []
@@ -432,6 +445,7 @@ def test_process_new_stages_as_new(monkeypatch):
                 }
             },
             "sess",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -481,6 +495,7 @@ async def test_merge_receives_prose_only_not_frontmatter():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -514,6 +529,7 @@ async def test_staged_update_body_is_sanitized():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -552,6 +568,7 @@ async def test_stage_update_carries_validated_scripts():
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
             scripts=scripts,
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -584,7 +601,7 @@ async def test_process_auto_skills_update_route_forwards_scripts():
     }
     ctx = _sel_recorder([])
     try:
-        await asyncio.to_thread(c._process_auto_skills, result, "sess")
+        await asyncio.to_thread(c._process_auto_skills, result, "sess", gate=c._write_gate("sess"))
     finally:
         ctx.stop()
 
@@ -609,6 +626,7 @@ async def test_stage_update_skips_non_live_target():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -647,6 +665,7 @@ async def test_stage_update_truncates_long_target_slug():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -682,7 +701,7 @@ async def test_update_verdict_on_pending_target_stages_a_new_candidate():
     recorded: list[dict] = []
     ctx = _sel_recorder(recorded)
     try:
-        await asyncio.to_thread(c._process_auto_skills, result, "sess")
+        await asyncio.to_thread(c._process_auto_skills, result, "sess", gate=c._write_gate("sess"))
     finally:
         ctx.stop()
 
@@ -722,7 +741,7 @@ async def test_update_verdict_on_live_target_still_stages_an_update():
     }
     ctx = _sel_recorder([])
     try:
-        await asyncio.to_thread(c._process_auto_skills, result, "sess")
+        await asyncio.to_thread(c._process_auto_skills, result, "sess", gate=c._write_gate("sess"))
     finally:
         ctx.stop()
 
@@ -762,6 +781,7 @@ async def test_merge_prompt_never_receives_live_body_credentials():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -859,6 +879,7 @@ async def test_stage_update_merges_live_triggers_not_replaces_them():
             description="Retry a failed deployment, rolling back if needed",
             triggers="rollback",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -895,6 +916,7 @@ async def test_stage_update_falls_back_to_live_description_when_candidate_empty(
             description="",
             triggers="b",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()
@@ -934,6 +956,7 @@ async def test_base_version_is_captured_before_the_body_it_describes():
             description="d",
             triggers="t",
             procedure_md="## Steps\n1. cand\n",
+            gate=c._write_gate("sess"),
         )
     finally:
         ctx.stop()

@@ -4523,8 +4523,13 @@ class SkillsLoader:
         triggers: str,
         procedure_md: str,
         provenance: AutoSkillProvenance,
+        admit: Callable[[], None] | None = None,
     ) -> str | None:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
+
+        ``admit`` is the caller's admission check (the consolidator's write
+        gate), asked immediately before the first write -- this writer takes no
+        lock, so the write itself is the step it guards.
 
         Returns the full skill name (``auto/<slug>``) on success, or
         ``None`` if the slug is invalid or the skill already exists.
@@ -4558,7 +4563,36 @@ class SkillsLoader:
             procedure_md=procedure_md,
             provenance=provenance,
         )
-        skill_dir.mkdir(parents=True, exist_ok=True)
+        # The CLAIM: `exist_ok=False` makes the mkdir the one atomic step two
+        # same-slug creations cannot both win. The loser -- another pass landed
+        # the slug between the check above and here -- reports "already exists"
+        # like a slug that was there all along, and never writes into, or
+        # removes, a directory the winner owns.
+        skill_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            skill_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            logger.info("Auto skill %s already exists, skipping", name)
+            return None
+        # The admission is asked immediately ahead of the one content-bearing
+        # write. A refusal removes exactly what THIS call created -- the empty
+        # directory it just claimed -- so the store is as it was; `rmdir` rather
+        # than a recursive remove, so a file another writer put there meanwhile
+        # is never taken with it.
+        if admit is not None:
+            try:
+                admit()
+            except BaseException:
+                try:
+                    skill_dir.rmdir()
+                except OSError:
+                    logger.warning(
+                        "auto skill %s: the claimed directory could not be removed after a "
+                        "refusal; leaving it",
+                        name,
+                        exc_info=True,
+                    )
+                raise
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
         self._invalidate_iter_cache()  # new skill visible to trigger matching now
         logger.info("Created auto skill: %s", name)
@@ -4572,8 +4606,12 @@ class SkillsLoader:
         triggers: str,
         procedure_md: str,
         provenance: AutoSkillProvenance,
+        admit: Callable[[], None] | None = None,
     ) -> bool:
         """Update an existing auto-generated skill with a refined procedure.
+
+        ``admit``: the caller's admission check, asked immediately before the
+        rewrite (no lock here; the write is the guarded step).
 
         Refuses to overwrite skills NOT in the auto namespace — protects
         hand-authored skills from being clobbered by the refine path.
@@ -4637,6 +4675,8 @@ class SkillsLoader:
             _carry.append("inject_on_trigger: false")
         if _carry:
             content = content.replace("\n---\n", "\n" + "\n".join(_carry) + "\n---\n", 1)
+        if admit is not None:
+            admit()
         skill_file.write_text(content, encoding="utf-8")
         self._invalidate_iter_cache()  # so the refined triggers/description apply now
         logger.info("Refined auto skill: %s", name)
@@ -4994,6 +5034,7 @@ class SkillsLoader:
         kind: str = "new",
         target: str | None = None,
         base_version: int | None = None,
+        admit: Callable[[], None] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -5019,6 +5060,10 @@ class SkillsLoader:
             return None
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         root = self._pending_root()
+        # The caller's admission (the consolidator's write gate), asked ahead of
+        # the first mutation -- the pending root and the directory claim below.
+        if admit is not None:
+            admit()
         root.mkdir(parents=True, exist_ok=True)
         # Atomically CLAIM a pending dir. mkdir(exist_ok=False) closes the TOCTOU
         # between an exists() check and the create. If the natural slug is already
@@ -5058,6 +5103,13 @@ class SkillsLoader:
                 procedure_md=procedure_md,
                 provenance=provenance,
             )
+            # Each file is a separately durable write of the candidate's content,
+            # so each asks the admission immediately ahead of itself: one check at
+            # the top holds for the claim, not for a write made after another
+            # write landed. A refusal raises into the handler below, which removes
+            # the claimed directory with whatever landed in it.
+            if admit is not None:
+                admit()
             (pdir / "SKILL.md").write_text(content, encoding="utf-8")
             script_names: list[str] = []
             clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
@@ -5069,6 +5121,8 @@ class SkillsLoader:
                     # Guard the script filename against traversal / nesting.
                     if not fn or "/" in fn or "\\" in fn or ".." in fn:
                         continue
+                    if admit is not None:
+                        admit()
                     (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
                     script_names.append(fn)
             meta = {
@@ -5086,11 +5140,14 @@ class SkillsLoader:
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if admit is not None:
+                admit()
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
-            # A partial write (e.g. disk full) must not leave a CLAIMED but empty
-            # dir behind: a later stage would see it exists and report the slug as
-            # "already awaiting review" while no reviewable candidate exists.
+            # A partial write (e.g. disk full) or an admission refused between two
+            # writes must not leave a CLAIMED but empty or half-written dir behind:
+            # a later stage would see it exists and report the slug as "already
+            # awaiting review" while no reviewable candidate exists.
             # Roll back the atomic claim so the slug can be re-staged cleanly.
             shutil.rmtree(pdir, ignore_errors=True)
             raise

@@ -405,7 +405,13 @@ class MemoryStore:
         return ""
 
     @named_store_operation
-    def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
+    def write_preferences(
+        self,
+        content: str,
+        *,
+        expected_baseline: str | None = None,
+        admit: Callable[[], None] | None = None,
+    ) -> bool:
         """Write user preferences and update FTS index.
 
         Serialized behind the same advisory ``file_lock`` mechanism
@@ -425,6 +431,11 @@ class MemoryStore:
         write is skipped and ``False`` is returned. ``None`` writes
         unconditionally (direct user intent wins). Returns ``True`` when the
         write happened.
+
+        ``admit`` is the caller's admission check (the consolidator's write
+        gate): asked INSIDE the lock, after the baseline check and immediately
+        before the write, so a restriction that lands while this writer waited
+        for the lock refuses the write with the file untouched.
         """
         self._require_link_free_roots()  # gate before the first syscall
         self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -437,6 +448,8 @@ class MemoryStore:
                         "baseline this update was computed from"
                     )
                     return False
+                if admit is not None:
+                    admit()
                 self._atomic_write_text(self._preferences_file, content)
                 # Indexed INSIDE the lock: with concurrent writers, indexing
                 # after release lets writer B's file land while writer A's
@@ -469,11 +482,18 @@ class MemoryStore:
         return ""
 
     @named_store_operation
-    def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
+    def write_projects(
+        self,
+        content: str,
+        *,
+        expected_baseline: str | None = None,
+        admit: Callable[[], None] | None = None,
+    ) -> bool:
         """Write active projects, adding header if missing, and update FTS index.
 
-        Locking and ``expected_baseline`` (compare-and-swap) semantics: see
-        :meth:`write_preferences`.
+        Locking, ``expected_baseline`` (compare-and-swap) and ``admit`` (the
+        caller's admission, asked under the lock right before the write)
+        semantics: see :meth:`write_preferences`.
         """
         self._require_link_free_roots()  # gate before the first syscall
         self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -487,6 +507,8 @@ class MemoryStore:
                         "baseline this update was computed from"
                     )
                     return False
+                if admit is not None:
+                    admit()
                 self._atomic_write_text(self._projects_file, full)
                 # Indexed inside the lock — see write_preferences.
                 self._index_file(self._projects_file, full)
@@ -565,7 +587,7 @@ class MemoryStore:
         return self._history_dir / f"{date}.md"
 
     @named_store_operation
-    def append_history(self, entry: str) -> None:
+    def append_history(self, entry: str, *, admit: Callable[[], None] | None = None) -> None:
         """Append a timestamped entry to today's daily history file.
 
         The whole read-modify-write is serialized behind an exclusive advisory
@@ -576,9 +598,16 @@ class MemoryStore:
         rewrite AND the FTS index update, so the file and its index always
         publish under the same lock tenure; cache invalidation runs after
         release.
+
+        ``admit`` is the caller's admission check (the consolidator's write
+        gate), asked INSIDE the lock immediately before the rewrite: a
+        consolidation pass that admitted at its verb and then waited on this
+        lock while the session's memory mode tightened is refused here, with
+        the file untouched. The V2 database history asks it inside its own
+        transaction.
         """
         if self._memory_version == 2:
-            self._member_store().append_history(entry)
+            self._member_store().append_history(entry, admit=admit)
             return
         self._require_link_free_roots()  # gate before the first syscall
         self._history_dir.mkdir(parents=True, exist_ok=True)
@@ -629,6 +658,8 @@ class MemoryStore:
                     content = f"# {date}\n"
 
                 content += f"\n#### {timestamp}\n{entry.strip()}\n"
+                if admit is not None:
+                    admit()
                 self._atomic_write_text(path, content)
                 # Indexed inside the lock — see write_preferences.
                 self._index_file(path, content)

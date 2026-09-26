@@ -54,6 +54,17 @@ GATED_AUTOMATIC = {
     "history_consolidation.py::_save_lessons",
     "history_consolidation.py::_write_structured_memory",
     "history_consolidation.py::_consolidate",
+    # The consolidation write gate's verbs (_WriteGate): every durable write of a
+    # pass is one of these, each the store primitive with a memory-mode admission
+    # in front, and they are reached only from a pass _consolidate admitted past
+    # the switch (test_consolidation_write_gate.py pins that no batch is
+    # dispatched outside the gate and no primitive is reached outside it).
+    "history_consolidation.py::append_history",
+    "history_consolidation.py::set_semantic",
+    "history_consolidation.py::write_episodic",
+    "history_consolidation.py::write_lesson",
+    "history_consolidation.py::write_preferences",
+    "history_consolidation.py::write_projects",
     # Distils a lesson from a repeatedly failing task; gated before the LLM call.
     "taskrunner.py::_extract_lesson",
     # The enforcement point behind the learn_add MCP tool: every transport that

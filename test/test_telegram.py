@@ -3766,6 +3766,103 @@ class TestTelegramMidTurn:
         assert sess.queued == []  # NOT queued
         assert cli.reactions == [(12, _STEER_ACK_EMOJI)]  # steer-ack on the steer message
 
+    # -- the privacy confirmation follows the steer's result -------------------
+
+    @staticmethod
+    def _incognito_steer(steer_result):
+        """A busy session in steer mode, a ``/incognito`` message, and a provider
+        whose steer answers *steer_result* (a bool, or an exception to raise).
+        Returns the dispatcher, the client and the provider's steer log."""
+        from kiro_crew.messaging import privacy_mode
+
+        privacy_mode.reset()
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        provider = sess._gp
+        sent_at_steer: list[list[str]] = []
+
+        async def _steer(text: str) -> bool:
+            provider.steered.append(text)
+            sent_at_steer.append([t for t, _ in cli.sent])
+            if isinstance(steer_result, BaseException):
+                raise steer_result
+            return steer_result
+
+        provider.steer = _steer  # type: ignore[method-assign]
+
+        async def _go() -> None:
+            await d.handle_message(
+                TelegramInboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="/incognito stop now",
+                    message_id=12,
+                )
+            )
+
+        return d, cli, sess, sent_at_steer, _go
+
+    def test_a_steer_that_raises_keeps_the_mode_and_says_the_message_is_unconfirmed(
+        self,
+    ) -> None:
+        """The reservation applies the mode ahead of the steer; the steer RAISES
+        -- after its bytes may have reached the backend, so nobody knows whether
+        the message is in the turn. Fail-closed: the mode stays on, and the user
+        is told the mode is ON and that the message itself may not have run,
+        through the same producer -- never that the mode was not applied (a
+        message the backend records would then run unprotected). RED-BEFORE:
+        the raise released the mode and announced "not made incognito"."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, cli, sess, sent_at_steer, go = self._incognito_steer(RuntimeError("acp gone"))
+        with pytest.raises(RuntimeError, match="acp gone"):
+            asyncio.run(go())
+        texts = [t for t, _ in cli.sent]
+        assert texts == [
+            f"{privacy_mode.NOTICE_INCOGNITO} {privacy_mode.NOTICE_UNCONFIRMED_SUFFIX}"
+        ], f"a raised steer did not keep the mode and say the message is unconfirmed: sent={texts}"
+        assert (
+            list(privacy_mode._tracker("incognito")) != []
+        ), "the mode was taken back over a message the backend may be recording"
+        assert sess.queued == [], "a message whose steer raised was queued anyway"
+
+    def test_a_steer_that_declines_confirms_nothing_here(self) -> None:
+        """The provider declines the steer: the message falls through to the queue
+        and runs at the drain, where the modifier is applied and announced. This
+        path says nothing about the mode -- a confirmation here, for a message
+        that has not run, would be false -- and takes the reservation back."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, cli, sess, sent_at_steer, go = self._incognito_steer(False)
+        asyncio.run(go())
+        texts = [t for t, _ in cli.sent]
+        assert (
+            privacy_mode.NOTICE_INCOGNITO not in texts
+        ), f"a declined steer left a confirmation: sent={texts}"
+        assert [text for _, text, _ in sess.queued] == ["stop now"], sess.queued
+        assert list(privacy_mode._tracker("incognito")) == [], "the mode was not taken back"
+
+    def test_a_steer_that_lands_is_confirmed_once_after_it_landed(self) -> None:
+        """The confirmation follows the steer's result: one notice, sent AFTER the
+        provider reported the message in the turn -- never before it."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, cli, sess, sent_at_steer, go = self._incognito_steer(True)
+        asyncio.run(go())
+        assert sess._gp.steered == ["stop now"]
+        assert sent_at_steer == [
+            []
+        ], f"the confirmation was sent before the steer reported: at steer={sent_at_steer}"
+        texts = [t for t, _ in cli.sent]
+        assert texts == [
+            privacy_mode.NOTICE_INCOGNITO
+        ], f"one confirmation, after the steer: {texts}"
+        assert list(privacy_mode._tracker("incognito")), "the steered message's mode was not kept"
+        privacy_mode.reset()
+
     def test_busy_queue_mode_enqueues(self) -> None:
         d, cli, sess = _dispatcher({7})
         sess._busy = True

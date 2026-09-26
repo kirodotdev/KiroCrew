@@ -596,7 +596,13 @@ class TestConsolidatorStoreResolution:
         watch(ctx.ContextBuilder, "get_memory_for")
         watch(MemoryStore, "read_preferences")
         watch(MemoryStore, "read_projects")
-        model = AsyncMock(return_value={"history_entry": "The member finished its task."})
+        reads_before_model: list[int] = []
+
+        async def model(*args, **kwargs):
+            reads_before_model.append(calls.count("read_session_execution"))
+            return {"history_entry": "The member finished its task."}
+
+        model = AsyncMock(side_effect=model)
         monkeypatch.setattr(consolidator, "_call_llm", model)
 
         if unavailable:
@@ -605,7 +611,6 @@ class TestConsolidatorStoreResolution:
         else:
             await consolidator._consolidate(KEY)
 
-        assert calls.count("read_session_execution") == 1
         if unavailable:
             model.assert_not_awaited()
             assert calls == ["read_session_execution"]
@@ -613,6 +618,12 @@ class TestConsolidatorStoreResolution:
             assert ctx._vector_stores == {}
         else:
             model.assert_awaited_once()
+            # The identity is resolved from ONE execution-record read before the
+            # model call; the two further reads are the mode re-checks at the
+            # pass's durable write boundaries (the member-memory write, the
+            # offset advance), every one of them off the loop like the first.
+            assert reads_before_model == [1]
+            assert calls.count("read_session_execution") == 3
             assert {
                 "memory_store_version",
                 "get_memory_for",
@@ -675,6 +686,7 @@ class TestConsolidatorStoreResolution:
             },
             "dashboard:chat-coding",
             target,
+            gate=consolidator._write_gate("dashboard:chat-coding"),
         )
 
         assert [r["key"] for r in target.get_all_semantic()] == ["pref.editor"]
@@ -691,6 +703,7 @@ class TestConsolidatorStoreResolution:
         consolidator._write_structured_memory(
             {"semantic": [{"key": "pref.shell", "value": "zsh", "confidence": 1.0}]},
             "dashboard:chat-global",
+            gate=consolidator._write_gate("dashboard:chat-global"),
         )
         assert [r["key"] for r in silos.global_vectors.get_all_semantic()] == ["pref.shell"]
 
@@ -701,7 +714,10 @@ class TestConsolidatorStoreResolution:
         consolidator = self._consolidator(silos, tmp_path)
 
         consolidator._save_lessons(
-            [{"rule": "Rebase before merging.", "category": "preference"}], target, None
+            [{"rule": "Rebase before merging.", "category": "preference"}],
+            target,
+            None,
+            gate=consolidator._write_gate("dashboard:gate-test"),
         )
 
         assert len(target.get_lessons()) == 1
@@ -723,7 +739,10 @@ class TestConsolidatorStoreResolution:
         consolidator = self._consolidator(silos, tmp_path)
 
         consolidator._save_lessons(
-            [{"rule": "Rebase before merging.", "category": "preference"}], None, silo_lessons
+            [{"rule": "Rebase before merging.", "category": "preference"}],
+            None,
+            silo_lessons,
+            gate=consolidator._write_gate("dashboard:gate-test"),
         )
 
         assert [lesson.rule for lesson in silo_lessons.load_all()] == ["Rebase before merging."]
@@ -752,11 +771,13 @@ class TestConsolidatorStoreResolution:
             {"semantic": [{"key": "pref.editor", "value": "vim", "confidence": 1.0}]},
             "dashboard:chat-coding",
             unprepared,
+            gate=consolidator._write_gate("dashboard:chat-coding"),
         )
         consolidator._save_lessons(
             [{"rule": "Rebase before merging.", "category": "preference"}],
             unprepared,
             silo_lessons,
+            gate=consolidator._write_gate("dashboard:gate-test"),
         )
 
         # The semantic tier is simply skipped — nothing anywhere.

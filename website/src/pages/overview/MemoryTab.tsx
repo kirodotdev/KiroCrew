@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { Trans } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { XCircle, AlertTriangle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal } from 'lucide-react'
+import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
+import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import VectorMemoryCard from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import MemoryStoreCard, {
@@ -31,6 +33,38 @@ import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
 import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
+
+/** `POST /api/memory/consolidate`'s code for a target the memory modes promise
+ *  leaves no durable trace (a Temporary or Incognito session). "Summarize now"
+ *  posts every stem `api.sessions` lists, those sessions included, and a row's
+ *  `memory_mode` cannot pre-filter them all: a channel thread flagged before its
+ *  transcript header carried the mode holds the flag in the session map alone,
+ *  which the list is not built from. So the tally sorts the refusals after the
+ *  fact -- a skip the user asked for by choosing the mode, counted apart from a
+ *  request that failed. */
+const RESTRICTED_TARGET_CODE = 'restricted_target_session'
+
+/** Machine-readable fields of a rejected consolidate call's JSON body: the
+ *  backend `code`, and for a refused target the `mode` it was in -- both read
+ *  through the error journal's own body parser (`parseErrorCode` /
+ *  `parseErrorField`), the one parse of a backend error envelope. Duck-typed
+ *  on `body` rather than `instanceof ApiError` (the `MobileConnectModal`
+ *  shape), so it keeps working under a mocked `api/client`. */
+const consolidateRefusal = (reason: unknown): { code?: string; mode?: string } => {
+  const body = typeof reason === 'object' && reason !== null && 'body' in reason && typeof reason.body === 'string'
+    ? reason.body
+    : undefined
+  return { code: parseErrorCode(body), mode: parseErrorField(body, 'mode') }
+}
+
+/** The mode a skipped session was in, as the tally names it when every skipped
+ *  session shares one ("1 skipped: incognito session"): the reader could not tell
+ *  whether "temporary or incognito" was two kinds of private chat or one thing
+ *  with two names. A literal map, indexed, so every key stays greppable. */
+const SKIPPED_MODE_KEYS = {
+  incognito: 'pages.overview.memoryTab.skipped_incognito_session',
+  temporary: 'pages.overview.memoryTab.skipped_temporary_session',
+} as const
 
 /** The Scope cell. The three values are the three delete selectors the list
  *  reports, and each must read differently: a fragment is that scope's row;
@@ -135,6 +169,10 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
 
 function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void }) {
   const queryClient = useQueryClient()
+  // The failed-session link leaves this tab; through the same guard as the
+  // outer tab's exits, since the drafts held here are what the guard protects.
+  const navigate = useNavigate()
+  const leave = useGuardedLeave()
   const [recordDirty, setRecordDirty] = useState(false)
   const [recordsOpen, setRecordsOpen] = useState(false)
   const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
@@ -171,6 +209,14 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
   const [consolidating, setConsolidating] = useState(false)
   const [consolidateMsg, setConsolidateMsg] = useState<ReactNode>('')
   const [consolidateOk, setConsolidateOk] = useState(false)
+  // A failed press, apart from the status message: it reports rejected
+  // requests, so it renders through ErrorNotice like every other failure.
+  // `session` is the first failed request's session key, `count` how many failed.
+  // One failure notice for the press's two request kinds: the session LIST
+  // (no session, no tally -- `session` absent) and a per-session request (the
+  // first failed one named, `count` failed in all). `summary` is the plain-words
+  // line for that kind; `raw` is the server's own reply, kept verbatim.
+  const [consolidateFailure, setConsolidateFailure] = useState<{ title: string; summary: string; raw: string; session?: { key: string; title?: string }; count: number } | null>(null)
   // Track all "Saved" / "consolidate-msg-clear" timeout ids so they can be
   // cleared on unmount — otherwise a pending setTimeout fires after the
   // component is gone and (in vitest) shows up as an unhandled error from
@@ -186,7 +232,11 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       fn()
     }, ms)
     timeoutsRef.current.push(id)
+    return id
   }, [])
+  // The tally's own clear timer, so a press that lands within four seconds of
+  // the previous one cancels that one's clear instead of losing its tally to it.
+  const consolidateClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadLessons = useCallback(async () => { const d = await api.lessons(); setLessons(d.lessons || []) }, [])
   const { confirm, confirmDialog } = useConfirm()
   // Which step of a delete failed decides the banner's title: the request
@@ -251,17 +301,111 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
     }
   }, [refreshTrigger, loadLessons, queryClient])
   const consolidate = async () => {
-    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false)
-    const sessions = await api.sessions(200).catch(() => ({ sessions: [] }))
-    const keys = sessions?.sessions?.map((s: SessionInfo) => s.key).filter(Boolean) || []
+    if (consolidateClearRef.current !== null) {
+      clearTimeout(consolidateClearRef.current)
+      timeoutsRef.current = timeoutsRef.current.filter(t => t !== consolidateClearRef.current)
+      consolidateClearRef.current = null
+    }
+    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false); setConsolidateFailure(null)
+    // The list is the press's first request. A gateway that is down or answers
+    // 500 is a FAILURE of the press, not an empty list: it renders through the
+    // same notice as a failed per-session request, with the server's reply as
+    // the detail -- swallowed into `sessions: []`, it read as "start a chat
+    // first" with no error surface at all. That message is for a list that
+    // succeeded with nothing in it.
+    let sessions: { sessions?: SessionInfo[] } | undefined
+    try {
+      sessions = await api.sessions(200)
+    } catch (err) {
+      setConsolidateFailure({
+        title: i18nT('pages.overview.memoryTab.consolidate_list_failed'),
+        summary: i18nT('pages.overview.memoryTab.consolidate_list_failed_summary'),
+        raw: err instanceof Error ? err.message : String(err),
+        count: 0,
+      })
+      setConsolidating(false)
+      return
+    }
+    const listed = sessions?.sessions?.filter((s: SessionInfo) => Boolean(s.key)) || []
+    const keys = listed.map((s: SessionInfo) => s.key)
     if (keys.length === 0) { setConsolidateMsg(<><XCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.no_sessions_to_consolidate_start_a_chat_first')}</>); setConsolidating(false); return }
     const results = await Promise.allSettled(keys.map((k: string) => api.consolidateMemory(k, true)))
     const succeeded = results.filter(r => r.status === 'fulfilled').length
-    const failed = results.filter(r => r.status === 'rejected').length
-    if (failed > 0) setConsolidateMsg(<><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated_sessions_failed', { succeeded, total: keys.length, failed })}</>)
-    else { setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true) }
+    // Sort every rejection: a refusal the route names by its code is a skip the
+    // user asked for by choosing the mode, counted apart from a request that
+    // failed -- and BY MODE, so the tally can name the one mode every skip
+    // shares, or count each mode when they differ.
+    const byMode = { temporary: 0, incognito: 0 }
+    let unnamed = 0
+    let skipped = 0
+    let failed = 0
+    results.forEach(r => {
+      if (r.status !== 'rejected') return
+      const refusal = consolidateRefusal(r.reason)
+      if (refusal.code !== RESTRICTED_TARGET_CODE) { failed += 1; return }
+      skipped += 1
+      if (refusal.mode === 'temporary' || refusal.mode === 'incognito') byMode[refusal.mode] += 1
+      else unnamed += 1
+    })
+    // The one mode every skipped session was in, or nothing.
+    const onlyMode = skipped > 0 && byMode.temporary === skipped ? 'temporary'
+      : skipped > 0 && byMode.incognito === skipped ? 'incognito'
+        : undefined
+    const mode = onlyMode ? i18nT(SKIPPED_MODE_KEYS[onlyMode], { count: skipped }) : undefined
+    // The parenthetical of the mixed tally: the count of each mode ("1
+    // temporary, 1 incognito" -- the reader could not tell what made a session
+    // one or the other, or which of theirs were which; the counts at least say
+    // how many of each), or the either/or wording when a body named no mode.
+    const modes = unnamed === 0
+      ? i18nT('pages.overview.memoryTab.skipped_modes_breakdown', {
+        temporary: i18nT('pages.overview.memoryTab.skipped_temporary_count', { count: byMode.temporary }),
+        incognito: i18nT('pages.overview.memoryTab.skipped_incognito_count', { count: byMode.incognito }),
+      })
+      : i18nT('pages.overview.memoryTab.skipped_modes_unknown')
+    // `count` drives the mixed keys' plural ("1 private session skipped").
+    const tally = { succeeded, total: keys.length, failed, skipped, mode, modes, count: skipped }
+    // The skip fragment as it reads on its own: the mode when every skip shares
+    // one, "N private sessions skipped (1 temporary, 1 incognito)" otherwise --
+    // the category leads and the per-mode counts are the parenthetical.
+    const skippedFragment = skipped > 0
+      ? (mode
+        ? i18nT('pages.overview.memoryTab.skipped_sessions_mode', tally)
+        : i18nT('pages.overview.memoryTab.skipped_sessions', tally))
+      : undefined
+    if (failed > 0) {
+      // A failed request is an error, so it renders through ErrorNotice: the
+      // tally is the lead, a plain-words line says what happened and what to
+      // do (press the button again), and the footer names the FIRST failed
+      // request's session key beside that request's own string -- kept raw
+      // rather than localized, as the rule asks (the string is the journal key,
+      // should the hand-off ever be turned on here); with several failures the
+      // count is in the lead and this is the first of them. The skip fragment
+      // is NOT part of the notice: it is the other, successful half of the
+      // press, so it renders as the success-tone tally BESIDE the notice --
+      // inside the danger box, even in its own colour, the reader could not
+      // tell whether the skip was part of the problem. Both persist until the
+      // notice is dismissed: a failure the user has to act on must not vanish
+      // on the success tally's timer, and the skip belongs to the same press.
+      const firstIndex = results.findIndex(r => r.status === 'rejected' && consolidateRefusal(r.reason).code !== RESTRICTED_TARGET_CODE)
+      const first = results[firstIndex]
+      const reason = first && first.status === 'rejected' ? first.reason : undefined
+      setConsolidateFailure({
+        title: i18nT('pages.overview.memoryTab.consolidated_sessions_failed', tally),
+        summary: i18nT('pages.overview.memoryTab.consolidate_failed_summary'),
+        raw: reason instanceof Error ? reason.message : String(reason),
+        session: { key: keys[firstIndex] ?? '', title: listed[firstIndex]?.title },
+        count: failed,
+      })
+      if (skippedFragment) { setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {skippedFragment}</>); setConsolidateOk(true) }
+    } else if (skipped > 0) {
+      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {mode
+        ? i18nT('pages.overview.memoryTab.consolidated_sessions_skipped_mode', tally)
+        : i18nT('pages.overview.memoryTab.consolidated_sessions_skipped', tally)}</>); setConsolidateOk(true)
+    } else {
+      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true)
+    }
     setConsolidating(false)
-    scheduleClear(() => setConsolidateMsg(''), 4000)
+    if (failed === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
   }
   const addLesson = async () => {
     if (!rule) return
@@ -311,7 +455,67 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
         )}
         <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
         <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> {i18nT('pages.overview.memoryTab.running')}</> : <><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryTab.summarize_now')}</>}</Btn>
-        {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`}>{consolidateMsg}</span>}
+        {/* What the button does, under it on its own line: the blind reader
+            hesitated over "summarize WHAT" without it and pressed with it (the
+            UX lane's read of two heads). Names the button rather than saying
+            "it", since the line sits under the whole row. */}
+        <p className="basis-full m-0 text-[12px] text-muted" data-testid="summarize-now-help">{i18nT('pages.overview.memoryTab.summarize_now_help')}</p>
+        {/* No hand-off: the tab holds unsaved drafts -- the lesson rule being
+            typed below and the store text in the editors -- that the hand-off's
+            navigation would discard. The block variant on its own flex line
+            (`basis-full`) so the button row stays a row. */}
+        {consolidateFailure && (
+          <ErrorNotice
+            className="basis-full"
+            title={consolidateFailure.title}
+            /* Plain words a person can act on -- what happened, and that pressing
+               the button again retries it; the server's raw string is the journal
+               key the structured report is looked up by, so it rides as `report`
+               and, verbatim, as the footer's secondary detail under the failed
+               session's key. The detail carries a visible label ("Server's
+               reply:") so the message's "shown below" unambiguously points at it
+               and marks it as foreign text -- the backend still says
+               "consolidat*" where every label here says "Summarize", and unlabelled
+               the reader doubted it concerned the button they pressed. */
+            message={consolidateFailure.summary}
+            report={findReport(consolidateFailure.raw)}
+            footer={<>
+              {consolidateFailure.session !== undefined && (
+                /* The session by its TITLE, as the sidebar names it (the key only when
+                   it has none), and a way to act on it: the same guarded navigation as
+                   the tab's other exits, since a click leaves the drafts this tab holds. */
+                <span className="block text-[12px]" data-testid="consolidate-failed-session">
+                  <Trans
+                    i18nKey="pages.overview.memoryTab.consolidate_failed_session"
+                    count={consolidateFailure.count}
+                    values={{ session: consolidateFailure.session.title || consolidateFailure.session.key }}
+                    // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the control's label is the session title `Trans` renders inside it
+                    components={{ session: <button
+                      type="button"
+                      className="p-0 border-none bg-transparent font-body text-[12px] text-inherit underline underline-offset-2 cursor-pointer hover:text-accent"
+                      data-testid="consolidate-failed-session-link"
+                      onClick={() => {
+                        const destination = `/chat?sid=${encodeURIComponent(consolidateFailure.session?.key ?? '')}`
+                        leave(() => navigate(destination), destination)
+                      }}
+                    /> }}
+                  />
+                </span>
+              )}
+              <span className="block text-[12px] text-muted" data-testid="consolidate-failed-reply">
+                <Trans
+                  i18nKey="pages.overview.memoryTab.consolidate_failed_reply"
+                  values={{ reply: consolidateFailure.raw }}
+                  components={{ reply: <span className="font-mono" data-testid="consolidate-failed-detail" /> }}
+                />
+              </span>
+            </>}
+            onDismiss={() => { setConsolidateFailure(null); setConsolidateMsg('') }}
+            askAgent={false}
+            testId="consolidate-failed"
+          />
+        )}
+        {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`} data-testid="consolidate-msg">{consolidateMsg}</span>}
 
         {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
       </div>

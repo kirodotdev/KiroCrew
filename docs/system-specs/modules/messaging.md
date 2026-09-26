@@ -4,7 +4,7 @@
 
 `kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, WhatsApp, and Feishu integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
-**Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), and `sel` for audit.
+**Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), `sel` for audit, and, function-locally from `privacy_mode`, `session_map` (the durable flag) and `history` (the transcript header the mode is stamped into).
 
 Slack's transport path is gated behind the `messaging.use_transport` config flag (default `true` in Kiro Crew, so the abstraction is the canonical path); when off, Slack's native `handle_message` path runs instead.
 
@@ -2134,15 +2134,225 @@ rather than a second copy of them; `slack/handler.py` keeps every public symbol
   survives a gateway restart. `conv_state_map` requires the real `SessionMap`
   class rather than any attribute: a `MagicMock` stand-in returns a **truthy mock**
   for every flag, which would mark every session both temporary and incognito —
-  failing closed, but wrongly and silently.
+  failing closed, but wrongly and silently. **`recorded_mode(sessions,
+  session_key)`** is its read-only, any-thread form: the strictest mode the
+  trackers OR the map flag record, dict lookups only, marking nothing -- the
+  trackers are mutated on the event loop, so a reader on a worker thread (the
+  consolidator's write gate, before every store mutation) reads the flag beside
+  the tracker instead of copying it in.
+- **Two durable records, two readers.** The `SessionMap` flag is what `hydrate`
+  restores the channel's own gate from on every inbound message, and it keeps
+  the map entry alive through `SessionMap.prune` and the per-read repair (both
+  loop-side and lock-held, so neither reads a transcript) -- and through every
+  other path: because this gate hydrates from the map alone, a flagged row is
+  never removed, however complete the transcript header, until the gate can
+  read the header (a separate change). `SessionMap.stamp_privacy_headers` --
+  awaited by `start_pool` right after `prune`, the header probes on a worker
+  thread, the lock-held half touching no file -- only ensures each flagged
+  row's existing transcript header carries the mode.
+  The transcript header's `memory_mode` is the record the memory readers
+  consult: `apply_mode` stamps it through `_persist_transcript_mode`
+  (`ConversationLog.update_metadata_if` on the default `ConversationLog`, off the
+  loop, and READ BACK -- the writer's answer is not the record) so a transcript read never depends on the map being loaded,
+  and every memory reader already refuses on that field (`is_incognito_transcript`,
+  the shared `resolve_consolidation_target` behind the consolidator and the
+  consolidate route -- which reads it only for a target whose mode neither the
+  execution record nor the map flag already knows, so a known-restricted session's
+  transcript is never opened -- and the dashboard's persisted probe). Tighten-only: a `!incognito` typed after
+  `!temporary` leaves `temporary` in place -- and the compare reads the header's
+  mode NORMALIZED (`history.transcript_privacy_mode`, the companion of
+  `is_incognito_transcript`: same `lower()`, same set, the mode returned), so a
+  header a hand edit or a foreign writer spelled `Temporary` is the stricter mode
+  it is, not an unknown string that would lose to the incognito stamp; the
+  startup stamp (`SessionMap.stamp_privacy_headers`) and the consolidator's
+  header source read it through the same helper, and every reader agrees with
+  the predicate on every input (whitespace is not stripped by either: a header no
+  reader recognizes is one the stamps may repair with a recognized mode). Both
+  stamps decide through `needs_tightening(current, mode)`, which is False at
+  equality as well as for a stricter header, so a header that already records the
+  mode costs no write -- the startup stamp visits every flagged row on every boot,
+  and a restart re-applies a modifier from an empty tracker. Upserted: a thread flagged before its
+  first turn gets a metadata-only header — the mode marker, no user-authored
+  content, the same shape `bind_session_execution` writes for a restricted
+  session — and `ConversationLog.append` keeps an existing header, so the first
+  row any later writer appends lands under it. This is not the `/title` defect
+  below: the header carries the mode and nothing the user typed. A thread flagged
+  before the stamp existed is covered by its map entry, and the startup step
+  copies the mode into its existing transcript's header while the row stays.
 - **`apply_mode(mode, session_key, *, source, caller, resources, sessions, notify,
   on_applied) -> bool`** is idempotent and returns whether the mode was NEWLY
-  applied. The in-memory mark lands FIRST, before any await, so a concurrent
-  inbound message cannot observe the session as unrestricted after the user asked
-  for privacy; then the durable write, the audit (`f"{source}.{mode}_mode"`), the
-  caller's `on_applied` hook, and the notice. A persist failure is logged, not
-  raised — the mark already holds for this process, and refusing the modifier would
-  tell the user privacy is off while it is on.
+  applied. The application itself is **`_commit_mode`**, the ONE path from a
+  request to a published mode, and it publishes in one order: the durable map
+  row is written and its write AWAITED to disk (`_land`: `set_flag`, then
+  `aflush`); then the durable transcript header (`_persist_transcript_mode`,
+  tighten-only) -- the record the out-of-process gates read
+  (`capture_session_execution` takes an absent `memory_mode` as `persistent`,
+  and MCP `register_hook`, the task runner and workflow memory decide on it), so
+  a header write that fails, or returns with the header NOT recording the mode,
+  is the same refusal as a row that cannot land. The writer's answer is consumed
+  and read past: `update_metadata_if` has two silent no-write answers -- `False`
+  for a damaged first line it cannot read (the same answer as "already at least
+  this strict") and `True` for a first line that is valid JSON but not the
+  metadata record (a legacy message-first transcript), which it skips -- so the
+  stamp reads the header back and raises `HeaderNotRecorded` unless it carries
+  at least the mode. Either way the
+  row is taken back (`_land` to the value it had BEFORE the commit, never forced
+  off: after a restart a re-sent modifier commits over a row already on disk,
+  and clearing it would erase the thread's one durable private record) and the message is
+  NOT processed; only then the in-memory mark, the audit
+  (`f"{source}.{mode}_mode"`), the caller's `on_applied` hook and the notice. A
+  task cancelled during the header write publishes nothing in-process -- the
+  write itself completes on its worker thread beside the row, and the next
+  inbound `hydrate` restores the mark. A row the map refuses (`SessionMap.PRIVACY_ROW_CAP`
+  reached, a key over `PRIVACY_ROW_KEY_MAX`), cannot write or land, or whose
+  header cannot be written (`persist_failed`) publishes NOTHING: one SEL `denied` record
+  (`private_session_refused:<reason>:<target>`), `refusal_notice` (the mode was
+  not applied, the message was NOT processed, nothing ran and nothing was
+  saved), then `PrivacyModeRefused` -- no mark, no header, no mode-on notice, the
+  flag out of the map's memory again, so no record claims a mode the next boot
+  would not find. A header the writer SKIPPED -- the transcript's first line is
+  a message, not a metadata record (the legacy shape `update_metadata_if`
+  deliberately leaves alone) -- is the same refusal under its own reason,
+  `header_legacy`, because no retry can land it: its notice names the remedy
+  ("Start a new thread and send it there with the modifier") where
+  `persist_failed`'s says try again; migrating a metadata record onto legacy
+  transcripts is a separate change. There is no best-effort form: the mark that used to precede the
+  write and survive its failure is exactly what a restart lost, under a notice
+  that said the mode was on. The caller must not run the turn: the Slack applier
+  answers `only_modifier=True` (the contract both Slack callers already honour
+  by returning), the Telegram command and turn paths return, and the Telegram
+  steer path RESERVES before it steers. Refusing is the fail-closed answer;
+  running the message with the mode silently dropped would be the leak the
+  modifier exists to prevent, and evicting a retained row to make room would run
+  THAT thread as persistent after a restart. While the row is landing the key is
+  HELD, not published: the first caller for a (mode, key) registers the group in
+  `_pending` before its first await, and `is_temporary` / `is_incognito` /
+  `is_restricted` / `recorded_mode` answer restricted for a held key beside the
+  trackers, so a message arriving mid-write runs restricted rather than
+  persistent; nothing is announced, and the hold is gone with a write that
+  fails. `hydrate` restores only a row the map holds durably -- a flag whose
+  commit is still in flight is skipped, since marking it would publish a row the
+  write may yet fail to land. A concurrent second `apply_mode` for the same
+  (mode, key) joins the group and waits instead of re-committing (one row, one
+  audit, one notice), and because its message runs under the mode it COMMITS the
+  group, as does a plain modifier arriving while a reservation is pending on an
+  already-marked key. The shape is pinned structurally by
+  `test_messaging_privacy_mode`: `set_flag` and `aflush` are called nowhere but
+  `_land`; `_persist_transcript_mode` nowhere but `_commit_mode`, after `_land`
+  and before `mark`; `mark` nowhere but `_commit_mode`, `hydrate` and the
+  two in-memory wrappers; `_tracker(...).pop` nowhere but `_release_mode`; and no
+  module outside `privacy_mode` calls a publication function or writes a privacy
+  flag.
+- **`reserve(mode, session_key, …) -> Reservation`**, **`commit(reservation)`**,
+  **`release(reservation, *, sessions, source, …)`** — the form for a caller about
+  to take a step it cannot take back. `reserve` is `_commit_mode` plus the
+  bookkeeping a release needs: the group is HELD (a holder counted) and the
+  header the transcript carried before is remembered; a session already in the
+  mode is held without a second application and left exactly as it was by a
+  later release. The group for a (mode, key) is registered BEFORE `reserve`'s
+  first await, so a concurrent second caller always finds it, joins it and waits
+  for the first application to settle instead of running its own — no window in
+  which two callers each hold "the only" reservation and the loser's release
+  erases the winner's committed mode; a failed first application retires the
+  group and the joiner registers one of its own. A landed step `commit`s; a step
+  that did not land `release`s through **`_release_mode`**, the mirror of the
+  primitive, which loosens the records in the OPPOSITE order to the commit: the
+  transcript header is restored first, then the map flag is cleared and its
+  write AWAITED (`_land`), and only then is the tracker mark dropped and the
+  reversal reported, one SEL `released` record beside the `allowed` one. The
+  row goes LAST because it is the record a restart trusts -- `hydrate` restores
+  the mark from the map row alone, and the startup sweep re-stamps headers FROM
+  rows, never rows from headers -- so a sequence that stops anywhere leaves the
+  next boot reading the mode. The
+  header is restored to the STRICTEST claim still standing (`_restore_target`):
+  the mode it recorded before this reservation (normalized) and every OTHER mode
+  still recorded for the session -- in a tracker, in the map, or held in flight
+  -- never a bare `persistent` while another mode holds the conversation, so a
+  `temporary` reservation released after an `incognito` one committed leaves the
+  header at `incognito` (restoring the released mode's own `header_before` alone
+  wrote `persistent` there, which every header-only reader took at its word).
+  Written only if the header still records the released mode, and READ BACK. A
+  header restore that raises, or that leaves the header still recording the
+  released mode when its target was another value (the writer's silent
+  no-write answers, `HeaderNotRecorded`), RETAINS the mode with NOTHING
+  loosened yet -- the row and the mark stand as they were; a clear that cannot
+  reach disk RETAINS it too -- the flag is back in the map's memory (its next
+  write retries), the mark never left, and the header loosened a step earlier is
+  re-stamped with the mode (`_persist_transcript_mode`, tighten-only, best
+  effort in the safe direction: where that fails too the row still says the
+  mode and the sweep re-stamps the header from it at the next boot). Either way
+  one `retained` record (`release_failed:persist_failed:<target>`) reports the
+  failure in place of `released`; `release` returns whether the mode was
+  released. Cleared first (the earlier order), the row was put back after a
+  failed restore, and a put-back that failed too left it clear under a header
+  and a mark that still said the mode: the next boot hydrated nothing, so the
+  channel gate read the private session as persistent while every header-only
+  reader still read it private. A header left
+  STRICTER than the restore's target is another mode's commit landing, not a
+  failure; a header that says nothing (deleted, damaged) claims no mode, so the
+  release has nothing left to loosen there. Publishing the release with the
+  header still private (the earlier best-effort restore) read as released to the
+  channel gate and as private to every header-only reader. On ONE session the
+  durable sequences run one at a time, under a per-session-key lock
+  (**`_serialized`**, refcounted, made on first use and dropped with its last
+  user) shared by `_commit_mode`'s two durable steps and `_release_mode`'s
+  whole sequence: two modes on one key are two groups, and two releases
+  interleaved each read the other's mode as a standing claim (tracker and group
+  retire only after the header write), each wrote the other mode into the
+  header, both retired, and the header stayed private over a session with no
+  row, mark or group left on it. Serialized, the first release restores to the
+  second's claim; the second must then restore what the header held before
+  EITHER, so a successful release **re-roots** the other pending groups' claims
+  (`_reroot_claims`): a group whose `header_before` records the released mode
+  read that mode's stamp when it reserved, not a claim of its own, and now
+  records the released group's own `header_before` -- `!temporary` then
+  `!incognito`, both steers declined and released in that order, otherwise left
+  the header saying `temporary` for good, with nothing on the session claiming
+  it. `_release_mode` reads the group's `header_before` only once it holds the
+  lock, for the same reason. A cancellation during the durable steps (a
+  gateway shutdown mid-release) does not abandon the sequence: the header write
+  is a thread the cancellation cannot stop and the clear's flush may already be
+  on its way, so both steps run as one task SHIELDED from the release's, their
+  outcome is awaited, and the sequence ends released or retained before the
+  cancellation propagates; only a second cancellation while that outcome is
+  awaited propagates at once and leaves the outcome to the shielded task --
+  whatever it lands, the row is loosened last, so a boot that reads a
+  half-finished release reads the mode (the group settles failed). Loosening is
+  otherwise never done, so a release checks three things first — refcounted per
+  (mode, key): only the LAST pending holder releases, never when any holder
+  committed (a reservation's step, or a plain modifier's message, landed under
+  the mode), and never when the group did not newly apply the mode. The group
+  stays registered, `releasing`, for the whole awaited clear: the mark is dropped
+  last, so a same-mode request arriving in that window must not read "already
+  applied" off it and run (the clear would then land under the message and lose
+  the mode) -- `apply_mode`'s shortcut skips a releasing group, `_enter` waits
+  for the release to settle, and the request then lands a row of its own; a
+  release settles as failed for its joiners. **`is_provisional(mode,
+  session_key)`** names a mode that may yet be taken back -- a registered group
+  no holder has committed: a reservation whose step has not landed, a commit or a
+  release in flight -- and is what the consolidator's refusal memo asks before
+  remembering a refused session. The CONFIRMATION is not `reserve`'s to send:
+  the step it protects may still decline or fail, and a "mode ON" for a message
+  that then ran elsewhere or not at all is false, so `reserve` applies with
+  `announce=False`, keeps the notice with the group, and it goes out once,
+  through the producer the reservation was given, from whoever commits the
+  group first -- `commit` (the steer landed) or a plain modifier's message
+  that runs under it (`_announce_deferred`); `_notice` has exactly these two
+  producers, `_commit_mode`'s last step and that one. A step that DECLINED
+  (the steer answered False: the message provably runs elsewhere) releases and
+  says nothing here -- the path that then runs the message announces. A step
+  that RAISED, or was cancelled mid-flight, is AMBIGUOUS: a steer's bytes are
+  written to the backend before the awaited flush that fails, so the message
+  may already be in the turn and on its way into a transcript. Fail-closed,
+  it is **`commit(reservation, unconfirmed=True)`**: the mode stands exactly
+  as a landed step leaves it -- row, mark, header, the one `allowed` record --
+  and the confirmation goes out with `NOTICE_UNCONFIRMED_SUFFIX` appended (the
+  mode is on; the message itself may not have run; send it again if no reply
+  comes). Releasing there would strip the protection from a message the
+  backend may be recording, and telling the user the mode was "not applied"
+  would be false for exactly that message (the Telegram steer path; a
+  cancellation commits silently, its notice best-effort, and lets the
+  cancellation through). `reset()` drops pending groups with the trackers.
 - **`strip_and_apply(text, session_key, *, source, …) -> (text, only_modifier)`**
   is the single-text entry point. `only_modifier` means the message was nothing
   but modifiers and the caller MUST return without starting a turn. Slack drives
@@ -2150,10 +2360,13 @@ rather than a second copy of them; `slack/handler.py` keeps every public symbol
   carries two texts and only the mention-stripped command text decides
   `only_modifier`.
 - **Everything platform-shaped is a parameter**: `source` (the audit label),
-  `sessions` (only to reach the one `SessionMap`), `notify` (delivers
-  `NOTICE_TEMPORARY` / `NOTICE_INCOGNITO`, held here so two channels cannot
-  describe the same mode differently), and `on_applied` (Slack's `set_slack_link`,
-  so follow-ups pass its in-active-thread gate).
+  `sessions` (supplying it is what makes the mode durable; it is used only to
+  reach the one `SessionMap`), `notify` (delivers `NOTICE_TEMPORARY` /
+  `NOTICE_INCOGNITO`, held here so two channels cannot describe the same mode
+  differently), and `on_applied` (Slack's `set_slack_link`, so follow-ups pass
+  its in-active-thread gate). The header write takes no parameter: every
+  production `ConversationLog` reads the one configured sessions directory, so
+  the default instance reaches the file the channel writes.
 - **`strictest(modes) -> str`** collapses several requests into the one mode a
   shared turn can carry, for a channel whose queue drain answers a burst of
   messages as a single turn under a single key. Ranked on `_STRICTNESS`, which is

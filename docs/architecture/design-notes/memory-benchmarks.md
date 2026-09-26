@@ -337,7 +337,7 @@ not a fallback to the constants.
 
 **One instance, one store.** `longmemeval_s` carries ~40 sessions across 500
 instances. Merged into a single store that overruns `episodic_max` (10 000) and
-`_enforce_episodic_cap` starts tombstoning by `importance ASC, created_at ASC` —
+`_evict_for_episodic_cap` starts tombstoning by `importance ASC, created_at ASC` —
 deleting the oldest evidence first. The measurement would be reporting the eviction
 policy.
 

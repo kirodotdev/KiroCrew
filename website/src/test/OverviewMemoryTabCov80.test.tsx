@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, act, fireEvent } from '@testing-library/react'
+import { screen, waitFor, act, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import userEvent from '@testing-library/user-event'
 
@@ -42,6 +42,13 @@ const { api } = vi.hoisted(() => ({
   },
 }))
 vi.mock('../api/client', () => ({ api }))
+// The failed-session link opens the chat through the router; the destination is
+// what the test reads, so `useNavigate` is the one router hook replaced.
+const mockNavigate = vi.fn()
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+  return { ...actual, useNavigate: () => mockNavigate }
+})
 // Both cards own their own queries and their own tests; here they are seams that
 // report the vector/migration state this tab branches on.
 vi.mock('../pages/overview/VectorMemoryCard', () => ({
@@ -575,7 +582,7 @@ describe('MemoryTab — manual consolidation', () => {
 
     await waitFor(() => expect(api.consolidateMemory).toHaveBeenCalledTimes(2))
     expect(api.consolidateMemory).toHaveBeenCalledWith('zzq-s1', true)
-    expect(await screen.findByText(/Consolidated/)).toBeInTheDocument()
+    expect((await screen.findByText(/Consolidated/)).textContent).toContain('Consolidated 2 sessions')
   })
 
   it('reports a partial failure instead of claiming success', async () => {
@@ -585,25 +592,270 @@ describe('MemoryTab — manual consolidation', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
 
-    const msg = await screen.findByText(/failed/i)
-    expect(msg).toBeInTheDocument()
-    // The warning tone, not the success one.
-    expect((msg.closest('span') as HTMLElement).className).toContain('text-danger')
+    // A failed request is an error, so the failed tally renders through
+    // ErrorNotice (role="alert"): the tally as its lead, a plain-words
+    // localized message that says what happened AND what to do (press the
+    // button again), the failed session named in the footer over the failed
+    // request's own string as secondary detail in the mono font (and the
+    // journal lookup key behind `report`), no hand-off (the tab holds unsaved
+    // drafts), persistent.
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('1/2 sessions (1 failed)')
+    expect(notice.textContent).toContain('The server rejected a summarize request')
+    expect(notice.textContent).toContain('press Summarize now again')
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: zzq-s2')
+    const detail = within(notice).getByTestId('consolidate-failed-detail')
+    expect(detail.textContent).toBe('zzq-consolidate-failed')
+    expect(detail.className).toContain('font-mono')
+    // The raw reply is labelled as the server's own words -- one localized
+    // line, the reply inside it in mono: the backend still says "consolidat*"
+    // where every label here says "Summarize", and without the label the
+    // reader doubted the line concerned the button they pressed.
+    expect(within(notice).getByTestId('consolidate-failed-reply').textContent).toBe("Server's reply: zzq-consolidate-failed")
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.queryByText(/Summarized/, { selector: 'span' })).toBeNull()
   })
 
-  it('says there is nothing to consolidate when no session exists', async () => {
+  it('names the failed session by its title and opens it on click', async () => {
+    // "chat-103" was a dead end: the reader could not find that chat in the
+    // sidebar, which names sessions by title, nor tell whether the text did
+    // anything. The line names the session the way the sidebar does and IS the
+    // way to it -- through the tab's leave guard, since it holds drafts.
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1', title: 'Release notes' }, { key: 'zzq-s2', title: 'Draft reply to Mudhar' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const notice = await screen.findByRole('alert')
+    const line = within(notice).getByTestId('consolidate-failed-session')
+    expect(line.textContent).toBe('1 failed session: Draft reply to Mudhar')
+    expect(line.textContent).not.toContain('zzq-s2')
+    const link = within(line).getByRole('button', { name: 'Draft reply to Mudhar' })
+    expect(link.className).toContain('underline')
+    await userEvent.click(link)
+    expect(mockNavigate).toHaveBeenCalledWith('/chat?sid=zzq-s2')
+    // Opening the session is not a dismissal: the notice stays for the reader
+    // who comes back.
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+  })
+
+  it('names the first failed session and counts the rest', async () => {
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error('zzq-first-failure'))
+      .mockRejectedValueOnce(new Error('zzq-second-failure'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    // The reader was "stuck" on which session failed: the footer names the
+    // first failed request's session key, says how many failed in all, and
+    // shows that first request's reply -- the same request, not a mix.
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('1/3 sessions (2 failed)')
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('2 failed sessions, the first: zzq-s2')
+    expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-first-failure')
+  })
+
+  it('says what the button does, under it, before it is ever pressed', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByRole('button', { name: /Summarize now/i })
+    // Load-bearing for the blind reader: hesitant over "summarize WHAT" without
+    // it, willing to press with it. Static text under the row, not part of the
+    // button's name.
+    const help = screen.getByTestId('summarize-now-help')
+    expect(help.textContent).toBe(
+      'Summarize now writes the facts, decisions and lessons from your conversations into memory; the conversations themselves stay untouched.',
+    )
+    expect(help.closest('button')).toBeNull()
+  })
+
+  it('keeps the failure notice until it is dismissed', async () => {
+    vi.useFakeTimers()
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
+    await act(async () => {})
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  /** The route's refusal for a Temporary or Incognito target, as `j()` rejects it:
+   *  an ApiError-shaped rejection whose raw body carries the backend `code`. A body
+   *  without `mode` is the shape an older backend answered; the tally then keeps
+   *  the either/or wording. */
+  const restrictedTarget = (mode?: 'temporary' | 'incognito') => Object.assign(
+    new Error(`Consolidation is not allowed for a ${mode ?? 'temporary'} session: it leaves no durable memory.`),
+    { status: 403, body: JSON.stringify({ error: `Consolidation is not allowed for a ${mode ?? 'temporary'} session: it leaves no durable memory.`, code: 'restricted_target_session', ...(mode ? { mode } : {}) }) },
+  )
+
+  it('names the one mode every skipped session was in', async () => {
+    // "skipped as temporary or incognito" left the reader unsure whether that
+    // was two kinds of private chat or one thing with two names, and which
+    // theirs was. The route's body names the mode; when every skip shares it,
+    // the tally says so.
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget('incognito'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const msg = await screen.findByText(/Summarized/)
+    expect(msg.textContent).toContain('1/2 sessions (1 skipped: incognito session)')
+    expect(msg.textContent).not.toContain('temporary or incognito')
+  })
+
+  it('pluralizes the named mode and keeps it beside a genuine failure', async () => {
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }, { key: 'zzq-s4' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget('temporary'))
+      .mockRejectedValueOnce(restrictedTarget('temporary'))
+      .mockRejectedValueOnce(Object.assign(new Error('zzq-consolidate-failed'), { status: 500, body: '{"error": "boom"}' }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('1/4 sessions (1 failed)')
+    // The skip is the tally's other half and renders BESIDE the notice, in the
+    // success tone, as the tally it is when it stands alone -- never inside the
+    // danger box, where the reader could not tell whether it was part of the
+    // problem or a separate reassuring note.
+    const skip = screen.getByTestId('consolidate-msg')
+    expect(skip.textContent).toContain('2 skipped: temporary sessions')
+    expect(skip.className).toContain('text-ok')
+    expect(skip.className).not.toContain('text-danger')
+    expect(notice.contains(skip)).toBe(false)
+    expect(notice.textContent).not.toContain('skipped')
+  })
+
+  it('dismissing the failure notice takes the skip tally beside it away too', async () => {
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget())
+      .mockRejectedValueOnce(new Error('zzq-consolidate-failed'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const notice = await screen.findByRole('alert')
+    expect(screen.getByTestId('consolidate-msg').textContent).toContain('1 private session skipped')
+    // The two report one press: the skip beside a failure is not on the
+    // four-second timer (it would vanish while the failure stays), so the
+    // notice's dismiss clears both.
+    await userEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByTestId('consolidate-msg')).toBeNull()
+  })
+
+  it('counts each mode when the skipped sessions were in different modes', async () => {
+    // Mixed modes cannot name one. The lane's reader could not tell what made a
+    // session "temporary" versus "incognito", or which of theirs were which, so
+    // the category leads and the parenthetical counts each mode (the lane's
+    // wording: "2 private sessions skipped (1 temporary, 1 incognito)").
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget('temporary'))
+      .mockRejectedValueOnce(restrictedTarget('incognito'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const msg = await screen.findByText(/Summarized/)
+    expect(msg.textContent).toContain('1/3 sessions — 2 private sessions skipped (1 temporary, 1 incognito)')
+    expect(msg.textContent).not.toContain('temporary or incognito')
+  })
+
+  it('counts each mode with its own number', async () => {
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }, { key: 'zzq-s4' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget('incognito'))
+      .mockRejectedValueOnce(restrictedTarget('temporary'))
+      .mockRejectedValueOnce(restrictedTarget('incognito'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const msg = await screen.findByText(/Summarized/)
+    expect(msg.textContent).toContain('1/4 sessions — 3 private sessions skipped (1 temporary, 2 incognito)')
+  })
+
+  it('counts a restricted_target_session refusal as skipped, not failed', async () => {
+    // `api.sessions` lists the temporary session too; the route refuses it by
+    // design, so the press must read as ok with the skip named, never as a
+    // failure on every "Summarize now". The body names no mode (the shape an
+    // older backend answered), so the parenthetical keeps the either/or wording
+    // -- per-mode counts need every skip's mode.
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget())
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const msg = await screen.findByText(/Summarized/)
+    expect(msg.textContent).toContain('1/2 sessions — 1 private session skipped (temporary or incognito)')
+    expect(msg.textContent).not.toContain('failed')
+    // The success tone, and no error surface for a refusal the user asked for.
+    expect((msg.closest('span') as HTMLElement).className).toContain('text-ok')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps a genuine failure failed beside a skipped refusal', async () => {
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget())
+      .mockRejectedValueOnce(Object.assign(new Error('zzq-consolidate-failed'), { status: 500, body: '{"error": "boom"}' }))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('1/3 sessions (1 failed)')
+    expect(screen.getByTestId('consolidate-msg').textContent).toContain('1 private session skipped (temporary or incognito)')
+    // The refused one is a skip, not a failure: one failed, one skipped, one summarized.
+    expect(within(notice).getByTestId('consolidate-failed-session').textContent).toBe('1 failed session: zzq-s3')
+    expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-consolidate-failed')
+  })
+
+  it('says there is nothing to summarize when no session exists', async () => {
     api.sessions.mockResolvedValue({ sessions: [] })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
-    expect(await screen.findByText(/No sessions to consolidate/i)).toBeInTheDocument()
+    expect(await screen.findByText(/No sessions to summarize/i)).toBeInTheDocument()
     expect(api.consolidateMemory).not.toHaveBeenCalled()
   })
 
-  it('treats an unreadable session list as nothing to do rather than crashing', async () => {
-    api.sessions.mockRejectedValue(new Error('zzq-sessions-unreachable'))
+  it('reports a session list the server would not give as a failure, not as no sessions', async () => {
+    // A gateway that is down or answers 500 used to fall through `sessions: []`
+    // into "start a chat first" with no error surface at all, while a failed
+    // per-session request got the full notice. The list is the press's first
+    // request: its failure is the press's failure.
+    api.sessions.mockRejectedValueOnce(new Error('zzq-list-down'))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
-    expect(await screen.findByText(/No sessions to consolidate/i)).toBeInTheDocument()
+
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('Could not list the sessions to summarize')
+    expect(notice.textContent).toContain('so nothing was summarized')
+    expect(notice.textContent).toContain('press Summarize now again')
+    expect(within(notice).getByTestId('consolidate-failed-detail').textContent).toBe('zzq-list-down')
+    expect(within(notice).getByTestId('consolidate-failed-reply').textContent).toBe("Server's reply: zzq-list-down")
+    // No session to name: the list itself is what failed.
+    expect(within(notice).queryByTestId('consolidate-failed-session')).toBeNull()
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(screen.queryByText(/No sessions to summarize/i)).toBeNull()
+    expect(screen.queryByText(/Summarized/, { selector: 'span' })).toBeNull()
+    expect(api.consolidateMemory).not.toHaveBeenCalled()
+    // Dismissible like every failure; the button is usable again.
+    expect(screen.getByRole('button', { name: /Summarize now/i })).toBeEnabled()
   })
 
   it('clears the outcome message on its own timer', async () => {
@@ -615,6 +867,24 @@ describe('MemoryTab — manual consolidation', () => {
     expect(screen.getByText(/Consolidated/)).toBeInTheDocument()
 
     await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.queryByText(/Consolidated/)).toBeNull()
+  })
+
+  it('keeps a second press\'s tally for its own four seconds', async () => {
+    // The first press's clear timer must not wipe the tally of a press that
+    // landed within four seconds of it.
+    vi.useFakeTimers()
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
+    await act(async () => {})
+    await act(async () => { vi.advanceTimersByTime(3000) })
+    fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
+    await act(async () => {})
+    expect(screen.getByText(/Consolidated/)).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(1500) })
+    expect(screen.getByText(/Consolidated/)).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(3000) })
     expect(screen.queryByText(/Consolidated/)).toBeNull()
   })
 })

@@ -52,10 +52,12 @@ from kiro_crew.embeddings import (
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool, run_with_recall_deadline
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.history_consolidation import resolve_consolidation_target
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.memory import normalize_projects_document
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import isolated_python_argv, kill_and_reap
 from kiro_crew.sandbox import (
@@ -66,6 +68,7 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls, redact_local_paths
+from kiro_crew.workflow_memory import WorkflowMemoryError
 
 from ._shared import (
     _get_memory,
@@ -77,6 +80,7 @@ from ._shared import (
     require_owner_dashboard_request,
     resolve_lesson_memory_store,
     resolve_requested_memory_store,
+    resolve_session_memory_mode,
     vector_memory_for_store,
 )
 from .cron import _recognize_session
@@ -2179,6 +2183,89 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    # The write gate above tests the CALLER's mode; ``key`` names the TARGET.
+    # Without this check a persistent caller consolidating a temporary or
+    # incognito session persists semantic keys and episodic fragments for a
+    # conversation the memory modes promise leaves no durable trace.
+    # The target's mode is resolved the way the other routes resolve a key that
+    # is not the request's own (``_headless_mode_refusal``): the live slot
+    # first -- the authoritative record for an open dashboard tab, which the
+    # consolidator cannot see -- then the persisted execution record and
+    # transcript header for a closed session. Refused BEFORE the running claim,
+    # the message-count read and the retry probe, so a refused target costs no
+    # message-count or retry-probe read and never occupies the key.
+    #
+    # An UNRESOLVABLE mode proceeds. A live session always resolves, and for a
+    # persisted one ``_consolidate`` re-reads the execution record and header of
+    # the exact transcript it consolidates and refuses on either, so proceeding
+    # leaves no write path unguarded -- while refusing here would turn a key
+    # with no transcript at all (a harmless no-op today) or a stem the probe
+    # finds ambiguous into a 403 on every "Consolidate all".
+    #
+    # A channel transcript reaches this route as its filename stem
+    # (``slack_<ts>``: ``list_sessions`` hands out stems), while the thread's
+    # durable incognito/temporary flag is keyed by its live ``slack:<ts>`` key
+    # in the session map. Resolve the stem to that key first, or the flag is
+    # invisible and the thread reads as persistent. Only the session map can
+    # unfold a stem (the ``:``-to-``_`` fold is not reversible); it answers ""
+    # for a stem it does not hold, which keeps the original key. The transcript
+    # itself is still read under ``key``, the name the caller supplied.
+    mode_key = key
+    if is_channel_session_key(key) and state.sessions is not None:
+        unfolded = state.sessions.channel_key_for_stem(key)
+        if isinstance(unfolded, str) and is_channel_session_key(unfolded):
+            mode_key = unfolded
+    try:
+        target_mode: str | None = await resolve_session_memory_mode(state, mode_key)
+    except (OSError, ValueError, WorkflowMemoryError):
+        target_mode = None
+    if target_mode is None or not is_incognito_transcript(target_mode):
+        # The live resolution above covers what only the gateway knows (a
+        # dashboard slot's mode, an inherited subagent mode) and, for a channel
+        # key, answers off the session map alone -- ``persistent`` for every
+        # thread the map does not flag, without probing the transcript. The
+        # durable records are then read by resolve_consolidation_target, the ONE
+        # resolver ``_consolidate`` asks too, under ``key`` exactly as the
+        # consolidator will read it: a thread whose stem the map could not
+        # unfold, or whose entry the map does not hold, is refused on its
+        # header here and not passed to a consolidator that refuses it -- the
+        # 200-for-a-refusal the Memory tab would count as summarized.
+        try:
+            target = await resolve_consolidation_target(
+                key, log=state.conversation_log, sessions=state.sessions
+            )
+        except (UnknownMemoryStore, OSError) as exc:
+            # The record was readable when store_of_session answered above and
+            # is not now (a writer landed a first line the reader cannot decode
+            # between the two reads): the same coded 503 the first read gives,
+            # carrying the resolver's own words, never a 500 -- nothing has been
+            # claimed or dispatched yet.
+            return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
+        if target.restricted is not None:
+            target_mode = target.restricted.mode
+    if target_mode is not None and is_incognito_transcript(target_mode):
+        # ``_read_session_key``, not the raw header: the audit record carries the
+        # same canonical caller as the write gate's records.
+        _sel().log_api_access(
+            caller=_read_session_key(request),
+            operation="memory.consolidate",
+            outcome="denied",
+            source="dashboard",
+            resources=f"restricted_target_session:{target_mode}",
+        )
+        return web.json_response(
+            {
+                "error": f"Consolidation is not allowed for a {target_mode} session: "
+                "it leaves no durable memory.",
+                "code": "restricted_target_session",
+                # The mode as a field, not only inside the sentence: the Memory
+                # tab's tally names the mode a skipped session was in, and must
+                # not parse English prose to learn it. Nothing new is disclosed;
+                # the sentence already carries the word.
+                "mode": target_mode,
+            },
+            status=403,
+        )
     include_history = body.get("include_history", True)
     # Claim the key before the eligibility probe below, which awaits. Testing
     # membership and adding must happen with no yield between them: the probe

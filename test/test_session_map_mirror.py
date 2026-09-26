@@ -824,26 +824,28 @@ class TestAutomaticMirrorOptOut:
         mgr.set_mirror_opt_out(key, False)
         assert mgr.mirror_opt_out(key) is False
 
-    def test_a_session_scoped_flag_does_not_make_an_entry_immortal(self, session_map):
+    def test_an_unlisted_flag_does_not_make_an_entry_immortal(self, session_map):
         """Immortality is opt-in, because prune is the only collection path.
 
-        Slack's ``temporary`` / ``incognito`` flags describe ONE session, not a
-        durable preference. Keeping their entries would leak a row per such
-        thread — and the map is rewritten whole on every mutation, so the leak
-        costs every later write, not just disk.
+        A flag that is neither a durable setting (``_DURABLE_FLAGS``) nor a
+        privacy mode (``_PRIVACY_STRICTNESS``) describes ONE session. Keeping its
+        entry would leak a row per such session — and the map is rewritten whole
+        on every mutation, so the leak costs every later write, not just disk.
+        The privacy modes are the listed exception, for a reason recorded at
+        ``_PRIVACY_STRICTNESS`` and pinned in ``test_session_map_conv_state.py``.
         """
-        for flag in ("temporary", "incognito"):
+        for flag in ("pinned", "muted"):
             key = f"slack:kirocrew:{flag}"
             session_map.set_flag(key, flag, True)
         assert session_map.prune() == 2
-        assert session_map.get_flag("slack:kirocrew:temporary", "temporary") is False
-        assert session_map.get_flag("slack:kirocrew:incognito", "incognito") is False
+        assert session_map.get_flag("slack:kirocrew:pinned", "pinned") is False
+        assert session_map.get_flag("slack:kirocrew:muted", "muted") is False
 
-    def test_a_stale_sid_is_still_collected_when_the_flag_is_session_scoped(self, session_map):
-        """The repair branch is for settings only, not for any flag at all."""
+    def test_a_stale_sid_is_still_collected_when_the_flag_is_unlisted(self, session_map):
+        """The repair branch is for the listed flags only, not for any flag at all."""
         key = "slack:kirocrew:direct:7"
         session_map.set(key, "sid-that-no-longer-exists")
-        session_map.set_flag(key, "temporary", True)
+        session_map.set_flag(key, "pinned", True)
         assert session_map.prune() == 1
         assert key not in session_map._data
 

@@ -537,7 +537,10 @@ class TestVolatileLessonWriteBoundary:
             lesson_store=store,
         )
         with patch("kiro_crew.history_consolidation._HISTORY_LOGGER.info") as info:
-            consolidator._save_lessons([{"rule": self.VOLATILE_IDENTITY, "category": "knowledge"}])
+            consolidator._save_lessons(
+                [{"rule": self.VOLATILE_IDENTITY, "category": "knowledge"}],
+                gate=consolidator._write_gate("dashboard:gate-test"),
+            )
 
         assert store.load_all() == []
         info.assert_not_called()
@@ -729,10 +732,12 @@ class TestDurableModelVersionReferences:
                     {"rule": rule, "category": category}
                     for rule, category in self.MODEL_TOOLING_RULES
                 ],
-            ]
+            ],
+            gate=consolidator._write_gate("dashboard:gate-test"),
         )
         consolidator._save_lessons(
-            [{"rule": rule, "category": category} for rule, category in self.BACKEND_PROCESS_RULES]
+            [{"rule": rule, "category": category} for rule, category in self.BACKEND_PROCESS_RULES],
+            gate=consolidator._write_gate("dashboard:gate-test"),
         )
 
         assert [lesson.rule for lesson in store.load_all()] == [

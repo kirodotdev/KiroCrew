@@ -3278,6 +3278,256 @@ class TestAMidTurnModifierSurvivesTheQueue:
         queued = sessions.queued
         assert queued and queued[-1][2].get("privacy_request") == "incognito"
 
+    @staticmethod
+    def _real_map(sessions, tmp_path, monkeypatch):
+        """Give the sessions double a real ``SessionMap`` so the row is a real record."""
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+        sessions._session_map = SessionMap()
+        return sessions._session_map
+
+    @staticmethod
+    def _audits(monkeypatch) -> list[dict]:
+        from unittest.mock import MagicMock
+
+        from kiro_crew.messaging import privacy_mode
+
+        events: list[dict] = []
+        fake = MagicMock()
+        fake.log_api_access = lambda **kw: events.append(kw)
+        monkeypatch.setattr(privacy_mode, "sel", lambda: fake)
+        return events
+
+    @pytest.mark.asyncio
+    async def test_no_steer_without_a_persisted_row(self, tmp_path, monkeypatch) -> None:
+        """The row is reserved BEFORE the steer, strictly: a map that cannot write it
+        refuses the message -- the steer never runs, the user is told, one denial.
+        Mutation: check the row read-only, steer, then apply best-effort -- the steer
+        runs and the mark holds with no row behind it."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        monkeypatch.setattr(sm, "set_flag", MagicMock(side_effect=OSError("disk full")))
+        events = self._audits(monkeypatch)
+        steered: list[bool] = []
+
+        async def _steer(text: str) -> bool:
+            steered.append(sm.get_flag(key, "incognito"))  # was the row there when we steered?
+            return True
+
+        sessions._gp = SimpleNamespace(
+            supports_steer=True, has_active_turn=lambda: True, steer=_steer
+        )
+        privacy_mode.reset()
+        try:
+            await d.handle_message(_dm("/incognito and also this"))
+        finally:
+            privacy_mode.reset()
+        assert steered == [], f"the message steered without a persisted row: {steered}"
+        assert not privacy_mode.is_incognito(key)
+        assert sessions.queued == [], "a refused message must not be queued either"
+        landed = "".join(text for text, _ in client.sent)
+        assert "NOT processed" in landed and "Incognito mode ON" not in landed
+        assert [e["outcome"] for e in events] == ["denied"]
+        assert events[0]["resources"] == f"private_session_refused:persist_failed:{key}"
+
+    @pytest.mark.asyncio
+    async def test_no_steer_when_the_row_cannot_be_made_durable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The row reached the map's memory but its write failed: the reservation is
+        durable-or-refused, so the steer never runs, nothing is marked or published,
+        the user is told plainly, one denial -- and nothing else in the trail, since
+        the mark (and its ``allowed`` record) now follows the write instead of
+        preceding it. Mutation: return before the map's flush -- the steer runs on
+        a row that only exists in memory (red: the steer was called and the mark
+        holds)."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        monkeypatch.setattr(sm, "aflush", AsyncMock(side_effect=OSError("disk full")))
+        events = self._audits(monkeypatch)
+        steer = AsyncMock(return_value=True)
+        sessions._gp = SimpleNamespace(
+            supports_steer=True, has_active_turn=lambda: True, steer=steer
+        )
+        privacy_mode.reset()
+        try:
+            await d.handle_message(_dm("/incognito and also this"))
+        finally:
+            privacy_mode.reset()
+        steer.assert_not_awaited()
+        assert not privacy_mode.is_incognito(key)
+        assert sm.get_flag(key, "incognito") is False
+        assert sessions.queued == []
+        landed = "".join(text for text, _ in client.sent)
+        assert "could not be written" in landed and "NOT processed" in landed
+        assert [e["outcome"] for e in events] == ["denied"]
+        assert events[-1]["resources"] == f"private_session_refused:persist_failed:{key}"
+
+    @pytest.mark.asyncio
+    async def test_a_declined_steer_whose_release_cannot_reach_disk_retains_the_mode(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The reservation landed durably, the provider declined the steer, and the
+        release's clear cannot be written: the mode is RETAINED on this key -- mark
+        on, flag on, header stamped -- with a ``retained`` record, and the message
+        still takes the queue path with its request. Mutation: drop the mark before
+        the clear is durable -- the key reads persistent with its row still on disk."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        events = self._audits(monkeypatch)
+        real_aflush = sm.aflush
+        flushes: list[str] = []
+
+        async def _aflush_fails_after_the_reservation() -> None:
+            flushes.append("flush")
+            if len(flushes) > 1:  # the first flush lands the reservation; the release's fails
+                raise OSError("disk full")
+            await real_aflush()
+
+        monkeypatch.setattr(sm, "aflush", _aflush_fails_after_the_reservation)
+        sessions._gp = SimpleNamespace(
+            supports_steer=True, has_active_turn=lambda: True, steer=AsyncMock(return_value=False)
+        )
+        privacy_mode.reset()
+        try:
+            await d.handle_message(_dm("/incognito and also this"))
+            assert privacy_mode.is_incognito(key), "the mark was dropped with the clear still owed"
+            assert sm.get_flag(key, "incognito") is True
+            assert [e["outcome"] for e in events] == ["allowed", "retained"]
+            queued = sessions.queued
+            assert queued and queued[-1][2].get("privacy_request") == "incognito"
+        finally:
+            privacy_mode.reset()
+
+    @pytest.mark.asyncio
+    async def test_a_full_map_refuses_before_the_steer(self, tmp_path, monkeypatch) -> None:
+        import kiro_crew.session_map as session_map_mod
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        monkeypatch.setattr(session_map_mod, "PRIVACY_ROW_CAP", 1)
+        sm.set_flag("telegram:kirocrew:direct:other", "incognito", True)
+        events = self._audits(monkeypatch)
+        steer = AsyncMock(return_value=True)
+        sessions._gp = SimpleNamespace(
+            supports_steer=True, has_active_turn=lambda: True, steer=steer
+        )
+        privacy_mode.reset()
+        try:
+            await d.handle_message(_dm("/incognito and also this"))
+        finally:
+            privacy_mode.reset()
+        steer.assert_not_awaited()
+        assert sm.get_flag(key, "incognito") is False
+        assert [e["outcome"] for e in events] == ["denied"]
+        assert "NOT processed" in "".join(text for text, _ in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_declined_steer_releases_the_reservation(self, tmp_path, monkeypatch) -> None:
+        """The row, the mark and the header exist AT the steer; when the provider
+        declines it, all three are taken back (the cap count goes back down) and the
+        message takes the queue path with its request. Mutation: reserve after the
+        steer -- the row is absent when the steer runs (red: ``steered == [False]``);
+        never release -- the row stays (red: ``privacy_flagged_entries``)."""
+        from kiro_crew import history as history_mod
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        events = self._audits(monkeypatch)
+        log = ConversationLog()
+        log.init()
+        with history_mod.allow_on_loop_persist():
+            log.append(key, "user", "a persistent-era turn")
+        steered: list[bool] = []
+
+        async def _steer(text: str) -> bool:
+            steered.append(sm.get_flag(key, "incognito"))
+            return False  # the provider declines the steer
+
+        sessions._gp = SimpleNamespace(
+            supports_steer=True, has_active_turn=lambda: True, steer=_steer
+        )
+        privacy_mode.reset()
+        try:
+            await d.handle_message(_dm("/incognito and also this"))
+            assert steered == [True], "the row must exist when the steer runs"
+            # Released: nothing of the reservation remains, the count is back down.
+            assert not privacy_mode.is_incognito(key)
+            assert sm.get_flag(key, "incognito") is False
+            assert sm.privacy_flagged_entries() == {}
+            assert log.get_metadata(key).get("memory_mode") in (None, "persistent")
+            assert [e["outcome"] for e in events] == ["allowed", "released"]
+            queued = sessions.queued
+            assert queued and queued[-1][2].get("privacy_request") == "incognito"
+        finally:
+            privacy_mode.reset()
+
+    @pytest.mark.asyncio
+    async def test_a_steer_that_raises_retains_the_reservation(self, tmp_path, monkeypatch) -> None:
+        """A steer that RAISES is ambiguous: its bytes reach the backend before
+        the awaited flush that fails, so the message may be in the turn and on
+        its way into a transcript. Fail-closed: the mode stands -- row, mark and
+        header exactly as a landed steer leaves them, one ``allowed`` record --
+        and only an explicit decline (the steer returning False) releases.
+        Mutation: release on the raise (the r36 shape) -- red: the row is
+        cleared while the backend may be recording the message."""
+        from kiro_crew.messaging import privacy_mode
+
+        d, client, sessions = _dispatcher({7})
+        d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
+        key = d._session_key(("direct", "7"))
+        self._busy(d)
+        sm = self._real_map(sessions, tmp_path, monkeypatch)
+        events = self._audits(monkeypatch)
+        sessions._gp = SimpleNamespace(
+            supports_steer=True,
+            has_active_turn=lambda: True,
+            steer=AsyncMock(side_effect=RuntimeError("transport dropped")),
+        )
+        privacy_mode.reset()
+        try:
+            with pytest.raises(RuntimeError):
+                await d.handle_message(_dm("/incognito and also this"))
+            assert privacy_mode.is_incognito(
+                key
+            ), "a raised steer released the mode over a message the backend may be recording"
+            assert sm.get_flag(key, "incognito") is True
+            assert [e["outcome"] for e in events] == ["allowed"]
+        finally:
+            privacy_mode.reset()
+
 
 class TestAutoTitle:
     """A Telegram conversation gets an LLM-generated name, not a truncation.

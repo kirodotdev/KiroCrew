@@ -374,6 +374,7 @@ def test_temporal_rows_do_not_crowd_current_fact_or_episode_context(store):
 def test_consolidator_confidence_is_not_authority_and_bad_item_is_local(store):
     fact(store)
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     writer._write_structured_memory(
         {
             "semantic": [
@@ -385,6 +386,7 @@ def test_consolidator_confidence_is_not_authority_and_bad_item_is_local(store):
         },
         "dashboard:alice",
         store,
+        gate=writer._write_gate("dashboard:alice"),
     )
     assert json.loads(store.get_semantic("user.work_email")["value_json"]) == "old@example.com"
     assert store.get_semantic("project.valid")["source"] == "consolidation:dashboard:alice"
@@ -394,6 +396,7 @@ def test_consolidator_confidence_is_not_authority_and_bad_item_is_local(store):
 @pytest.mark.parametrize("store", ["v2"], indirect=True)
 def test_consolidator_creates_new_fact_with_metadata_without_orphan_proposal(store):
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     writer._write_structured_memory(
         {
             "semantic": [
@@ -412,6 +415,7 @@ def test_consolidator_creates_new_fact_with_metadata_without_orphan_proposal(sto
         },
         "dashboard:alice",
         store,
+        gate=writer._write_gate("dashboard:alice"),
     )
     row = store.get_semantic("user.new_contact")
     assert json.loads(row["value_json"]) == "new@example.com"
@@ -518,12 +522,14 @@ def test_controlled_update_cases_require_current_user_evidence(store, case):
         case, "old@example.com"
     )
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     writer._write_structured_memory(
         {"semantic": [item]},
         "dashboard:alice",
         store,
         snapshot={"user.work_email": before},
         messages=[message],
+        gate=writer._write_gate("dashboard:alice"),
     )
     assert json.loads(store.get_semantic("user.work_email")["value_json"]) == expected
 
@@ -621,6 +627,7 @@ def test_model_quote_cannot_strip_actual_user_message_context(store, content, qu
         is None
     )
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     writer._write_structured_memory(
         {
             "semantic": [
@@ -636,6 +643,7 @@ def test_model_quote_cannot_strip_actual_user_message_context(store, content, qu
         store,
         snapshot={"user.work_email": before},
         messages=messages,
+        gate=writer._write_gate("dashboard:alice"),
     )
     assert json.loads(store.get_semantic("user.work_email")["value_json"]) == "old@example.com"
     assert meta.get_record_metadata(store.db, "key:user.work_email")["revision"] == 1
@@ -660,6 +668,7 @@ def test_model_quote_cannot_strip_actual_user_message_context(store, content, qu
 def test_complete_affirmative_user_statement_still_authorizes_correction(store, content, quote):
     before = fact(store)
     writer = object.__new__(HistoryConsolidator)
+    writer._sessions = None  # read by the write gate every write goes through
     writer._write_structured_memory(
         {
             "semantic": [
@@ -677,6 +686,7 @@ def test_complete_affirmative_user_statement_still_authorizes_correction(store, 
         messages=[
             {"role": "user", "content": content, "ts": datetime.now(timezone.utc).isoformat()}
         ],
+        gate=writer._write_gate("dashboard:alice"),
     )
     assert json.loads(store.get_semantic("user.work_email")["value_json"]) == "new@example.com"
     metadata = meta.get_record_metadata(store.db, "key:user.work_email")

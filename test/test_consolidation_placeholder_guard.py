@@ -104,6 +104,17 @@ class TestIsPlausibleMemoryFile:
         )
 
 
+def _written_once_with(writer: MagicMock, content: str, *, expected_baseline: str) -> None:
+    """The writer was called once with exactly these arguments plus the write
+    gate's ``admit`` hook (the store asks it under its lock ahead of the write),
+    which is checked by kind: it is a bound partial the test cannot spell."""
+    writer.assert_called_once()
+    assert writer.call_args.args == (content,)
+    kwargs = dict(writer.call_args.kwargs)
+    assert callable(kwargs.pop("admit"))
+    assert kwargs == {"expected_baseline": expected_baseline}
+
+
 def _make_consolidator(memory: MagicMock) -> HistoryConsolidator:
     log = MagicMock()
     log.snapshot_for_consolidation.return_value = (
@@ -166,11 +177,11 @@ class TestConsolidatePlaceholderGuard:
             }
             await c._consolidate("k", include_history=False)
 
-        memory.write_preferences.assert_called_once_with(
-            new_prefs, expected_baseline="# User Preferences\n\n- old\n"
+        _written_once_with(
+            memory.write_preferences, new_prefs, expected_baseline="# User Preferences\n\n- old\n"
         )
-        memory.write_projects.assert_called_once_with(
-            new_projects, expected_baseline="# Active Projects\n\n## Old\n"
+        _written_once_with(
+            memory.write_projects, new_projects, expected_baseline="# Active Projects\n\n## Old\n"
         )
 
     @pytest.mark.asyncio
@@ -186,7 +197,7 @@ class TestConsolidatePlaceholderGuard:
             llm.return_value = {"projects_update": trimmed}
             await c._consolidate("k", include_history=False)
 
-        memory.write_projects.assert_called_once_with(trimmed, expected_baseline=bloated)
+        _written_once_with(memory.write_projects, trimmed, expected_baseline=bloated)
 
     @pytest.mark.asyncio
     async def test_omitted_update_keys_write_nothing(self):
