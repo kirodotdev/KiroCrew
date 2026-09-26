@@ -393,6 +393,22 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("Kp7mQ2xR" * 12),
     ),
+    # Todoist (Connections registry, launch-gated). Endpoint is the
+    # ``authorization_endpoint`` from https://todoist.com's RFC 8414 document,
+    # reached via RFC 9728 discovery from https://ai.todoist.net/mcp. The scope
+    # pair is the one the registry entry requests, space-delimited per RFC 6749
+    # section 3.3.
+    (
+        "todoist-mcp",
+        "https://todoist.com/oauth/authorize"
+        "?client_id=tdd_0123456789abcdef0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=data%3Aread_write%20data%3Adelete"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

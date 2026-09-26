@@ -945,6 +945,7 @@ mounts or gates on it.
 | Postman | developer-tools | 2 | yes / yes | installs `/minimal` (no delete tools); no scope picker | gated | manual launch-gate check |
 | Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
 | Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
+| Todoist | project-management | 2 | yes / yes | none — the server lists only `data:read_write`; the entry adds `data:delete` and leaves out `project:delete` | gated | manual launch-gate check, including two sessions held past the one-hour token expiry (refresh tokens rotate on every use) |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so

@@ -313,6 +313,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.webflow.com", "/oauth/authorize"),
         ("mcp.zapier.com", "/oauth/authorize"),
         ("netlify-mcp.netlify.app", "/oauth-server/auth"),
+        ("todoist.com", "/oauth/authorize"),
         ("www.dropbox.com", "/oauth2/authorize"),
         # Two issuers advertise a consent page on a different host than the
         # issuer itself: Figma's MCP authorization server (issuer api.figma.com)
