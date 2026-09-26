@@ -2136,9 +2136,16 @@ class SessionManager:
             parent_session_key, agent=agent
         )
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None:
-        """Release the shared companion runtime for a parent."""
-        await self._allocation_boundary().release_subagent_runtime(parent_session_key)
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected_generation: int | None = None
+    ) -> None:
+        """Release the shared companion runtime for a parent.
+
+        Pass ``expected_generation`` to skip the release when a successor already owns the key.
+        """
+        await self._allocation_boundary().release_subagent_runtime(
+            parent_session_key, expected_generation=expected_generation
+        )
 
     async def _get_or_bootstrap_run_runtime(
         self, parent_session_key: str, *, agent: str | None = None, cwd: str | None = None
