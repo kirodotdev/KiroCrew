@@ -38,6 +38,10 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
 )
+from kiro_crew.session_compaction_methods import (
+    COMPACTION_METHOD_NATIVE,
+    ROTATION_HISTORY_FATE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,26 @@ logger = logging.getLogger(__name__)
 CHANNEL_COMPACT_NOTICE = (
     "Context reached {pct:.0f}% and was auto-compacted. Earlier turns are now a "
     "summary; this conversation continues where it left off."
+)
+#: A rotation (``soft``, ``shake``) is a fresh session carrying the recent turns:
+#: the earlier ones are not a summary, they are gone from the agent's memory or
+#: condensed into it, and the notice has to say so or the channel user reads the
+#: line above and expects a memory the agent does not have. It speaks of memory,
+#: not of the messages: those stay in the channel untouched.
+CHANNEL_COMPACT_ROTATED_NOTICE = (
+    "Context reached {pct:.0f}% and the session was rotated ({method}). The agent "
+    "remembers only the recent turns; earlier ones are {fate}. This conversation "
+    "continues where it left off."
+)
+#: The rotation that dropped nothing: a ``shake`` whose seed writer found the tail
+#: covers every row recycles as ``soft`` and arrives with ``all_kept=True``. The
+#: line above would tell this user the earlier turns are gone from the agent's
+#: memory when every one of them was carried into the fresh session, so this one
+#: names the method and says that, and nothing about recent turns.
+CHANNEL_COMPACT_ROTATED_WHOLE_NOTICE = (
+    "Context reached {pct:.0f}% and the session was rotated ({method}). The agent "
+    "carried the whole conversation into the fresh session. This conversation "
+    "continues where it left off."
 )
 CHANNEL_COMPACT_FAILED_NOTICE = (
     "Context reached {pct:.0f}% but auto-compact failed. It retries after a "
@@ -89,8 +113,10 @@ def notice_text(
     *,
     success: bool,
     outcome: str = COMPACT_OUTCOME_COMPACTED,
+    method: str = COMPACTION_METHOD_NATIVE,
+    all_kept: bool = False,
 ) -> str:
-    """Render the notice for *namespace* at *pct* usage.
+    """Render the notice for *namespace* at *pct* usage after *method* ran.
 
     ``outcome`` says WHICH arm ran, and a channel needs it for the same reason the
     dashboard does: a recycle is a success to the caller, so ``success`` alone
@@ -100,12 +126,24 @@ def notice_text(
     backend cannot compact -- a kiro-cli session whose in-place ``/compact`` merely
     timed out reaches the other.
 
+    A rotation method (``soft``, ``shake``) is a recycle too, on purpose, so
+    ``method`` is read first: its notice names the method and what became of the
+    pre-tail history, which the restart wordings cannot know. ``all_kept`` is read
+    before that fate: the one ``soft`` rotation that dropped nothing (the seed
+    writer found the tail covers every row) gets the whole-conversation line, not
+    ``soft``'s loss.
+
     ``new_cmd`` is threaded into both restart notices because it is the one action a
     user can take afterwards, and it is already per-namespace.
     """
     if not success:
         compact_cmd, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
         return CHANNEL_COMPACT_FAILED_NOTICE.format(pct=pct, cmd=compact_cmd, new_cmd=new_cmd)
+    fate = ROTATION_HISTORY_FATE.get(method)
+    if fate is not None and all_kept:
+        return CHANNEL_COMPACT_ROTATED_WHOLE_NOTICE.format(pct=pct, method=method)
+    if fate is not None:
+        return CHANNEL_COMPACT_ROTATED_NOTICE.format(pct=pct, method=method, fate=fate)
     if outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
         _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
         return CHANNEL_RESTART_UNCOMPACTABLE_NOTICE.format(pct=pct, new_cmd=new_cmd)
@@ -122,6 +160,8 @@ async def deliver_channel_compaction_notice(
     *,
     success: bool,
     outcome: str = COMPACT_OUTCOME_COMPACTED,
+    method: str = COMPACTION_METHOD_NATIVE,
+    all_kept: bool = False,
 ) -> None:
     """Post the auto-compact notice into the conversation behind *key*.
 
@@ -135,10 +175,21 @@ async def deliver_channel_compaction_notice(
         return
     if namespace == SLACK_NAMESPACE:
         await _deliver_slack(
-            state, key, notice_text(namespace, pct, success=success, outcome=outcome)
+            state,
+            key,
+            notice_text(
+                namespace,
+                pct,
+                success=success,
+                outcome=outcome,
+                method=method,
+                all_kept=all_kept,
+            ),
         )
         return
-    await _deliver_via_transport(state, key, pct, success=success, outcome=outcome)
+    await _deliver_via_transport(
+        state, key, pct, success=success, outcome=outcome, method=method, all_kept=all_kept
+    )
 
 
 def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
@@ -210,6 +261,8 @@ async def _deliver_via_transport(
     *,
     success: bool,
     outcome: str = COMPACT_OUTCOME_COMPACTED,
+    method: str = COMPACTION_METHOD_NATIVE,
+    all_kept: bool = False,
 ) -> None:
     """Send through the governed cross-surface ladder (Discord and friends).
 
@@ -249,7 +302,14 @@ async def _deliver_via_transport(
     if target is None:
         return
     resolved, transport = target
-    text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
+    text = notice_text(
+        resolved.channel_type,
+        pct,
+        success=success,
+        outcome=outcome,
+        method=method,
+        all_kept=all_kept,
+    )
     try:
         await transport.send_message(resolved.channel_id, text, thread_id=resolved.thread_id)
     except Exception:

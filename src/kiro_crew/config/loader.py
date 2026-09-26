@@ -2969,6 +2969,10 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             lo=AUTOCOMPACT_PCT_MIN,
             hi=AUTOCOMPACT_PCT_MAX,
         ),
+        # The compaction key resolves through the sections module handle for the
+        # same reason as `empty_response_max_continues` above: this module's
+        # top-level names are a frozen facade, so no new re-export.
+        compaction_method=_sections._compaction_method(session_data),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,

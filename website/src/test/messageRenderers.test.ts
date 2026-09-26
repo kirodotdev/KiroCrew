@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
+import { COMPACTION_SEED_ROLE } from '../pages/chat/groupDisplayItems'
 import {
   defaultMessageRenderers,
   GROUPED_ROLES,
@@ -66,11 +67,19 @@ describe('default registry reproduces the old role chain', () => {
   it('draws nothing for the undrawn roles, but still CLAIMS them', () => {
     // A grouped or lifecycle-only role has no row of its own. Both facts matter:
     // an entry exists (so deleting it is caught here), and it renders null.
-    for (const role of ['thinking', 'system', 'done', 'queued']) {
+    for (const role of ['thinking', 'system', 'done', 'queued', COMPACTION_SEED_ROLE]) {
       const entry = resolveRenderer(msg(role), defaultMessageRenderers)
       expect(entry?.id, role).toBe('undrawn')
       expect(entry!.render(msg(role), {} as never), role).toBeNull()
     }
+    // The compaction seed row as a reload delivers it: role plus the record in
+    // meta. Its content is the digest the model replays; unclaimed, a host's
+    // fallback would print it.
+    const seed: ChatMessage = {
+      role: COMPACTION_SEED_ROLE, content: 'digest of dropped rows', cls: '',
+      meta: { kind: 'compaction_seed', method: 'shake', dropped_rows: 12 },
+    }
+    expect(resolveRenderer(seed, defaultMessageRenderers)?.id).toBe('undrawn')
     const file = resolveRenderer(msg('file'), defaultMessageRenderers)
     expect(file?.id).toBe('file')
     expect(file!.render(msg('file'), {} as never)).toBeNull()

@@ -152,6 +152,9 @@ describe('chat role parity (ChatPage consumes the app-sdk registry)', () => {
     const undrawn = rendererBlock().match(/id: 'undrawn',\s*\n\s*roles: \[([^\]]*)\]/)
     expect(undrawn).not.toBeNull()
     expect(undrawn![1]).not.toMatch(/'system'|'done'/)
+    // ...but it MUST claim the compaction seed row (model-facing digest a
+    // reload brings back): unclaimed, the bubble fallback would print it.
+    expect(undrawn![1]).toContain('COMPACTION_SEED_ROLE')
   })
 
   it('every ChatPage host entry overrides a default or is a documented page-only entry', () => {

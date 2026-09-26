@@ -33,6 +33,17 @@ export const GROUPABLE = new Set(['permission'])
  */
 export const REASONING_ROLES = ['thinking'] as const
 
+/**
+ * Transcript role of the row a rotation compaction method leaves behind for the
+ * successor session (`session_compaction_methods.SEED_ROLE` on the backend): its
+ * content is the digest of the dropped history, written for the model that
+ * replays the transcript, not for a reader. Every registry claims it UNDRAWN.
+ * Claiming matters: a role no renderer claims falls to ChatPage's bubble
+ * fallback, which would print the digest as a message after a reload. A
+ * collapsed marker for it is follow-up work.
+ */
+export const COMPACTION_SEED_ROLE = 'compaction'
+
 const REASONING_ROLE_SET: ReadonlySet<string> = new Set(REASONING_ROLES)
 
 /** Is this message a reasoning trace (regardless of whether it has content)?

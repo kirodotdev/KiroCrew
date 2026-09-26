@@ -854,6 +854,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.compaction-method",
+    "label": "Compaction Method",
+    "labelKey": "pages.settings.chatPanel.compaction_method",
+    "description": "What runs at the Auto-Compact Threshold. A method that would not free enough context hands off, Shake to Soft, Soft to Native; where Shake cannot write its digest, as in a channel, Native runs",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "session.compaction_method"
+  },
+  {
     "id": "chat.completion-event-characters",
     "label": "Completion Event Characters",
     "labelKey": "pages.settings.chatPanel.completion_event_characters",

@@ -167,7 +167,7 @@ class TestSpawnCounterPlacement:
 
 class TestCompactions:
     @staticmethod
-    def _fire(success, *, recycling=False):
+    def _fire(success, *, recycling=False, rotating=False):
         """Drive the production funnel with the minimum state it reads."""
         import asyncio
         from types import SimpleNamespace
@@ -186,18 +186,28 @@ class TestCompactions:
         # reports as different outcomes. This case is the FAILED one, so the set is
         # empty -- present rather than absent, because the real ``CompactionState``
         # always has it and a double without it would pass by accident.
-        stub.state = SimpleNamespace(on_compacted=None, uncompactable_recycles=set())
+        stub.state = SimpleNamespace(
+            on_compacted=None,
+            uncompactable_recycles=set(),
+            rotating={"k": "soft"} if rotating else {},
+        )
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
         )
 
     def test_a_compaction_verdict_is_counted(self, rec):
         self._fire(True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": True}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
+            "method": "native",
+        }
 
     def test_a_failed_compaction_is_still_an_attempt(self, rec):
         self._fire(False)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "method": "native",
+        }
 
     def test_a_failed_compact_that_recycles_is_not_counted_successful(self, rec):
         """The counter's success is not the callback's success.
@@ -212,7 +222,24 @@ class TestCompactions:
         this test is what notices.
         """
         self._fire(True, recycling=True)
-        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": False,
+            "method": "native",
+        }
+
+    def test_an_intentional_rotation_is_counted_successful(self, rec):
+        """A rotation method recycles ON PURPOSE through the same primitive.
+
+        The marker alone cannot tell it from a replaced provider; ``rotating``
+        is set for the same span and is what restores the success.
+        """
+        self._fire(True, recycling=True, rotating=True)
+        # The method tag names the rotation, so a rotation recycling every turn
+        # is its own series rather than a rise in native successes.
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
+            "method": "soft",
+        }
 
     def test_a_surface_with_no_callback_is_still_counted(self, rec):
         """The early return below the emit would otherwise drop those surfaces."""

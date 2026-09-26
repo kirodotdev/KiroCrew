@@ -152,6 +152,59 @@ class TestNoticeText:
         assert "92%" in text
         assert "auto-compacted" in text
 
+    def test_rotation_copy_names_the_method_and_the_history_fate(self) -> None:
+        """A rotation is not a summary: the channel user is told the earlier turns
+        were dropped (soft) or condensed into the agent's memory (shake), and
+        which method ran. A
+        rotation is a recycle to the outcome arm too, so it arrives as
+        ``recycled``; ``method`` is read first, or the restart wording would tell
+        the user a compaction failed."""
+        soft = notice_text("discord", 70.0, success=True, outcome="recycled", method="soft")
+        shake = notice_text("discord", 70.0, success=True, outcome="recycled", method="shake")
+        # The notice speaks of the agent's memory, not of the messages, which
+        # stay in the channel untouched; "earlier turns dropped" read as a
+        # deletion.
+        for text in (soft, shake):
+            assert "remembers only the recent turns" in text
+            assert "dropped" not in text and "digested" not in text
+        assert "rotated (soft)" in soft and "earlier ones are gone from its memory" in soft
+        assert "rotated (shake)" in shake and "earlier ones are condensed into its memory" in shake
+        assert "kept as a digest" not in shake
+        assert "summary" not in soft and "summary" not in shake
+        assert "restarted" not in soft and "restarted" not in shake
+        # The default is the native line, unchanged for every caller that does not
+        # name a method.
+        assert notice_text("discord", 70.0, success=True, method="native") == notice_text(
+            "discord", 70.0, success=True
+        )
+
+    def test_kept_all_rotation_copy_says_the_whole_conversation_was_carried(self) -> None:
+        """A ``shake`` whose seed writer found the tail covers every row recycles
+        as ``soft`` and arrives with ``all_kept=True``: ``soft`` is what ran, but
+        nothing left the agent's memory, so the soft line's "earlier ones are
+        gone" would be false. The notice names the method and says the whole
+        conversation was carried, with no talk of recent turns. The signal is
+        off for every other shape, whose copy is unchanged."""
+        kept_all = notice_text(
+            "discord", 70.0, success=True, outcome="recycled", method="soft", all_kept=True
+        )
+        soft = notice_text("discord", 70.0, success=True, outcome="recycled", method="soft")
+        shake = notice_text("discord", 70.0, success=True, outcome="recycled", method="shake")
+
+        assert kept_all.startswith("Context reached 70% and the session was rotated (soft).")
+        assert "carried the whole conversation into the fresh session" in kept_all
+        for word in ("gone", "condensed", "recent turns", "remembers only", "summary", "restarted"):
+            assert word not in kept_all, word
+        assert "continues where it left off" in kept_all
+        assert all(ord(ch) < 0x2190 for ch in kept_all), kept_all
+        assert "earlier ones are gone from its memory" in soft
+        assert "earlier ones are condensed into its memory" in shake
+        assert "carried the whole conversation" not in soft
+        assert "carried the whole conversation" not in shake
+        assert notice_text("discord", 70.0, success=True, method="native", all_kept=True) == (
+            notice_text("discord", 70.0, success=True)
+        )
+
     def test_failure_copy_quotes_bang_commands_on_discord(self) -> None:
         text = notice_text("discord", 90.0, success=False)
         assert "!compact" in text
