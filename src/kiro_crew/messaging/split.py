@@ -593,7 +593,6 @@ def split_markdown_safe(
     *,
     reserve: int = 0,
     redactor: Callable[[str], str] | None = None,
-    stable: bool = False,
 ) -> list[str]:
     """Split *text* into chunks of at most ``limit - reserve`` characters.
 
@@ -641,19 +640,6 @@ def split_markdown_safe(
     its text pays one scan and keeps its bytes.
     """
     if redactor is not None:
-        if stable:
-            # PREFIX-STABLE: redact the whole text, then cut at the caller's own
-            # budget and nowhere else. A streaming caller re-splits its growing
-            # body every frame and treats all but the last chunk as delivered, so
-            # it needs chunk i to be decided by the text before it and nothing
-            # later. Searching for a safer budget reads the WHOLE body, so text
-            # arriving later can move a boundary under a message already sent --
-            # which a count of delivered chunks cannot detect and no later frame
-            # can take back. Such a caller grades its own seam before it treats a
-            # chunk as final, and holds one it cannot yet vouch for.
-            return split_markdown_safe(
-                redact_for_display(text, redactor)[0], limit, reserve=reserve
-            )
         # The recursive cut passes no redactor, so this runs one level deep.
         # ``reserve`` travels with it, and is the floor of the budget search: a
         # budget it consumes whole would return the text unsplit.

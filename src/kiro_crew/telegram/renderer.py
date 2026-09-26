@@ -828,6 +828,27 @@ def _split_markdown_table_aware(text: str, rendered_limit: int, rich_limit: int)
     """
     if _FENCE_LINE_RE.search(text):
         return _split_markdown_bounded(text, rendered_limit)
+    kept = _table_aware_blocks(text, rendered_limit, rich_limit)
+    repaired = repaired_for_delivery(text, kept, _default_redactor)
+    if repaired is None:
+        return kept
+    # The repaired body goes back through the SAME assembly, not the prose
+    # splitter: that one knows nothing of ``_table_blocks`` or ``rich_limit``, and
+    # both callers only reach here with text already past their budget, so it would
+    # cut the table run mid-body and strand header-less rows. Repairing again is
+    # neither needed nor sound -- ``repaired_for_delivery`` answers only with text
+    # whose every whitespace run may be removed and still read clean, so no
+    # boundary of a second assembly can rejoin what the first one severed.
+    return _table_aware_blocks(repaired, rendered_limit, rich_limit)
+
+
+def _table_aware_blocks(text: str, rendered_limit: int, rich_limit: int) -> list[str]:
+    """The block assembly :func:`_split_markdown_table_aware` cuts and grades.
+
+    Split out so the graded sequence and the repaired one are assembled by the
+    same code: a repair that re-entered a different splitter would be measured
+    against budgets this one never used.
+    """
     out: list[str] = []
     for is_table, lines in _table_blocks(text):
         block = "\n".join(lines)
@@ -839,11 +860,7 @@ def _split_markdown_table_aware(text: str, rendered_limit: int, rich_limit: int)
                 out.extend(_split_table_rows(safe_block.split("\n"), rich_limit))
         elif block.strip():
             out.extend(_split_markdown_bounded(block, rendered_limit))
-    kept = [c for c in out if c.strip()]
-    repaired = repaired_for_delivery(text, kept, _default_redactor)
-    if repaired is None:
-        return kept
-    return _split_markdown_bounded(repaired, rendered_limit)
+    return [c for c in out if c.strip()]
 
 
 def _strip_md(text: str) -> str:

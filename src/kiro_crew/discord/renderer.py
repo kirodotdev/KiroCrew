@@ -84,10 +84,11 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
+    repaired_after_a_sent_tail,
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 from kiro_crew.messaging.status_reactions import (
     PHASE_QUEUED,
     PHASE_THINKING,
@@ -359,7 +360,7 @@ def build_model_components(choices: Sequence[tuple[str, str]], current: str) -> 
     return rows
 
 
-def _fit_platform_cap(text: str) -> list[str]:
+def _fit_platform_cap(text: str, limit: int = DISCORD_MAX_TEXT) -> list[str]:
     """Slice *text* into payloads Discord's message API will accept whole.
 
     ``split_markdown_safe`` budgets every chunk against :meth:`_limit`, with one
@@ -379,7 +380,7 @@ def _fit_platform_cap(text: str) -> list[str]:
     render badly, where truncation keeps neither. Nothing here re-derives fence
     grammar — the splitter owns that, and this only bounds what reaches the API.
     """
-    return chunk_text(text, DISCORD_MAX_TEXT) or [text]
+    return chunk_text(text, limit) or [text]
 
 
 class DiscordApprovalDecider:
@@ -667,6 +668,13 @@ class DiscordRenderer(Renderer):
         # text pushed (skip no-op edits), and the edit throttle timestamp.
         self._stream_mid: str | None = None
         self._shown = ""
+        # The message the reader last saw, whole, so the next thing shown can be
+        # graded against it. A rotation seals a bubble whose tail is a credential
+        # PREFIX -- matching nothing, so every scan passes it -- and the characters
+        # completing the key arrive in the next bubble, where the reader scrolling
+        # the two reads it whole while neither message holds it. Written only once
+        # a delivery confirms, in ``_record_sent``.
+        self._sent_tail = ""
         # Delivery accounting for `delivery_failed`: how many seals were tried
         # and how many actually reached Discord.
         self._seals_attempted = 0
@@ -938,7 +946,9 @@ class DiscordRenderer(Renderer):
             if self._uploads_enabled() and self._segment_uploads_safe:
                 if await asyncio.to_thread(protected_ref_spans, candidate):
                     return
-            chunks = await asyncio.to_thread(split_markdown_safe, candidate, limit)
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, candidate, limit, redactor=_redact_all
+            )
             for chunk in chunks[:-1]:
                 self._buf = []
                 self._delivery_text = chunk
@@ -959,11 +969,15 @@ class DiscordRenderer(Renderer):
                 self._delivery_text = None
                 return
             split_source, tail = raw[:hold_at], raw[hold_at:]
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, split_source, limit, redactor=_redact_all
+            )
             sealed = chunks
         else:
             split_source = raw
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, split_source, limit, redactor=_redact_all
+            )
             sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
             probe_at = len(prefix := raw.removesuffix(tail))
             probe = prefix + "![x](/tmp/x.png)" + " ".join(re.findall(r"`+", prefix)) + tail
@@ -1032,6 +1046,11 @@ class DiscordRenderer(Renderer):
         # ``TurnDriver`` applies — and the display pass exists precisely for the
         # credential that is invisible until Discord renders the markdown away.
         body = _redact_transformed(body)
+        # The live bubble is a second sink, not the same message: after a rotation
+        # seals a bubble ending in a credential prefix, this frame is where the
+        # completing characters first reach the reader. Graded here for that reason,
+        # and recording nothing -- the edit below can fail.
+        body = self._seam_safe(body)
         footer = f"-# 🔧 {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
@@ -1133,6 +1152,33 @@ class DiscordRenderer(Renderer):
                 exc_info=True,
             )
 
+    def _seam_safe(self, text: str) -> str:
+        """*text* with its seam to the message above repaired.
+
+        The one grader. Callers only show text; none of them carries a seam rule of
+        its own, which is what keeps a new sealing or streaming path from shipping
+        an open seam.
+
+        It does NOT record the predecessor. What the next thing shown must be graded
+        against is the message the reader can SEE, and text this returns has not been
+        sent yet: every send and edit path below can fail, and recording here would
+        make unsent text the predecessor, after which the next delivered message
+        gives up a leading span for a key nobody ever read. ``_record_sent`` is
+        called once a delivery path confirms.
+        """
+        repaired = repaired_after_a_sent_tail(self._sent_tail, text, _redact_all)
+        return repaired if repaired is not None else text
+
+    def _record_sent(self, text: str) -> None:
+        """Remember *text* as the message the next seam is graded against.
+
+        Called only after a send or edit reports success, and with the text that
+        actually went out -- which is not always the text ``_seam_safe`` returned: a
+        payload over the platform cap is cut again after that point, so the last
+        piece shown is what the reader is looking at.
+        """
+        self._sent_tail = text
+
     async def _land_sealed(
         self,
         text: str,
@@ -1148,6 +1194,7 @@ class DiscordRenderer(Renderer):
                 ):
                     self._seals_landed += 1
                     self._tally_redactions(text)
+                    self._record_sent(text)
                     return True
                 # A missing live message falls through to a fresh send.
                 self._stream_mid = None
@@ -1160,6 +1207,7 @@ class DiscordRenderer(Renderer):
             if landed:
                 self._seals_landed += 1
                 self._tally_redactions(text)
+                self._record_sent(text)
             return landed
         except Exception:
             logger.warning("discord: sealing the segment failed", exc_info=True)
@@ -1214,10 +1262,24 @@ class DiscordRenderer(Renderer):
                 return
             text = "…"
 
+        # Graded against the message above before anything is cut: this sink is the
+        # one place a shown segment's text is decided, so it is the one place that
+        # has to know what the reader is already looking at.
+        text = await asyncio.to_thread(self._seam_safe, text)
         chunks = [text]
         if len(text) > DISCORD_MAX_TEXT:
-            chunks = await asyncio.to_thread(split_markdown_safe, text, DISCORD_MAX_TEXT)
-        chunks = [part for chunk in chunks for part in _fit_platform_cap(chunk)]
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, text, DISCORD_MAX_TEXT, redactor=_redact_all
+            )
+        # Bounded and graded rather than flattened blind: the credential-aware cut
+        # above can DECLINE to cut and answer with the text whole, and this cap
+        # truncates a larger payload after every scan has run. ``_fit_platform_cap``
+        # is handed in as the cutter because it is the last resort for exactly the
+        # chunk the fence-aware splitter cannot get under the cap, and the grade
+        # then covers the boundaries that blind cut creates.
+        chunks = await asyncio.to_thread(
+            bounded_for_delivery, chunks, DISCORD_MAX_TEXT, _redact_all, _fit_platform_cap
+        )
         for index, chunk in enumerate(chunks):
             part_files = files if index == 0 else []
             final = index == len(chunks) - 1
@@ -1239,10 +1301,22 @@ class DiscordRenderer(Renderer):
         )
         try:
             source = _redact_transformed(source)
+            # Graded like every other shown text, and for the reason this branch
+            # exists: it is reached when the files-bearing chunk fails to land, an
+            # ordinary transient, and what it posts sits under a message already
+            # sealed. Without this the recovery ships the un-repaired suffix of a
+            # credential whose prefix is in that sealed message, and the record
+            # below then makes the recovery chunk the next seam's predecessor as
+            # though it had been graded.
+            source = await asyncio.to_thread(self._seam_safe, source)
             recovery = [source]
             if len(source) > DISCORD_MAX_TEXT:
-                recovery = await asyncio.to_thread(split_markdown_safe, source, DISCORD_MAX_TEXT)
-            recovery = [part for chunk in recovery for part in _fit_platform_cap(chunk)]
+                recovery = await asyncio.to_thread(
+                    split_markdown_safe, source, DISCORD_MAX_TEXT, redactor=_redact_all
+                )
+            recovery = await asyncio.to_thread(
+                bounded_for_delivery, recovery, DISCORD_MAX_TEXT, _redact_all, _fit_platform_cap
+            )
             landed_any = False
             for index, chunk in enumerate(recovery):
                 if await self._client.send_message(
@@ -1252,6 +1326,7 @@ class DiscordRenderer(Renderer):
                 ):
                     landed_any = True
                     self._tally_redactions(chunk)
+                    self._record_sent(chunk)
             if landed_any:
                 # This recovery IS a delivery, so it has to answer to
                 # `delivery_failed`. Only the LANDED count moves: the seal that
