@@ -29,9 +29,6 @@ test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_run
 test/test_acp_runtime.py::test_periodic_sweep_skips_protected_runtime_pid
 test/test_agent.py::TestAtomicJsonWrite::test_new_file_gets_0o644
 test/test_agent.py::TestAtomicJsonWrite::test_preserves_existing_permissions
-test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_honors_custom_dir
-test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_non_executable_emits_sel_audit
-test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_skips_non_executable
 test/test_agent.py::TestResolveKirocrewBin::test_accepts_any_readable_bin_from_walk
 test/test_agent.py::TestResolveKirocrewBin::test_accepts_apollo_binary_with_envroot
 test/test_agent.py::TestResolveKirocrewBin::test_accepts_wrapper_bin_from_walk
