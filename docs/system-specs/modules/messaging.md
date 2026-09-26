@@ -3957,13 +3957,49 @@ use yet rather than a limit: interactive `template_card` buttons and their
 `/101032` says the interactive card types require a configured callback URL, which
 is in tension with long-connection mode, and declaring a widget capability that
 cannot be verified against a live bot is the exact dishonesty
-`test_capability_ledger.py` exists to prevent); outbound media upload (the 3-step
-chunked `aibot_upload_media_*` sequence, which needs request/response correlation
-the client does not yet have, so `files_outbound` stays `False` and an image
-reference keeps printing its path — the honest degradation); per-group sessions;
+`test_capability_ledger.py` exists to prevent); per-group sessions;
 and the `enter_chat` / `feedback_event` events. `_handle_event` recognizes those
 event types and drops them deliberately: each owes a reply inside a 5-second
 single-delivery window, so answering one is a feature with its own design.
+
+**Outbound media send DOES ship** (the 3-step chunked `aibot_upload_media_init/chunk/finish`
+handshake in `wecom/media_upload.py` + `client.upload_media`, then a
+`send_file_proactive` `aibot_send_msg` frame): a `file_send` to a WeCom peer
+delivers the file as native WeCom media — a `.png`/`.jpg`/`.jpeg` as an image, an
+`.mp4`/`.webm` as video, everything else as a generic `file` — routed by
+`upload_destination.DOCUMENT_CHANNELS` + the `send_document` verb, and a non-empty
+caption follows as a companion text push. The extension→type map is deliberately
+narrow: a format maps to a richer type only when WeCom's own `type` accepts it AND
+`security.BINARY_MIME_ALLOWLIST` admits it at the upload gate. A gif/bmp/webp is
+allowlisted but WeCom's image type is JPG/PNG only, so it sends as an ordinary
+`file`; an image that exceeds the image type's tighter 2 MB cap but fits the
+20 MB `file` cap is likewise downgraded to `file` rather than failed. Voice is
+unmapped because `audio/amr` is not allowlisted at all — the upload gate refuses it
+with HTTP 400 `binary_mime_not_allowed` before `send_document` runs, so an `.amr`
+never sends (as voice or as file). `files_outbound` nonetheless stays
+`False`, because that flag gates a DIFFERENT thing: whether a renderer extracts a
+local image reference out of a sealed reply segment and uploads it inline. WeCom
+ships no such renderer-extraction path, so an inline image reference in a reply
+keeps printing its path — the honest degradation — and declaring the flag `True`
+would make the capability ledger claim an extraction WeCom does not do while
+changing nothing about the `send_document` path, which never reads it.
+
+The frame shapes (`aibot_upload_media_init/chunk/finish`, the `msgtype` media
+frames, the 512 KiB/100-chunk caps) are implemented from WeCom's published aibot
+API and exercised against a WS stand-in; a live-bot round trip for each media type
+is not reachable from CI and remains to be confirmed by a maintainer against the
+published protocol (or by a live send). Until then a wrong frame assumption would
+make a `file_send` fall back to the dashboard-link path rather than corrupt
+anything — the same degradation as before this change, not a new failure mode.
+
+**Size is capped PER TYPE, from WeCom's published limits** (message-push config,
+`developer.work.weixin.qq.com/document/path/91770`): an `image` and a `voice` note
+are each capped at 2 MB, a `file` and a `video` at 20 MB, and every object must
+exceed the platform's 5-byte floor. `media_upload.MAX_BYTES_BY_TYPE` is the one
+place those live; `prepare_upload` enforces `min(caller-ceiling, type-cap)`, so an
+oversize image or voice note is refused before the handshake starts rather than
+accepted locally and rejected by the platform mid-upload. This replaces the
+earlier single 20 MiB ceiling that every type shared.
 
 ## WeCom settings API
 
