@@ -10650,6 +10650,8 @@
       "popped_out": "已弹出",
       "previous_chats": "以往聊天",
       "regenerate_title_with_llm": "用 LLM 重新生成标题 — 当前名称可通过“撤销”恢复",
+      "rename_session_title": "{{title}}（重命名会话）",
+      "session_renamed_to": "会话已重命名为 {{title}}",
       "auto_title": "自动命名",
       "undo_auto_title": "撤销",
       "remove_knowledge_context": "移除知识上下文",

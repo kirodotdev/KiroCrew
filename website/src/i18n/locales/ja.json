@@ -10650,6 +10650,8 @@
       "popped_out": "別ウィンドウで表示中",
       "previous_chats": "以前のチャット",
       "regenerate_title_with_llm": "LLM でタイトルを再生成 — 現在の名前は「取り消し」で元に戻せます",
+      "rename_session_title": "{{title}}（セッション名を変更）",
+      "session_renamed_to": "セッション名を {{title}} に変更しました",
       "auto_title": "自動タイトル",
       "undo_auto_title": "取り消し",
       "remove_knowledge_context": "ナレッジコンテキストを削除",

@@ -49,6 +49,8 @@ import { api } from '../api/client'
 
 const SLOT = 'pane-1'
 const TITLE = 'Alpha session'
+// The trigger's accessible name is the action plus the title (SessionTitleControl).
+const RENAME = `${TITLE} (rename session)`
 const REGEN = 'Regenerate title with LLM — the current name can be restored with Undo'
 
 function makeStore() {
@@ -91,15 +93,15 @@ beforeEach(() => {
 describe('ChatPane header — rename and regenerate controls (#9727)', () => {
   it('renders the title as an editable control with the regenerate button in the pane header', async () => {
     renderPane()
-    expect(await screen.findByRole('button', { name: TITLE })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: RENAME })).toBeTruthy()
     expect(screen.getByRole('button', { name: REGEN })).toBeTruthy()
     // The bar itself is the hover target that reveals the Pen and Sparkles.
-    expect(screen.getByRole('button', { name: TITLE }).closest('.group\\/header')).not.toBeNull()
+    expect(screen.getByRole('button', { name: RENAME }).closest('.group\\/header')).not.toBeNull()
   })
 
   it('click -> inline editor; Enter renames the pane slot through renameSlot and the store', async () => {
     const { store } = renderPane()
-    const label = await screen.findByRole('button', { name: TITLE })
+    const label = await screen.findByRole('button', { name: RENAME })
     act(() => { fireEvent.click(label) })
     const input = screen.getByDisplayValue(TITLE) as HTMLInputElement
     act(() => { fireEvent.change(input, { target: { value: 'Renamed in pane' } }) })
@@ -107,7 +109,7 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     act(() => { fireEvent.blur(input) })
     expect(api.renameSlot).toHaveBeenCalledWith(SLOT, 'Renamed in pane')
     expect(storeTitle(store)).toBe('Renamed in pane')
-    expect(await screen.findByRole('button', { name: 'Renamed in pane' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Renamed in pane (rename session)' })).toBeTruthy()
   })
 
   it('Escape restores the title without calling the API', async () => {
@@ -142,7 +144,7 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     const notice = await screen.findByTestId('chat-pane-title-error')
     expect(notice.textContent).toContain("Couldn't rename the session")
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
-    expect(await screen.findByRole('button', { name: TITLE })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: RENAME })).toBeTruthy()
   })
 
   it('when the rename AND the recovery re-read both fail, the pane reverts locally and still shows the notice', async () => {
@@ -160,7 +162,7 @@ describe('ChatPane header — rename and regenerate controls (#9727)', () => {
     expect(notice.textContent).toContain("Couldn't rename the session")
     expect(notice.textContent).toContain('gateway down')
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
-    expect(await screen.findByRole('button', { name: TITLE })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: RENAME })).toBeTruthy()
   })
 
   it('a failed regenerate shows the in-pane error notice and leaves the title unchanged', async () => {

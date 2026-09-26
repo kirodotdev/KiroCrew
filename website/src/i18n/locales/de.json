@@ -10801,6 +10801,8 @@
       "popped_out": "Ausgekoppelt",
       "previous_chats": "Frühere Chats",
       "regenerate_title_with_llm": "Titel mit LLM neu erstellen – der aktuelle Name lässt sich mit „Rückgängig“ wiederherstellen",
+      "rename_session_title": "{{title}} (Sitzung umbenennen)",
+      "session_renamed_to": "Sitzung umbenannt in {{title}}",
       "auto_title": "Auto-Titel",
       "undo_auto_title": "Rückgängig",
       "remove_knowledge_context": "Wissenskontext entfernen",

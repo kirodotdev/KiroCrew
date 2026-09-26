@@ -10801,6 +10801,8 @@
       "popped_out": "পপ আউট করা হয়েছে",
       "previous_chats": "আগের চ্যাট",
       "regenerate_title_with_llm": "LLM দিয়ে শিরোনাম পুনরায় তৈরি করুন — বর্তমান নামটি 'আনডু' দিয়ে ফিরিয়ে আনা যাবে",
+      "rename_session_title": "{{title}} (সেশনের নাম পরিবর্তন করো)",
+      "session_renamed_to": "সেশনের নাম পরিবর্তন করে {{title}} করা হয়েছে",
       "auto_title": "স্বয়ংক্রিয় শিরোনাম",
       "undo_auto_title": "আনডু",
       "remove_knowledge_context": "নলেজ কনটেক্সট সরান",

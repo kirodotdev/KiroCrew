@@ -10952,6 +10952,8 @@
       "popped_out": "En ventana aparte",
       "previous_chats": "Chats anteriores",
       "regenerate_title_with_llm": "Regenerar el título con el LLM — el nombre actual se puede restaurar con Deshacer",
+      "rename_session_title": "{{title}} (cambiar nombre de la sesión)",
+      "session_renamed_to": "Sesión renombrada a {{title}}",
       "auto_title": "Título automático",
       "undo_auto_title": "Deshacer",
       "remove_knowledge_context": "Quitar el contexto de conocimiento",

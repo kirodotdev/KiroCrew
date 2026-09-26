@@ -10650,6 +10650,8 @@
       "popped_out": "별도 창에 표시 중",
       "previous_chats": "이전 채팅",
       "regenerate_title_with_llm": "LLM으로 제목 다시 생성 — 현재 이름은 '실행 취소'로 되돌릴 수 있습니다",
+      "rename_session_title": "{{title}} (세션 이름 바꾸기)",
+      "session_renamed_to": "세션 이름이 {{title}}(으)로 변경되었습니다",
       "auto_title": "자동 제목",
       "undo_auto_title": "실행 취소",
       "remove_knowledge_context": "지식 컨텍스트 제거",

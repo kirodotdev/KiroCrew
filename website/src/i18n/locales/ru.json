@@ -11103,6 +11103,8 @@
       "popped_out": "В отдельном окне",
       "previous_chats": "Предыдущие чаты",
       "regenerate_title_with_llm": "Сгенерировать заголовок заново через LLM — текущее имя можно вернуть кнопкой «Отменить»",
+      "rename_session_title": "{{title}} (переименовать сессию)",
+      "session_renamed_to": "Сессия переименована в {{title}}",
       "auto_title": "Автозаголовок",
       "undo_auto_title": "Отменить",
       "remove_knowledge_context": "Удалить контекст знаний",

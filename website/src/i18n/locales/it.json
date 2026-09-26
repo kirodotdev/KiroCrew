@@ -10952,6 +10952,8 @@
       "popped_out": "Aperta in una finestra separata",
       "previous_chats": "Chat precedenti",
       "regenerate_title_with_llm": "Rigenera il titolo con l'LLM — il nome attuale può essere ripristinato con Annulla",
+      "rename_session_title": "{{title}} (rinomina sessione)",
+      "session_renamed_to": "Sessione rinominata in {{title}}",
       "auto_title": "Titolo automatico",
       "undo_auto_title": "Annulla",
       "remove_knowledge_context": "Rimuovi il contesto delle conoscenze",

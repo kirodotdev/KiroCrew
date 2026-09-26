@@ -10952,6 +10952,8 @@
       "popped_out": "Détachée",
       "previous_chats": "Chats précédents",
       "regenerate_title_with_llm": "Régénérer le titre avec le LLM — le nom actuel peut être rétabli avec Annuler",
+      "rename_session_title": "{{title}} (renommer la session)",
+      "session_renamed_to": "Session renommée en {{title}}",
       "auto_title": "Titre auto",
       "undo_auto_title": "Annuler",
       "remove_knowledge_context": "Retirer le contexte de connaissances",

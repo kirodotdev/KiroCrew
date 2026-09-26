@@ -6535,6 +6535,8 @@
       "popped_out": "Popped out",
       "previous_chats": "Previous chats",
       "regenerate_title_with_llm": "Regenerate title with LLM — the current name can be restored with Undo",
+      "rename_session_title": "{{title}} (rename session)",
+      "session_renamed_to": "Session renamed to {{title}}",
       "auto_title": "Auto-title",
       "undo_auto_title": "Undo",
       "remove_knowledge_context": "Remove knowledge context",

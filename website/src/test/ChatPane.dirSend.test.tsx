@@ -208,7 +208,10 @@ describe('ChatPane send — the response confirms the optimistic bubble', () => 
 describe('ChatPane agent switch — failures reach the shared notice', () => {
   async function openAgentPicker() {
     const { store } = renderPane('pane-agent')
-    const trigger = await screen.findByLabelText(/agent/i)
+    // The picker's own label, not `/agent/i`: the slot key doubles as the
+    // pane title, and the rename trigger's name carries the title too
+    // ("pane-agent (rename session)"), so the loose regex matches both.
+    const trigger = await screen.findByLabelText(/follows the default agent|^Agent: /)
     fireEvent.click(trigger)
     return store
   }

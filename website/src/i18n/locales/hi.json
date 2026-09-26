@@ -10801,6 +10801,8 @@
       "popped_out": "पॉप आउट किया गया",
       "previous_chats": "पिछली चैट",
       "regenerate_title_with_llm": "LLM से शीर्षक पुनः बनाएँ — वर्तमान नाम को 'पूर्ववत करें' से वापस लाया जा सकता है",
+      "rename_session_title": "{{title}} (सत्र का नाम बदलें)",
+      "session_renamed_to": "सत्र का नाम बदलकर {{title}} कर दिया गया",
       "auto_title": "स्वतः शीर्षक",
       "undo_auto_title": "पूर्ववत करें",
       "remove_knowledge_context": "ज्ञान संदर्भ निकालें",
