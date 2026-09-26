@@ -700,7 +700,8 @@ def _doctor_mcp_tools(
        into ``tools`` nor probed (see :func:`_spec_gate_closed`). Missing
        ``tools`` entries — and ``allowedTools`` entries for every server
        outside :data:`_NO_BLANKET_ALLOW_MCPS` — are auto-appended and the file
-       is rewritten atomically. A missing ``mcpServers`` entry cannot be
+       is rewritten atomically; an instance that must not own the shared agent
+       home writes nothing and reports the repairs as issues. A missing ``mcpServers`` entry cannot be
        auto-added because the command path is install-specific.
     2. Live handshake probe via :func:`mcp_discovery.probe_server`. Reports
        per-server status with tool count on success, and on failure shows
@@ -728,6 +729,8 @@ def _doctor_mcp_tools(
     allowed = agent_data.get("allowedTools", [])
     mcps = agent_data.get("mcpServers", {})
     config_changed = False
+    # Read-only probe (no SEL write): a declined instance never writes the shared spec.
+    declined = _agent._decline_shared_agent_home(audit=False) is not None
 
     probe_targets = []
     if gated_off is None:
@@ -818,7 +821,12 @@ def _doctor_mcp_tools(
         # `allowedTools` auto-approves, which is the one path that never reaches
         # the PreToolUse gate — so what the ceiling says about this server decides
         # both whether doctor may mint a grant and whether an existing one stands.
-        if not may_skip_gate_now(ref):
+        if not may_skip_gate_now(ref) and ref in allowed and declined:
+            config_changed = True
+            issues.append(
+                f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
+            )
+        elif not may_skip_gate_now(ref):
             # REVOKE, not merely "do not add". A grant can predate the ceiling —
             # the policy arrives on a host whose config was written while it was
             # ungoverned — and leaving it in place means the ceiling applies only
@@ -879,6 +887,20 @@ def _doctor_mcp_tools(
         )
 
     if config_changed:
+        try:  # both verdicts on the shared spec are audited; the audit must not break doctor
+            sel().log_api_access(
+                caller="system",
+                operation="agent_home_write",
+                outcome="denied" if declined else "allowed",
+                source="cli_doctor",
+                resources=str(agent_path),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("SEL audit unavailable for doctor spec write", exc_info=True)
+    if config_changed and declined:
+        print("  → Auto-fix skipped: shared home")
+        issues.append("agent config (auto-fix skipped: shared home)")
+    elif config_changed:
         agent_data["tools"] = tools
         agent_data["allowedTools"] = allowed
         agent_data["mcpServers"] = mcps

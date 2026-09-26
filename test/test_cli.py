@@ -4415,6 +4415,80 @@ class TestDoctorMcpTools:
         assert updated["tools"] == ["@kirocrew-cron", "@kirocrew-core"]
         assert updated["allowedTools"] == ["@kirocrew-cron", "@kirocrew-core"]
 
+    def test_auto_fix_skips_write_when_shared_home_declined(self, tmp_path, capsys):
+        """An instance that must not own the shared agent home reports the
+        auto-fix as skipped and leaves the spec byte-identical."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=[],
+            allowed=[],
+            servers={
+                "kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]},
+                "kirocrew-cron": {"command": "/bin/kirocrew", "args": ["mcp-cron"]},
+            },
+        )
+        before = agent_path.read_bytes()
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=agent_path),
+            self._mock_probe(
+                {
+                    "kirocrew-core": ("ok", [], ""),
+                    "kirocrew-cron": ("ok", [], ""),
+                }
+            ),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "Auto-fix skipped: shared home" in out
+        assert "Auto-fixed agent config" not in out
+        assert agent_path.read_bytes() == before
+        assert "agent config (auto-fix skipped: shared home)" in issues
+
+    def test_declined_home_reports_a_forbidden_grant_without_writing(self, tmp_path, capsys):
+        """A declined home leaves a ceiling-forbidden grant on disk, logs no
+        SEL revoke, and reports the grant for the owning install to repair."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        refs = ["@kirocrew-core", "@kirocrew-cron"]
+        _write_agent_config(
+            agent_path,
+            tools=refs,
+            allowed=refs,
+            servers={
+                "kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]},
+                "kirocrew-cron": {"command": "/bin/kirocrew", "args": ["mcp-cron"]},
+            },
+        )
+        before = agent_path.read_bytes()
+        issues: list[str] = []
+        sel_mock = MagicMock()
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=agent_path),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.sel", sel_mock),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert agent_path.read_bytes() == before
+        sel_mock.return_value.log_api_access.assert_called_once_with(
+            caller="system",
+            operation="agent_home_write",
+            outcome="denied",
+            source="cli_doctor",
+            resources=str(agent_path),
+        )
+        assert "auto-approve withheld" not in out
+        assert issues == [
+            f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
+            for ref in ("@kirocrew-cron", "@kirocrew-core")
+        ] + ["agent config (auto-fix skipped: shared home)"]
+
     def test_auto_fix_never_blanket_allows_computer_use(self, tmp_path, capsys):
         """**Doctor must never add ``@kirocrew-computer`` to ``allowedTools``.**
 
