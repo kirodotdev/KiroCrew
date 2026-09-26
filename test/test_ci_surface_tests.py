@@ -823,9 +823,19 @@ def _items(module: str, name: str, count: int) -> list[_FakeItem]:
 
 
 def test_the_collection_floor_reds_below_its_value() -> None:
+    """One test short of the floor is an error, because the floor IS the collection.
+
+    This is the property the floor's POSITION buys and the reason it is set to the
+    measured collection rather than to the collection less the margin. Set below the
+    collection, the same margin would be spent hiding losses of that size instead:
+    the drain this check exists to catch would pass silently up to ``_FLOOR_MARGIN``
+    cases, while ordinary growth would red on the very first added test.
+    """
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     with pytest.raises(pytest.UsageError, match="below its floor of 10"):
         _run_hook(ns, _items("test_a.py", "test_one", 9))
+    # And the margin does not soften it: the floor is a hard minimum in this direction.
+    assert ns._FLOOR_MARGIN > 0, "this assertion is vacuous if the margin is already zero"
 
 
 def test_the_collection_floor_passes_at_its_own_value() -> None:
@@ -855,6 +865,30 @@ def test_a_floor_left_behind_by_a_growing_suite_is_an_error() -> None:
 def test_the_floor_may_sit_exactly_its_margin_below_the_collection() -> None:
     ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
     _run_hook(ns, _items("test_a.py", "test_one", 10 + ns._FLOOR_MARGIN))
+
+
+def test_the_stale_floor_message_names_both_ways_the_margin_can_be_exceeded() -> None:
+    """The message must not send a reader hunting a regression that is not there.
+
+    A margin above zero legalises growth with no floor edit, so two branches may
+    each add up to ``_FLOOR_MARGIN`` tests, clear this bound separately, and compose
+    past it without either one touching the constant. The lane then reds on a commit
+    that did not grow the suite, and a message naming only the same-commit cause
+    misattributes it. Both causes are asserted because naming one is what makes the
+    other invisible.
+    """
+    ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
+    collected = 10 + ns._FLOOR_MARGIN + 1
+    with pytest.raises(pytest.UsageError) as caught:
+        _run_hook(ns, _items("test_a.py", "test_one", collected))
+    message = " ".join(str(caught.value).split())
+    assert "in the commit that grew the suite" in message, message
+    assert "concurrently merged one did" in message, message
+    # The prescribed value is the COLLECTION itself, never the collection less the
+    # margin: prescribing the latter re-pins the floor at maximum staleness, which
+    # spends the margin on hiding losses and leaves growth no headroom at all.
+    assert f"Raise _MIN_COLLECTED to {collected}" in message, message
+    assert f"Raise _MIN_COLLECTED to {collected - ns._FLOOR_MARGIN}" not in message, message
 
 
 def test_a_module_that_defines_tests_and_yields_nothing_is_an_error() -> None:
@@ -986,10 +1020,11 @@ def test_a_module_whose_tests_pytest_cannot_reach_is_still_required_to_yield_one
 def test_the_margin_is_smaller_than_the_smallest_module() -> None:
     """The floor's margin is derived from the tree, not chosen for comfort.
 
-    The floor's stated job is to trip on losing even the smallest module, so the
-    margin has to be smaller than the smallest module's test count. Widening it
-    past that silently turns the floor into something a whole module can vanish
-    underneath.
+    The margin is growth headroom, so its bound is about what may land WITHOUT the
+    floor being raised. A margin at or above the smallest module's test count would
+    let a whole new module arrive while the constant stays put, and the floor would
+    resume drifting by exactly the mechanism this file exists to stop. Losing tests
+    is not what the margin governs -- a collection below the floor reds at any size.
     """
     ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
     per_module = {name: len(names) for name, names in ns._declared_tests().items() if names}
@@ -997,7 +1032,7 @@ def test_the_margin_is_smaller_than_the_smallest_module() -> None:
     smallest = min(per_module.values())
     assert ns._FLOOR_MARGIN < smallest, (
         f"the floor's margin is {ns._FLOOR_MARGIN} and the smallest module declares "
-        f"{smallest} tests, so losing that whole module would not trip the floor"
+        f"{smallest} tests, so a whole module could be added without raising the floor"
     )
 
 

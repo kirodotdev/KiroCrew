@@ -39,7 +39,7 @@ _HERE = Path(__file__).resolve().parent
 #
 # It exists because a skip is indistinguishable from a pass in every report anyone
 # reads, and the skips below are wide: a missing image dependency takes the WHOLE
-# suite out of collection, so 236 tests can be entirely absent from a run that
+# suite out of collection, so every test here can be entirely absent from a run that
 # reports success. Installing those dependencies in a dedicated job is not enough on
 # its own, because it fixes the environment and not the mechanism: a dependency
 # rename, an extras split or a resolver change puts that lane back to reporting
@@ -72,33 +72,53 @@ else:
         "than read as either answer."
     )
 
-# How far the floor below is allowed to sit under a real collection, in tests.
+# How much the collection may GROW above the floor below before the floor must be
+# raised, in tests. It is headroom for growth, never tolerance for loss: a collection
+# BELOW the floor is an error at any size.
 #
 # The bound is derived, not chosen: the smallest module here contributes 3 tests, so a
-# margin of 3 or more would let that whole module vanish without tripping the floor.
-# Two is the largest value that still reds on losing the smallest thing there is to
-# lose. ``_the_margin_is_smaller_than_the_smallest_module`` in the repository's
-# ``test_ci_surface_tests`` pins that derivation against the tree, so widening this
-# reddens a test rather than quietly loosening the floor.
+# margin of 3 or more would let a whole new module land without the floor ever being
+# raised, and the floor would start drifting again by exactly the mechanism this file
+# exists to stop. Two is the largest value that still forces a floor edit in the
+# commit that adds a module. ``_the_margin_is_smaller_than_the_smallest_module`` in
+# the repository's ``test_ci_surface_tests`` pins that derivation against the tree, so
+# widening this reddens a test rather than quietly buying more drift.
 _FLOOR_MARGIN = 2
 
 # Floor on how many tests the suite must yield, checked only under _REQUIRED_ENV.
 #
-# Read off a real collection (369 items) less the margin above. The tightness IS the
-# feature: the floor is tripped by losing even the smallest module, which a looser
-# floor would wave through. The per-module check below catches a module that stops
-# being collected at all, and the per-test check catches a named test that stops
-# yielding an item; this catches what neither can see, a test whose own cases drain
-# away -- a parametrize source that empties down to one case while the function it
-# decorates is still collected under its own name.
+# This IS the measured collection (369 items), not the measurement less a cushion.
+# The position matters as much as the number, because the two directions want their
+# slack on opposite sides: a test DISAPPEARING is the failure this guard exists to
+# catch, so it gets no tolerance at all, while a test being ADDED is ordinary work
+# that should not red a lane for the first two before anyone edits a constant. Setting
+# the floor to collection-less-margin inverts both -- it spends the whole margin on
+# hiding losses and leaves growth no room whatsoever.
 #
-# When the suite grows, raise it, in the same commit as the growth: a collection that
-# runs more than the margin above this number is an error rather than a comfortable
-# cushion, because a floor left behind by a growing suite stops measuring anything
-# long before anyone notices it drifted. It may be LOWERED only alongside a
-# deliberate deletion of tests, in the same commit, and never to make a red lane
-# green: a floor edited down to meet the measurement measures nothing.
-_MIN_COLLECTED = 367
+# So a loss is caught the moment it takes the collection BELOW this number, and the
+# blind spot is exactly the legal growth currently sitting above it: zero right after
+# this constant is set to a fresh measurement, at most _FLOOR_MARGIN just before a
+# raise is forced. It is never a fixed allowance, which is why it is stated as a
+# relationship here and nowhere else -- the lane's own doc row points at this comment
+# rather than restating it, because a bound spelled out twice is the drift this file
+# exists to stop.
+#
+# The per-module check below catches a module that stops being collected at all and
+# the per-test check catches a named test that stops yielding an item, both exact and
+# holding no number; this catches the one shape neither can see, a test whose own
+# parametrize cases drain away while the function is still collected under its own
+# name.
+#
+# Growth reaches here from source as well as from tests: test_review_findings
+# parametrizes over the production AWS_CRED_ENV list, so adding one credential name
+# to the supervisor backend grows this collection without touching a test file.
+#
+# When the suite grows past the margin, raise this to the new collection, in the same
+# commit as the growth: a floor left behind by a growing suite stops measuring anything
+# long before anyone notices it drifted. It may be LOWERED only alongside a deliberate
+# deletion of tests, in the same commit, and never to make a red lane green: a floor
+# edited down to meet the measurement measures nothing.
+_MIN_COLLECTED = 369
 
 # Not collected on a non-POSIX host. This suite's SUBJECT is the source of a Linux
 # container image, built by the deploy driver and run on Fargate -- not part of the
@@ -344,12 +364,17 @@ def pytest_collection_modifyitems(
     if len(mine) - _MIN_COLLECTED > _FLOOR_MARGIN:
         raise pytest.UsageError(
             f"{_REQUIRED_ENV} is set and the crew container suite collected "
-            f"{len(mine)} tests, so its floor of {_MIN_COLLECTED} sits "
-            f"{len(mine) - _MIN_COLLECTED} tests below the real collection rather "
-            f"than the {_FLOOR_MARGIN} it is allowed. The suite grew and the floor "
-            f"stayed behind, so the floor now passes a run that lost "
+            f"{len(mine)} tests, which is {len(mine) - _MIN_COLLECTED} above its "
+            f"floor of {_MIN_COLLECTED} rather than the {_FLOOR_MARGIN} of growth "
+            f"headroom it is allowed. The suite grew and the floor stayed behind, so "
+            f"the floor now passes a run that lost "
             f"{len(mine) - _MIN_COLLECTED} tests. Raise _MIN_COLLECTED to "
-            f"{len(mine) - _FLOOR_MARGIN} in the commit that grew the suite."
+            f"{len(mine)} -- the collection itself, not less a cushion -- in the "
+            f"commit that grew the suite. If THIS commit did not grow it, a "
+            f"concurrently merged one did: two branches may each add up to "
+            f"{_FLOOR_MARGIN} tests, clear this bound separately, and compose past it "
+            f"without either one editing this line, so the raise is owed here rather "
+            f"than being a regression to hunt."
         )
 
 
