@@ -250,10 +250,11 @@ jobs:
               # The external_id is now attempt-scoped (<lane>-pr-<PR>-<run>-<attempt>),
               # so match the PR dimension by prefix and let sort_by(.started_at)|last
               # pick the newest attempt regardless of suffix. Trailing hyphen keeps
-              # -pr-9 from matching -pr-99.
+              # -pr-9 from matching -pr-99. filter=all: the default (latest) returns one
+              # check-run per name, which leaves sort_by nothing to choose between.
               enc="$(jq -rn --arg name "$check_name" '$name | @uri')"
               details_url="$(gh api --method GET \
-                "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
+                "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all" \
                 --jq "[.check_runs[]
                        | select(.external_id != null)
                        | select(.external_id | startswith(\"$lane-pr-$PR-\"))]
