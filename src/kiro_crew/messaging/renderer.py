@@ -167,12 +167,30 @@ def chunk_for_transport(text: str, capabilities: TransportCapabilities) -> list[
     # default the dataclass declares.
     max_bytes = getattr(capabilities, "max_message_bytes", 0)
     if max_bytes > 0:
-        from kiro_crew.messaging.split import split_markdown_bytes
+        from kiro_crew.messaging.split import (
+            bounded_for_delivery,
+            chunk_utf8_bytes,
+            split_markdown_bytes,
+        )
 
-        return split_markdown_bytes(text, max_bytes)
-    from kiro_crew.messaging.split import split_markdown_safe
+        # Graded after the split rather than during it: every caller of this helper
+        # sends each unit as its own message, so a boundary here is a seam between
+        # two messages a reader reads in order, and a key written across a line
+        # break is invisible to a per-message scan yet whole on screen once the
+        # break is gone. The byte splitter takes no redactor -- it reaches its
+        # budget by shrinking a CHARACTER limit and retrying, which a cut that may
+        # decline to cut would not terminate on -- so the guarantee is established
+        # on the sequence it produced, with the byte cutter it measured in.
+        return bounded_for_delivery(
+            split_markdown_bytes(text, max_bytes), max_bytes, _default_redactor, chunk_utf8_bytes
+        )
+    from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 
-    return split_markdown_safe(text, capabilities.max_message_chars)
+    units = split_markdown_safe(text, capabilities.max_message_chars, redactor=_default_redactor)
+    # Bounded for the same reason every capped caller does it: the credential-aware
+    # cut is fail-closed and can answer with the text whole, and a transport that
+    # caps by slicing would drop that answer's tail after every scan has run.
+    return bounded_for_delivery(units, capabilities.max_message_chars, _default_redactor)
 
 
 def cap_choices(
