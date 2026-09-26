@@ -9870,6 +9870,7 @@
       "preview_read_network_error": "Impossibile leggere questo documento: la richiesta non ha raggiunto il server. Controlla la connessione e riprova.",
       "preview_read_server_error": "Impossibile leggere questo documento: il server ha restituito un errore.",
       "preview_relative_path_body": "La posizione di questo documento è stata registrata rispetto al suo progetto originale, quindi non può essere aperto in sicurezza da qui. Aprilo dalla sessione che lo ha creato.",
+      "preview_binary_body": "Questo documento non è leggibile come testo, quindi non c'è nulla da visualizzare in anteprima qui.",
       "save_to_artifacts": "Salva negli artefatti",
       "saved_to_library_notice": "“{{name}}” è stato salvato nei tuoi artefatti."
     },

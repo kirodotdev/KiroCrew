@@ -9735,6 +9735,7 @@
       "preview_read_network_error": "Dieses Dokument konnte nicht gelesen werden – die Anfrage hat den Server nicht erreicht. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "preview_read_server_error": "Dieses Dokument konnte nicht gelesen werden – der Server hat einen Fehler gemeldet.",
       "preview_relative_path_body": "Der Speicherort dieses Dokuments wurde relativ zu seinem ursprünglichen Projekt aufgezeichnet, daher kann es von hier aus nicht sicher geöffnet werden. Öffnen Sie es aus der Sitzung, die es erstellt hat.",
+      "preview_binary_body": "Dieses Dokument ist nicht als Text lesbar, daher gibt es hier nichts anzuzeigen.",
       "save_to_artifacts": "In den Artefakten speichern",
       "saved_to_library_notice": "„{{name}}“ wurde in Ihren Artefakten gespeichert."
     },

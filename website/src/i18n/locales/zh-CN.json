@@ -9600,6 +9600,7 @@
       "preview_read_network_error": "无法读取此文档：请求未能到达服务器。请检查网络连接后重试。",
       "preview_read_server_error": "无法读取此文档：服务器返回了错误。",
       "preview_relative_path_body": "此文档的位置是相对于其原始项目记录的，无法从此处安全打开。请在创建它的会话中打开。",
+      "preview_binary_body": "此文档无法按文本读取，因此这里没有可预览的内容。",
       "save_to_artifacts": "保存到产物",
       "saved_to_library_notice": "已将“{{name}}”保存到你的产物中。"
     },
