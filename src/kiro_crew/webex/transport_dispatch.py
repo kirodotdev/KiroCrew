@@ -1470,11 +1470,19 @@ class WebexDispatcher:
                     # and ``edit_receipt`` carries the room id, so editing it under the
                     # opener's address reaches a different room where that message id
                     # does not exist.
+                    envelope = _reply_envelope(inbound, place)
                     await self._queue.flip_answering_locked(
                         session_key,
-                        self._receipt_surface(_reply_envelope(inbound, place)),
+                        self._receipt_surface(envelope),
                         texts,
                         own_deferred,
+                        # WHOSE messages this turn answers, read through the same helper
+                        # the producer tagged them with, so "which of the bubble's lines
+                        # were answered" cannot be spelled differently here than where
+                        # they were recorded. A space shares one bubble between members,
+                        # so without this the flip retires it over lines that are still
+                        # queued and the second member's acknowledgement disappears.
+                        _entry_owner(envelope),
                     )
             if not texts or place is None:
                 return

@@ -5765,7 +5765,9 @@ class TestDrainSenderIdentity:
         d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         deferred: list[int] = []
 
-        async def _flip(session_key: str, channel_id: str, answered: list[str], n: int = 0) -> None:
+        async def _flip(
+            session_key: str, channel_id: str, answered: list[str], n: int = 0, owner: str = ""
+        ) -> None:
             deferred.append(n)
 
         d._receipt_flip_locked = _flip
@@ -5788,7 +5790,9 @@ class TestDrainSenderIdentity:
         d, _cli, sess = _dispatcher({"u1"}, dm_scope="unified")
         deferred: list[int] = []
 
-        async def _flip(session_key: str, channel_id: str, answered: list[str], n: int = 0) -> None:
+        async def _flip(
+            session_key: str, channel_id: str, answered: list[str], n: int = 0, owner: str = ""
+        ) -> None:
             deferred.append(n)
 
         d._receipt_flip_locked = _flip

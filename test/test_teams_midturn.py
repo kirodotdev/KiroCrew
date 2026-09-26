@@ -686,7 +686,7 @@ class TestTeamsSharesTheQueueWithOtherTransports:
         mine = self._from(_EMAIL, "CONV", "act-1")
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0):
+        async def _flip(session_key, surface, answered, n=0, owner=""):
             deferred.append(n)
 
         monkeypatch.setattr(d._queue, "flip_answering_locked", _flip)
@@ -715,7 +715,7 @@ class TestTeamsSharesTheQueueWithOtherTransports:
         theirs = self._from("other@example.com", "CONV2", "act-2", "theirs")
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0):
+        async def _flip(session_key, surface, answered, n=0, owner=""):
             deferred.append(n)
 
         monkeypatch.setattr(d._queue, "flip_answering_locked", _flip)

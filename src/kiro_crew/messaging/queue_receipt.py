@@ -327,6 +327,59 @@ class QueueReceipt:
             self.lines = [line for line in self.lines if line.owner != owner]
         return taken
 
+    def drop_answered(self, owner: str, count: int) -> None:
+        """Drop the *count* lines *owner* queued EARLIEST at this bubble's address.
+
+        What a drain just took off the queue, and only that. It COUNTS rather than
+        dropping the owner's lines outright the way :meth:`withdraw` does, because one
+        drain does not necessarily answer everything one principal queued: the collapse
+        stops at its own cap, and what is past the cap is re-enqueued and still queued.
+        The lines it did answer are that owner's earliest ones, since the drain collapses
+        in arrival order from the front of the queue.
+
+        Scoped to :attr:`address` as well as to *owner*, for the reason every rule here
+        is: a line records the address it ARRIVED at, and a drain answers ONE envelope,
+        so the lines it took are the ones that arrived where that envelope came from.
+
+        An empty *owner* drops nothing, matching :meth:`withdraw` -- a caller that cannot
+        name its principal names no line.
+        """
+        if not owner or count <= 0:
+            return
+        mine = self.address
+        kept: list[ReceiptLine] = []
+        remaining = count
+        for line in self.lines:
+            if remaining and line.owner == owner and line.address == mine:
+                remaining -= 1
+                continue
+            kept.append(line)
+        self.lines = kept
+
+    def others_at_address(self, owner: str) -> list[str]:
+        """What this bubble still lists for principals OTHER than *owner*, in order.
+
+        The question a drain asks before it retires the bubble, and it is deliberately
+        narrower than :meth:`texts_at_address`. Three categories of remaining line meet
+        here and only one of them may hold the key:
+
+        * another principal's line at this address -- ONLY that entry is their handle,
+          and only their own drain can answer them, so retiring it erases an
+          acknowledgement for a message that is still queued. That is this list.
+        * a line at ANOTHER address -- never rendered on this bubble, so it is owed
+          nothing by it. Excluded, the same way every render here excludes it.
+        * *owner*'s own line past the collapse cap -- still queued, but it is answered
+          by this same principal's very next drain and the flip body already says so
+          with ``+N deferred``. Excluded, so that contract is left as it is.
+
+        An empty *owner* names no principal, so nothing can be told apart from them and
+        the answer is every line at the address.
+        """
+        mine = self.address
+        if not mine:
+            return []
+        return [line.text for line in self.lines if line.address == mine and line.owner != owner]
+
 
 class ReceiptSurface(Protocol):
     """One conversation's receipt bubble, with its address already bound.
@@ -483,6 +536,7 @@ class ReceiptQueue:
         surface: ReceiptSurface,
         answered: list[str],
         deferred: int = 0,
+        owner: str = "",
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record.
 
@@ -497,6 +551,18 @@ class ReceiptQueue:
         address test below is also a test on the BODY: when it passes, ``answered`` is
         this bubble's own chat's text; when it fails, ``answered`` belongs to a
         different chat and none of it may appear here.
+
+        ``owner`` is WHOSE messages this drain answered -- the same token the queue
+        entries it took were tagged with -- and it is what makes "the answered ones"
+        identifiable among the bubble's lines. One bubble can list several principals'
+        lines while one drain answers one principal's: a group space puts every member
+        on one session key AND one address, so a PARTIAL drain is the ordinary case
+        there rather than an edge. When another principal's line is still listed here
+        afterwards the entry is KEPT and the bubble re-rendered as queued, because that
+        entry is the only handle their message has. Empty means the caller cannot name
+        the principal it answered, and then the bubble is finalized whole as it always
+        was -- nothing can tell the answered lines from the ones still queued. Every
+        shipped drain names it.
         """
         receipt = self._receipts.pop(session_key, None)
         if receipt is None:
@@ -549,6 +615,34 @@ class ReceiptQueue:
             # bubble beside it for the same burst.
             self._receipts[session_key] = receipt
             return
+        if owner:
+            receipt.drop_answered(owner, len(answered))
+            if receipt.others_at_address(owner):
+                # A PARTIAL drain: this bubble still lists ANOTHER principal's queued
+                # message, and one drain answers one principal. A group space gives
+                # every member the one session key AND the one address, so both of
+                # their messages are listed on this single bubble and
+                # :meth:`addressed_by` is true for each of them -- which is what makes
+                # this the ordinary case there rather than an edge.
+                #
+                # "Now answering" would say that other member's message went, and
+                # retiring the key strands it exactly the way it strands a partial stop:
+                # this entry is their only handle, so their own later drain finds
+                # nothing to flip and records them nowhere at all, while the next burst
+                # opens a second bubble beside the stale one. So the bubble is
+                # re-rendered to what is STILL queued and the entry stays LIVE. This
+                # turn's own messages lose nothing by that: they are being answered, and
+                # the answer is what says so -- the same reason a partial stop leaves its
+                # caller to learn from the stop reply.
+                #
+                # Rendered from ``texts_at_address`` like every other body here, so it
+                # lists this address's remaining lines and not another conversation's.
+                # A refused re-render owes no record, for the reason a refused GROW owes
+                # none: these messages have not left the queue, so the registry and the
+                # queue still agree and the next transition renders the list again.
+                self._receipts[session_key] = receipt
+                await self._edit(surface, receipt.msg_id, receipt_text(receipt.texts_at_address()))
+                return
         if not await self._edit(surface, receipt.msg_id, body):
             # These messages have LEFT the queue, so nothing else will ever revisit this
             # bubble on its own: dropped now it reads "⏳ Queued" for good. The record is

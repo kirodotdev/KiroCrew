@@ -1904,7 +1904,7 @@ class TelegramDispatcher:
                     )
                 if texts and origin is not None:
                     await self._receipt_flip_locked(
-                        session_key, int(origin.chat_id), texts, own_deferred
+                        session_key, int(origin.chat_id), texts, own_deferred, _entry_owner(origin)
                     )
             if not texts or origin is None:
                 return
@@ -2035,7 +2035,12 @@ class TelegramDispatcher:
             return True
 
     async def _receipt_flip_locked(
-        self, session_key: str, chat_id: int, answered: list[str], deferred: int = 0
+        self,
+        session_key: str,
+        chat_id: int,
+        answered: list[str],
+        deferred: int = 0,
+        owner: str = "",
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record and drop the
         live entry so the next mid-turn burst opens a fresh receipt. Caller MUST
@@ -2046,6 +2051,11 @@ class TelegramDispatcher:
         so a >cap burst doesn't overstate what this turn answers. ``deferred``
         (>0 only past the cap) is noted so the remainder isn't silently implied.
 
+        ``owner`` is WHOSE messages those are, which the flip needs because one bubble
+        can list several principals': a GROUP chat gives every member one chat address
+        and one session key, so a drain answering one member must leave the others'
+        lines -- and the entry that is their only handle -- alone.
+
         ``chat_id`` is the chat the receipt BUBBLE lives in, which the drain takes
         from the queued entry's own origin rather than from the turn that opened the
         queue -- ``create_or_grow_locked`` posted that bubble into the chat of
@@ -2055,7 +2065,7 @@ class TelegramDispatcher:
         """
         assert self.client is not None
         await self._queue.flip_answering_locked(
-            session_key, self._receipt_surface(chat_id, None), answered, deferred
+            session_key, self._receipt_surface(chat_id, None), answered, deferred, owner
         )
 
     async def _handle_dashboard(
