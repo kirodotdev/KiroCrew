@@ -10,9 +10,25 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 
 REVIEWED_STAMP_RE = re.compile(r"\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+([0-9a-f]{7,40})\b")
 BLOCK_MERGE_RE = re.compile(r"\[BLOCK-MERGE\]\s+([0-9a-f]{7,40})\b")
+# The SANCTIONED downgrade, read from the one part of the comment a model cannot
+# author. When adjudication clears a marker-writing lane's block, the workflow
+# renders its heading from the PARSED decision the gate acts on --
+# `codex-review.yml:1330` and `fork-gpt-review.yml:1296` both set
+# verdict="... (all downgraded on adjudication)" -- and echoes it at
+# `codex-review.yml:1364`, before any `<details>`. The rewritten
+# `[BLOCK-MERGE-DOWNGRADED]` marker is NOT used for this, deliberately: that
+# rewrite lands inside the body embedded from the model's own output file, so a
+# review whose prose contains the marker would forge a clearance and suppress a
+# real block. The workflow states this rule itself for a sibling marker at
+# `codex-review.yml:1311-1314`: the refusal signal is the step's own output,
+# "never a grep of the review body", because "a review merely QUOTING the refusal
+# marker must not reclassify a completed verdict".
+_DOWNGRADE_HEADING_RE = re.compile(r"^##[^\n]*\(all downgraded on adjudication\)", re.MULTILINE)
+_PREFIX_SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
 
 
 def sha_matches(stamp_sha, head_sha):
@@ -229,6 +245,427 @@ def span_hash(path, rule_class):
     """
     key = "{}|{}".format(path, rule_class)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+# ---- Superseded verdicts ---------------------------------------------------
+# A lane's marker comment is ONE slot, selected by the lane marker alone and
+# never by the head, so publishing a verdict REPLACES whatever the slot held.
+# Replacing a previous head's verdict is the lane doing its job. Replacing a
+# verdict for the head under review is different: both bodies judged the same
+# revision, the reader sees only the survivor, and nothing in the comment says a
+# rival existed. Every body the slot ever held is kept by GraphQL
+# ``userContentEdits`` -- in full, including the original publication -- so the
+# record exists and wants reading rather than rebuilding.
+#
+# The two cases are told apart by ONE question, asked of each stored body that
+# is not the current one: does it carry this lane's own stamp for the head under
+# review? A body stamped for another head is an ordinary stale-head replacement
+# and is not reported, because that is every normal publish. A body stamped for
+# THIS head is a superseded sample and is.
+_EDIT_PAGE_SIZE = 100
+_MAX_EDIT_PAGES = 20
+# The body field (`diff`) is the expensive half of this read, and the API throttles
+# it specifically: the same query at the same page size succeeds without `diff` and
+# is refused with it once a caller has spent its allowance. So ask the cheap
+# question first -- HOW MANY bodies has this comment held? -- and pay for bodies
+# only when the answer can matter. A comment holding at most one body has nothing
+# that could have been superseded, which is the common case on any head whose lanes
+# have each published once.
+_EDIT_COUNT_QUERY = (
+    "query($id:ID!){node(id:$id){... on IssueComment{" "userContentEdits(first:1){totalCount}}}}"
+)
+_EDIT_HISTORY_QUERY = (
+    "query($id:ID!,$n:Int!,$c:String){node(id:$id){... on IssueComment{"
+    "userContentEdits(first:$n,after:$c){totalCount "
+    "pageInfo{hasNextPage endCursor} nodes{editedAt diff editor{login}}}}}}"
+)
+
+
+def count_comment_edits(node_id, run_command, notes=None):
+    """How many bodies this comment has held; None when that cannot be read.
+
+    Deliberately omits the body field, so it stays answerable when the expensive
+    read is not. Fails closed like its sibling: an unreadable count is not zero.
+    """
+    if not node_id:
+        _note(notes, "the comment carries no node id, so its history cannot be addressed")
+        return None
+    rc, out, err_text = run_command(
+        ["gh", "api", "graphql", "-f", "query=" + _EDIT_COUNT_QUERY, "-F", "id=" + node_id]
+    )
+    if rc == 124:
+        _note(notes, "the edit count did not answer inside its per-call bound")
+        return None
+    if rc != 0 or not out:
+        _note(notes, _failure_reason(out, err_text, rc).replace("the read", "the edit count"))
+        return None
+    try:
+        total = json.loads(out)["data"]["node"]["userContentEdits"]["totalCount"]
+    except (ValueError, KeyError, TypeError):
+        _note(notes, "the edit count returned no payload")
+        return None
+    if not isinstance(total, int) or total < 0:
+        _note(notes, "the edit count was not a count")
+        return None
+    return total
+
+
+def _failure_reason(out, err_text, rc):
+    """Why a FAILED read failed, read only from places a payload cannot forge.
+
+    The throttle signature is matched on stderr and on the GraphQL envelope's own
+    `errors[].type` / `errors[].code`, never on the whole response text. A
+    SUCCESSFUL history payload carries the review bodies themselves, and a review
+    that discusses rate limits would otherwise turn a clean read into a refusal --
+    a false `ok=false` that becomes a required status no recompute can clear. So
+    this runs only after the caller has established the read did not succeed.
+    """
+    codes = ""
+    try:
+        errors = json.loads(out or "")["errors"]
+        codes = " ".join(
+            "{} {}".format(e.get("type") or "", e.get("code") or "")
+            for e in errors
+            if isinstance(e, dict)
+        ).lower()
+    except (ValueError, KeyError, TypeError):
+        codes = ""
+    stderr_text = (err_text or "").lower()
+    if "rate limit" in stderr_text or "rate_limit" in codes or "rate limit" in codes:
+        return "the API refused the read with a rate limit"
+    return "the read failed (exit {})".format(rc)
+
+
+def _note(notes, reason):
+    """Record why a read failed, for a caller that must say more than "unreadable"."""
+    if notes is not None and reason not in notes:
+        notes.append(reason)
+
+
+def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=None, notes=None):
+    """What each body this comment has held CONCLUDED; None on error.
+
+    Returns one entry per stored body as ``{at, editor, stamped, ...shape}``, never
+    the body itself -- see the reduction in the loop.
+
+    ``diff`` is GraphQL's name for the field, but what it returns is the whole
+    body as of that edit, which is what makes a superseded verdict readable
+    rather than merely detectable. The oldest entry is the original publication,
+    so a comment created and then replaced once yields two entries.
+
+    Returns None on ANY failure -- an unreadable history cannot be told from an
+    unedited comment, and a caller that treats the two alike reports "no verdict
+    was superseded" from a failed read. Every caller here fails closed on None.
+    ``deadline`` is a ``time.monotonic()`` instant past which the read gives up
+    the same way, so a slow page cannot spend a caller's whole budget.
+
+    ``notes`` collects WHY a read failed. A rate limit and a genuine fault both
+    fail closed, but they ask different things of whoever reads the result -- wait
+    versus investigate -- and a bare "unreadable" cannot tell them apart. GitHub
+    reports a GraphQL secondary limit in the envelope's ``errors[]`` while its own
+    rate_limit endpoint can still show budget remaining, so the signature is read
+    from stderr and from those error entries -- never from a response this read
+    already SUCCEEDED in fetching, whose body is reviewer prose that may discuss
+    rate limits itself. See ``_failure_reason``.
+    """
+    if not node_id:
+        return None
+    entries = []
+    cursor = None
+    for _page in range(_MAX_EDIT_PAGES):
+        if deadline is not None and time.monotonic() >= deadline:
+            _note(notes, "the time budget ran out mid-history")
+            return None
+        args = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            "query=" + _EDIT_HISTORY_QUERY,
+            "-F",
+            "id=" + node_id,
+            "-F",
+            "n=" + str(_EDIT_PAGE_SIZE),
+        ]
+        if cursor:
+            args += ["-F", "c=" + cursor]
+        rc, out, err_text = run_command(args)
+        if rc == 124:
+            _note(notes, "the read did not answer inside its per-call bound")
+            return None
+        if rc != 0 or not out:
+            _note(notes, _failure_reason(out, err_text, rc))
+            return None
+        try:
+            edits = json.loads(out)["data"]["node"]["userContentEdits"]
+        except (ValueError, KeyError, TypeError):
+            _note(notes, "the read returned no history payload")
+            return None
+        for node in edits.get("nodes") or []:
+            if not isinstance(node, dict):
+                return None
+            editor = node.get("editor") or {}
+            # The body is REDUCED here and never retained. Each entry's body is an
+            # externally-authored review comment that runs to tens of KB, and a page
+            # asks for a hundred of them, so keeping them would bound the entry
+            # COUNT while leaving the bytes unbounded. Only the shape and the two
+            # scalars are ever consumed, so they are all that survives the loop.
+            body = node.get("diff") or ""
+            entries.append(
+                dict(
+                    _sample_shape(body, lane, head_sha),
+                    at=node.get("editedAt") or "",
+                    editor=(editor.get("login") or ""),
+                    stamped=_stamped_for_head(body, lane, head_sha),
+                )
+            )
+        page_info = edits.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            # The cap is a page cap, not a record cap: a history longer than the
+            # cap is UNREAD, not empty, so report it as unreadable.
+            total = edits.get("totalCount")
+            if isinstance(total, int) and len(entries) < total:
+                return None
+            return entries
+        cursor = page_info.get("endCursor") or ""
+        if not cursor:
+            return None
+    return None
+
+
+def _sample_shape(body, lane, head_sha):
+    """What one stored body concluded, for a body already known to be this lane's.
+
+    Two spellings of "this sample blocks", because the lanes do not share one.
+    GPT and Opus write ``[BLOCK-MERGE] <head>`` into the body. The whole-design
+    lanes never write that marker at all -- they end their body with
+    ``<Lane>-Verdict: BLOCK`` -- so reading the marker alone makes ``blocking``
+    structurally False for DESIGN, UX and FIRST-PRINCIPLES, and a same-head
+    re-sample that replaces one of their BLOCK verdicts with a PASS would pass
+    every gate silently. Whichever spelling a lane uses, a block is a block.
+    """
+    verdict = VERDICT_LINE_RE.search(body)
+    label = verdict.group(1).upper() if verdict else ""
+    marked = any(sha_matches(sha, head_sha) for sha in BLOCK_MERGE_RE.findall(body))
+    # The verdict line is scoped to the lanes that own it, matching
+    # design_lane_verdicts: a lane that does not write one cannot have a BLOCK
+    # read out of model prose that merely quotes the shape.
+    declared = label == "BLOCK" and (lane or "").upper() in WHOLE_DESIGN_LANES
+    return {
+        "blocking": marked or declared,
+        "downgraded": _sanctioned_downgrade(body, head_sha),
+        "verdict": label,
+        "findings": len(FINDING_RE.findall(body)),
+        "chars": len(body),
+    }
+
+
+def _sanctioned_downgrade(body, head_sha):
+    """True when the WORKFLOW's own heading says adjudication downgraded this head.
+
+    Read from the text BEFORE the first ``<details>``, which on a non-blocking
+    body is entirely workflow-authored: the HTML key, the ``## <Lane> Review --
+    <verdict>`` heading rendered from the parsed adjudication decision, and the
+    sentence naming the head. The model's own output is embedded inside
+    ``<details><summary>Review details</summary>`` on that path, so nothing it
+    writes can reach this region -- which is the whole point, because the
+    alternative signal (a ``[BLOCK-MERGE-DOWNGRADED]`` marker anywhere in the
+    body) sits in the embedded model text and a review whose prose contains it
+    would forge its own clearance.
+
+    Requires the heading to BE a heading (``^##``) rather than the phrase
+    appearing loose, and requires the head to be named in the same region, so a
+    heading left over from another head does not clear this one.
+    """
+    prefix = (body or "").split("<details>", 1)[0]
+    if not _DOWNGRADE_HEADING_RE.search(prefix):
+        return False
+    return any(sha_matches(sha, head_sha) for sha in _PREFIX_SHA_RE.findall(prefix))
+
+
+def _stamped_for_head(body, name, head_sha):
+    """True when ``body`` carries ``name``'s OWN stamp for ``head_sha``.
+
+    Same rule as extract_findings: a stamp counts only under the lane whose
+    workflow-authored key owns the comment, so a stamp name appearing inside
+    model prose cannot make another lane's history look superseded.
+    """
+    return any(
+        stamp_name == name and sha_matches(sha, head_sha)
+        for stamp_name, sha in REVIEWED_STAMP_RE.findall(body)
+    )
+
+
+def superseded_verdicts(
+    comments,
+    head_sha,
+    bindings,
+    run_command,
+    authors=DEFAULT_MARKER_AUTHORS,
+    deadline=None,
+):
+    """Report verdicts for ``head_sha`` that a later sample at ``head_sha`` replaced.
+
+    Returns ``{"ok", "lanes", "lanes_seen", "blocking_dropped", "error"}``.
+    ``lanes`` carries one entry per bound lane whose history was read, each with
+    the current body's shape and a newest-first list of superseded samples for
+    this head. ``lanes_seen`` is how many lanes were actually examined, reported
+    as its own field so a caller reads the population rather than inferring it
+    from an array's length. ``blocking_dropped`` names the lanes where a
+    superseded sample BLOCKED this head and the body now presented does not --
+    the direction that turns a judged block into a clean board, which is the only
+    direction that can manufacture a pass. A sample blocks in either of the two
+    spellings the lanes use: ``[BLOCK-MERGE] <head>`` in the body, which GPT and
+    Opus write, or a ``<Lane>-Verdict: BLOCK`` line from a whole-design lane,
+    which never writes that marker at all. See ``_sample_shape``.
+
+    A lane is NOT named when the presented body's WORKFLOW-AUTHORED heading says
+    adjudication downgraded this head: that is the repository's own record that the
+    block was cleared by decision, and the rewrite producing it necessarily leaves a
+    superseded blocking body behind. ``current_downgraded`` reports that reading per
+    lane. The heading is used rather than the rewritten marker because the marker
+    lands inside the embedded model output -- see ``_sanctioned_downgrade``.
+
+    ``ok`` False means the question could not be ANSWERED and must be read as
+    unknown, never as "nothing was superseded". Two causes reach it and both fail
+    closed. An unreadable history is one. EXAMINING NO LANE AT ALL is the other:
+    a head whose lanes have not posted yet, or whose only comment wearing a lane
+    key fails the author check, yields an empty lane set, and answering "nothing
+    was superseded" there reports calm from having observed nothing -- the same
+    shape as a clean scan of an empty population. A gate that has never seen a
+    lane has not verified stability. So zero examined is UNKNOWN, stated in
+    ``error``, rather than a pass a caller has to know to distrust.
+
+    A caller that gates on this treats False as pending, the same convention
+    disposition_gate uses: a transient API failure must not turn a required
+    status red.
+    """
+    result = {
+        "ok": False,
+        "lanes": [],
+        "lanes_seen": 0,
+        "blocking_dropped": [],
+        "error": "",
+        # Which of the two causes of ok=False this is, as a value rather than as
+        # prose a caller would have to pattern-match. "unreadable" is a read that
+        # FAILED on a lane that exists; "no-lanes" is an empty population. Both
+        # are UNKNOWN and neither is a pass, but a caller may treat them
+        # differently: the required status maps both to pending, while the local
+        # gate fails closed only on "unreadable", because an empty population is
+        # already reported by the marker evaluation that runs before this.
+        "cause": "",
+    }
+    if comments is None or not head_sha:
+        result["error"] = "comments unavailable or no head sha"
+        result["cause"] = "unreadable"
+        return result
+    allowed = {a.lower() for a in authors or ()}
+    lanes = []
+    dropped = set()
+    for comment in comments:
+        body = comment.get("body") or ""
+        name = (bindings or {}).get(comment_key(body))
+        if not name:
+            continue
+        user = comment.get("user") or {}
+        if user.get("type") != "Bot" or (user.get("login") or "").lower() not in allowed:
+            continue
+        if deadline is not None and time.monotonic() >= deadline:
+            # Out of budget with lanes still unread. Reporting the lanes already
+            # examined would be a clean answer over a population cut short by the
+            # clock, which is the same fault as answering over an empty one.
+            result["error"] = (
+                "the time budget ran out with lane {} and possibly others "
+                "unexamined, so supersession is not evaluable for this head".format(name)
+            )
+            result["cause"] = "unreadable"
+            return result
+        notes: list = []
+        node_id = comment.get("node_id") or ""
+        stored = count_comment_edits(node_id, run_command, notes)
+        if stored is None:
+            result["error"] = "lane {} edit count not read: {}".format(
+                name, notes[0] if notes else "no reason reported"
+            )
+            result["cause"] = "unreadable"
+            return result
+        if stored <= 1:
+            # At most one stored body, so there is no earlier sample for this or
+            # any other head. The current body is that body, and the bodies are
+            # what the expensive read would have fetched.
+            history = []
+        else:
+            history = fetch_comment_edit_history(
+                node_id, name, head_sha, run_command, deadline, notes
+            )
+        if history is None:
+            result["error"] = "lane {} history not read: {}".format(
+                name, notes[0] if notes else "no reason reported"
+            )
+            result["cause"] = "unreadable"
+            return result
+        # Order WITHIN the head asked about, not within the comment's whole
+        # history. Among the bodies stamped for this head, every one but the most
+        # recent was replaced by a later sample for the SAME head, which is the
+        # finding. The most recent one was replaced by a newer head's verdict or
+        # is the body presented now -- an ordinary publish either way. Scoping the
+        # sort this way makes the answer correct for a head the PR has since moved
+        # past, where the overall-newest body belongs to another head entirely.
+        stamped = sorted(
+            (e for e in history if e.get("at") and e.get("stamped")),
+            key=lambda e: e["at"],
+            reverse=True,
+        )
+        samples = [{k: v for k, v in e.items() if k != "stamped"} for e in stamped[1:]]
+        current = _sample_shape(body, name, head_sha)
+        entry = {
+            "lane": name,
+            "comment_id": comment.get("id"),
+            "current_stamped": _stamped_for_head(body, name, head_sha),
+            "current_blocking": current["blocking"],
+            "current_downgraded": current["downgraded"],
+            "current_verdict": current["verdict"],
+            "superseded": samples,
+        }
+        lanes.append(entry)
+        # BLOCKING DROPPED needs the presented body to be a verdict for THIS
+        # head. With the PR moved past the head asked about, the slot holds a
+        # newer head's verdict, so `current_blocking` is False for a reason that
+        # has nothing to do with a dropped block -- and staleness is already
+        # reported by the marker evaluation. Requiring current_stamped keeps this
+        # signal to the one case it names: both samples judged this head, the
+        # earlier blocked, the survivor does not.
+        #
+        # And the presented body's own WORKFLOW-AUTHORED heading must not say
+        # adjudication downgraded this head. That heading is the repository's
+        # record that this exact block was cleared by decision, rendered from the
+        # parsed decision the gate acts on, and the rewrite producing it replaces
+        # the comment in place -- so it leaves a superseded blocking body behind as
+        # a matter of course. Naming the lane there would redden the required
+        # status on a head whose current verdict is a legitimate clear, and no
+        # recompute could ever clear it, since the stored history keeps the old
+        # body forever. Read from the heading and not from a marker in the body:
+        # the marker sits in the embedded model output, so a review quoting it
+        # would forge its own clearance. See _sanctioned_downgrade.
+        if (
+            entry["current_stamped"]
+            and any(s["blocking"] for s in samples)
+            and not current["blocking"]
+            and not current["downgraded"]
+        ):
+            dropped.add(name)
+    result["lanes"] = sorted(lanes, key=lambda e: e["lane"])
+    result["lanes_seen"] = len(lanes)
+    result["blocking_dropped"] = sorted(dropped)
+    if not lanes:
+        result["error"] = (
+            "no bound lane marker comment was examined, so supersession is not "
+            "evaluable for this head"
+        )
+        result["cause"] = "no-lanes"
+        return result
+    result["ok"] = True
+    return result
 
 
 def extract_findings(

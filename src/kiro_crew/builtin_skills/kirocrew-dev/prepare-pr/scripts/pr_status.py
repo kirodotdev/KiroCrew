@@ -12,6 +12,8 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
                              [--reviewers NAME1,NAME2] [--json]
         python3 pr_status.py --disposition-gate --repo OWNER/NAME --pr N
                              --head SHA
+        python3 pr_status.py --supersession-gate --repo OWNER/NAME --pr N
+                             --head SHA
         (no number -> auto-detect the PR for the current branch;
          --readiness-context / PREPARE_PR_READINESS_CONTEXT override the
          aggregate status-context name, default "PR Readiness";
@@ -26,7 +28,11 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
          --disposition-gate evaluates ONLY the disposition rule for an
          explicitly given repo/PR/head, prints one JSON object and exits 0 --
          this is what pr-readiness.yml calls to enforce the rule server-side,
-         so the rule keeps a single definition)
+         so the rule keeps a single definition;
+         --supersession-gate reports which verdicts for that head a later
+         sample at the SAME head replaced, read out of the comment's stored
+         edit history, and prints one JSON object and exits 0 on the same
+         terms: ``ok`` false is UNKNOWN and must be treated as pending)
 
 Exit codes:
    0  CLEAN     - open, non-draft, MERGEABLE, no CHANGES_REQUESTED, aggregate
@@ -57,6 +63,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 
 class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
@@ -636,6 +643,7 @@ def writer_disposition_records(repo, comments):
 
 
 disposition_violations = _review_contract.disposition_violations
+superseded_verdicts = _review_contract.superseded_verdicts
 
 
 def resolve_marker_bindings(argv, environ):
@@ -958,7 +966,7 @@ def detect_repo(pr_url=""):
     return repo.strip() if rc == 0 and "/" in repo else ""
 
 
-def fetch_bot_comments(repo, number, trusted_authors):
+def fetch_bot_comments(repo, number, trusted_authors, run_command=None):
     """Trusted marker-source comments on the PR, across pages; None on error.
 
     Paginated by hand (PRs here routinely carry 50+ bot comments; a single
@@ -968,12 +976,19 @@ def fetch_bot_comments(repo, number, trusted_authors):
     text would post an attacker-chosen marker and forge freshness. Returns
     None (uncertain, the caller fails closed) on any API/parse error or when
     the page cap is hit with more pages left.
+
+    ``run_command`` lets a caller supply a BOUNDED runner. The default one has
+    no timeout, which is right for the interactive report -- a slow read there
+    is visible to the person waiting -- but wrong for a gate whose output a
+    machine reads, because a hung call produces no output at all and empty
+    output is not a clean result.
     """
     if not repo:
         return None
+    call = run_command or run
     comments: list = []
     for page in range(1, _MAX_COMMENT_PAGES + 1):
-        rc, out, _ = run(
+        rc, out, _ = call(
             [
                 "gh",
                 "api",
@@ -1242,6 +1257,7 @@ def build_report(
     code,
     status,
     green_age=None,
+    supersession_eval=None,
 ):
     """Build the --json report.
 
@@ -1293,6 +1309,16 @@ def build_report(
             "bot_comments_readable": bool(marker_eval.get("ok")),
             "elided_stamp_reviewers": sorted(marker_eval.get("elided") or []),
             "findings": dict(marker_eval.get("findings") or {}),
+            # Verdicts for THIS head that a later same-head sample replaced. The
+            # lanes whose block was dropped are the gating half and reach the
+            # status line through decide(); these two fields are what a machine
+            # reads instead of the human-only report section. `readable` false is
+            # UNKNOWN, never "none found".
+            "superseded_verdicts": {
+                "blocking_dropped": sorted((supersession_eval or {}).get("blocking_dropped") or []),
+                "lanes_seen": int((supersession_eval or {}).get("lanes_seen") or 0),
+                "readable": bool((supersession_eval or {}).get("ok")),
+            },
             # Advisory, and deliberately OUTSIDE progress_key: the base moving is
             # not this PR making progress, and on a repo that merges every couple
             # of minutes a commit count in the key would reset the stall streak
@@ -1327,6 +1353,7 @@ def decide(
     rollup_notice="",
     disposition_eval=None,
     concerns_eval=None,
+    supersession_eval=None,
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
 
@@ -1510,6 +1537,48 @@ def decide(
         reasons.append(
             unanswered_concerns_reason(lane, (concerns_eval or {}).get("head_sha") or "")
         )
+    # A block this lane raised for THIS head, replaced by a later sample that does
+    # not block. Waiting cannot fix it -- the replacement already happened -- so it
+    # is an act reason, matching what the required status does with the same field.
+    #
+    # An UNREADABLE evaluation gates here too, exactly as the marker and
+    # disposition evaluations above do: "could not read the stored history" is not
+    # "no verdict was superseded", and this exit code is what arms `gh pr merge
+    # --auto`, so failing open here would let one transient GraphQL failure arm
+    # auto-merge over a dropped review block. The printed report already calls this
+    # state "fail-closed - this is not a clean result"; without this branch the
+    # exit code contradicted its own report. It sits BELOW the running gate rather
+    # than in ``blocked_now`` because an unreadable history is transient and
+    # waiting genuinely can fix it -- unlike a disposition violation, which only
+    # the comment's author can clear.
+    #
+    # This is not the required status's rule and does not change it: there,
+    # ``ok=false`` maps to `pending`, never to a red, because a status that turns
+    # "I could not answer" into a failure blocks every writer on a transient. The
+    # two surfaces answer different questions -- "is this revision red" versus
+    # "may this loop arm auto-merge" -- and UNKNOWN answers no to the second.
+    #
+    # Scoped to cause="unreadable", the read that FAILED on a lane that exists.
+    # The other cause, an empty population, is already covered here: the
+    # supersession read only runs when the markers were readable, so zero lanes
+    # examined means no bound lane comment exists, and "no [<NAME>-REVIEWED] for
+    # current head" above is the reason that states it. Failing closed on that too
+    # would add a second voice for one condition and report BLOCKED on every pull
+    # request whose reviewers have not commented yet, for a population where
+    # nothing could have been superseded.
+    if supersession_eval is not None and supersession_eval.get("cause") == "unreadable":
+        reasons.append(
+            "superseded review verdicts could not be established (fail-closed) - "
+            + (supersession_eval.get("error") or "supersession could not be evaluated")
+        )
+    for lane in (supersession_eval or {}).get("blocking_dropped") or []:
+        reasons.append(
+            "superseded verdict: {} blocked this head in a replaced sample and the "
+            "body now presented does not - read the comment's stored history; if the "
+            "clear is legitimate, clear it the sanctioned way (adjudication or an "
+            "/ai-review override), which stamps [BLOCK-MERGE-DOWNGRADED] and is "
+            "read here as cleared".format(lane)
+        )
     if head_run is False:
         reasons.append(
             "no pull_request-event workflow run for the current head - the "
@@ -1614,12 +1683,111 @@ def disposition_gate(argv, environ):
     return 0
 
 
+# A gate's output is read by a machine, and empty output is not a clean result:
+# a caller wrapping it in `timeout 60` gets rc=124 and an empty stdout, which is
+# indistinguishable from a gate that answered "nothing found" unless the caller
+# knows to check. `run` has no timeout, which is right for the interactive report
+# and wrong here, so the gate path gets its own bounded runner and an overall
+# budget. Together they guarantee the gate PRINTS, within roughly the budget plus
+# one call, whatever the network does.
+_GATE_CALL_TIMEOUT_SECS = 20
+_GATE_TOTAL_BUDGET_SECS = 45
+
+
+def bounded_run(args, timeout=_GATE_CALL_TIMEOUT_SECS):
+    """``run`` with a per-call wall-clock bound; 124 and a reason on timeout."""
+    try:
+        p = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "{}: no answer within {}s".format(args[0], timeout)
+    except OSError as exc:
+        return 127, "", "{}: {}".format(args[0], exc)
+
+
+def supersession_gate(argv, environ):
+    """Report verdicts for one head that a later sample at the same head replaced.
+
+    A lane's marker comment is one slot keyed on the lane alone, so a second
+    sample at one head overwrites the first and the board keeps only the
+    survivor. Every body the slot held survives in GraphQL userContentEdits, so
+    this gate reads that history rather than adding a record to it.
+
+    Usage: --supersession-gate --repo OWNER/NAME --pr N --head SHA
+    (--marker-bindings / --marker-authors and their env forms apply as usual.)
+
+    Prints ``{"ok", "blocking_dropped", "superseded", "lanes_seen", "lanes",
+    "error"}``. ``superseded`` is the total count of replaced same-head samples,
+    ``lanes_seen`` is how many lanes were examined, and ``blocking_dropped``
+    names the lanes where a replaced sample BLOCKED this head and the presented
+    body does not -- the only direction that can turn a judged block into a clean
+    board. A sample blocks in either spelling the lanes use, ``[BLOCK-MERGE]
+    <head>`` or a whole-design ``<Lane>-Verdict: BLOCK`` line. A presented body
+    whose workflow-authored heading says adjudication downgraded this head is a
+    SANCTIONED clear and is not named.
+
+    ``ok`` False means UNKNOWN and must be treated as pending, never as "nothing
+    was superseded". It covers an unreadable history, a head where NO lane was
+    examined, and the reads not finishing inside the gate's own time budget --
+    because a clean answer over an empty population, and no answer at all, are
+    both calm reported from having observed nothing. Every call is bounded and the
+    whole gate is bounded, so it always prints. Exit status is 0 for both
+    outcomes, so a non-zero exit means this script itself failed to run.
+    """
+    repo = _flag_value(argv, "--repo").strip()
+    number = _flag_value(argv, "--pr").strip()
+    head_sha = _flag_value(argv, "--head").strip()
+    result = {
+        "ok": False,
+        "blocking_dropped": [],
+        "superseded": 0,
+        "lanes_seen": 0,
+        "lanes": [],
+        "error": "",
+    }
+    try:
+        if not repo or not number or not head_sha:
+            result["error"] = "--repo, --pr and --head are all required"
+        else:
+            deadline = time.monotonic() + _GATE_TOTAL_BUDGET_SECS
+            bindings = resolve_marker_bindings(argv, environ)
+            authors = resolve_marker_authors(argv, environ)
+            comments = fetch_bot_comments(repo, number, authors, bounded_run)
+            if comments is None:
+                result["error"] = "bot comments could not be read"
+            else:
+                found = superseded_verdicts(
+                    comments, head_sha, bindings, bounded_run, authors, deadline
+                )
+                result["ok"] = bool(found["ok"])
+                result["error"] = found["error"]
+                result["blocking_dropped"] = found["blocking_dropped"]
+                result["lanes"] = found["lanes"]
+                result["lanes_seen"] = found["lanes_seen"]
+                result["superseded"] = sum(len(e["superseded"]) for e in found["lanes"])
+    except Exception as exc:  # noqa: BLE001 - any failure is "unknown", never red
+        result["ok"] = False
+        result["error"] = "{}: {}".format(type(exc).__name__, exc)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def main(argv):
     # Before the auth probe and PR detection below: this mode is given its
     # repo/PR/head explicitly and must stay usable from a workflow runner,
     # where `gh auth status` prose is noise and the JSON is the whole output.
     if "--disposition-gate" in argv[1:]:
         return disposition_gate(argv, os.environ)
+
+    if "--supersession-gate" in argv[1:]:
+        return supersession_gate(argv, os.environ)
 
     if run(["gh", "auth", "status"])[0] != 0:
         err("ERROR: gh not found or not authenticated. Run: gh auth login")
@@ -1820,6 +1988,57 @@ def main(argv):
             ),
             "head_sha": head_sha,
         }
+    # A second sample at ONE head replaces the first in the lane's slot, so the
+    # board keeps only the survivor and the replaced verdict is presented
+    # nowhere. Report it here from the stored history rather than leaving the
+    # local loop to infer it. Costs one GraphQL read per bound lane, so it runs
+    # only when the markers themselves were readable -- with those unread there
+    # is no lane set to ask about.
+    supersession_eval = None
+    if marker_eval.get("ok") and bot_comments is not None:
+        supersession_eval = superseded_verdicts(
+            bot_comments, head_sha, marker_bindings, run, marker_authors
+        )
+        print("-- Superseded verdicts (head {}) ".format(sanitize(head_sha[:12]) or "?") + "-" * 17)
+        if not supersession_eval["ok"]:
+            print(
+                "  UNKNOWN: {} (fail-closed - this is not a clean result)".format(
+                    sanitize(supersession_eval["error"] or "supersession could not be evaluated")
+                )
+            )
+        else:
+            replaced = [e for e in supersession_eval["lanes"] if e["superseded"]]
+            if not replaced:
+                print(
+                    "  (no verdict for this head was replaced by a later sample; "
+                    "{} lane(s) examined)".format(supersession_eval["lanes_seen"])
+                )
+            for entry in replaced:
+                for sample in entry["superseded"]:
+                    print(
+                        "  - {}: sample at {} was replaced{}{}{}".format(
+                            sanitize(entry["lane"]),
+                            sanitize(sample["at"]),
+                            "  [BLOCK-MERGE]" if sample["blocking"] else "",
+                            (
+                                "  verdict {}".format(sanitize(sample["verdict"]))
+                                if sample["verdict"]
+                                else ""
+                            ),
+                            (
+                                "  ({} FINDING line(s))".format(sample["findings"])
+                                if sample["findings"]
+                                else ""
+                            ),
+                        )
+                    )
+            for lane in supersession_eval["blocking_dropped"]:
+                print(
+                    "  BLOCKING DROPPED: {} blocked this head in a replaced sample and "
+                    "the body now presented does not - read the history before "
+                    "treating this lane as clear".format(sanitize(lane))
+                )
+
     print("-- Disposition records (one lane, one rationale per finding) " + "-" * 6)
     if not disposition_ok:
         print("  ERROR: disposition records could not be established (fail-closed)")
@@ -1913,6 +2132,7 @@ def main(argv):
         rollup_notice=rollup_notice,
         disposition_eval=disposition_eval,
         concerns_eval=concerns_eval,
+        supersession_eval=supersession_eval,
     )
     print(status)
     if "--json" in argv[1:]:
@@ -1933,6 +2153,7 @@ def main(argv):
                     code=code,
                     status=status,
                     green_age=green_age,
+                    supersession_eval=supersession_eval,
                 ),
                 sort_keys=True,
                 separators=(",", ":"),

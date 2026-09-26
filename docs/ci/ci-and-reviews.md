@@ -2309,6 +2309,31 @@ status plus one `readiness:` label**.
   adjudication ledger downgrade a REPEATED finding on a later review round, and a
   later review round takes a push, which recomputes readiness and catches the
   violation.
+- **It also reports a verdict this head's own re-sample replaced.** A review
+  lane's marker comment is ONE slot keyed on the lane, never on the head, so a
+  second sample at one head overwrites the first and the board keeps only the
+  survivor. Every body the slot ever held survives in GraphQL
+  `userContentEdits`, so readiness runs `pr_status.py --supersession-gate` and
+  folds each lane where a replaced sample BLOCKED this head, while the body now
+  presented does not, into its blocking list. A sample blocks in either spelling
+  the lanes use: `[BLOCK-MERGE] <head>`, which GPT and Opus write, or a
+  `<Lane>-Verdict: BLOCK` line from Design, UX or First Principles, which never
+  write that marker at all. **A presented body carrying
+  `[BLOCK-MERGE-DOWNGRADED] <head>` is a sanctioned clear and is not reported** —
+  that rewrite is how adjudication and `/ai-review override` clear a block, and it
+  necessarily leaves a superseded blocking body behind, so the marker is read
+  rather than the shape re-detected. That is also the clearance path if you hit
+  this blocker on a verdict you judge legitimate: clear it the sanctioned way and
+  the gate reads it as cleared. An ordinary same-head re-sample that did not drop
+  a block is reported for information and does NOT gate. A reading the gate could
+  not establish is `pending`, never red, for the same reason the disposition gate's
+  is — an unreadable comment history is not "no verdict was superseded" — and the
+  step is skipped for `dependabot[bot]` with the same condition the lanes carry,
+  because on such a pull request no lane ever publishes and `pending` would strand
+  the status for the life of the head with nothing able to clear it. The local
+  `pr_status.py` reports the same two states: a dropped block and an unreadable
+  reading both fail closed there, because that exit code is what arms
+  `gh pr merge --auto`.
 - **Unapproved fork runs remain blocking but are attributed separately.** GitHub
   reports a fork workflow held behind *Approve and run* as `action_required`
   even though it has not executed. Readiness keeps the failure status and
