@@ -85,6 +85,7 @@ DECLARED_SITES = frozenset(
         ("apps/plugin_import.py", "_is_schema_qualified"),
         ("apps/plugin_import.py", "convert_plugin_package"),
         ("apps/plugin_import.py", "find_plugin_manifest"),
+        ("cloud/source.py", "_staging_dir"),
         ("config/superseded_defaults.py", "_update_map"),
         ("connections/warm.py", "_is_plain_warm_generation_dir"),
         ("connections/warm.py", "_read_warm_generation_owner"),
