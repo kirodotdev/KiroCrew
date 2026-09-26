@@ -960,6 +960,26 @@ class MonitorState:
     #: anything was observed. Counted apart from wakes so the metering does not
     #: report a periodic delivery as a real signal.
     floor_ticks: int = 0
+    #: True from the tick that DECIDES a floor delivery until that delivery is
+    #: CONFIRMED.
+    #:
+    #: The decision publishes a reset ``quiet_streak`` durably, so the only record
+    #: that a turn was due is gone the moment the decision lands -- while the
+    #: in-process claim carrying the debt lives in memory. A gateway death in
+    #: between therefore keeps the half that suppresses and loses the half that
+    #: delivers: the next tick reads a subject that has not changed against a
+    #: baseline written for a turn nobody received, answers quiet, and the forced
+    #: delivery moves a whole floor away with nothing saying one was owed.
+    #: ``followup_ticks`` is not the backstop, because it answers a fire the slot
+    #: REFUSED and a process that stopped refuses nothing.
+    #:
+    #: So the debt is durable and outlives the fire. Finding it set on a later tick
+    #: means a floor delivery is still owed, and that tick fires WITHOUT observing:
+    #: re-observing would read the same unchanged subject and answer quiet again.
+    #: It is discharged at the one point delivery is confirmed -- the same point
+    #: that charges ``floor_ticks`` -- so a refusal and a death both leave it owed,
+    #: and a retried delivery is charged exactly once.
+    floor_fire_pending: bool = False
     #: True from just before a probe runs until its verdict has been consumed.
     #:
     #: The kernel commits its dedupe state BEFORE raising a wake, which is right
@@ -1052,6 +1072,12 @@ class MonitorState:
         # unreadable value becomes True and costs at most one turn.
         if not isinstance(self.poll_in_flight, bool):
             self.poll_in_flight = True
+        # Normalised toward doubt for the same reason, and the fail-safe runs the
+        # same way: an unreadable value here means a forced turn may be owed, and
+        # ``bool("")`` would clear that and suppress it. One turn spent beats one
+        # lost, and the flag clears itself on the delivery it asks for.
+        if not isinstance(self.floor_fire_pending, bool):
+            self.floor_fire_pending = True
         # The marker carries an outcome name, so an unreadable value cannot be
         # guessed. Keep it PENDING and record the cautious classification: a
         # delivery still happens, and a subject wrongly called blocked prompts a

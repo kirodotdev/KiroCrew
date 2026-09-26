@@ -6093,6 +6093,24 @@ class AutoNudgeService:
                 loop.id,
             )
             return False
+        if monitor.floor_fire_pending:
+            # A floor delivery was decided on an earlier tick and has not been
+            # confirmed. Deliver it WITHOUT observing: the streak that earned it is
+            # already reset on disk, so a fresh probe reads an unchanged subject,
+            # answers quiet, and would suppress the very turn that is owed -- the
+            # same reasoning the judge's own owed wake is delivered on.
+            #
+            # The in-process claim is re-taken here because a restart starts with an
+            # empty claim set while this flag survives, and the claim is what makes
+            # the fire cycle charge the delivery and discharge the debt. Re-taking is
+            # idempotent: it is a set, and the fire cycle is the only release.
+            self._pending_floor_tick.add(loop.id)
+            logger.info(
+                "AutoNudge: loop %s owes a floor delivery -- firing it rather than "
+                "re-observing a subject its own reset reads as calm",
+                loop.id,
+            )
+            return False
         # Durable BEFORE the probe runs, because the case it protects against is
         # this coroutine never resuming. ``_persist_soon`` would not do: a
         # scheduled write does not survive the shutdown that causes the problem.
@@ -6421,6 +6439,14 @@ class AutoNudgeService:
                 # fire cycle. They belong in one structure; that is the collapse
                 # recommended on the pull request rather than a third set later.
                 self._pending_floor_tick.add(loop.id)
+                # And durably, because that claim is in memory while the reset above
+                # is not: a process that stops between this decision and the turn
+                # landing keeps the reset, so the next tick reads the subject as calm
+                # and the forced delivery is gone with nothing recording it was due.
+                # Set BEFORE either write below, so the debt and the reset that hides
+                # it ride ONE snapshot -- they land together or neither lands, and a
+                # lost write leaves the streak at the floor for the next tick to trip.
+                monitor.floor_fire_pending = True
                 logger.info(
                     "AutoNudge: loop %s hit the quiet-streak floor after %d quiet ticks",
                     loop.id,
@@ -7048,6 +7074,13 @@ class AutoNudgeService:
             # exists to break a silence, not to protect work the agent had already
             # started, so there is nothing in progress for a bypassed tick to shield.
             loop.monitor.floor_ticks += 1
+            # And the durable debt is discharged HERE and nowhere earlier, because this
+            # is the one place the turn is known to have landed. A refused fire keeps it
+            # owed alongside the re-taken claim above, and so does a process that never
+            # reaches this line -- which is the case the in-memory claim alone cannot
+            # carry. The clear may ride the delivered path's own write: losing it costs
+            # one extra fire, which is the direction to be wrong in.
+            loop.monitor.floor_fire_pending = False
         if not delivered:
             # If the fire path already removed the loop (e.g. slot missing →
             # remove()), do NOT resurrect it with a fresh timer — that would
