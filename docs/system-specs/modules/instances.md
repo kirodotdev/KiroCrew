@@ -1526,8 +1526,12 @@ would make the proxy a third token-crossing route without touching this file.
 The transfer needs the
 credential but the browser does not, so the
 request is issued **inside `SshTunnelManager.send_session_bundle`** — the token
-never leaves the manager, is sent as a cookie (so it cannot land in the peer's
-access log), and is never logged. Any audit of where tokens leave the gateway
+never leaves the manager and is never logged. The minted token is a one-time
+link, which the peer refuses as a cookie, so the manager trades it once at
+`GET /api/status?token=` and sends only the resulting session cookie (so it
+cannot land in the peer's access log). The trade runs as soon as the link is
+stored (connect, re-mint, self-heal), inside the link's click window, and the
+session is cached against that link. Any audit of where tokens leave the gateway
 still finds exactly two routes.
 
 ### 14.5 Trust model for an inbound session

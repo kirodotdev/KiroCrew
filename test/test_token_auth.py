@@ -266,6 +266,11 @@ async def _ok_handler(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+def _session_token(*args, **kwargs):
+    """Mint the kind of token the middleware sets as a cookie on exchange."""
+    return generate_token(*args, register_nonce=False, session=True, **kwargs)
+
+
 def _make_request(
     path: str = "/",
     query: dict | None = None,
@@ -295,6 +300,8 @@ async def test_middleware_accepts_valid_token(via: str) -> None:
     token = generate_token("testuser", ttl_seconds=300)
 
     if via == "cookie":
+        # A cookie holds the exchanged SESSION token, never the link itself.
+        token = _session_token("testuser", ttl_seconds=300)
         # Pre-bind IP and mark consumed so cookie path works
         bind_token_ip(token, "127.0.0.1")
         mark_consumed(token)
@@ -394,7 +401,7 @@ async def test_no_refresh_claim_survives_session_exchange() -> None:
 @pytest.mark.asyncio
 async def test_cookie_not_reset_when_present() -> None:
     mw = token_auth_middleware()
-    token = generate_token("existing", ttl_seconds=300)
+    token = _session_token("existing", ttl_seconds=300)
     # Simulate prior query-param auth
     bind_token_ip(token, "127.0.0.1")
     mark_consumed(token)
@@ -417,8 +424,8 @@ async def test_expired_query_token_falls_back_to_valid_cookie() -> None:
     mw = token_auth_middleware()
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
-        stale = generate_token("staleuser", ttl_seconds=300)
-    cookie = generate_token("staleuser", ttl_seconds=3600)
+        stale = _session_token("staleuser", ttl_seconds=300)
+    cookie = _session_token("staleuser", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
 
@@ -510,8 +517,8 @@ async def test_invalid_query_token_with_valid_cookie_reports_the_cookie_authenti
     mw = token_auth_middleware()
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
-        stale = generate_token("sameuser2", ttl_seconds=300)
-    cookie = generate_token("sameuser2", ttl_seconds=3600)
+        stale = _session_token("sameuser2", ttl_seconds=300)
+    cookie = _session_token("sameuser2", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
 
@@ -532,8 +539,8 @@ async def test_internal_path_expired_query_token_falls_back_to_cookie() -> None:
     whose session cookie is still valid."""
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
-        stale = generate_token("intuser", ttl_seconds=300)
-    cookie = generate_token("intuser", ttl_seconds=3600)
+        stale = _session_token("intuser", ttl_seconds=300)
+    cookie = _session_token("intuser", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
     mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
@@ -623,7 +630,7 @@ async def test_cookie_named_by_host_port_under_tunnel() -> None:
 async def test_cookie_read_uses_host_port() -> None:
     """A cookie named by the Host port authenticates the matching dashboard."""
     mw = token_auth_middleware()  # server port 5476
-    token = generate_token("readuser", ttl_seconds=300)
+    token = _session_token("readuser", ttl_seconds=300)
     bind_token_ip(token, "127.0.0.1")
     mark_consumed(token)
 
@@ -1009,7 +1016,7 @@ async def test_internal_path_non_loopback_denied_in_local_only_mode() -> None:
 @pytest.mark.asyncio
 async def test_internal_path_non_loopback_cookie_auth_when_not_local_only() -> None:
     """When local_only=False, non-loopback with valid cookie is granted."""
-    token = generate_token("testuser", ttl_seconds=300)
+    token = _session_token("testuser", ttl_seconds=300)
     mw = token_auth_middleware(
         internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
     )
@@ -1049,7 +1056,7 @@ async def test_internal_path_non_loopback_wrong_secret_denied() -> None:
 @pytest.mark.asyncio
 async def test_internal_path_non_loopback_valid_secret_and_cookie_granted() -> None:
     """Both valid secret and valid cookie on non-loopback → granted."""
-    token = generate_token("testuser", ttl_seconds=300)
+    token = _session_token("testuser", ttl_seconds=300)
     mw = token_auth_middleware(
         internal_paths=frozenset({"/api/spawn"}), internal_secret="real", local_only=False
     )
@@ -1190,7 +1197,7 @@ async def test_mixed_path_loopback_with_secret_granted() -> None:
 async def test_mixed_path_non_loopback_with_valid_cookie_granted() -> None:
     """DCV/SSH-forwarded browser: non-loopback + valid cookie → granted (no false banner)."""
     mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}))
-    token = generate_token("dcvuser", ttl_seconds=300)
+    token = _session_token("dcvuser", ttl_seconds=300)
     bind_token_ip(token, "10.0.0.1")
     mark_consumed(token)
     req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
@@ -2603,7 +2610,7 @@ async def test_shell_bypass_does_not_preempt_ip_mismatch() -> None:
     stays 403' invariant: this test fails if the bypass is ever moved above
     validation/IP-binding."""
     mw = token_auth_middleware(spa_shell_handler=_shell_handler)
-    token = generate_token("ipuser", ttl_seconds=300)
+    token = _session_token("ipuser", ttl_seconds=300)
     bind_token_ip(token, "10.0.0.1")
     mark_consumed(token)
     req = _make_request(
@@ -3971,7 +3978,7 @@ async def test_node_scope_replay_from_another_node_denied_with_device_reason(
 
     _tailnet_env(_whois_payload(node="other-node.tail.ts.net"))
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:node:you@example.com|phone.tail.ts.net")
     mark_consumed(token)
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -3988,7 +3995,7 @@ async def test_login_scope_replay_from_another_node_is_accepted(_tailnet_env) ->
 
     _tailnet_env(_whois_payload(node="other-node.tail.ts.net"))
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust(pin_scope="login"))
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:login:you@example.com")
     mark_consumed(token)
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -4005,7 +4012,7 @@ async def test_login_scope_replay_with_different_login_is_denied(_tailnet_env) -
             allowed_logins=("you@example.com", "other@example.com"), pin_scope="login"
         )
     )
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:login:you@example.com")
     mark_consumed(token)
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -4038,7 +4045,7 @@ async def test_tagged_node_session_not_replayable_from_second_tagged_node(
     mw = token_auth_middleware(
         tailnet_trust=_tailnet_trust(allowed_logins=("tagged-devices",), pin_scope="login")
     )
-    token = generate_token("ci", ttl_seconds=300)
+    token = _session_token("ci", ttl_seconds=300)
     # Session originally bound on tagged node A (forced node scope).
     bind_token_peer(token, "ts:node:tagged-devices|ci-a.tail.ts.net")
     mark_consumed(token)
@@ -4141,7 +4148,7 @@ async def test_non_tailscale_tunnel_behaviour_is_unchanged(_tailnet_env) -> None
 async def test_plain_ip_mismatch_reason_is_preserved(_tailnet_env) -> None:
     """The address-pin denial keeps its historical reason string."""
     mw = token_auth_middleware()
-    token = generate_token("user", ttl_seconds=300)
+    token = _session_token("user", ttl_seconds=300)
     bind_token_ip(token, "10.0.0.1")
     mark_consumed(token)
     req = _make_request(cookies={"mc_token_5476": token}, remote="192.168.1.9")
@@ -4191,7 +4198,7 @@ async def test_internal_mixed_path_enforces_the_peer_pin(_tailnet_env) -> None:
         mixed_internal_paths=frozenset({"/api/spawn"}),
         tailnet_trust=_tailnet_trust(),
     )
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:node:you@example.com|phone.tail.ts.net")
     mark_consumed(token)
     req = _peer_request(cookies={"mc_token_5476": token})
@@ -4210,7 +4217,7 @@ async def test_internal_mixed_path_accepts_the_matching_peer(_tailnet_env) -> No
         mixed_internal_paths=frozenset({"/api/spawn"}),
         tailnet_trust=_tailnet_trust(),
     )
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:node:you@example.com|phone.tail.ts.net")
     mark_consumed(token)
     req = _peer_request(cookies={"mc_token_5476": token})
@@ -4230,7 +4237,7 @@ async def test_identity_pinned_session_with_daemon_down_names_unavailability(
 
     _tailnet_env(None)  # daemon unreachable
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     bind_token_peer(token, "ts:node:you@example.com|phone.tail.ts.net")
     mark_consumed(token)
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -4249,7 +4256,7 @@ async def test_restart_first_use_repins_verified_peer_cookie(_tailnet_env) -> No
     set_whois = _tailnet_env
     set_whois(_whois_payload())
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     mark_consumed(token)
     # No bind_token_peer call: simulates the post-restart unbound state.
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -4276,7 +4283,7 @@ async def test_restart_require_peer_cookie_refuses_unverified_first_use(
 
     _tailnet_env(None)
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
-    token = generate_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
+    token = _session_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
     mark_consumed(token)
     # No bind_token_peer call: simulates the post-restart in-memory state.
     resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
@@ -4302,6 +4309,7 @@ async def test_restart_signed_require_peer_cookie_rehydrates_only_for_original_d
         peer_key=expected,
         extra={"require_peer": "1"},
         register_nonce=False,
+        session=True,
     )
 
     assert not _ta._state.has_binding(token)
@@ -4332,7 +4340,11 @@ async def test_restart_legacy_claimless_require_peer_cookie_cannot_claim_device(
     _tailnet_env(_whois_payload())
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
     token = generate_token(
-        "tsuser", ttl_seconds=300, extra={"require_peer": "1"}, register_nonce=False
+        "tsuser",
+        ttl_seconds=300,
+        extra={"require_peer": "1"},
+        register_nonce=False,
+        session=True,
     )
     response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert response.status == 403
@@ -4378,6 +4390,7 @@ async def test_signed_login_scope_survives_operator_pin_scope_change(_tailnet_en
         peer_key=expected,
         extra={"require_peer": "1"},
         register_nonce=False,
+        session=True,
     )
     response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert response.status == 200
@@ -4396,7 +4409,7 @@ async def test_restart_repin_covers_internal_mixed_paths(_tailnet_env) -> None:
     mw = token_auth_middleware(
         mixed_internal_paths=frozenset({"/api/spawn"}), tailnet_trust=_tailnet_trust()
     )
-    token = generate_token("tsuser", ttl_seconds=300)
+    token = _session_token("tsuser", ttl_seconds=300)
     mark_consumed(token)
     req = _peer_request(cookies={"mc_token_5476": token})
     req.path = "/api/spawn"
@@ -4424,7 +4437,7 @@ async def test_restart_unbound_cookie_without_peer_keeps_todays_semantics(
 
     _tailnet_env(_whois_payload())
     mw = token_auth_middleware()  # trust off
-    token = generate_token("user", ttl_seconds=300)
+    token = _session_token("user", ttl_seconds=300)
     mark_consumed(token)
     resp = await mw(_make_request(cookies={"mc_token_5476": token}), _ok_handler)
     assert resp.status == 200
@@ -4587,3 +4600,103 @@ def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
     (app_dir / ".app_secret").write_text("real", encoding="utf-8")
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False
+
+
+# -- A one-time link is never a session cookie --
+
+
+def _claims_of(token: str) -> dict:
+    import base64
+    import json
+
+    head = token.split(".", 1)[0]
+    return json.loads(base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)))
+
+
+@pytest.mark.asyncio
+async def test_unclicked_login_link_is_refused_as_a_session_cookie() -> None:
+    """The gateway's printed login link carries a 20-hour ``session_exp``, so a
+    copy read back from a log must not authenticate as ``mc_token_<port>``."""
+    link = generate_token("owner", ttl_seconds=MAX_SESSION_TTL_SECS)
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/api/status", cookies={"mc_token_5476": link}), _ok_handler)
+    assert resp.status == 403
+    assert validate_token_with_app(link, use_session_exp=True)[2] == ("link token is not a session")
+    # It is still a working one-time link inside its click window.
+    assert validate_token_with_app(link)[0] is True
+
+
+@pytest.mark.asyncio
+async def test_link_on_an_internal_path_query_gets_link_rules_not_session_rules() -> None:
+    """An internal-path ``?token=`` link works inside its click window (``pod
+    api`` relies on that) and stops when the window closes, instead of lasting
+    its full 20-hour ``session_exp``."""
+    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1_000_000.0
+        link = generate_token("owner", ttl_seconds=MAX_SESSION_TTL_SECS)
+        fresh = await mw(_make_request(path="/api/spawn", query={"token": link}), _ok_handler)
+        mock_time.time.return_value = 1_000_000.0 + 600
+        later = await mw(_make_request(path="/api/spawn", query={"token": link}), _ok_handler)
+    assert fresh.status == 200
+    assert later.status == 403
+
+
+@pytest.mark.asyncio
+async def test_link_exchange_mints_a_session_the_cookie_path_accepts() -> None:
+    link = generate_token("owner", ttl_seconds=3600)
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/api/status", query={"token": link}), _ok_handler)
+    assert resp.status == 200
+    session = resp.cookies.get("mc_token_5476").value
+    assert session != link
+    assert _claims_of(session)["kind"] == "session"
+    valid, uid, reason, _app = validate_token_with_app(session, use_session_exp=True)
+    assert (valid, uid, reason) == (True, "owner", "")
+
+
+def test_the_session_claim_cannot_be_set_or_stripped_through_extra() -> None:
+    assert "kind" not in _claims_of(generate_token("u", extra={"kind": "session"}))
+    session = generate_token("u", register_nonce=False, session=True, extra={"kind": "link"})
+    assert _claims_of(session)["kind"] == "session"
+
+
+def test_skipping_nonce_registration_does_not_make_a_session() -> None:
+    """Sessionhood is declared by ``session=True``, never inferred from how the
+    nonce was stored."""
+    token = generate_token("u", register_nonce=False)
+    assert "kind" not in _claims_of(token)
+    assert validate_token_with_app(token, use_session_exp=True)[2] == (
+        "link token is not a session"
+    )
+
+
+def test_a_token_without_the_session_claim_is_refused_as_a_session() -> None:
+    """Links and cookies minted before the claim existed carry no ``kind`` and
+    are signed with the same persisted key; they must not keep authenticating
+    for their remaining 20 hours."""
+    import json
+
+    from kiro_crew.dashboard import token_auth as _ta
+
+    now = time.time()
+    payload = {
+        "sub": "owner",
+        "exp": now + 300,
+        "session_exp": now + MAX_SESSION_TTL_SECS,
+        "iat": now,
+        "nonce": "0123456789abcdef",
+        "gen": 0,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    legacy = f"{_ta._b64url_encode(raw)}.{_ta._sign(raw)}"
+    assert validate_token(legacy, use_session_exp=True)[0] is True
+    assert validate_token_with_app(legacy, use_session_exp=True)[2] == (
+        "link token is not a session"
+    )
+
+
+def test_app_tokens_are_not_links() -> None:
+    token = generate_token("myapp", app="myapp")
+    assert "kind" not in _claims_of(token)
+    assert validate_token_with_app(token, use_session_exp=True)[:1] == (True,)
