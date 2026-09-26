@@ -646,6 +646,12 @@ def test_the_drift_guard_resolves_each_double_in_its_own_scope() -> None:
     Pins the scan itself, because a name-keyed lookup passes this input: two
     scopes bind ``_authorize``, only one of them drifted, and a single entry per
     name checks both installs against whichever body it kept.
+
+    Also pins the rule INSIDE one scope: a name bound more than once there has
+    to satisfy the fence in every form it takes, on the direct branch and on
+    the factory branch alike. Each of those gets a case holding one conforming
+    and one drifted form, which a satisfied-by-one rule approves and the
+    every-form rule reports.
     """
     drifted = textwrap.dedent("""
         def good(monkeypatch):
@@ -665,6 +671,49 @@ def test_the_drift_guard_resolves_each_double_in_its_own_scope() -> None:
     assert len(installed) == 2, installed
     # The second install is the drifted one; the first must stay clean.
     assert offenders == [installed[1]], (offenders, installed)
+
+    # ONE scope binding the name twice, one conforming form and one drifted.
+    # Both installs resolve to both bodies, so the every-binding rule reports
+    # both. This is the input a satisfied-by-one rule cannot decide: it finds
+    # the conforming body and approves installs the drifted body also serves.
+    mixed_direct = textwrap.dedent("""
+        def both(monkeypatch):
+            def _authorize(candidate, *, proof_not_before=None):
+                return "ok", 1
+
+            monkeypatch.setattr(mod, "relay_authorize", _authorize)
+
+            def _authorize(candidate):
+                return "ok", 1
+
+            monkeypatch.setattr(mod, "relay_authorize", _authorize)
+        """)
+    installed, offenders = _relay_authorize_doubles(mixed_direct)
+    assert len(installed) == 2, installed
+    assert offenders == installed, (offenders, installed)
+
+    # The same rule on the factory branch: one scope binding the factory name
+    # twice, one returning a conforming inner callable and one a drifted one.
+    # The install is reported because a drifted form of the factory reaches it.
+    mixed_factory = textwrap.dedent("""
+        def both(monkeypatch):
+            def _make():
+                def _authorize(candidate, *, proof_not_before=None):
+                    return "ok", 1
+
+                return _authorize
+
+            def _make():
+                def _authorize(candidate):
+                    return "ok", 1
+
+                return _authorize
+
+            monkeypatch.setattr(mod, "relay_authorize", _make())
+        """)
+    installed, offenders = _relay_authorize_doubles(mixed_factory)
+    assert len(installed) == 1, installed
+    assert offenders == installed, (offenders, installed)
 
     # The dotted-string install form is counted and checked the same way.
     dotted = textwrap.dedent("""
