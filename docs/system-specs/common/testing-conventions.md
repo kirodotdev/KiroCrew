@@ -2982,11 +2982,11 @@ The knobs, tightest-wins:
 If the suite is slow on your machine, the answer is usually not a bigger `-n`: run
 the slice you are working on. A full-suite checkpoint is what CI is for.
 
-**Narrow by FILE, not by `--splits`.** `--splits/--group` — pytest-split, retained
-for macOS — deselects *after* the session has collected everything, so a 1-of-4
+**Narrow by FILE, not by `--splits`.** `--splits/--group` — pytest-split — deselects
+*after* the session has collected everything, so a 1-of-4
 item shard still pays the whole floor in every worker while running a quarter of
 the tests. Measured: 14,237 of 56,946 items selected, 744 MiB peak, which is the
-unsharded floor. Linux and Windows CI instead use `scripts.ci_file_shards` to
+unsharded floor. CI uses `scripts.ci_file_shards` on every platform to
 assign whole files before import; each worker collects only its shard's files.
 For local work, pass the specific files relevant to the change.
 
@@ -3439,7 +3439,7 @@ test fails. Raw assignment does not.
 
 **Sharding does not just scatter this class, it hides it — so a full-suite run is the wrong
 place to be finding it.** `ci.yml` assigns whole files to Linux/Windows shards
-before import (macOS retains `pytest-split` groups), and a leaker only damages tests
+before import (every platform assigns whole files), and a leaker only damages tests
 that land in the *same process*, so a leak whose
 victim sits in another shard is not observable in PR CI at all. The release job runs the
 suite whole and is therefore the first place it appears — as failures in files that have
@@ -3763,10 +3763,14 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
-macOS retains three `pytest-split` groups. That plugin uses recorded runtime only
-when `.test_durations` is available, otherwise it falls back to test count.
-`test-durations.yml` remains the optional duration-recording workflow; its output
-does not affect Linux/Windows file ownership. Linux-recorded durations must not be
+macOS assigns whole files like the other platforms, in four shards. The shard
+count is the knob to reach for there rather than the 40-minute cap, because that
+cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:
+a higher cap bounds a runaway more loosely, while a higher count is what divides
+the work. `test-durations.yml` still
+invokes pytest-split to RECORD `.test_durations`, and three tests load its plugin
+directly, but no sharding lane reads that file any more, so the recording balances
+nothing. Linux-recorded durations must not be
 assumed to balance macOS.
 
 **Measure a shard by running it, not by summing durations.** Per-test times from

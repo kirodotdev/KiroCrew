@@ -132,8 +132,8 @@ Out-of-band lanes that never gate a PR:
   call, and `test-durations.yml` already pays for a full suite on `main`.
   Contributor-facing half: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
-  `test-durations.yml` (re-measures `.test_durations` so pytest-split's shards stay
-  balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
+  `test-durations.yml` (re-measures `.test_durations`, which no sharding lane reads
+  any more, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
   live label set, because keyword rules mislabel often enough to be worse than no
   label), `issue-summary.yml` (a second, deliberately separate lane posts ONE
@@ -400,8 +400,8 @@ fourth shrink-only, diff-scoped baseline gate referenced in the table above.
 
 ### Backend file sharding
 
-The Linux and Windows matrices assign whole files before pytest imports their
-items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
+The Linux, Windows and macOS matrices assign whole files before pytest imports
+their items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
 those matrix commands. It uses SHA-256 of the root-relative POSIX path to choose
 one of `SHARD_COUNT` owners. Each xdist worker reaches the same assignment.
 Adding a file does not move existing files between shards.
@@ -411,8 +411,8 @@ platform-specific conftest ignores, and creates its normal file collectors.
 The plugin returns an empty collection report for files owned by another shard,
 before their collector imports them. It does not rewrite discovery into explicit
 file arguments, which would bypass `collect_ignore`. Within its owner, the
-ordinary shard excludes only `ipv6_required`; the dedicated hosted lane runs those
-items. Explicit reduced-scope targets keep their
+ordinary Linux shard excludes only `ipv6_required` and the dedicated hosted lane runs
+those items; the macOS command passes no marker filter at all. Explicit reduced-scope targets keep their
 existing discovery semantics and are partitioned at the same file boundary.
 Leaf-test repeat runs do not load the file-sharding plugin and remain unsharded.
 
@@ -437,14 +437,19 @@ suite, with no duplicates within each OS. Invalid shard options fail as usage
 errors. A shard collecting no tests retains
 pytest's nonzero exit; it never falls back to the whole suite or reports success.
 `loadgroup` still serializes marked tests within a job. Like the former item
-split, this is not a cross-runner serialization mechanism. Namespace jobs and
-macOS keep their existing collection; `pytest-split` remains installed for macOS
-and the optional duration-recording workflow.
+split, this is not a cross-runner serialization mechanism. Namespace jobs keep their
+own collection, and macOS now file-shards like the two backend jobs, so no job
+splits items any more. `pytest-split` stays
+installed for `test-durations.yml`'s `--store-durations` recording run and for three
+tests that load its plugin directly (`test_ci_pytest_progress.py`,
+`test_ci_file_shards.py`, `test_xdist_escaped_failure_guard.py`); what has no consumer
+is the `.test_durations` those runs record.
 
 This reduces repeated test-module imports and item collection. It does not avoid
 shared conftest/package imports or imports made by another test. Hashing does not
-balance duration, and one large test file is indivisible. The eight shards per OS
-trade more runner slots and repeated setup for less work per shard. Keep runner
+balance duration, and one large test file is indivisible. The eight Linux/Windows
+shards, and macOS's four, trade more runner slots and repeated setup for less work per
+shard. Keep runner
 routing, timeout values and coverage gates fixed when comparing CI runs; report
 the shard count alongside queue, collection and execution timings.
 Use actual phase timing rather than buffered log timestamps to measure collection.
@@ -473,7 +478,7 @@ recorded line ran in the unmodified variant. Whole-suite coverage and baseline
 graduations still require the resulting CI artifact.
 
 Rollback: replace the plugin and `--file-shards` / `--file-shard` flags in the
-three matrix invocations with the previous `--splits` / `--group` flags. No
+four matrix invocations with the previous `--splits` / `--group` flags. No
 infrastructure, worker-count or privilege change is needed.
 
 ### Required native IPv6 tests
@@ -675,8 +680,8 @@ Where the coverage went:
 
 | Lane | Where | Blocking? |
 |---|---|---|
-| `backend-test-macos` (full suite, 3 shards) | `platform-tests.yml`: called by `nightly.yml` at 06:00 UTC, plus `workflow_dispatch` against any branch | Holds the nightly **publish** jobs, never the builds — the artifacts are the evidence a fixer works from. Maintains one tracking issue (`platform-tests-macos` label) carrying the failing node ids and the pull requests merged in the last 24h |
-| The same suite, on demand | `macos-on-demand.yml`, `pull_request`, calls `platform-tests.yml` against the PR head; a Linux `decide` job runs it when the diff touches a darwin-sensitive path, **or** the PR carries the `ci:macos` label, **or** the head SHA falls in a 1-in-20 sample (`16#${HEAD_SHA:0:8} % 20`, deterministic per commit) (acts immediately -- the workflow listens for `labeled`). Over those three sits a CEILING: the path and sample switches are refused while this lane already holds `LANE_MAX_LIVE_RUNS` (6) live runs of the hosted macOS pool, because on 2026-09-24 it held 53 of the 56 in-progress macOS jobs and one shard waited 14 hours for a runner while `build.yml` and `release.yml` queued behind it. A capped run is skipped, not queued, so the ceiling bounds demand and settles the lane at about nine verdicts an hour -- a timely verdict for a few pull requests instead of a 14-hour one for all of them, with the nightly still covering every merge. The `ci:macos` label is never refused, and neither is a re-run, so a retry cannot turn a red lane into a skip | Advisory. It is a separate workflow ON PURPOSE: a macOS job inside `ci.yml` holds that workflow's completion even with `continue-on-error`, so it would still hold readiness. Readiness evaluates neither this workflow nor its check |
+| `backend-test-macos` (full suite, 4 shards) | `platform-tests.yml`: called by `nightly.yml` at 06:00 UTC, plus `workflow_dispatch` against any branch | Holds the nightly **publish** jobs, never the builds — the artifacts are the evidence a fixer works from. Maintains one tracking issue (`platform-tests-macos` label) carrying the failing node ids and the pull requests merged in the last 24h |
+| The same suite, on demand | `macos-on-demand.yml`, `pull_request`, calls `platform-tests.yml` against the PR head; a Linux `decide` job runs it when the diff touches a darwin-sensitive path, **or** the PR carries the `ci:macos` label, **or** the head SHA falls in a 1-in-20 sample (`16#${HEAD_SHA:0:8} % 20`, deterministic per commit) (acts immediately -- the workflow listens for `labeled`). Over those three sits a CEILING: the path and sample switches are refused while this lane already holds `LANE_MAX_LIVE_RUNS` (4) live runs of the hosted macOS pool (a run holds one job per shard, so the ceiling is expressed in runs but felt in jobs, and it moves with the shard count), because on 2026-09-24 it held 53 of the 56 in-progress macOS jobs and one shard waited 14 hours for a runner while `build.yml` and `release.yml` queued behind it. A capped run is skipped, not queued, so the ceiling bounds demand and settles the lane at about six verdicts an hour -- a timely verdict for a few pull requests instead of a 14-hour one for all of them, with the nightly still covering every merge. The `ci:macos` label is never refused, and neither is a re-run, so a retry cannot turn a red lane into a skip | Advisory. It is a separate workflow ON PURPOSE: a macOS job inside `ci.yml` holds that workflow's completion even with `continue-on-error`, so it would still hold readiness. Readiness evaluates neither this workflow nor its check |
 | Real gateway boot on macOS | `ci.yml`'s `e2e-boot-matrix`, push-to-main leg; `nightly.yml`'s `pod-scenarios` | Blocking on main / holds nothing in the nightly |
 
 `test/test_macos_platform_tests_gate.py` pins all of it, including the property that

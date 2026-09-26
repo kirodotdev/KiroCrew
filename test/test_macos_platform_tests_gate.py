@@ -104,16 +104,73 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
 class TestTheMovedLaneIsTheSameLane:
     """A move that quietly drops shards or canaries is a deletion with a receipt."""
 
-    def test_the_full_suite_still_runs_in_three_shards(self) -> None:
+    def test_the_full_suite_still_runs_in_four_shards(self) -> None:
         job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
         assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
-        assert job["strategy"]["matrix"]["group"] == [1, 2, 3]
-        assert job["env"]["SHARD_COUNT"] == 3
-        # 40 was measured against the slowest observed shard; a runaway macOS shard
-        # costs about ten times a Linux one.
+        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4]
+        assert job["env"]["SHARD_COUNT"] == 4
+        # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
+        # about ten times a Linux one -- so suite growth is absorbed by the shard
+        # COUNT and this number stays put. The cap only means something while the
+        # slowest shard sits inside it with room to spare.
         assert job["timeout-minutes"] == 40
         runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
-        assert "--splits" in runs and "--group" in runs
+        # The file-sharding plugin, the same one backend-test and
+        # backend-test-windows use: only the owning shard IMPORTS a file, where
+        # pytest-split collects the whole suite in every shard and deselects the
+        # rest. On a lane billed at ten times Linux, paying every import once per
+        # shard for tests that shard then discards is the difference between a cap
+        # with headroom and a cap that cancels publication.
+        assert "-p scripts.ci_file_shards" in runs
+        assert '--file-shards "$SHARD_COUNT"' in runs and "--file-shard " in runs
+        assert "--splits" not in runs, "pytest-split re-imports every shard's discards"
+
+    #: The concurrent ``macos-15`` job count this lane's ceiling was calibrated at, from
+    #: the day it held 53 of the 56 in-progress macOS jobs and one shard waited 14 hours
+    #: for a runner while the signing paths queued behind it. A recalibration edits this
+    #: one number; the assertion and the docstring both read it.
+    CALIBRATED_PEAK_MACOS_JOBS = 18
+
+    def test_the_on_demand_ceiling_is_a_job_ceiling_not_a_run_ceiling(self) -> None:
+        """The product is the invariant; either factor alone can hide a rise in it.
+
+        ``macos-on-demand.yml`` admits runs, but the hosted macOS pool is starved by
+        JOBS, and a run of this lane holds one per shard. So a shard-count bump lifts
+        that lane's peak occupancy without touching the ceiling it is bounded by, and
+        the ceiling's own comment cannot stop it -- a comment is not a guard, which is
+        why the product is asserted here rather than described there.
+
+        The calibrated peak lives in ``CALIBRATED_PEAK_MACOS_JOBS`` rather than in this
+        sentence, so a recalibration is one edit. Raising either factor past it needs the
+        pool argument made again in the same diff, which is exactly what failing here
+        asks for.
+        """
+        shards = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["env"]["SHARD_COUNT"]
+        decide = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        ceiling = next(
+            int(step["env"]["LANE_MAX_LIVE_RUNS"])
+            for step in decide
+            if "LANE_MAX_LIVE_RUNS" in (step.get("env") or {})
+        )
+        peak = self.CALIBRATED_PEAK_MACOS_JOBS
+        assert int(shards) * ceiling <= peak, (
+            f"{shards} shards x {ceiling} live runs = {int(shards) * ceiling} concurrent "
+            f"macos-15 jobs, over the {peak} this lane's ceiling was calibrated at"
+        )
+        # The probe budget is justified beside itself as TWICE the ceiling, and that
+        # is the only reason its size is defensible on a step that runs for every
+        # pull request. Left behind when the ceiling moves it becomes a multiple
+        # nobody chose, spending repository-wide API reads to look for holders that
+        # cannot exist.
+        reads = next(
+            int(step["env"]["LANE_OCCUPANCY_MAX_READS"])
+            for step in decide
+            if "LANE_OCCUPANCY_MAX_READS" in (step.get("env") or {})
+        )
+        assert reads == ceiling * 2, (
+            f"the occupancy probe reads up to {reads} runs against a ceiling of "
+            f"{ceiling}; the comment beside it justifies twice the ceiling"
+        )
 
     def test_the_sharded_run_cannot_report_success_through_tee(self) -> None:
         # The shard pipes pytest to `tee` so the log survives as an artifact, and
@@ -124,7 +181,7 @@ class TestTheMovedLaneIsTheSameLane:
         # pipe, and before the pytest line, since a pipefail set afterwards protects
         # nothing.
         job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
-        shard = next(step for step in job["steps"] if "--splits" in str(step.get("run", "")))
+        shard = next(step for step in job["steps"] if "--file-shards" in str(step.get("run", "")))
         run = str(shard["run"])
         assert "| tee" in run, "the shard no longer keeps a log"
         assert run.index("set -o pipefail") < run.index("pytest "), run
