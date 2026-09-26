@@ -35,6 +35,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     azure_client,
     github_client,
     gitlab_client,
+    gitlab_transport,
     provider,
     routes,
     store,
@@ -61,6 +62,79 @@ class TestGitlabUrlParsing(unittest.TestCase):
             gitlab_client.parse_gitlab_repo_url("https://gitlab.com/a/b/c/proj"),
             ("gitlab.com", "a/b/c", "proj"),
         )
+
+    def test_namespace_at_gitlabs_nesting_ceiling_is_accepted(self):
+        # The maximum must not refuse a namespace GitLab itself creates, so the
+        # boundary case parses. Depth comes from the bound rather than being
+        # written down again, and the count is measured off the PARSED namespace.
+        depth = gitlab_transport.MAX_NAMESPACE_SEGMENTS
+        namespace = "/".join(f"g{level}" for level in range(depth))
+        host, owner, repo = gitlab_client.parse_gitlab_repo_url(
+            f"https://gitlab.com/{namespace}/proj"
+        )
+        self.assertEqual((host, repo), ("gitlab.com", "proj"))
+        self.assertEqual(len(owner.split("/")), depth)
+
+    def test_namespace_one_level_past_the_ceiling_is_refused(self):
+        # The COUNT is bounded, not only each segment's shape: every segment here
+        # satisfies SEGMENT_RE and none is a traversal, so shape checks alone admit
+        # this URL and only the maximum refuses it.
+        namespace = "/".join(
+            f"g{level}" for level in range(gitlab_transport.MAX_NAMESPACE_SEGMENTS + 1)
+        )
+        with self.assertRaises(RepoUrlError):
+            gitlab_client.parse_gitlab_repo_url(f"https://gitlab.com/{namespace}/proj")
+
+    def test_namespace_ceiling_is_derived_from_gitlabs_ancestor_limit(self):
+        # ``ancestors.count`` excludes the group itself, so the legal path is the
+        # ancestors GitLab permits plus the group they are ancestors of.
+        self.assertEqual(
+            gitlab_transport.MAX_NAMESPACE_SEGMENTS,
+            gitlab_transport.GITLAB_MAX_GROUP_ANCESTORS + 1,
+        )
+
+    def test_segment_at_gitlabs_length_ceiling_is_accepted(self):
+        # A segment as long as GitLab's own `URL_MAX_LENGTH` must still parse, so the
+        # size bound does not refuse a group GitLab creates. The width is taken from
+        # the constant and measured back off the PARSED namespace.
+        width = gitlab_transport.GITLAB_MAX_SEGMENT_CHARS
+        host, owner, repo = gitlab_client.parse_gitlab_repo_url(
+            f"https://gitlab.com/{'a' * width}/proj"
+        )
+        self.assertEqual((host, repo), ("gitlab.com", "proj"))
+        self.assertEqual(len(owner), width)
+
+    def test_segment_one_character_past_the_length_ceiling_is_refused(self):
+        # COUNT and SIZE are separate dimensions: this URL has one group, so the
+        # nesting bound reads `len(parts) - 1 == 1` and passes it, and the character
+        # class admits every byte. Only the length bound refuses it.
+        over = "a" * (gitlab_transport.GITLAB_MAX_SEGMENT_CHARS + 1)
+        with self.assertRaises(RepoUrlError):
+            gitlab_client.parse_gitlab_repo_url(f"https://gitlab.com/{over}/proj")
+
+    def test_project_segment_is_bounded_too(self):
+        # The project is the other field the parse retains, and `project_path` puts it
+        # in the same argv element as the namespace, so its size is bounded on the
+        # same admission path rather than only the namespace's.
+        over = "a" * (gitlab_transport.GITLAB_MAX_SEGMENT_CHARS + 1)
+        with self.assertRaises(RepoUrlError):
+            gitlab_client.parse_gitlab_repo_url(f"https://gitlab.com/group/{over}")
+
+    def test_the_two_bounds_together_cap_the_whole_parsed_value(self):
+        # Neither bound alone caps what the parse returns: without the count bound the
+        # depth grows, without the size bound one segment does. Together they put a
+        # ceiling on `owner/repo`, which is what one argv element has to hold.
+        # Linux caps a single argv element at MAX_ARG_STRLEN; this is that consumer's
+        # limit, not a restatement of either bound.
+        max_arg_strlen = 131072
+        segments = gitlab_transport.MAX_NAMESPACE_SEGMENTS
+        width = gitlab_transport.GITLAB_MAX_SEGMENT_CHARS
+        widest = "/".join("a" * width for _ in range(segments))
+        _, owner, repo = gitlab_client.parse_gitlab_repo_url(
+            f"https://gitlab.com/{widest}/{'p' * width}"
+        )
+        self.assertEqual(len(owner.split("/")), segments)
+        self.assertLess(len(f"{owner}/{repo}"), max_arg_strlen)
 
     def test_deep_page_urls_resolve_to_the_project(self):
         # Users paste whatever tab they are on.
