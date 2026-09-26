@@ -444,8 +444,8 @@ state, so a read-only filesystem must not take init down.
 > direction is right — the home also holds the security policy, sessions and
 > lessons, all private on the same boundary — but it is wider than memory and it
 > is the only place in the tree that does it today. `memory.py`'s FTS index
-> (`memory_index.db`) and its sidecars carry the same secrets and are **not** yet
-> covered by the per-file pass.
+> (`memory_index.db`) and its sidecars carry the same secrets; `memory.py` runs
+> an owner-only pass on them in `MemoryStore._restrict_index_files`.
 
 ## File locking on Windows
 
