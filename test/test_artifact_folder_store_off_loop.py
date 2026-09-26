@@ -203,13 +203,17 @@ async def test_icon_task_write_back_off_loop(stores, threads, monkeypatch) -> No
     req = _request()
     # A fresh folder's epoch is 0 by construction, which is what the create
     # path pins; the rename path passes the epoch ``rename()`` returns.
+    before = set(art_handlers._ARTIFACT_FOLDER_ICON_TASKS)
     _spawn_artifact_folder_icon_task(req, folder["id"], "F", expected_epoch=0)
-    # Poll the RECORD, not the store: a ``fstore.get`` from this coroutine would
-    # log the event loop's own thread and make the assertion below meaningless.
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if "set_icon_if_epoch" in threads:
-            break
+    spawned = set(art_handlers._ARTIFACT_FOLDER_ICON_TASKS) - before
+    # Await the spawned task(s) to completion before asserting. The task is
+    # fire-and-forget and holds a strong ref in the module-level set; letting
+    # this coroutine return while it is still pending would leave a task bound
+    # to a loop that is about to close, so a later test's drain of that set
+    # fails. Awaiting it also makes the write-back deterministic: the store call
+    # records its thread on ENTRY, so the write can still be in flight when a
+    # poll on that record would wake.
+    await asyncio.gather(*spawned)
 
     _assert_off_loop(threads, "set_icon_if_epoch")
     assert fstore.get(folder["id"])["icon"] == "📁"
