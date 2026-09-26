@@ -33,6 +33,10 @@ class _FakeSlot:
         # Runtime-only turn identity; empty until _run_chat installs one, which
         # is also what a slot rehydrated from disk answers.
         self._active_turn_session_key = ""
+        #: Runtime-only runner bookkeeping, mirrors ``_ChatSlot``: which task the
+        #: slot currently runs, and whether that task is still preparing.
+        self.task = None
+        self._turn_preparing = False
         self._stop_state = "idle"
         # Mirrors the real slot's monotonic stop-initiation counter. The real
         # `_stop_state` setter bumps it on every idle -> active edge; this fake
