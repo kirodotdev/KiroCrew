@@ -106,6 +106,14 @@ def _install_fake_gh(
         if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
             runs = [{"event": e} for e in events]
             return 0, json.dumps({"total_count": len(runs), "workflow_runs": runs}), ""
+        # The supersession gate's cheap probe: how many bodies has this comment
+        # held? One means the current body IS the only body, so nothing could have
+        # been superseded and the expensive body-bearing read is never made. A stub
+        # that refused this would make every lane's history UNREADABLE, which the
+        # local gate correctly fails closed on.
+        if args[:3] == ["gh", "api", "graphql"]:
+            edits = {"totalCount": 1, "pageInfo": {"hasNextPage": False}, "nodes": []}
+            return 0, json.dumps({"data": {"node": {"userContentEdits": edits}}}), ""
         raise AssertionError("unexpected command: {}".format(args))
 
     module.run = fake_run
@@ -364,6 +372,10 @@ def test_report_emits_only_the_consumed_surface(capsys) -> None:
         "green_age",
         "overridden_reviewers",
         "stale_reviewers",
+        # Consumer: the readiness gate reads `blocking_dropped` to block a merge,
+        # and the babysit loop reads that plus `readable`, so an UNKNOWN reading is
+        # not mistaken for "none found".
+        "superseded_verdicts",
         "unresolved_threads",
     }
 
@@ -1584,7 +1596,15 @@ def _bot_comment(
     key: str | None = "codex-ai-review",
 ) -> dict[str, object]:
     prefix = f"<!-- {key} -->\n" if key else ""
-    return {"user": {"type": user_type, "login": login}, "body": prefix + body}
+    # node_id is what the supersession reader needs to ask how many bodies this
+    # comment has held. Every real comment from the API carries one; a fixture
+    # without it makes the stored history UNREADABLE, which the local gate
+    # correctly fails closed on.
+    return {
+        "node_id": "IC_" + str(abs(hash(prefix + body)) % 10**9),
+        "user": {"type": user_type, "login": login},
+        "body": prefix + body,
+    }
 
 
 def _clean_checks() -> list[dict[str, str]]:
@@ -2219,6 +2239,9 @@ def _gpt_finding_comment(module: ModuleType) -> tuple[dict, str]:
     """A trusted GPT-lane comment with one advisory finding for the head."""
     span = module.span_hash("src/x.py", "gpt/FINDING")
     comment = {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
@@ -2408,6 +2431,9 @@ def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
     current = "e" * 40
     span = module.span_hash("src/x.py", "gpt/FINDING")
     bot_comment = {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
@@ -2450,6 +2476,9 @@ _GATE_HEAD = "f" * 40
 
 def _gate_bot_comment(head: str = _GATE_HEAD) -> dict:
     return {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- codex-ai-review -->\n"
@@ -2834,6 +2863,9 @@ def _design_comment(
     head: str = _CONCERNS_HEAD,
 ) -> dict:
     return {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- {} -->\n"
@@ -3146,6 +3178,9 @@ def test_the_inventory_and_evidence_sections_are_not_disposable_items() -> None:
     heading."""
     module = _load_script()
     comment = {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- first-principles-review -->\n"
@@ -3176,6 +3211,9 @@ def test_a_prose_watch_section_still_yields_its_items() -> None:
     this extractor exists to surface."""
     module = _load_script()
     comment = {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- ux-review -->\n"
@@ -3203,6 +3241,9 @@ def test_a_lane_cannot_forge_another_lanes_design_items() -> None:
     stamp name injected into model output claims nothing."""
     module = _load_script()
     forged = {
+        # Real comments carry a node id; without one the supersession reader
+        # cannot address the stored history and fails closed.
+        "node_id": "IC_fixture",
         "user": {"type": "Bot", "login": "github-actions[bot]"},
         "body": (
             "<!-- ux-review -->\n"

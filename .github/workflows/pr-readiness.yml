@@ -516,6 +516,94 @@ jobs:
             echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
+      # Issue #13951: a review lane's marker comment is ONE slot selected by the
+      # lane marker alone, never by the head, so a second sample at one head
+      # REPLACES the first and only the survivor is presented. The direction that
+      # matters is a blocking sample replaced by a clean one at the same head: the
+      # `[BLOCK-MERGE]` line goes, the stamp still names the head, and this status
+      # goes green over a block nobody adjudicated away.
+      #
+      # Evaluated HERE for the same reason the disposition rule is: a reader that
+      # only runs in the local prepare-pr loop binds whoever runs that loop, and
+      # #13951's own finding was that the record existed in GraphQL
+      # userContentEdits while nothing read it. A reader no gate calls reproduces
+      # that shape one layer up -- the reading exists and nothing consumes it.
+      #
+      # SCOPE, deliberately the narrowest thing that closes the hole: only
+      # `blocking_dropped` gates. It fires only when a replaced sample carried
+      # `[BLOCK-MERGE] <head>` AND the body now presented is itself stamped for
+      # that head and does not block, and it was measured at ZERO occurrences
+      # across 60 pull requests and 219 bot comments, so gating on it cannot
+      # redden an ordinary revision. `superseded` alone is deliberately NOT a
+      # gate: ordinary same-head re-samples happen, are not harmful, and reddening
+      # them would block real revisions for a condition this repository does not
+      # treat as a defect.
+      #
+      # Never fails the step, same as the disposition gate: a failed step skips
+      # the publish below and strands the required status pending with no event to
+      # recompute it.
+      #
+      # Cost, stated plainly: one comment read plus one GraphQL edit-history read
+      # per bound lane that posted (at most five). Like the disposition gate it
+      # cannot be skipped on a cheap precondition -- deciding whether any lane
+      # comment was ever replaced means reading the comment list and then its
+      # history, which is the work itself.
+      # Skipped for `dependabot[bot]` for the same reason every review lane skips
+      # it, and with the same condition those lanes use: on such a pull request no
+      # bound lane ever publishes a marker comment, so this gate examines nothing
+      # and correctly reports UNKNOWN. Mapping that UNKNOWN to `pending` would
+      # strand the required status for the life of the head -- and the sweep cannot
+      # rescue it, because its rescue needs a check that completed after the
+      # verdict was published, while here every recompute re-derives the same empty
+      # reading and there is no lane to re-run that would ever post a comment. The
+      # exemption is deliberately the ACTOR and not the empty reading: a head whose
+      # lanes have simply not posted YET is also empty, and that one must stay
+      # UNKNOWN, because its lanes will publish and can then be superseded.
+      # Leaving the step unrun makes its outputs empty, which the evaluation below
+      # treats as contributing nothing -- the same shape the disposition step uses.
+      - name: Evaluate superseded verdicts
+        id: supersessions
+        if: >-
+          steps.context.outputs.stale != 'true'
+          && steps.context.outputs.state == 'OPEN'
+          && github.actor != 'dependabot[bot]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.context.outputs.pr }}
+          SHA: ${{ steps.context.outputs.sha }}
+          GATE: ${{ github.workspace }}/src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_status.py
+        run: |
+          set -uo pipefail
+
+          ok=false
+          dropped=""
+          if [ ! -f "$GATE" ]; then
+            echo "pr-readiness: supersession evaluator not found at $GATE" >&2
+          elif out="$(python3 "$GATE" --supersession-gate \
+                --repo "$REPO" --pr "$PR" --head "$SHA")"; then
+            echo "pr-readiness: supersession gate -- $out"
+            if [ "$(jq -r '.ok' <<<"$out" 2>/dev/null)" = "true" ]; then
+              ok=true
+              dropped="$(jq -r '.blocking_dropped[]' <<<"$out" 2>/dev/null || true)"
+            else
+              echo "pr-readiness: supersession gate could not evaluate: $(jq -r '.error' <<<"$out" 2>/dev/null)" >&2
+            fi
+          else
+            # stderr deliberately not suppressed: the gate turns every expected
+            # failure into ok=false JSON, so reaching here means the interpreter
+            # itself failed and the traceback is the only diagnosis.
+            echo "pr-readiness: supersession gate did not run (exit $?)" >&2
+          fi
+
+          delim="EOF_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          {
+            echo "ok=$ok"
+            echo "dropped<<$delim"
+            printf '%s\n' "$dropped"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Evaluate current revision
         id: verdict
         if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
@@ -547,6 +635,13 @@ jobs:
           # wiring so a rename cannot silently disable the gate.
           DISPOSITION_OK: ${{ steps.dispositions.outputs.ok }}
           DISPOSITION_VIOLATIONS: ${{ steps.dispositions.outputs.violations }}
+          # From the supersession step above, on the same terms: empty means the
+          # step did not run, which contributes nothing. Only the dropped-block
+          # list gates; test_prepare_pr_supersession.py pins these two names to
+          # this step's outputs so a rename cannot silently empty the env and
+          # leave both `case` arms falling through with every test green.
+          SUPERSESSION_OK: ${{ steps.supersessions.outputs.ok }}
+          SUPERSESSION_DROPPED: ${{ steps.supersessions.outputs.dropped }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
@@ -1211,6 +1306,29 @@ jobs:
               ;;
             false)
               pending+=("disposition records could not be read")
+              read_failure=true
+              ;;
+          esac
+
+          # Superseded-verdict enforcement (issue #13951). A block that was judged
+          # at THIS head and then replaced by a clean sample at the same head is a
+          # condition waiting cannot fix: the replacement already happened, and
+          # only re-establishing a verdict or a human adjudication resolves it. So
+          # it belongs in `failed`. Only the dropped-block list gates -- an
+          # ordinary same-head re-sample is not a defect and must not redden a
+          # revision. `ok=false` means the question could not be ANSWERED, which
+          # is UNKNOWN and therefore `pending`, never a red: that covers both an
+          # unreadable edit history and a head where no lane was examined at all.
+          # It is a READ failure, so it is stamped like the disposition one.
+          case "${SUPERSESSION_OK:-}" in
+            true)
+              while IFS= read -r lane; do
+                [ -n "$lane" ] || continue
+                failed+=("superseded verdict: $lane blocked this head in a replaced sample and the body now presented does not - read the comment's stored history; a legitimate clear goes through adjudication or an /ai-review override, which stamps [BLOCK-MERGE-DOWNGRADED] and clears this")
+              done <<<"${SUPERSESSION_DROPPED:-}"
+              ;;
+            false)
+              pending+=("superseded verdicts could not be evaluated")
               read_failure=true
               ;;
           esac
