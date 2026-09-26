@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1172,8 +1173,12 @@ class TestFirstPrinciplesReview:
         assert "- name: Fetch PR intent (untrusted data file)" in workflow
         # Fetched BEFORE the OIDC role is assumed, and bounded.
         assert workflow.index("Fetch PR intent") < workflow.index("role-to-assume")
-        assert "read($fh, my $b, 8000)" in workflow
-        assert "[description TRUNCATED at 8000 bytes]" in workflow
+        # The capture is the shared script this lane sources, so the bound lives
+        # there. Assert the lane reaches it and that the bound is in it.
+        assert CAPTURE_SOURCE_LINE in workflow
+        capture = CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        assert "read($fh, my $b, 8000)" in capture
+        assert "[description TRUNCATED at 8000 bytes]" in capture
         assert "pr-intent.txt" in workflow
         # The cap must not pipe into `head -c`, and must not fall back to a second
         # copy of the body. `head -c` exits as soon as it has its bytes, so the
@@ -1391,7 +1396,17 @@ class TestFirstPrinciplesReview:
         # as it has its bytes, so the writer takes SIGPIPE and `pipefail` turns the
         # 141 into a step failure -- on exactly the over-cap body the cap exists for.
         # A 30 KB PR description lost that race and took this lane red.
-        assert "read($fh, my $b, 8000)" in prefetch
+        assert CAPTURE_SOURCE_LINE in prefetch
+        capture = CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        assert "read($fh, my $b, 8000)" in capture
+        # Scan the CODE, not the commentary. The capture's header names the
+        # rejected `printf | head -c` spelling and says why it is rejected, so a
+        # whole-file match would report that explanation as the offender it warns
+        # about. Strip comment lines and assert on what actually runs.
+        capture_code = "\n".join(
+            ln for ln in capture.splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert "| head -c" not in capture_code, capture_code
         assert "| head -c" not in prefetch
 
     def test_a_contract_absent_from_the_base_is_not_a_red_check(self) -> None:
@@ -1602,13 +1617,12 @@ class TestFirstPrinciplesIntentCapSurvivesALongBody:
     """
 
     def _cap_block(self, lane: str) -> str:
-        workflow = _workflow(lane)
-        step = (
-            "Fetch PR intent (untrusted data file)"
-            if lane.startswith("fork-")
-            else "Prefetch the change as data files"
-        )
-        script = _step_script(workflow, step)
+        # The cap lives in the ONE shared capture both lanes source, so the block
+        # under test is the block that runs. Assert the lane reaches it, then
+        # execute the script's own copy: extracting per lane would assert against
+        # a string the workflow does not contain.
+        assert CAPTURE_SOURCE_LINE in _workflow(lane), lane
+        script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
         start = script.index("# Cap at 8000 bytes")
         end = script.index('rm -f "$full"', start) + len('rm -f "$full"')
         return script[start:end]
@@ -1694,13 +1708,10 @@ class TestIntentReadFailureFailsClosed:
     """
 
     def _read_block(self, lane: str) -> str:
-        workflow = _workflow(lane)
-        step = (
-            "Fetch PR intent (untrusted data file)"
-            if lane.startswith("fork-")
-            else "Prefetch the change as data files"
-        )
-        script = _step_script(workflow, step)
+        # The read lives in the ONE shared capture both lanes source. Assert the
+        # lane reaches it, then execute the script's own copy.
+        assert CAPTURE_SOURCE_LINE in _workflow(lane), lane
+        script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
         start = script.index('raw=""')
         end = script.index("# Strip embedded media")
         return script[start:end]
@@ -14142,3 +14153,824 @@ class TestUxLensZeroIsIdenticalInBothLanes:
             assert "across the whole app, not one panel" in flat, name
             # "The issue asked for it here" is not a design decision.
             assert "is NOT a design decision and is itself a finding" in flat, name
+
+
+# --------------------------------------------------------------------------
+# Description provenance: one capture, one digest, one stamp.
+#
+# A review lane that judges the author's stated intent has two ways to get the
+# description, and they are not equivalent. A grant that lets the MODEL fetch it
+# leaves the verdict with no revision to name: the model picks the moment, so the
+# verdict answers for whatever the text said then, and a reader cannot tell a
+# current verdict from one whose description-derived finding the author has since
+# corrected. A workflow step that captures it ONCE gives the verdict a single,
+# nameable input, and the digest of those bytes is what the verdict carries.
+#
+# The grant is also a live redirect. `--allowedTools` Bash grants are
+# PREFIX-matched, so `Bash(gh pr view:*)` equally admits
+# `gh pr view ... > <path>`: text injected into a diff can overwrite the lane's
+# own input files. These pins hold both properties at once, and they enumerate
+# every workflow from disk rather than a list, so a lane added later is covered
+# the day it lands.
+# --------------------------------------------------------------------------
+
+#: The one capture every description-reading lane sources.
+CAPTURE_SCRIPT = ROOT / ".github" / "scripts" / "pr-description-capture.sh"
+CAPTURE_SOURCE_LINE = '. "$GITHUB_WORKSPACE/.github/scripts/pr-description-capture.sh"'
+#: The marker a published verdict carries to name the description it read.
+STAMP_MARKER = "[DESCRIPTION-READ]"
+STAMP_HEADING = 'echo "### Description read"'
+STAMP_GATE = 'if [ -n "$badge" ] && [ -n "${DESCRIPTION_DIGEST:-}" ]; then'
+STAMP_ECHO = 'echo "[DESCRIPTION-READ] $DESCRIPTION_DIGEST"'
+#: Lanes whose model is given no description at all, so a stamp would be a claim
+#: about an input they never received. Named rather than derived because the
+#: point of the assertion is that the asymmetry is deliberate.
+NO_DESCRIPTION_LANES = ("claude-review.yml", "fork-opus-review.yml")
+
+
+def _every_workflow() -> tuple[str, ...]:
+    """Every workflow file on disk, so a lane added later is covered."""
+    names = tuple(sorted(p.name for p in WORKFLOWS.glob("*.yml")))
+    assert len(names) > 10, names
+    return names
+
+
+def _sources_capture(name: str) -> bool:
+    return CAPTURE_SOURCE_LINE in _workflow(name)
+
+
+def _emits_stamp(name: str) -> bool:
+    return STAMP_ECHO in _workflow(name)
+
+
+def _capture_lanes() -> tuple[str, ...]:
+    return tuple(n for n in _every_workflow() if _sources_capture(n))
+
+
+def _stamp_block(name: str) -> list[str]:
+    """The stamp's own shell lines, from its gate to the closing `fi`."""
+    lines = _workflow(name).splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == STAMP_GATE]
+    assert len(starts) == 1, (name, starts)
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    for end in range(start + 1, len(lines)):
+        if lines[end].strip() == "fi" and len(lines[end]) - len(lines[end].lstrip()) == indent:
+            return lines[start : end + 1]
+    raise AssertionError(f"{name}: the stamp gate is never closed")
+
+
+class TestNoLaneGrantsALiveDescriptionRead:
+    """No `--allowedTools` line anywhere grants a live description fetch.
+
+    `Bash(gh pr view:*)` is prefix-matched, so it admits every `gh pr view`
+    spelling including one that redirects its output over a file the job wrote.
+    A lane that needs the description reads it from the shared capture instead.
+
+    Scans every workflow rather than a named set: the grant is wrong in any lane,
+    including one that does not exist yet.
+    """
+
+    def test_no_workflow_grants_gh_pr_view(self) -> None:
+        offenders = []
+        granting = 0
+        for name in _every_workflow():
+            for line in _workflow(name).splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("--allowedTools"):
+                    continue
+                granting += 1
+                if "Bash(gh pr view" in stripped:
+                    offenders.append((name, stripped))
+        # A control: an empty scan would satisfy the assertion above for the
+        # wrong reason, so require that grant lines were actually examined.
+        assert granting >= 8, granting
+        assert offenders == [], offenders
+
+    def test_no_workflow_grants_any_bash_at_all(self) -> None:
+        """The invariant is about the MATCHER, not the verb.
+
+        Stating it as "no `Bash(gh pr view:*)`" was too narrow, because prefix
+        matching is a property of `--allowedTools` and not of the command named:
+        `Bash(git diff:*)` equally admits `git diff ... > pr-intent.txt`, and the
+        description digest is computed at capture time, so an overwrite AFTER
+        capture leaves the stamp naming the original bytes while a reader who
+        recomputes it is told the verdict is current.
+
+        No narrower grant closes that. Without `:*` a lane cannot pass a range,
+        and any form that accepts arguments accepts shell text; `--disallowedTools`
+        denies TOOLS rather than command substrings, so it cannot express "no
+        redirect" at all. The primitive therefore goes away with the last Bash
+        grant, not with a better one -- which is why every review lane reads its
+        diff from a data file instead.
+        """
+        offenders = []
+        granting = 0
+        for name in _every_workflow():
+            for line in _workflow(name).splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("--allowedTools"):
+                    continue
+                granting += 1
+                if "Bash(" in stripped:
+                    offenders.append((name, stripped))
+        assert granting >= 8, granting
+        assert offenders == [], offenders
+
+    def test_every_lane_that_reviews_a_diff_is_handed_one(self) -> None:
+        """Dropping the grant must not leave a lane with no diff at all.
+
+        Removing Bash and forgetting the prefetch would give the reviewer nothing
+        to review while every grant assertion still passed, so the two halves are
+        pinned together: a lane whose prompt names a patch data file must also
+        contain the step that writes one, and that step must fail closed.
+
+        The SIZE cap is asserted only where a lane states one.
+        `first-principles-review.yml` prefetches and fails closed on an empty diff
+        but sets no cap, which predates this change; asserting a cap everywhere
+        would impose a uniformity this change did not create and cannot verify.
+        Where a cap exists it must be the 1 MB one and must fail closed, so a
+        lane cannot acquire a cap that silently truncates instead.
+        """
+        checked = capped = 0
+        for name in _capture_lanes():
+            workflow = _workflow(name)
+            if "authentic.patch" not in workflow:
+                continue
+            checked += 1
+            assert 'git diff --no-color "$BASE_SHA' in workflow, name
+            assert "failing closed" in workflow, name
+            if "exceeds 1 MB" in workflow:
+                capped += 1
+                assert "1000000" in workflow, name
+        assert checked >= 6, checked
+        assert capped >= 5, capped
+
+
+class TestStampFollowsTheSharedCapture:
+    """A lane stamps a description digest exactly when it captures one.
+
+    The biconditional is the assertion. A lane that captures but does not stamp
+    keeps the provenance private to the job log; a lane that stamps without
+    capturing would be naming bytes it never read.
+    """
+
+    def test_capture_and_stamp_are_the_same_set(self) -> None:
+        capture = {n for n in _every_workflow() if _sources_capture(n)}
+        stamp = {n for n in _every_workflow() if _emits_stamp(n)}
+        assert capture == stamp, {"captures only": capture - stamp, "stamps only": stamp - capture}
+        assert len(capture) >= 6, sorted(capture)
+
+    @pytest.mark.parametrize("name", NO_DESCRIPTION_LANES)
+    def test_a_lane_given_no_description_makes_no_claim_about_one(self, name: str) -> None:
+        workflow = _workflow(name)
+        assert CAPTURE_SOURCE_LINE not in workflow, name
+        assert STAMP_MARKER not in workflow, name
+
+    def test_every_capture_lane_reads_the_shared_script_and_no_copy(self) -> None:
+        """No lane carries its own copy of the read, the strip or the cap.
+
+        Two implementations would make one digest mean two different things, so a
+        reader recomputing it could get a mismatch from a description nobody had
+        touched. The distinctive lines of the capture therefore appear in the
+        script and in no workflow.
+        """
+        script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        needles = (
+            'raw="$(gh api "repos/$REPO/pulls/$PR"',
+            "[description TRUNCATED at 8000 bytes]",
+            'INTENT_DIGEST="$($_kc_sha',
+        )
+        for needle in needles:
+            assert needle in script, needle
+        for name in _every_workflow():
+            workflow = _workflow(name)
+            for needle in needles:
+                assert needle not in workflow, (name, needle)
+
+
+class TestStampIsWorkflowWrittenAndGatedOnARealVerdict:
+    """The digest reaches the comment from the capture step, never from the model.
+
+    Three properties, one per way the stamp could lie. It is gated on a parsed
+    verdict, so a "could not complete" notice cannot claim to have read a
+    description. It is written after the redaction pass, so that pass cannot
+    rewrite the digest into something a reader cannot reproduce. And its value
+    comes from the capture step's own output, so the model cannot supply it.
+    """
+
+    @pytest.mark.parametrize("name", _capture_lanes())
+    def test_gated_on_a_parsed_verdict_and_a_present_digest(self, name: str) -> None:
+        block = _stamp_block(name)
+        assert block[0].strip() == STAMP_GATE, (name, block[0])
+        assert any(STAMP_ECHO in ln for ln in block), name
+        assert any(STAMP_HEADING in ln for ln in block), name
+
+    @pytest.mark.parametrize("name", _capture_lanes())
+    def test_written_after_the_redaction_pass(self, name: str) -> None:
+        lines = _workflow(name).splitlines()
+        redactions = [i for i, ln in enumerate(lines) if "perl -i -pe" in ln]
+        stamps = [i for i, ln in enumerate(lines) if STAMP_ECHO in ln]
+        assert len(redactions) == 1, (name, redactions)
+        assert len(stamps) == 1, (name, stamps)
+        assert redactions[0] < stamps[0], (name, redactions, stamps)
+
+    @pytest.mark.parametrize("name", _capture_lanes())
+    def test_the_digest_comes_from_the_capture_step_output(self, name: str) -> None:
+        workflow = _workflow(name)
+        doc = yaml.safe_load(workflow)
+        binding = "DESCRIPTION_DIGEST: ${{ steps.intent.outputs.description_digest }}"
+        assert binding in workflow, name
+        # The step id the binding names must exist, and must be the step that
+        # sources the capture -- otherwise the digest describes another step.
+        sourcing_ids = set()
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                run = step.get("run")
+                if isinstance(run, str) and CAPTURE_SOURCE_LINE in run:
+                    sourcing_ids.add(step.get("id"))
+        assert sourcing_ids == {"intent"}, (name, sourcing_ids)
+
+
+class TestStampBlockIsByteIdenticalAcrossLanes:
+    """Lanes that cover the same thing publish the same stamp, down to the bytes.
+
+    A reader learns one shape and a verifier parses one shape. Only the comment
+    file each lane appends to differs, so compare the emitted lines and not the
+    redirect.
+
+    There are exactly TWO shapes, and the split is the point rather than drift: a
+    lane whose verdict reads only the prose names the prose, and a lane whose
+    verdict also reads the evidence downloaded from the description names that
+    evidence too. Collapsing them would force one of the two to lie -- either the
+    prose-only lanes claim coverage they do not have, or the evidence lanes send
+    a reader to recompute over inputs that are not what was judged. What this
+    forbids is a THIRD shape: within each class the bytes must match, so no
+    single lane can drift into bespoke wording, and both classes must be
+    non-empty so a shape cannot quietly lose all its members.
+    """
+
+    def test_emitted_lines_match_within_each_coverage_class(self) -> None:
+        by_class: dict[bool, dict[str, list[str]]] = {True: {}, False: {}}
+        for name in _capture_lanes():
+            block = _stamp_block(name)
+            emitted = [
+                ln.strip() for ln in block if ln.strip().startswith("echo") or ln.strip() == "echo"
+            ]
+            covers_evidence = "EVIDENCE_LIST" in _workflow(name)
+            by_class[covers_evidence][name] = emitted
+        # Both classes must exist, or the assertion below could pass on an empty
+        # one and the split would be unverified.
+        assert by_class[True], "no lane covers evidence"
+        assert by_class[False], "no prose-only lane remains"
+        for covers_evidence, lanes in by_class.items():
+            shapes = {tuple(v) for v in lanes.values()}
+            assert len(shapes) == 1, (covers_evidence, lanes)
+        prose_shape = next(iter({tuple(v) for v in by_class[False].values()}))
+        assert prose_shape[1] == STAMP_HEADING, prose_shape
+        assert prose_shape[3] == STAMP_ECHO, prose_shape
+        # The heading and marker line are what a verifier parses, so they must be
+        # common to BOTH shapes; only the explanatory sentence differs.
+        evidence_shape = next(iter({tuple(v) for v in by_class[True].values()}))
+        assert evidence_shape[1] == STAMP_HEADING, evidence_shape
+        assert evidence_shape[3] == STAMP_ECHO, evidence_shape
+
+
+class TestStampHeadingClosesTheConcernsCapture:
+    """Execute the real `concerns_digest` over a stamped body.
+
+    That awk captures to end-of-file once it is inside a `### Watch` section, so a
+    body whose last section is Watch would carry the stamp into the CONCERNS job
+    annotation. A `### ` heading that is not Watch closes the capture, which is
+    why the stamp has one. String-matching the heading proves nothing about the
+    awk, so run it.
+    """
+
+    def _digest_fn(self) -> str:
+        script = _step_script(_workflow("design-review.yml"), "Post design review summary")
+        return _shell_function(script, "concerns_digest")
+
+    def _run(self, tmp_path: Path, body: str) -> str:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("concerns_digest is Bash; skip where Bash is absent")
+        target = tmp_path / "comment.md"
+        target.write_text(body, encoding="utf-8", newline="\n")
+        script = tmp_path / "run.sh"
+        script.write_text(
+            self._digest_fn() + '\nconcerns_digest "$1" "Design-Verdict:" "[DESIGN-REVIEWED]"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        result = subprocess.run(
+            [bash, str(script), str(target)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, _proc_log(result)
+        return result.stdout
+
+    #: A body that ends in a Watch section, which is the case that leaks.
+    _WATCH_BODY = (
+        "<!-- design-review -->\n"
+        "## Design Review\n\n"
+        "Design-Verdict: CONCERNS\n\n"
+        "The premise holds but the surface is wider than the problem.\n\n"
+        "### Watch\n"
+        "- the retry budget on the second call\n"
+    )
+    _STAMP = (
+        "\n### Description read\n\n"
+        "[DESCRIPTION-READ] " + "a" * 64 + "\n\n"
+        "_That sha256 names the PR description this verdict read._\n"
+    )
+
+    def test_the_heading_keeps_the_stamp_out_of_the_annotation(self, tmp_path: Path) -> None:
+        digest = self._run(tmp_path, self._WATCH_BODY + self._STAMP)
+        assert "the retry budget on the second call" in digest
+        assert "DESCRIPTION-READ" not in digest, digest
+
+    def test_without_the_heading_the_stamp_leaks(self, tmp_path: Path) -> None:
+        """The control that makes the test above mean something.
+
+        Same body, same awk, stamp emitted with no heading: the digest swallows
+        it. That is what the heading prevents, so if this case ever stops leaking
+        the assertion above has stopped discriminating.
+        """
+        headless = self._STAMP.replace("### Description read\n\n", "")
+        digest = self._run(tmp_path, self._WATCH_BODY + headless)
+        assert "DESCRIPTION-READ" in digest, digest
+
+
+class TestCaptureDigestNamesTheModelsInput:
+    """Execute the shared capture and check what its digest covers.
+
+    The digest is only worth publishing if it names the bytes the model was
+    given. So it must equal the hash of the intent file as written -- after the
+    media strip and the cap -- and it must move when that file moves and hold
+    still when it does not. A digest taken over the raw API body instead would
+    report an image-URL swap as a description the verdict never saw, which is the
+    same false confidence in the other direction.
+    """
+
+    def _capture(
+        self,
+        tmp_path: Path,
+        body: str,
+        evidence: list[bytes] | None = None,
+        evidence_names: list[str] | None = None,
+        list_missing: bool = False,
+    ) -> tuple[str, str, bytes]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture is Bash; skip where Bash is absent")
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        reply = tmp_path / "api-reply.txt"
+        reply.write_text(f"Title: t\n\nDescription:\n{body}\n", encoding="utf-8", newline="\n")
+        gh = tmp_path / "gh"
+        gh.write_text(f'#!/bin/sh\ncat "{reply}"\n', encoding="utf-8", newline="\n")
+        gh.chmod(0o755)
+        intent = tmp_path / "pr-intent.txt"
+        outputs = tmp_path / "gh-output"
+        outputs.write_text("", encoding="utf-8")
+        extra: dict[str, str] = {}
+        if evidence is not None or list_missing:
+            # Write the evidence files the lane would have collected, then the
+            # list naming them -- the same two-file shape the lanes build, so the
+            # pin exercises the real contract rather than a paraphrase of it.
+            names = evidence_names or [f"evidence-{i}.bin" for i in range(len(evidence or []))]
+            paths = []
+            for name, blob in zip(names, evidence or [], strict=True):
+                target = tmp_path / name
+                target.write_bytes(blob)
+                paths.append(target)
+            listing = tmp_path / "intent-evidence-list.txt"
+            lines = [str(p) for p in paths]
+            if list_missing:
+                lines.append(str(tmp_path / "never-written.bin"))
+            listing.write_text("".join(f"{ln}\n" for ln in lines), encoding="utf-8", newline="\n")
+            extra["EVIDENCE_LIST"] = str(listing)
+        runner = tmp_path / "run.sh"
+        runner.write_text(
+            f'. "{CAPTURE_SCRIPT}"\nprintf %s "$INTENT_DIGEST"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        env = _child_env(
+            {
+                "PATH": _stub_path(tmp_path),
+                "REPO": "o/r",
+                "PR": "1",
+                "GH_TOKEN": "t",
+                "INTENT": str(intent),
+                "GITHUB_OUTPUT": str(outputs),
+                # The capture takes an `mktemp` scratch for the pre-cap body, so
+                # without these it lands in the system temp dir rather than this
+                # test's own. `_child_env` uses `setdefault`, so naming TEMP/TMP
+                # here keeps the Windows passthrough from reinstating the host's.
+                "TMPDIR": str(tmp_path),
+                "TEMP": str(tmp_path),
+                "TMP": str(tmp_path),
+                **extra,
+            }
+        )
+        result = subprocess.run(
+            [bash, str(runner)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            env=env,
+            cwd=tmp_path,
+        )
+        if list_missing:
+            # The fail-closed path is the subject of its own pin, so hand the
+            # caller the failure instead of asserting success here.
+            return (
+                str(result.returncode),
+                outputs.read_text(encoding="utf-8"),
+                result.stderr.encode(),
+            )
+        assert result.returncode == 0, _proc_log(result)
+        reported = result.stdout.strip().splitlines()[-1].strip()
+        return reported, outputs.read_text(encoding="utf-8"), intent.read_bytes()
+
+    def test_the_digest_is_the_hash_of_the_file_the_model_reads(self, tmp_path: Path) -> None:
+        reported, outputs, written = self._capture(tmp_path, "a plain description")
+        assert reported == hashlib.sha256(written).hexdigest(), (reported, written)
+        assert f"description_digest={reported}" in outputs, outputs
+
+    def test_a_changed_description_changes_the_digest(self, tmp_path: Path) -> None:
+        first, _, _ = self._capture(tmp_path / "a", "the original claim")
+        second, _, _ = self._capture(tmp_path / "b", "the corrected claim")
+        assert first != second, first
+
+    def test_a_stripped_image_does_not_move_the_digest(self, tmp_path: Path) -> None:
+        """What the strip erases cannot change the model's input, so it cannot
+        change the digest -- IN A LANE THAT READS PROSE ONLY, which is what
+        passing no evidence list models here. Two bodies differing only in an
+        image URL the strip replaces therefore hash the same, and a reader
+        recomputing after such an edit is told the verdict is current, which in
+        that lane it is. A lane whose verdict also reads what those URLs resolved
+        to hands over an evidence list and is covered by the pins below, because
+        there the same edit DOES change what was judged.
+        """
+        one, _, wrote_one = self._capture(
+            tmp_path / "a", "prose\n\n![shot](https://example.com/one.png)\n"
+        )
+        two, _, wrote_two = self._capture(
+            tmp_path / "b", "prose\n\n![shot](https://example.com/two.png)\n"
+        )
+        assert b"[image removed]" in wrote_one, wrote_one
+        assert wrote_one == wrote_two, (wrote_one, wrote_two)
+        assert one == two, (one, two)
+
+    def test_the_digest_is_bare_hex_when_the_path_needs_escaping(self, tmp_path: Path) -> None:
+        """`sha256sum <file>` escapes a name holding a backslash and prefixes the
+        whole line with one, so reading the hash off that line yields `\\<hex>`:
+        a stamp no reader can reproduce. A Windows path is all backslashes, so
+        the shard reproduced it and this board could not. A backslash is a legal
+        POSIX filename character, so digesting one here makes the class visible
+        wherever the suite runs, not only where the OS forces it.
+        """
+        reported, outputs, written = self._capture(tmp_path / "a\\b", "a plain description")
+        assert reported == hashlib.sha256(written).hexdigest(), (reported, written)
+        assert set(reported) <= set("0123456789abcdef"), reported
+        assert len(reported) == 64, reported
+        assert f"description_digest={reported}" in outputs, outputs
+
+    def test_an_unusable_digest_fails_the_step_closed(self, tmp_path: Path) -> None:
+        """The guard is a shape assertion, not an emptiness one. `\\<64 hex>` is
+        non-empty, so a guard testing only for empty publishes it; the step must
+        refuse anything that is not exactly 64 hex characters, because a stamp a
+        reader cannot reproduce is worse than no stamp at all.
+        """
+        script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        guard = script[script.index("INTENT_DIGEST=") :]
+        assert "-ne 64" in guard, guard[:400]
+        assert "*[!0-9a-f]*" in guard, guard[:400]
+        assert guard.count("exit 1") >= 2, guard[:600]
+
+    def test_the_digest_reads_stdin_and_falls_back_to_shasum(self) -> None:
+        """Two portability properties of EVERY digest command in the script.
+
+        Reading stdin keeps a filename out of the output, so no path can escape
+        into the hash. The `shasum` fallback lets a reader on a Mac reproduce the
+        stamp by hand, which the verdict explicitly invites -- macOS ships no
+        `sha256sum`, and this repository already picks between the two the same
+        way in `cli.sh`, `playwright-cli.sh` and `ensure-node.sh`.
+
+        The property is per-SITE, not a count. The script takes more than one
+        digest -- the captured description, and the manifest that folds in a
+        lane's evidence -- and a count assertion fails on a new site that holds
+        the property just as loudly as on one that breaks it. So every site is
+        checked, with a lower bound as the control so an over-narrow filter
+        matching nothing cannot pass vacuously.
+        """
+        script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
+        code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+        digest = [ln for ln in code if "INTENT_DIGEST=" in ln and "cut" in ln]
+        assert len(digest) >= 1, digest
+        for line in digest:
+            assert " < " in line, line
+        assert "shasum -a 256" in "\n".join(code), digest
+        assert any("command -v sha256sum" in ln for ln in code), digest
+        # The bare `sha256sum "$INTENT"` spelling is the one whose escaped output
+        # produced a stamp no reader could reproduce; it must appear nowhere. The
+        # same goes for any other digest taken over a PATH rather than stdin.
+        assert not any('sha256sum "$INTENT"' in ln for ln in code), digest
+        hashed_paths = [ln for ln in code if "_kc_sha" in ln and "cut" in ln and " < " not in ln]
+        assert hashed_paths == [], hashed_paths
+
+    def test_evidence_the_verdict_read_moves_the_digest(self, tmp_path: Path) -> None:
+        """The defect this closes: the media strip replaces every attachment URL
+        with the same placeholder, so in a lane whose verdict also reads what
+        those URLs resolved to, swapping one attachment for another leaves the
+        captured prose byte-identical. A digest over the prose alone reports a
+        match on a verdict formed from other evidence. Same body, different
+        evidence bytes, so only the evidence can account for the difference.
+        """
+        one, _, wrote_one = self._capture(tmp_path / "a", "same prose", evidence=[b"pixels-A"])
+        two, _, wrote_two = self._capture(tmp_path / "b", "same prose", evidence=[b"pixels-B"])
+        assert wrote_one == wrote_two, (wrote_one, wrote_two)
+        assert one != two, one
+
+    def test_no_evidence_list_keeps_the_intent_only_digest(self, tmp_path: Path) -> None:
+        """The other direction, which is why the coverage is per-lane and not
+        global: a lane that judges prose only must keep naming the prose alone,
+        or a media-only edit it provably never saw would be reported as a
+        description that changed -- the same false confidence inverted.
+        """
+        reported, _, written = self._capture(tmp_path, "prose only")
+        assert reported == hashlib.sha256(written).hexdigest(), reported
+
+    def test_the_manifest_names_ordinals_not_paths(self, tmp_path: Path) -> None:
+        """A runner temp path is per-run, so digesting it would move the stamp on
+        a re-run that read byte-identical evidence and tell a reader the verdict
+        was stale. Identical bytes under different names must hash the same.
+        """
+        one, _, _ = self._capture(
+            tmp_path / "a", "same prose", evidence=[b"same"], evidence_names=["first.bin"]
+        )
+        two, _, _ = self._capture(
+            tmp_path / "b", "same prose", evidence=[b"same"], evidence_names=["second.bin"]
+        )
+        assert one == two, (one, two)
+
+    def test_two_evidence_files_are_not_one_longer_one(self, tmp_path: Path) -> None:
+        """The manifest is per-file lines, not concatenated bytes, so splitting
+        the same total differently cannot collide."""
+        one, _, _ = self._capture(tmp_path / "a", "same prose", evidence=[b"ab", b"c"])
+        two, _, _ = self._capture(tmp_path / "b", "same prose", evidence=[b"a", b"bc"])
+        assert one != two, one
+
+    def test_an_unreadable_listed_evidence_file_fails_closed(self, tmp_path: Path) -> None:
+        """A stamp must never overstate its coverage. If the lane named evidence
+        the capture cannot read, silently hashing the rest would publish a digest
+        claiming to cover what it never saw, so the capture fails instead.
+        """
+        code, outputs, stderr = self._capture(
+            tmp_path, "prose", evidence=[b"present"], list_missing=True
+        )
+        assert code != "0", (code, stderr)
+        assert "description_digest=" not in outputs, outputs
+
+    def test_every_lane_reading_attachment_evidence_names_it_in_the_digest(self) -> None:
+        """Enumerated from source, because a named site is a sample. A lane whose
+        model is pointed at the evidence downloaded from the description must
+        hand that evidence to the capture, or its stamp names less than its
+        verdict read. The predicate is sourcing the attachment-evidence script:
+        that is what downloads the bytes, and every lane that does it feeds them
+        to its model either as images or as the rendered-evidence manifest.
+
+        The check is STRUCTURAL -- the capture step's own `env` must carry the
+        key -- not a substring search of the file. A substring is satisfied by a
+        mention in a comment, and by a renamed key: `EVIDENCE_LIST_DISABLED`
+        contains `EVIDENCE_LIST`, so a lane that had stopped handing its evidence
+        over would still read as covered.
+        """
+        offenders = []
+        covered = 0
+        for name in _every_workflow():
+            text = _workflow(name)
+            if "pr-attachment-evidence.sh" not in text:
+                continue
+            if "pr-description-capture.sh" not in text:
+                continue
+            covered += 1
+            doc = yaml.safe_load(text)
+            named = False
+            for job in doc["jobs"].values():
+                for step in job.get("steps") or []:
+                    run = step.get("run") or ""
+                    if "pr-description-capture.sh" not in run:
+                        continue
+                    if "EVIDENCE_LIST" in (step.get("env") or {}):
+                        named = True
+            if not named:
+                offenders.append(name)
+        # A control: zero matches would pass the assertion vacuously, and the
+        # count is the census this pin exists to hold -- four lanes download
+        # attachment evidence AND capture the description.
+        assert covered == 4, covered
+        assert offenders == [], offenders
+
+    def test_a_list_file_holding_a_non_path_line_does_not_fail_the_capture(
+        self, tmp_path: Path
+    ) -> None:
+        """A UX lane hands over `ux-screenshots.txt`, whose lines are NOT all
+        paths: a `TRUNCATED: more than N images` prose notice is appended to it
+        when the cap drops evidence. Passing that prose as an evidence path trips
+        the capture's fail-closed readability guard, and the lane goes red on any
+        PR carrying more than the cap -- a guard firing correctly on input that
+        was never a path. So a lane lists the list FILE as content and only those
+        of its lines that are really files; this pin holds the capture's half of
+        that contract by proving a prose-bearing list file is digestible.
+        """
+        listing = tmp_path / "shots.txt"
+        listing.parent.mkdir(parents=True, exist_ok=True)
+        listing.write_bytes(
+            b"/nonexistent/shot-01.png\nTRUNCATED: more than 40 images; one was not listed\n"
+        )
+        reported, outputs, _ = self._capture(
+            tmp_path, "prose", evidence=[listing.read_bytes()], evidence_names=["shots.txt"]
+        )
+        assert len(reported) == 64, reported
+        assert f"description_digest={reported}" in outputs, outputs
+
+    def test_a_dropped_evidence_notice_moves_the_digest(self, tmp_path: Path) -> None:
+        """Digesting the list file as CONTENT is what makes the truncation notice
+        load-bearing: an edit that changes WHICH evidence a cap drops changes that
+        list's bytes even when no kept file changed, so the verdict's stamp moves.
+        Filtering the notice out and digesting only real paths would lose this.
+        """
+        one, _, _ = self._capture(
+            tmp_path / "a",
+            "same prose",
+            evidence=[b"/x/shot-01.png\nTRUNCATED: more than 40 images; one was not listed\n"],
+            evidence_names=["shots.txt"],
+        )
+        two, _, _ = self._capture(
+            tmp_path / "b",
+            "same prose",
+            evidence=[b"/x/shot-01.png\nTRUNCATED: more than 40 images; two were not listed\n"],
+            evidence_names=["shots.txt"],
+        )
+        assert one != two, one
+
+    def test_every_ux_lane_covers_its_recording_list(self) -> None:
+        """The recording list is named in each UX lane's prompt as a data file the
+        model reads, so a recording-only description edit must move the digest. A
+        lane that hands over its images and map but not its recordings publishes a
+        stamp claiming coverage it lost. Enumerated from source: the predicate is
+        the lane naming a recordings file at all.
+        """
+        offenders = []
+        covered = 0
+        for name in _every_workflow():
+            text = _workflow(name)
+            if "ux-recordings.txt" not in text:
+                continue
+            if "pr-description-capture.sh" not in text:
+                continue
+            covered += 1
+            doc = yaml.safe_load(text)
+            named = False
+            for job in doc["jobs"].values():
+                for step in job.get("steps") or []:
+                    run = step.get("run") or ""
+                    if "pr-description-capture.sh" not in run:
+                        continue
+                    env = step.get("env") or {}
+                    if "CLIPS" in env and "EVIDENCE_LIST" in env and "$CLIPS" in run:
+                        named = True
+            if not named:
+                offenders.append(name)
+        # Control: both UX lanes name a recordings file and capture a description.
+        assert covered == 2, covered
+        assert offenders == [], offenders
+
+    def test_no_lane_pipes_a_whole_list_file_into_the_evidence_list(self) -> None:
+        """The defect this forbids, stated structurally: `cat "$SHOTS" >>
+        "$EVIDENCE_LIST"` copies every line of a list file in as a path, and that
+        list carries prose. A lane must filter to real files instead, which is
+        what the `[ -f ` test below is.
+        """
+        offenders = []
+        for name in _every_workflow():
+            text = _workflow(name)
+            if "EVIDENCE_LIST" not in text:
+                continue
+            if 'cat "$SHOTS" >> "$EVIDENCE_LIST"' in text:
+                offenders.append((name, "cats a list file in as paths"))
+            if "$SHOTS" in text and "[ -f " not in text:
+                offenders.append((name, "reads $SHOTS without a real-file test"))
+        assert offenders == [], offenders
+
+    def test_a_lane_that_names_evidence_says_so_where_the_verdict_is_read(self) -> None:
+        """A reader recomputes over whatever the stamp's sentence names. A lane
+        folding evidence in while still printing the description-only sentence
+        would send that reader to recompute over the description alone, get a
+        mismatch, and read a sound verdict as stale -- a false alarm the fix
+        itself manufactured. So the sentence must branch on the count.
+        """
+        offenders = []
+        for name in _every_workflow():
+            text = _workflow(name)
+            if "EVIDENCE_LIST" not in text:
+                continue
+            if "EVIDENCE_COUNT" not in text or "names everything this verdict read" not in text:
+                offenders.append(name)
+        assert offenders == [], offenders
+
+
+class TestASourcedScriptNeverRunsWithCredentialsLive:
+    """Every sourced script in a review lane runs before that lane's credentials.
+
+    The invariant, as one sentence: in any workflow that both sources a script
+    from `.github/scripts/` and assumes a role, every source must appear before
+    every assume. It is stated over the WHOLE file rather than per lane, because
+    the reason is not local -- a session assumed once persists for every later
+    step in the job, so "before the model call" is not the same bar as "before
+    any credentials exist".
+
+    On a same-repo pull request the checkout is the PR's merge ref, so a sourced
+    script is the PR's own editable copy; running it after an assume executes
+    PR-authored shell with Bedrock credentials in its environment. The fork lanes
+    check out base_sha and so are not exposed today, but they are held to the same
+    order deliberately: an exception resting on which ref a lane checks out breaks
+    silently the day that ref changes, and this pin is what makes the property
+    independent of it.
+
+    `design-review.yml` documents this ordering in prose. Prose is not a gate: it
+    describes an order without holding it, and an order that must hold in six
+    lanes at once needs something that fails when one of them drifts. That is
+    what this test is.
+    """
+
+    #: A run: step's shell is the workflow's own code, so an `aws` call inside one
+    #: is not what this pin is about. What it looks for is the credential ACTION.
+    _ASSUME = "aws-actions/configure-aws-credentials"
+    _SOURCE = '. "$GITHUB_WORKSPACE/.github/scripts/'
+
+    def _positions(self, text: str) -> "tuple[list[int], list[int]]":
+        sources, assumes = [], []
+        for i, line in enumerate(text.splitlines()):
+            if line.lstrip().startswith("#"):
+                continue
+            if self._SOURCE in line:
+                sources.append(i + 1)
+            if self._ASSUME in line:
+                assumes.append(i + 1)
+        return sources, assumes
+
+    def test_the_invariant_holds_in_every_workflow_on_disk(self) -> None:
+        offenders = []
+        covered = 0
+        for name in _every_workflow():
+            sources, assumes = self._positions(_workflow(name))
+            if not sources or not assumes:
+                continue
+            covered += 1
+            if max(sources) > min(assumes):
+                offenders.append((name, sources, assumes))
+        # A control: the assertion below is only meaningful if the scan actually
+        # found files holding both halves. Zero would pass it vacuously.
+        assert covered >= 4, covered
+        assert offenders == [], offenders
+
+    @pytest.mark.parametrize("name", _capture_lanes())
+    def test_each_capture_lane_sources_before_it_assumes(self, name: str) -> None:
+        sources, assumes = self._positions(_workflow(name))
+        assert sources, name
+        if not assumes:
+            pytest.skip(f"{name} assumes no role")
+        assert max(sources) < min(assumes), (name, sources, assumes)
+
+
+class TestCaptureLanesKeepTheirTriggerSet:
+    """Capturing a description does not earn a lane an `edited` trigger.
+
+    A fresh reading of the description and a re-roll of the whole verdict are
+    different things. `edited` buys the first by paying for the second: with
+    `cancel-in-progress`, a body edit on an unchanged head discards the verdict
+    the lane already published and replaces it with another roll of a
+    non-deterministic reviewer. The stamp gives a reader the freshness signal
+    without that trade, so the trigger sets stay as they are.
+    """
+
+    @pytest.mark.parametrize("name", _capture_lanes())
+    def test_no_capture_lane_reruns_on_a_description_edit(self, name: str) -> None:
+        doc = yaml.safe_load(_workflow(name))
+        trigger = (doc.get(True) or doc.get("on") or {}).get("pull_request")
+        if trigger is None:
+            # The fork lanes are dispatched by a stage-1 gate, not by
+            # `pull_request` directly; they have no trigger set to hold.
+            assert "workflow_run" in (doc.get(True) or doc.get("on") or {}), name
+            return
+        types = trigger.get("types") or []
+        assert "edited" not in types, (name, types)
+        assert "synchronize" in types, (name, types)
