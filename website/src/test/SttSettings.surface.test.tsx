@@ -19,7 +19,9 @@ import { Provider } from 'react-redux'
 
 import { store } from '../store'
 import { initI18n } from '../i18n'
-import { SettingsSection } from '../components/settings'
+import { MemoryRouter } from 'react-router-dom'
+import { SettingsSection, SettingsToggle } from '../components/settings'
+import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
 
@@ -83,8 +85,175 @@ function mountPanel(over: Record<string, unknown> = {}) {
   )
 }
 
+/**
+ * The same panel, but reached the way a deep link reaches it: under a router
+ * carrying the url, with the REAL `useSettingHighlight` mounted above it.
+ *
+ * The Voice tab is the surface that makes ownership testable, because it holds TWO
+ * collapsible groups and one is NESTED inside the other -- `PushToTalkConfig`'s
+ * "Start dictation with a key" renders as the last child of "Fine-tuning". A reveal
+ * that is not scoped to the group actually holding the target opens both.
+ */
+async function mountPanelAt(entry: string, over: Record<string, unknown> = {}) {
+  // Seed BOTH reads and freeze them, so the panel commits its rows on the first
+  // render rather than one round-trip later. That is not a convenience: the probe
+  // strips its own parameter 100 ms after it mounts, so a panel that arrives after
+  // that window makes every assertion here a statement about load latency instead
+  // of about ownership. Seeding pins the ordering the defect lives in -- the group
+  // opens, its children mount, and the signal is still up when they do.
+  const view = mountPanel(over)
+  view.unmount()
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  })
+  qc.setQueryData(['sttConfig'], await mockApi.sttConfig())
+  qc.setQueryData(['sttStatus'], await mockApi.sttStatus())
+  function Probe() {
+    useSettingHighlight()
+    return <SttSettings />
+  }
+  return render(
+    <Provider store={store}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[entry]}><Probe /></MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
+  )
+}
+
 describe('SettingsSection disclosure', () => {
   afterEach(() => cleanup())
+
+  /* A collapsed group is not merely hidden -- it is ABSENT from the document that
+   * a settings deep link searches. `useSettingHighlight` resolves
+   * `/settings/<tab>?highlight=<id>` by querying the DOM for the row's
+   * `data-setting-label` / `data-setting-key`, so a group that renders no rows
+   * makes its settings unreachable from the command palette and from every
+   * `SettingRef` chip. Six of the Voice tab's twenty-six registry entries sit
+   * inside one. */
+  function Probe({ children }: { children: React.ReactNode }) {
+    useSettingHighlight()
+    return <>{children}</>
+  }
+
+  /** The row the deep links below name, with the `data-setting-key` that makes it
+   *  findable. `Streaming` is `stt.streaming` in the registry. */
+  function TargetRow() {
+    return <SettingsToggle label="Streaming" checked onChange={() => {}} configKey="stt.streaming" />
+  }
+
+  it('reveals the group holding the target, and only that group', async () => {
+    // Two SIBLING groups, one holding the row the link names. A reveal driven by
+    // "a link is pending" rather than by WHICH row it wants opens both, which
+    // trades the hidden target for unrelated groups left standing open.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+        <Probe>
+          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+          <SettingsSection title="Bystander" collapsible><p>elsewhere</p></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Owner' }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.queryByText('elsewhere')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Bystander' }).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('reveals a NESTED group only when the target is inside it', async () => {
+    // The shape the Voice tab actually has: one collapsible group as the last child
+    // of another. The outer one must open either way -- the inner cannot exist
+    // otherwise -- and the inner must answer for itself.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+        <Probe>
+          <SettingsSection title="Outer" collapsible>
+            <TargetRow />
+            <SettingsSection title="Inner" collapsible><p>nested</p></SettingsSection>
+          </SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
+    expect(screen.queryByText('nested')).toBeNull()
+  })
+
+  it('keeps the owning group open once the link has finished looking', async () => {
+    // The probe strips its own parameter the moment it has rung the row, so a group
+    // whose openness merely MIRRORED the signal would close on that same tick and
+    // take the ringed row off screen. Latched for the owner; a group mounted after
+    // the withdrawal gets nothing.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+        <Probe>
+          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
+
+    // Past the probe's 100 ms tick. The first tree stays MOUNTED on purpose, so its
+    // unmount cleanup cannot be what clears the signal: only the withdrawal can.
+    await new Promise(r => setTimeout(r, 250))
+    render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+
+    expect(screen.queryByText('later')).toBeNull()
+    expect(screen.getByText('Streaming')).toBeTruthy()
+  })
+
+  it('reveals nothing for an id the registry does not know', async () => {
+    // The unknown-id branch strips the parameter and returns WITHOUT a cleanup, so
+    // it is the one path where the withdrawal cannot ride the effect teardown. It
+    // also resolves to no selector at all, so no group has anything to answer for.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.no-such-row']}>
+        <Probe>
+          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    await new Promise(r => setTimeout(r, 250))
+
+    expect(screen.queryByText('Streaming')).toBeNull()
+    render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+    expect(screen.queryByText('later')).toBeNull()
+  })
+
+  it.each([
+    ['a registry id', '/settings/voice?highlight=voice.streaming'],
+    ['a config key', '/settings/voice?highlight=key:stt.streaming'],
+  ])('withdraws when the page is torn down mid-probe (%s)', async (_name, entry) => {
+    // Leaving Settings before the probe finishes is the ordinary way out of it, and
+    // the two url forms take DIFFERENT branches -- a config key waits on a mutation
+    // observer, a registry id on a timer -- so each one has its own teardown.
+    const view = render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Probe>
+          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
+    view.unmount()
+
+    render(<SettingsSection title="Later" collapsible><p>later</p></SettingsSection>)
+    expect(screen.queryByText('later')).toBeNull()
+  })
+
+  it('stays closed when the navigation carries no deep link', () => {
+    // The other half, or the fix would just be "never collapse": an ordinary visit
+    // to the tab must still cost the reader nothing.
+    render(
+      <MemoryRouter initialEntries={['/settings/voice']}>
+        <Probe>
+          <SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>
+        </Probe>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByText('inside')).toBeNull()
+  })
 
   it('renders its rows immediately when it is a plain heading', () => {
     // The regression guard for the other half of the prop: a section that never
@@ -114,6 +283,49 @@ describe('SettingsSection disclosure', () => {
   it('names the group as a heading, so the document outline is unchanged', () => {
     render(<SettingsSection title="Group" collapsible><p>inside</p></SettingsSection>)
     expect(screen.getByRole('heading', { name: 'Group' })).toBeTruthy()
+  })
+})
+
+describe('a settings deep link reveals the group that OWNS its target', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    await initI18n('en')
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { enumerateDevices: async () => [] },
+    })
+  })
+  afterEach(() => cleanup())
+
+  it('opens Fine-tuning for Streaming and leaves Push-to-talk closed', async () => {
+    // The real Voice tab, reached the way the command palette reaches it. `Streaming`
+    // lives directly in "Fine-tuning"; "Start dictation with a key" is a SEPARATE
+    // collapsible group nested inside it and owns none of this. Revealing it too
+    // trades "the target stays hidden" for "unrelated groups open and stay open",
+    // which is a different wrong answer rather than a fix.
+    await mountPanelAt('/settings/voice?highlight=voice.streaming')
+
+    // The owner opened and the target is on the page.
+    await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
+
+    // The unrelated group did not. Asserted by the LABEL of a row only it holds,
+    // which is what a reader actually pays for, and on a row the registry lists
+    // under its own id (`voice.shortcut-key`).
+    expect(screen.queryByText('Shortcut key')).toBeNull()
+    expect(screen.queryByText('How the key works')).toBeNull()
+    expect(
+      screen.getByRole('button', { name: /start dictation with a key/i }).getAttribute('aria-expanded'),
+    ).toBe('false')
+  })
+
+  it('opens Push-to-talk when the target is the one IT owns', async () => {
+    // The mirror image, so the first case cannot be satisfied by never revealing a
+    // nested group: `Shortcut key` is inside "Start dictation with a key", which is
+    // inside "Fine-tuning", and a deep link to it has to open BOTH.
+    await mountPanelAt('/settings/voice?highlight=voice.shortcut-key')
+
+    await waitFor(() => expect(screen.getByText('Shortcut key')).toBeTruthy())
+    expect(screen.getByText('Streaming')).toBeTruthy()
   })
 })
 

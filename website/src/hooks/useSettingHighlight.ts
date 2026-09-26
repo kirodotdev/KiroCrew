@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { setSettingsDeepLinkTarget } from '../components/settings'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -151,10 +152,31 @@ export function useSettingHighlight(owns: boolean = true): void {
   }
 
   useEffect(() => {
-    if (!owns || !highlightId) return
+    /* Announce the pending link BEFORE the probe, and withdraw it as soon as
+     * there is none. A collapsed `SettingsSection` renders no rows, so without
+     * this the probe below searches a document its target was never put into --
+     * see the signal's own comment in `components/settings`. Keyed off
+     * `highlightId` alone, so the withdrawal rides the re-run that the strip
+     * already causes: resolved, unknown and not-ours all arrive here as "no
+     * highlight", which is the one condition that means nothing is pending. */
+    if (!owns || !highlightId) { setSettingsDeepLinkTarget(null); return }
 
     const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
     const settingId = entry?.settingId
+    /* The selector a collapsed group answers "is that row inside me?" with. Built
+     * from the SAME three identities the probe resolves by, in the same precedence,
+     * so a group can never reveal itself for something the probe would not accept.
+     * Deliberately coarser than `findTarget`: the `occurrence` tiebreak disambiguates
+     * a repeated label, which is a question only the probe can answer and which no
+     * group needs to in order to know whether it holds the row. */
+    const containmentSelector = settingId
+      ? `[data-setting-id="${CSS.escape(settingId)}"]`
+      : directConfigKey
+        ? `[data-setting-key="${CSS.escape(directConfigKey)}"]`
+        : entry
+          ? `[data-setting-label="${CSS.escape(entry.labelKey ? i18nT(entry.labelKey) : entry.label)}"]`
+          : null
+    setSettingsDeepLinkTarget(containmentSelector)
     // Explicit UI identities and schema keys both survive an async panel load.
     if (settingId || directConfigKey) {
       const findDirectTarget = (): HTMLElement | null => {
@@ -217,6 +239,9 @@ export function useSettingHighlight(owns: boolean = true): void {
         return () => {
           clearTimeout(timer)
           observer?.disconnect()
+          // A page torn down mid-probe leaves nothing to resolve the link, so the
+          // signal must not outlive it into the next tree.
+          setSettingsDeepLinkTarget(null)
         }
       }
       // Unknown keys retain the legacy parameter-cleanup behavior below.
@@ -268,7 +293,7 @@ export function useSettingHighlight(owns: boolean = true): void {
       }, { replace: true })
     }, 100)
 
-    return () => clearTimeout(timer)
+    return () => { clearTimeout(timer); setSettingsDeepLinkTarget(null) }
     // location.key: every navigation re-arms the probe. Without it, the
     // legacy-URL translation (SettingsPage replace-navigates ?tab=X onto the
     // path form, mounting the target panel one commit LATER) would race this
