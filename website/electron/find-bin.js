@@ -138,4 +138,45 @@ function findKirocrewBin(
   return isWindows ? "kirocrew.exe" : "kirocrew"; // fall back to PATH
 }
 
-module.exports = { findKirocrewBin };
+// Root-owned directories an ssh client may be taken from. Mirrors
+// `platform_compat._TRUSTED_SYSTEM_BIN_DIRS`: PATH can lead with agent-writable
+// directories (`~/.local/bin`, a worktree venv), and this binary runs in the
+// un-sandboxed main process with the remote command and returns the token.
+const TRUSTED_POSIX_SSH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"];
+
+// The in-box Windows OpenSSH client, at a fixed path. Not derived from
+// `%SystemRoot%`: `HKCU\Environment` is writable without elevation, so a
+// restarted app would inherit a root naming a planted `ssh.exe`
+// (`platform_compat._windows_system_dirs` records this as measured). Node has
+// no `GetSystemDirectoryW`; a Windows installed off `C:` gets an ENOENT naming
+// this path instead, which is where `main` already fails on every Windows host.
+const WINDOWS_SSH_BIN = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+
+/**
+ * Resolve the local OpenSSH client for an `execFile` call from trusted,
+ * non-user-writable locations only: never PATH, never the environment.
+ *
+ * POSIX takes the first executable `ssh` in the trusted system directories
+ * (NixOS included), falling back to `/usr/bin/ssh` so a miss surfaces as a
+ * spawn ENOENT naming that path. Windows takes the fixed in-box client.
+ *
+ * @param {typeof import("fs")} fs - Node fs module (needs `accessSync`, `constants.X_OK`)
+ * @param {typeof import("path")} path - Node path module
+ * @param {boolean} [isWindows] - whether the host is Windows
+ * @returns {string} Absolute path to the ssh client
+ */
+function findSshBin(fs, path, isWindows = process.platform === "win32") {
+  if (isWindows) return WINDOWS_SSH_BIN;
+  for (const dir of TRUSTED_POSIX_SSH_DIRS) {
+    const bin = path.join(dir, "ssh");
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+      return bin;
+    } catch {
+      // not here; try the next trusted directory
+    }
+  }
+  return "/usr/bin/ssh";
+}
+
+module.exports = { findKirocrewBin, findSshBin };

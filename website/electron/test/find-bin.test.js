@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");
 const fs = require("fs");
-const { findKirocrewBin } = require("../find-bin");
+const { findKirocrewBin, findSshBin } = require("../find-bin");
 
 const HOME = "/mock/home";
 const RESOURCES = "/mock/resources";
@@ -226,5 +226,41 @@ describe("findKirocrewBin", () => {
     const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "ia32");
     assert.equal(result, unsuffixed);
     assert.deepStrictEqual(probed.filter((p) => p.includes("kirocrew-backend-")), []);
+  });
+});
+
+describe("findSshBin", () => {
+  const executable = (...present) => ({
+    accessSync: (p) => { if (!present.includes(p)) throw new Error("ENOENT"); },
+    constants: { X_OK: fs.constants.X_OK },
+  });
+
+  it("takes /usr/bin/ssh and never consults PATH on POSIX", () => {
+    const planted = executable("/home/u/.local/bin/ssh", "/usr/bin/ssh");
+    assert.equal(findSshBin(planted, path.posix, false), "/usr/bin/ssh");
+  });
+
+  it("finds a NixOS system ssh in the trusted system profile", () => {
+    const nix = "/run/current-system/sw/bin/ssh";
+    assert.equal(findSshBin(executable(nix), path.posix, false), nix);
+  });
+
+  it("ignores an ssh that exists only in a PATH-only directory", () => {
+    const result = findSshBin(executable("/opt/homebrew/bin/ssh"), path.posix, false);
+    assert.equal(result, "/usr/bin/ssh");
+  });
+
+  it("uses the fixed in-box client on Windows, whatever SystemRoot says", () => {
+    const saved = process.env.SystemRoot;
+    process.env.SystemRoot = "D:\\Planted";
+    try {
+      assert.equal(
+        findSshBin(executable("D:\\Planted\\System32\\OpenSSH\\ssh.exe"), path.win32, true),
+        "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+      );
+    } finally {
+      if (saved === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = saved;
+    }
   });
 });
