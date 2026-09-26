@@ -6463,6 +6463,7 @@
       "show_line_by_line_diff": "Zeilenweisen Diff anzeigen",
       "cancel_line_by_line_diff": "Abbrechen",
       "computing_line_by_line_diff": "Zeilenweiser Diff wird berechnet…",
+      "highlighting": "Syntax wird hervorgehoben…",
       "line_by_line_diff_failed": "Diff konnte nicht berechnet werden",
       "more": "mehr",
       "no_changes": "keine Änderungen",

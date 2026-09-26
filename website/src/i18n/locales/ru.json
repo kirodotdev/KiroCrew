@@ -6669,6 +6669,7 @@
       "show_line_by_line_diff": "Показать построчные различия",
       "cancel_line_by_line_diff": "Отмена",
       "computing_line_by_line_diff": "Вычисление построчных различий…",
+      "highlighting": "Подсветка синтаксиса…",
       "line_by_line_diff_failed": "Не удалось вычислить различия",
       "more": "ещё",
       "no_changes": "нет изменений",

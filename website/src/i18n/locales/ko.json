@@ -6360,6 +6360,7 @@
       "show_line_by_line_diff": "줄 단위 diff 표시",
       "cancel_line_by_line_diff": "취소",
       "computing_line_by_line_diff": "줄 단위 diff 계산 중…",
+      "highlighting": "구문 강조 표시 중…",
       "line_by_line_diff_failed": "diff를 계산할 수 없습니다",
       "more": "더 보기",
       "no_changes": "변경 없음",

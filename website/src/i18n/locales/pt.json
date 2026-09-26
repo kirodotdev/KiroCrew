@@ -6566,6 +6566,7 @@
       "show_line_by_line_diff": "Mostrar diff linha a linha",
       "cancel_line_by_line_diff": "Cancelar",
       "computing_line_by_line_diff": "Calculando diff linha a linha…",
+      "highlighting": "Realçando código…",
       "line_by_line_diff_failed": "Não foi possível calcular o diff",
       "more": "mais",
       "no_changes": "sem alterações",

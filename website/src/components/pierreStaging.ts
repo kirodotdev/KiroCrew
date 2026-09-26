@@ -196,6 +196,16 @@ const LATCH_CAP = 4000
  */
 export const PierreFarmHoldContext = createContext(false)
 
+/** `true` inside the fallback a `WarmSwap` is HOLDING on screen while its impl
+ *  has not painted, unless the caller opted out of the pending cue. Read by the
+ *  plain fallback's header row (`PlainFallbackHeader`), which then carries the
+ *  one-line "Highlighting code…" cue at its end — the place Pierre's own header
+ *  fills with its metadata once painted. That row exists in both states, so
+ *  the cue costs the hold no height (#13937). `false` everywhere else: a
+ *  fallback rendered outside a hold, under farm measurement, or by a surface
+ *  with no header row carries no cue. */
+export const WarmSwapHeldContext = createContext(false)
+
 export function useStagedMount(immediate: boolean, latchKey?: string, hold = false): boolean {
   const farm = useContext(PierreFarmHoldContext)
   const [ready, setReady] = useState(!farm && (immediate || (latchKey !== undefined && latched.has(latchKey))))
