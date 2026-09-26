@@ -9391,6 +9391,37 @@
       "sr_over": "O prompt excede o limite de tamanho.",
       "held_tokens": "Envio retido. O prompt excede em ~{{over}} o limite de {{limit}} tokens deste modelo. Envie de novo para enviá-lo mesmo assim.",
       "sr_confirm": "Envio retido: o prompt excede o limite de tamanho. Envie de novo para enviá-lo mesmo assim."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Painel lateral",
+        "files": "Arquivos",
+        "git": "Git",
+        "changes": "Alterações",
+        "subagents": "Subagentes",
+        "terminal": "Terminal",
+        "notes": "Notas",
+        "workLog": "Registro de trabalho",
+        "group": "Grupo",
+        "tabs": "Abas"
+      },
+      "paletteContent": "Conteúdo",
+      "hint": "Arraste um bloco para a grade · arraste um painel para movê-lo, ou para fora para remover",
+      "previewCue": "Prévia",
+      "remove": "Remover",
+      "removeElement": "Remover {{label}}",
+      "moveElement": "Mover {{label}}",
+      "dragHandle": "Arrastável, use as teclas de seta para mover",
+      "replaceElement": "Substituir {{label}}",
+      "doesNotFit": "Não cabe",
+      "dragTile": "Arraste {{label}} para a grade",
+      "cols": "colunas",
+      "rows": "linhas",
+      "fewerCols": "menos colunas",
+      "moreCols": "mais colunas",
+      "fewerRows": "menos linhas",
+      "moreRows": "mais linhas"
     }
   },
   "hooks": {
@@ -17189,6 +17220,10 @@
       "age_for": "há {{age}}",
       "age_tip": "Tempo no estado que o selo indica.",
       "open_chat": "Abrir o chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Ambiente de teste do editor de layout",
+      "reset": "Redefinir layout"
     }
   },
   "privacyDisclosure": {

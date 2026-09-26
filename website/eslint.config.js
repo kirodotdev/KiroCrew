@@ -218,6 +218,11 @@ export default [
           // styles/crew-notes.css (imported in main.tsx, outside index.css's
           // @source graph): the crewmate Notes-panel readability scope.
           'crew-notes',
+          // components/crew/layout/layoutEditor.css (imported by LayoutEditor.tsx,
+          // outside index.css's @source graph): the layout editor's Neo-Frame
+          // "Bench" build-mode classes and their drag/drop/target state hooks,
+          // all le-prefixed so no generic state name is exempted repo-wide.
+          'le-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

@@ -9139,6 +9139,37 @@
       "sr_over": "プロンプトが長さの上限を超えています。",
       "held_tokens": "送信を保留しました。プロンプトは、このモデルの上限 {{limit}} トークンを約 {{over}} 超えています。それでも送信するには、もう一度送信してください。",
       "sr_confirm": "送信を保留しました：プロンプトが長さの上限を超えています。それでも送信するには、もう一度送信してください。"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "チャット",
+        "sidePanel": "サイドパネル",
+        "files": "ファイル",
+        "git": "Git",
+        "changes": "変更",
+        "subagents": "サブエージェント",
+        "terminal": "ターミナル",
+        "notes": "メモ",
+        "workLog": "作業ログ",
+        "group": "グループ",
+        "tabs": "タブ"
+      },
+      "paletteContent": "コンテンツ",
+      "hint": "タイルをグリッドにドラッグ · ペインをドラッグして移動、グリッド外へドラッグで削除",
+      "previewCue": "プレビュー",
+      "remove": "削除",
+      "removeElement": "{{label}} を削除",
+      "moveElement": "{{label}}を移動",
+      "dragHandle": "ドラッグ可能、矢印キーで移動",
+      "replaceElement": "{{label}}を置き換える",
+      "doesNotFit": "収まりません",
+      "dragTile": "{{label}} をグリッドにドラッグ",
+      "cols": "列",
+      "rows": "行",
+      "fewerCols": "列を減らす",
+      "moreCols": "列を増やす",
+      "fewerRows": "行を減らす",
+      "moreRows": "行を増やす"
     }
   },
   "hooks": {
@@ -16703,6 +16734,10 @@
       "age_for": "{{age}} 経過",
       "age_tip": "バッジの状態にとどまっている時間。",
       "open_chat": "チャットを開く"
+    },
+    "layoutEditorHarness": {
+      "title": "レイアウトエディタのハーネス",
+      "reset": "レイアウトをリセット"
     }
   },
   "privacyDisclosure": {

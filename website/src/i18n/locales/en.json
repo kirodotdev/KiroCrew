@@ -5862,6 +5862,37 @@
       "term_check": "The agent wrote this command. Check it carefully before you press Enter.",
       "term_failed": "Couldn't open the Terminal panel.",
       "undo": "Undo"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Side panel",
+        "files": "Files",
+        "git": "Git",
+        "changes": "Changes",
+        "subagents": "Subagents",
+        "terminal": "Terminal",
+        "notes": "Notes",
+        "workLog": "Work log",
+        "group": "Group",
+        "tabs": "Tabs"
+      },
+      "paletteContent": "Content",
+      "hint": "Drag a tile onto the grid · drag a pane to move it, or off the grid to remove",
+      "previewCue": "Preview",
+      "remove": "Remove",
+      "removeElement": "Remove {{label}}",
+      "moveElement": "Move {{label}}",
+      "dragHandle": "Draggable, use arrow keys to move",
+      "replaceElement": "Replace {{label}}",
+      "doesNotFit": "Doesn't fit",
+      "dragTile": "Drag {{label}} onto the grid",
+      "cols": "columns",
+      "rows": "rows",
+      "fewerCols": "fewer columns",
+      "moreCols": "more columns",
+      "fewerRows": "fewer rows",
+      "moreRows": "more rows"
     }
   },
   "hooks": {
@@ -9838,6 +9869,10 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
+    },
+    "layoutEditorHarness": {
+      "title": "Layout editor harness",
+      "reset": "Reset layout"
     }
   },
   "settings": {

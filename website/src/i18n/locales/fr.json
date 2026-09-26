@@ -9391,6 +9391,37 @@
       "sr_over": "Le prompt dépasse sa limite de longueur.",
       "held_tokens": "Envoi suspendu. Le prompt dépasse de ~{{over}} la limite de {{limit}} tokens de ce modèle. Renvoie pour l’envoyer quand même.",
       "sr_confirm": "Envoi suspendu : le prompt dépasse sa limite de longueur. Renvoie pour l’envoyer quand même."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Panneau latéral",
+        "files": "Fichiers",
+        "git": "Git",
+        "changes": "Modifications",
+        "subagents": "Sous-agents",
+        "terminal": "Terminal",
+        "notes": "Notes",
+        "workLog": "Journal de travail",
+        "group": "Groupe",
+        "tabs": "Onglets"
+      },
+      "paletteContent": "Contenu",
+      "hint": "Faites glisser une tuile sur la grille · faites glisser un volet pour le déplacer, ou à l’extérieur pour le retirer",
+      "previewCue": "Aperçu",
+      "remove": "Retirer",
+      "removeElement": "Retirer {{label}}",
+      "moveElement": "Déplacer {{label}}",
+      "dragHandle": "Déplaçable, utilise les touches fléchées pour déplacer",
+      "replaceElement": "Remplacer {{label}}",
+      "doesNotFit": "Ne rentre pas",
+      "dragTile": "Faire glisser {{label}} sur la grille",
+      "cols": "colonnes",
+      "rows": "lignes",
+      "fewerCols": "moins de colonnes",
+      "moreCols": "plus de colonnes",
+      "fewerRows": "moins de lignes",
+      "moreRows": "plus de lignes"
     }
   },
   "hooks": {
@@ -17189,6 +17220,10 @@
       "age_for": "depuis {{age}}",
       "age_tip": "Temps passé dans l’état indiqué par le badge.",
       "open_chat": "Ouvrir le chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Banc d’essai de l’éditeur de disposition",
+      "reset": "Réinitialiser la disposition"
     }
   },
   "privacyDisclosure": {

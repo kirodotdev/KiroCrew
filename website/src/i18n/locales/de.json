@@ -9265,6 +9265,37 @@
       "sr_over": "Der Prompt überschreitet sein Längenlimit.",
       "held_tokens": "Senden angehalten. Der Prompt liegt ~{{over}} über dem Limit dieses Modells von {{limit}} Tokens. Sende erneut, um ihn trotzdem zu senden.",
       "sr_confirm": "Senden angehalten: Der Prompt überschreitet sein Längenlimit. Sende erneut, um ihn trotzdem zu senden."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Seitenleiste",
+        "files": "Dateien",
+        "git": "Git",
+        "changes": "Änderungen",
+        "subagents": "Subagenten",
+        "terminal": "Terminal",
+        "notes": "Notizen",
+        "workLog": "Arbeitsprotokoll",
+        "group": "Gruppe",
+        "tabs": "Tabs"
+      },
+      "paletteContent": "Inhalt",
+      "hint": "Eine Kachel auf das Raster ziehen · ein Feld ziehen zum Verschieben oder hinaus zum Entfernen",
+      "previewCue": "Vorschau",
+      "remove": "Entfernen",
+      "removeElement": "{{label}} entfernen",
+      "moveElement": "{{label}} verschieben",
+      "dragHandle": "Ziehbar, mit den Pfeiltasten verschieben",
+      "replaceElement": "{{label}} ersetzen",
+      "doesNotFit": "Passt nicht",
+      "dragTile": "{{label}} auf das Raster ziehen",
+      "cols": "Spalten",
+      "rows": "Zeilen",
+      "fewerCols": "weniger Spalten",
+      "moreCols": "mehr Spalten",
+      "fewerRows": "weniger Zeilen",
+      "moreRows": "mehr Zeilen"
     }
   },
   "hooks": {
@@ -16946,6 +16977,10 @@
       "age_for": "seit {{age}}",
       "age_tip": "Zeit im Zustand, den das Badge nennt.",
       "open_chat": "Chat öffnen"
+    },
+    "layoutEditorHarness": {
+      "title": "Layout-Editor-Testumgebung",
+      "reset": "Layout zurücksetzen"
     }
   },
   "privacyDisclosure": {

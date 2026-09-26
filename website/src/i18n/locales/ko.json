@@ -9139,6 +9139,37 @@
       "sr_over": "프롬프트가 길이 한도를 초과했습니다.",
       "held_tokens": "전송 보류. 프롬프트가 이 모델의 {{limit}} 토큰 한도를 약 {{over}} 초과합니다. 그래도 보내려면 한 번 더 보내세요.",
       "sr_confirm": "전송 보류: 프롬프트가 길이 한도를 초과했습니다. 그래도 보내려면 한 번 더 보내세요."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "채팅",
+        "sidePanel": "사이드 패널",
+        "files": "파일",
+        "git": "Git",
+        "changes": "변경 사항",
+        "subagents": "하위 에이전트",
+        "terminal": "터미널",
+        "notes": "메모",
+        "workLog": "작업 로그",
+        "group": "그룹",
+        "tabs": "탭"
+      },
+      "paletteContent": "콘텐츠",
+      "hint": "타일을 그리드로 드래그 · 창을 드래그하여 이동, 그리드 밖으로 드래그하여 제거",
+      "previewCue": "미리보기",
+      "remove": "제거",
+      "removeElement": "{{label}} 제거",
+      "moveElement": "{{label}} 이동",
+      "dragHandle": "드래그 가능, 화살표 키로 이동",
+      "replaceElement": "{{label}} 교체",
+      "doesNotFit": "맞지 않음",
+      "dragTile": "{{label}}을(를) 그리드로 드래그",
+      "cols": "열",
+      "rows": "행",
+      "fewerCols": "열 줄이기",
+      "moreCols": "열 늘리기",
+      "fewerRows": "행 줄이기",
+      "moreRows": "행 늘리기"
     }
   },
   "hooks": {
@@ -16703,6 +16734,10 @@
       "age_for": "{{age}} 경과",
       "age_tip": "배지가 나타내는 상태에 머문 시간입니다.",
       "open_chat": "채팅 열기"
+    },
+    "layoutEditorHarness": {
+      "title": "레이아웃 편집기 하네스",
+      "reset": "레이아웃 초기화"
     }
   },
   "privacyDisclosure": {
