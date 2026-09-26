@@ -15,10 +15,13 @@ from pathlib import Path
 from kiro_crew.service import linux, macos
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
+    RESTART_REFUSED,
     Platform,
+    RestartReport,
+    ScopeRestart,
     current_platform,
     headless_auth_warning,
-    restart_command_hint,
+    system_restart_command_hint,
 )
 
 
@@ -53,10 +56,19 @@ def installed_unit_path() -> "Path | None":
     the file is the signal that a service exists to inherit (or drop) an
     environment: a host running ``kirocrew gateway`` in the foreground has none,
     and inherits the invoking shell instead.
+
+    On Linux both systemd scopes count. The system unit file is checked first
+    (a plain stat, no spawn); when it is absent the calling account's own
+    manager is asked for the per-user unit the SELinux remedy stands up
+    (:func:`linux.user_unit_path`), which bakes the same ``Environment=`` lines
+    — so ``kirocrew doctor``'s managed-marker and credential checks read a
+    user-scope gateway as the installed service it is, instead of "none".
     """
     plat = current_platform()
-    if plat == Platform.SYSTEMD and linux.UNIT_PATH.is_file():
-        return linux.UNIT_PATH
+    if plat == Platform.SYSTEMD:
+        if linux.UNIT_PATH.is_file():
+            return linux.UNIT_PATH
+        return linux.user_unit_path()
     if plat == Platform.LAUNCHD and macos.PLIST_PATH.is_file():
         return macos.PLIST_PATH
     return None
@@ -161,17 +173,29 @@ def uninstall_service() -> int:
         # non-zero with the reason rather than letting a traceback escape (and
         # leaving the service installed).
         try:
-            linux.uninstall()
+            report = linux.uninstall()
             # Whatever removes the service removes the grant, so a host is left
             # as it was found rather than carrying an orphaned userns permission.
             profile = linux.remove_apparmor_profile()
         except linux.ServiceInstallError as exc:
             print(f"❌ {exc}", file=sys.stderr)
             return 1
-        print("✅ kirocrew service stopped and removed.")
+        # Both scopes are always named: a unit can live in the system scope, in
+        # the account's user scope (the SELinux remedy), or in neither, and the
+        # operator must read which one this actually touched. An unfinished
+        # teardown still prints everything (and still drops the profile above);
+        # the warning sits on the scope that needs a hand, and only the exit code
+        # says so.
+        if report.removed_any:
+            print("✅ kirocrew service stopped and removed.")
+        else:
+            print("ℹ️  No kirocrew service was removed.")
+        for scope, line in (("system", report.system), ("user", report.user)):
+            mark = "⚠️ " if scope in report.unfinished else ""
+            print(f"   {mark}{scope} scope: {line}")
         if profile.message:
             print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
-        return 0
+        return 1 if report.incomplete else 0
     if plat == Platform.LAUNCHD:
         macos.uninstall()
         print("✅ kirocrew service stopped and removed.")
@@ -181,11 +205,22 @@ def uninstall_service() -> int:
 
 
 def service_status() -> int:
-    """Print the platform service status. Returns 0 if active, 1 if inactive, 2 if unsupported."""
+    """Print the platform service status. Returns 0 if the service is up, 1 if
+    not, 2 if unsupported.
+
+    On Linux the exit code follows :func:`linux.is_up` — ``ActiveState=active``
+    in either scope, what ``systemctl is-active`` exits 0 for — not the wider
+    :func:`linux.is_active` that ``stop`` / ``restart`` select scopes by. The two
+    part on a crash loop: a unit in ``activating (auto-restart)`` must be
+    reachable to ``kirocrew stop``, and must read as DOWN to a script gating on
+    this exit code, since a gateway that never started is the failure `status`
+    exists to expose. The headline above the exit code prints the real state
+    either way.
+    """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         print(linux.status())
-        return 0 if linux.is_active() else 1
+        return 0 if linux.is_up() else 1
     if plat == Platform.LAUNCHD:
         print(macos.status())
         return 0 if macos.is_active() else 1
@@ -268,24 +303,39 @@ def stop_service() -> bool:
     return False
 
 
-def restart_service() -> bool:
+def restart_service() -> RestartReport:
     """Restart the platform service if installed and active.
 
-    Returns True if a service was restarted. Mirrors :func:`stop_service`
-    so callers can branch on "was this handled by the service manager?"
-    rather than re-doing platform detection. When False, callers fall
-    back to a foreground-gateway path (SIGTERM-by-port + detached spawn).
+    Returns a :class:`RestartReport`: truthy when a service was restarted and
+    came back up, so callers still branch on "was this handled by the service
+    manager?" rather than re-doing platform detection, and read its
+    ``failures`` when it was handled and did not take — which scope, whether
+    the manager REFUSED the restart (retry by hand with that scope's command,
+    ``hint``) or the unit did not stay up (read its journal). An empty report
+    (nothing running under a manager) sends callers to the foreground-gateway
+    path (SIGTERM-by-port + detached spawn). Mirrors :func:`stop_service`.
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         if linux.is_active():
             return linux.restart()
-        return False
+        return RestartReport()
     if plat == Platform.LAUNCHD:
         if macos.is_active():
-            return macos.restart()
-        return False
-    return False
+            ok = macos.restart()
+            return RestartReport(
+                (
+                    ScopeRestart(
+                        "launchd",
+                        ok,
+                        reason="" if ok else "launchctl refused the restart",
+                        kind="" if ok else RESTART_REFUSED,
+                        hint="" if ok else manual_restart_hint(),
+                    ),
+                )
+            )
+        return RestartReport()
+    return RestartReport()
 
 
 def manual_restart_hint() -> str:
@@ -296,13 +346,17 @@ def manual_restart_hint() -> str:
     not have. Unlike :func:`kiro_crew.service.common.restart_command_hint`,
     this must never answer ``kirocrew restart``: that is the command that just
     failed, so a circular hint would send the operator straight back into the
-    same refusal.
+    same refusal. On Linux the per-scope report (:class:`ScopeRestart.hint`)
+    carries the command for the scope that refused; this is the launchd path's
+    and the system scope's answer.
     """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
-        # "sudo systemctl restart kirocrew" — shared with the update path and
-        # the Slack restart-failure hint so the string cannot drift.
-        return restart_command_hint()
+        # "sudo systemctl restart kirocrew" — the same spelling the update path
+        # and the Slack restart-failure hint use for a system unit, so the
+        # string cannot drift; unconditional, because a systemd host with no
+        # unit file at all would otherwise be answered the circular CLI.
+        return system_restart_command_hint()
     if plat == Platform.LAUNCHD:
         # NOT `launchctl kickstart` — that is the exact call macos.restart()
         # just ran and got refused. Tearing the job down and bootstrapping it

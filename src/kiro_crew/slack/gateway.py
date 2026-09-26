@@ -13489,10 +13489,16 @@ class GatewayOrchestrator:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
                 # Surface the platform-correct manual restart command so a failed
-                # auto-restart doesn't leave the user guessing.
-                self.dashboard_state.push_update_progress(
-                    "failed", f"Restart failed — run: {restart_command_hint()}"
-                )
+                # auto-restart doesn't leave the user guessing. Resolved OFF the
+                # loop thread: the hint stats the two unit-file locations, and
+                # the per-user one is under the account's home, which can be a
+                # network mount — a stat against a disconnected mount blocks for
+                # as long as the mount does, and on this thread that freezes
+                # chat and the liveness heartbeat together with nothing in-band
+                # to clear it (the watchdog's kill is the only exit). A worker
+                # thread waits in its place; the loop keeps serving.
+                hint = await asyncio.to_thread(restart_command_hint)
+                self.dashboard_state.push_update_progress("failed", f"Restart failed — run: {hint}")
 
     async def _auto_apply_wheel_update(self) -> None:
         """Auto-apply a wheel/cli.sh update by re-running the signed installer.

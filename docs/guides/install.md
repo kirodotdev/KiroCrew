@@ -743,12 +743,27 @@ crash-looping service enabled at every boot.
 A per-user unit is not affected, because the per-user systemd manager does not
 run in PID 1's domain. Follow the commands the refusal prints, then manage the
 service with `systemctl --user status|restart kirocrew` and `journalctl --user -u
-kirocrew -f`. Note that `kirocrew service status` / `uninstall` only look at the
-system unit, so they will not see a user unit ([#7165] tracks adding a first-class
-`--user` scope). Installing kirocrew onto a system-labelled path such as
-`/usr/local/bin` also avoids the problem.
+kirocrew -f`. `kirocrew service status` reports it as the **user scope** (the
+output names both scopes: `system scope: not installed`, then `user scope: active
+(running)` with the `systemctl --user status` block; it exits 0 only while the
+unit is `active`, so a unit stuck in `activating (auto-restart)` exits 1 with
+that state in the headline), `kirocrew stop` /
+`kirocrew restart` act on it through your own manager (`restart` confirms the
+unit stays up and, if it lands in `activating (auto-restart)` instead, says so and
+prints that unit's own journal read, `journalctl --user -u kirocrew.service -n 50
+--no-pager`, rather than a `sudo systemctl` command that
+would not find the unit), `kirocrew logs` tails its
+user journal, `kirocrew doctor`'s service checks read its unit file, and
+`kirocrew service uninstall` removes it and says which scope it
+removed (a unit you `systemctl --user link`ed keeps its source file; only the
+link is removed). Run these as your own
+account, not under `sudo`: a root shell cannot reach your user manager, and the
+commands then report `user scope: not reachable from this shell` rather than
+guessing. `service install` itself still writes a system unit — [#10813] tracks
+preferring user units at install time. Installing kirocrew onto a system-labelled
+path such as `/usr/local/bin` also avoids the problem.
 
-[#7165]: https://github.com/kirodotdev/KiroCrew/issues/7165
+[#10813]: https://github.com/kirodotdev/KiroCrew/issues/10813
 
 ### Setting the service port
 
@@ -1222,8 +1237,9 @@ desktop app) as described in the [Install paths](#install-paths) section above.
 
 For reference, the data home structure and what each uninstall path touches:
 
-- `kirocrew service uninstall` removes only the systemd unit (plus the AppArmor
-  profile it installed) or the launchd plist.
+- `kirocrew service uninstall` removes only the systemd unit — the system unit
+  and, when your own user manager has one loaded, the per-user unit, naming each
+  scope it touched — (plus the AppArmor profile it installed) or the launchd plist.
 - Python and npm package removal has no `preuninstall` or `postuninstall`
   cleanup hook.
 - The macOS DMG/zip and the Linux AppImage have no cleanup hook, so removing the
