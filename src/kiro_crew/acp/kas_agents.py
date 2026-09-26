@@ -71,7 +71,9 @@ from typing import Any
 
 from kiro_crew.acp.kas_permissions import (
     allowed_tools_to_permissions,
+    auto_approved_capabilities,
     merge_user_permissions,
+    withhold_hook_gated_auto_approval,
 )
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -82,7 +84,9 @@ from kiro_crew.agent_discovery import (
     spec_welcome_message,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
+from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
@@ -717,6 +721,7 @@ def to_client_custom_agent(
     member_dispatch: bool = False,
     crew_panel: bool = False,
     session_key: str = "",
+    pre_tool_hook_matchers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -741,6 +746,12 @@ def to_client_custom_agent(
     capabilities are assigned per server and withdrawn by separate operator
     switches: a member may hold session control without a panel, or a panel
     without session control.
+
+    *pre_tool_hook_matchers* are the matchers of every PreToolUse hook this
+    session's calls meet on Crew's permission path (the spec's own and the Hooks
+    page's). A capability one of them covers is not auto-approved, so its calls
+    reach that path; see
+    :func:`kiro_crew.acp.kas_permissions.withhold_hook_gated_auto_approval`.
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -839,6 +850,14 @@ def to_client_custom_agent(
         # The list's PRESENCE, not its content: an empty list is still the operator
         # saying "auto-approve nothing", and a block must not answer that for them.
         allowlist_present=isinstance(allowed_tools_input, list),
+        agent_id=agent_id,
+    )
+    permissions = withhold_hook_gated_auto_approval(
+        permissions,
+        pre_tool_hook_matchers,
+        audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
+            refs, outcome, reason, agent_id
+        ),
         agent_id=agent_id,
     )
     if permissions:
@@ -1003,6 +1022,55 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     return raw
 
 
+def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ...]:
+    """The matchers of every PreToolUse hook a KAS session's calls meet.
+
+    Two sources, both fired by Crew's permission path: the spec's own ``hooks``
+    (Crew fires them on KAS, see :mod:`kiro_crew.agent_sdk.spec_hooks`) and the
+    Hooks page's store. The projection withholds auto-approval for what they cover,
+    because an auto-approved call never reaches that path. Read at session start:
+    a Hooks-page hook added later gates auto-approved calls from the next session
+    on.
+
+    Fails toward gating. A source that cannot be read answers ``("*",)``, which
+    withholds every auto-approval, rather than an empty tuple that would let a call
+    past a hook nobody could list.
+    """
+    try:
+        store = get_global_hook_store()
+        hooks = [*spec_script_hooks(agent_id, spec), *(store.list_all() if store else ())]
+    except Exception:  # noqa: BLE001 - fail toward gating, see the docstring
+        logger.warning(
+            "PreToolUse hooks for %r could not be listed; no call is auto-approved",
+            agent_id,
+            exc_info=True,
+        )
+        return ("*",)
+    return tuple(
+        h.matcher
+        for h in hooks
+        if h.enabled and h.event == HOOK_EVENT_PRE_TOOL_USE and h.command.strip()
+    )
+
+
+def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str] | None:
+    """What the projection sent for *agent_id* auto-approves, or ``None`` with no
+    projection (a host that took its agent at spawn time).
+
+    Recorded on the session when the batch is handed over, because a live session
+    keeps the batch it registered: ``set_mode`` activates, it does not re-send. The
+    turn loop compares this with what the PreToolUse hooks cover NOW (see
+    :func:`kiro_crew.agent_sdk.spec_hooks.hook_projection_stale`).
+    """
+    if not isinstance(custom_agents, list) or not custom_agents:
+        return None
+    entries = [a for a in custom_agents if isinstance(a, dict)]
+    if not entries:
+        return None
+    entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
+    return auto_approved_capabilities(entry.get("permissions"))
+
+
 def build_kas_custom_agents(
     agents_dir: Path,
     agent_id: str,
@@ -1048,6 +1116,7 @@ def build_kas_custom_agents(
             member_dispatch=member_dispatch,
             crew_panel=crew_panel,
             session_key=session_key,
+            pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
         )
     ]
 

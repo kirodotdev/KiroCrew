@@ -1113,6 +1113,13 @@ class AcpSessionHandle:
         # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
         # Mirrors ``AcpClient._spec_denied_tools``.
         self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # The capabilities the agent batch this session registered auto-approves
+        # (see ``kas_agents.projected_auto_approved``); None when no batch was sent.
+        self.kas_auto_approved: frozenset[str] | None = None
+        # The agent this session runs: the one the batch was registered for, then
+        # whichever a KAS mode switch moves it to ("" with no batch). A turn that
+        # names no agent runs this one, so its spec hooks are this agent's.
+        self.kas_projected_agent: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -5052,6 +5059,10 @@ class AcpSessionHandle:
             if mode_id == self._last_kas_mode_id:
                 return []
             self._last_kas_mode_id = mode_id
+            # The session now runs this agent, so a turn that names none meets
+            # this agent's spec hooks, not the one the batch was built for.
+            if self.kas_projected_agent:
+                self.kas_projected_agent = mode_id
             return [AcpEvent(kind=EVENT_AGENT_SWITCHED, text=mode_id)]
         if session_update == UPDATE_SESSION_INFO:
             return self._handle_kas_session_info(update)

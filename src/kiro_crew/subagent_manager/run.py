@@ -75,14 +75,19 @@ if TYPE_CHECKING:
         fire_tool_hooks,
         hook_gate_kwargs,
         identity_grant_covers_child,
+        invalidate_stale_kas_session,
         is_runtime_death,
         logger,
         name_grant,
+        permission_pre_tool_block,
         provider_fallback_active,
+        replace_stale_shared_session,
+        reproject_claimed_session,
         run_in_embed_pool,
         sel,
         time,
         transient_retry_delay,
+        turn_spec_hooks,
         update_state,
         window_for_provider_client,
         write_result_chunk,
@@ -1275,7 +1280,52 @@ class RunEventCoordinator(ManagerComponent):
                 info._session_sharing = False
                 info._shared_provider = None
                 use_session_sharing = False
-                client, is_new, _resumed = await self._manager._sessions.get_or_create(
+
+                def _fallback_claim():
+                    return self._manager._sessions.get_or_create(
+                        session_key,
+                        agent=agent or None,
+                        approval_policy=parent_policy,
+                        on_gate_acquired=self._manager._gate_exit_reset(info),
+                        on_gate_queued=self._manager._gate_wait_mark(info),
+                        **extra_kwargs,
+                    )
+
+                # Same claim-time re-check as the dedicated arm below.
+                client, is_new, _resumed = await reproject_claimed_session(
+                    self._manager._sessions,
+                    session_key,
+                    agent,
+                    await _fallback_claim(),
+                    _fallback_claim,
+                )
+                is_cc = self._manager._is_cc_provider(client)
+            else:
+                is_new = True
+                _resumed = False
+                is_cc = False
+            if use_session_sharing:
+                # A shared session's batch is built during its session/new; a
+                # PreToolUse hook added meanwhile is not in it, and nothing else
+                # re-checks a session this run owns outright. Replaced if stale.
+                client = await replace_stale_shared_session(
+                    client,
+                    agent,
+                    lambda: self._manager._create_shared_session(info, session_key, agent),
+                )
+        else:
+            # The dedicated process's ``session/new`` runs under the same
+            # ``SessionStartGate`` as a shared session's; hand it the same
+            # gate clock callbacks (``_gate_wait_mark`` at entry,
+            # ``_gate_exit_reset`` at exit), threaded through the provider
+            # factory to ``AcpProvider``.
+            #
+            # A kept KAS session whose registered batch auto-approves what a
+            # PreToolUse hook now covers is reset first, so the claim re-projects.
+            await invalidate_stale_kas_session(self._manager._sessions, session_key, agent)
+
+            def _claim():
+                return self._manager._sessions.get_or_create(
                     session_key,
                     agent=agent or None,
                     approval_policy=parent_policy,
@@ -1283,24 +1333,11 @@ class RunEventCoordinator(ManagerComponent):
                     on_gate_queued=self._manager._gate_wait_mark(info),
                     **extra_kwargs,
                 )
-                is_cc = self._manager._is_cc_provider(client)
-            else:
-                is_new = True
-                _resumed = False
-                is_cc = False
-        else:
-            # The dedicated process's ``session/new`` runs under the same
-            # ``SessionStartGate`` as a shared session's; hand it the same
-            # gate clock callbacks (``_gate_wait_mark`` at entry,
-            # ``_gate_exit_reset`` at exit), threaded through the provider
-            # factory to ``AcpProvider``.
-            client, is_new, _resumed = await self._manager._sessions.get_or_create(
-                session_key,
-                agent=agent or None,
-                approval_policy=parent_policy,
-                on_gate_acquired=self._manager._gate_exit_reset(info),
-                on_gate_queued=self._manager._gate_wait_mark(info),
-                **extra_kwargs,
+
+            # Decided again under the lease: the pre-claim reset is declined for a
+            # session another turn holds, and this claim may have waited for it.
+            client, is_new, _resumed = await reproject_claimed_session(
+                self._manager._sessions, session_key, agent, await _claim(), _claim
             )
             is_cc = self._manager._is_cc_provider(client)
 
@@ -1578,6 +1615,12 @@ class RunEventCoordinator(ManagerComponent):
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
         # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
         _pending_tools: dict[str, str] = {}
+        # The subagent's OWN spec hooks, when its OWN backend never receives them:
+        # keyed on this run's agent and provider, never the parent's, so a
+        # kiro-cli subagent (whose harness runs the field) gets none from Crew.
+        # On such a backend PreToolUse hooks gate each permission request below;
+        # the KAS projection turns every call they cover into one.
+        _spec = await turn_spec_hooks(client, agent)
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -1986,6 +2029,37 @@ class RunEventCoordinator(ManagerComponent):
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
                     self._manager._write_tombstone(info, "turn_limit")
                     return
+                _spec_block = None
+                if _spec.gated:
+                    _spec_block = (
+                        "the agent spec's hooks could not be read"
+                        if _spec.unreadable
+                        else await permission_pre_tool_block(
+                            self._manager.hook_store,
+                            _spec.hooks,
+                            _spec.cwd,
+                            event.title,
+                            event.tool_input,
+                            tool_identity=event.tool_name,
+                            mcp_server=event.mcp_server_name,
+                            subagent_id=info.id,
+                            parent_session_key=info.parent_session_key or None,
+                            agent_role=info.agent or None,
+                        )
+                    )
+                if _spec_block is not None:
+                    logger.warning(
+                        "Subagent %s PreToolUse hook blocked a tool: %s", info.id, _spec_block
+                    )
+                    await self._manager._reject_and_log(
+                        client,
+                        event.request_id,
+                        session_key,
+                        event,
+                        error="hook_deny",
+                        metadata={"subagent_id": info.id, "reason": "spec_hook"},
+                    )
+                    continue
                 tool_result = self._manager._ctx_builder.hooks.on_tool_call(
                     event.title,
                     session_key=session_key,
@@ -2245,13 +2319,15 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_count": info.tool_count,
                     },
                 )
-                # Fire PreToolUse hooks for auto-approved tools (informational only)
+                # Fire PreToolUse hooks for auto-approved tools (informational only).
+                # On a gated turn this frame precedes the call's permission request,
+                # so nothing has approved it yet.
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="subagent",
                     tool_name=event.title,
                     tool_kind=event.tool_kind,
-                    outcome="auto_approved",
+                    outcome="invoked" if _spec.gated else "auto_approved",
                     metadata={"subagent_id": info.id},
                 )
                 # Cache tool name so PostToolUse can recover it on EVENT_TOOL_RESULT.
@@ -2261,14 +2337,18 @@ class RunEventCoordinator(ManagerComponent):
                     _raw = _raw[9:]
                 if event.tool_call_id:
                     _pending_tools[event.tool_call_id] = _raw
-                await fire_tool_hooks(
-                    self._manager.hook_store,
-                    event.title,
-                    event.tool_input,
-                    subagent_id=info.id,
-                    parent_session_key=info.parent_session_key or None,
-                    agent_role=info.agent or None,
-                )
+                # A gated turn runs PreToolUse hooks on the permission request
+                # instead (see hooks.permission_pre_tool_block); firing here too
+                # would run each twice.
+                if not _spec.gated:
+                    await fire_tool_hooks(
+                        self._manager.hook_store,
+                        event.title,
+                        event.tool_input,
+                        subagent_id=info.id,
+                        parent_session_key=info.parent_session_key or None,
+                        agent_role=info.agent or None,
+                    )
             elif event.kind == EVENT_TOOL_RESULT:
                 # A FINAL result means the tool is done: drop the attribution
                 # snapshot so a later idle stretch is not judged against a
@@ -2290,6 +2370,8 @@ class RunEventCoordinator(ManagerComponent):
                             subagent_id=info.id,
                             parent_session_key=info.parent_session_key or None,
                             agent_role=info.agent or None,
+                            extra_hooks=_spec.hooks,
+                            extra_hooks_cwd=_spec.cwd,
                         )
                     except Exception:
                         logger.debug(

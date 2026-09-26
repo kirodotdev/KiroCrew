@@ -63,7 +63,12 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.agent_sdk.spec_hooks import crew_fired_spec_hooks
+from kiro_crew.agent_sdk.spec_hooks import (
+    crew_fired_spec_hooks,
+    invalidate_stale_kas_session,
+    reproject_claimed_session,
+    session_agent,
+)
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -792,14 +797,20 @@ async def _prepare_spec_hooks(
     every other session gets ``([], False, None)`` without the spec being read.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
-    one notice row, so the agent does not run without it silently.
+    one notice row, and so does a spec with ``confirm: true`` hooks, which Crew
+    skips because it cannot ask for the confirmation. Neither runs silently.
     """
-    if not agent or not capabilities_of(client).crew_fires_spec_hooks:
+    if not capabilities_of(client).crew_fires_spec_hooks:
         return [], False, None
     cwd = getattr(client, "cwd", "")
     work_dir = cwd if isinstance(cwd, str) and cwd else None
+    agent = session_agent(client, agent)
+    if not agent:
+        # Whose hooks apply is unknown, so PreToolUse fails closed.
+        logger.warning("no agent is known for this KAS session; tool calls are blocked")
+        return [], True, work_dir
     try:
-        hooks, lost = await asyncio.to_thread(crew_fired_spec_hooks, agent)
+        hooks, lost, unconfirmable = await asyncio.to_thread(crew_fired_spec_hooks, agent)
     except Exception:  # noqa: BLE001 - the caller fails PreToolUse closed
         logger.warning(
             "agent spec hooks for %r could not be read; tool calls are blocked",
@@ -815,6 +826,14 @@ async def _prepare_spec_hooks(
             _redact_display_text(_spec_keys_notice(agent, lost)),
             "msg msg-info",
         )
+    if is_new and unconfirmable:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable)),
+            "msg msg-info",
+        )
     return hooks, False, work_dir
 
 
@@ -823,6 +842,15 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
     return (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
+    )
+
+
+def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
+    """The session-start notice for ``confirm: true`` spec hooks this backend skips."""
+    hooks = "hook asks" if count == 1 else "hooks ask"
+    return (
+        f"ℹ️ Agent {agent} has {count} {hooks} to be confirmed before running. "
+        "This backend cannot ask, so they do not run in this session."
     )
 
 
@@ -10999,6 +11027,15 @@ async def _run_chat(
         # does not take this lock (an eager prewarm, a channel-side turn)
         # between the check and the claim, the busy refusal comes back
         # instead of a wait, and the claim is retried outside the lock.
+        #
+        # First, a live KAS session whose registered agent batch auto-approves a
+        # capability a PreToolUse hook now covers is reset: that batch withheld
+        # auto-approval only for the hooks of its day, so a hook added since would
+        # never see such a call. The claim below then resumes it with a fresh
+        # projection. A busy session is left for its next turn.
+        await invalidate_stale_kas_session(
+            state.sessions, session_key, kiro_agent or slot.agent or ""
+        )
         if state.sessions.has_session(session_key):
             _release_dispatch_lock()
             _wait_if_busy = True
@@ -11047,15 +11084,21 @@ async def _run_chat(
             undecided=_previous.undecided,
             from_mapping=_previous.from_mapping,
         )
+
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
         # a lease; a busy refusal there means a session registered underneath
-        # us, so drop the lock and claim again with the normal lease wait.
+        # us, so drop the lock and claim again with the normal lease wait. The
+        # re-projection below claims through the same site; the latch is
+        # write-once, so the store it cites stays the one this turn found.
+        async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
+            return await state.sessions.get_or_create(
+                session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+            )
+
         for _claim in (0, 1):
             try:
-                client, is_new, resumed = await state.sessions.get_or_create(
-                    session_key, wait_if_busy=_wait_if_busy, **_allocation_kwargs
-                )
+                client, is_new, resumed = await _claim_session(_wait_if_busy)
                 break
             except SessionBusyError:
                 if _wait_if_busy or _claim:
@@ -11065,6 +11108,21 @@ async def _run_chat(
         # Registered: the switch handlers' busy scan sees this session from
         # here on, so the lock has done its job and the turn must not hold it.
         _release_dispatch_lock()
+        # The pre-claim reset is declined for a session another turn holds, and
+        # this claim may have waited for exactly that turn. So the decision is made
+        # again on the session this turn now holds, under its lease, before any of
+        # its tools run.
+        try:
+            client, is_new, resumed = await reproject_claimed_session(
+                state.sessions,
+                session_key,
+                kiro_agent or slot.agent or "",
+                (client, is_new, resumed),
+                lambda: _claim_session(True),
+            )
+        except BaseException:
+            state.sessions.release(session_key)
+            raise
         if is_new and not resumed:
             # An observation this call CONSUMED, which is not the same as an
             # allocation this call made: a prewarmed session arms

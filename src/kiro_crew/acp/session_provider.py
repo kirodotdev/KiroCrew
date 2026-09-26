@@ -233,6 +233,17 @@ class AcpSessionProvider(LLMProvider):
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
     @property
+    def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
+        """See ``AcpSessionHandle.kas_auto_approved``."""
+        return getattr(self._handle, "kas_auto_approved", None)
+
+    @property
+    def kas_projected_agent(self) -> str:
+        """See ``AcpSessionHandle.kas_projected_agent``."""
+        value = getattr(self._handle, "kas_projected_agent", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir

@@ -50,6 +50,12 @@ from kiro_crew import name_grant, platform_compat
 from kiro_crew.agent_discovery import cached_project_agent_names, list_agents
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
+from kiro_crew.agent_sdk.spec_hooks import (
+    invalidate_stale_kas_session,
+    replace_stale_shared_session,
+    reproject_claimed_session,
+    turn_spec_hooks,
+)
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
@@ -80,6 +86,7 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    permission_pre_tool_block,
 )
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
@@ -5105,6 +5112,11 @@ _COMPONENT_GLOBAL_BINDINGS = (
     subprocess_executor,
     time,
     transient_retry_delay,
+    permission_pre_tool_block,
+    turn_spec_hooks,
+    invalidate_stale_kas_session,
+    replace_stale_shared_session,
+    reproject_claimed_session,
     update_state,
     window_for_provider_client,
     write_result_chunk,
