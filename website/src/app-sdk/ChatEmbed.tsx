@@ -60,6 +60,12 @@ export interface ChatEmbedProps {
    */
   onSend?: (message: string) => Promise<unknown> | void
   /**
+   * Open a file in the host's file viewer. Embed hosts with no viewer leave
+   * it unset (capability by omission, like `onSend`): attachment cards still
+   * render, without an opener.
+   */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /**
    * Content rendered in normal flow directly ABOVE the composer, inside the
    * embed's own column, so it always sits on top of the input regardless of the
    * composer's height. A host uses this for a docked quote / reference bar
@@ -107,6 +113,7 @@ function ChatEmbed({
   frameless,
   startAtBottom,
   onSend,
+  onFileOpen,
   aboveComposer,
   composerMaxHeight,
 }: ChatEmbedProps) {
@@ -353,6 +360,7 @@ function ChatEmbed({
         onApprove={approve}
         onApproveBatch={approveBatch}
         canTrust
+        onFileOpen={onFileOpen}
         transcript={{
           sessionId: `embed:${slotKey}`,
           followOutput: !!startAtBottom,
