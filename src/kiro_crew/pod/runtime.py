@@ -1575,6 +1575,22 @@ def resolved_pod_home(cfg: PodConfig, name: str) -> Path:
         return pod_home(cfg, name)
 
 
+def _stop_names_missing_unit(cp: subprocess.CompletedProcess) -> bool:
+    """Whether a failed ``systemctl stop`` refused because the unit is ABSENT.
+
+    ``stop`` acts only on loaded units — unlike ``start`` it never instantiates
+    a template — so a name with nothing running under systemd fails with
+    ``Unit <unit> not loaded.`` (``not found.`` on some systemd versions). Both
+    are stable C-locale messages: ``_systemctl_env`` pins ``LC_ALL=C`` exactly
+    so classifiers like this one cannot be defeated by a host locale. Every
+    other stop failure (a bus that cannot be reached, a timeout, a stop job
+    that genuinely failed) stays unclassified, because there the unit may
+    still be live.
+    """
+    err = cp.stderr or ""
+    return "Unit" in err and ("not loaded" in err or "not found" in err)
+
+
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Stop pod *name* and reclaim its isolated HOME, or say why it could not.
 
@@ -1620,11 +1636,77 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         # Read the cgroup path BEFORE stopping: systemd clears ControlGroup on
         # an inactive unit.
         procs_file = cgroup_procs_file(cfg, name)
+        # Set only by the unit-less arm below, which revokes the boot pin
+        # before its delete; a failed delete puts the pin back from here.
+        revoked_pin: bytes | None = None
         cp = systemctl("stop", pod_unit(cfg, name))
         if cp.returncode != 0:
-            # The unit may still be live; deleting its HOME here is exactly the
-            # race this ordering exists to avoid.
-            return cp
+            if not _stop_names_missing_unit(cp):
+                # The unit may still be live; deleting its HOME here is exactly
+                # the race this ordering exists to avoid.
+                return cp
+            # systemd holds nothing under this name — the shape every orphaned
+            # HOME presents, and the one stop failure that cannot mean a live
+            # unit. Still not proof of a dead pod: a gateway started outside
+            # the template unit serves with no unit at all, so the delete
+            # below is gated on the pod's own evidence instead of the service
+            # manager's, and an unprovable answer refuses.
+            blocker = reclaim_blocker(cfg, name)
+            if blocker is not None:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod {name!r} has no unit loaded, but {blocker} — "
+                        f"refusing to delete its isolated HOME at "
+                        f"{resolved_pod_home(cfg, name)}. Stop whatever runs "
+                        f"there, then retry `kirocrew pod down {name}`."
+                    ),
+                )
+            # Proven dead. Close the boot door before deleting: a systemd or
+            # direct `pod _run` boot must read the checkout pin first, and it
+            # reads lock-free (see write_env_file for why boot cannot take the
+            # name mutex) — so a pin that is already gone turns a racing boot
+            # into a recorded terminal refusal instead of a gateway building
+            # its HOME under this delete. The unit path gets the equivalent
+            # protection from the stop itself; this revocation is the
+            # unit-less mirror of the macOS plist claim marker, and it is why
+            # the delete below cannot land on a pod that boots after this
+            # point. A boot that read the pin earlier recreates the HOME and
+            # is caught by the residue verification below, loudly.
+            #
+            # SNAPSHOT before revoking, so a reclaim that fails after this
+            # point can put the pin back: the pin carries settings a retry
+            # must keep answering with (PORT= drives which port every later
+            # liveness judgment probes), and losing them on a failed delete
+            # would make the retry judge a different pod than the first
+            # attempt did.
+            try:
+                pin = cfg.env_file(name)
+                try:
+                    revoked_pin = pin.read_bytes()
+                except FileNotFoundError:
+                    revoked_pin = None
+                pin.unlink(missing_ok=True)
+            except OSError as exc:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod {name!r} is provably dead, but its boot pin at "
+                        f"{cfg.env_file(name)} could not be revoked ({exc}) — "
+                        f"refusing to delete its HOME while a boot could still "
+                        f"claim it. Fix the pin file, then retry "
+                        f"`kirocrew pod down {name}`."
+                    ),
+                )
+            # There is nothing to stop and no cgroup to drain, so the reclaim
+            # below is what this call has left to do.
+            cp = subprocess.CompletedProcess(
+                args=cp.args, returncode=0, stdout=cp.stdout or "", stderr=""
+            )
         survivors = drain_cgroup(procs_file) if procs_file is not None else []
         # Resolved, because cleanup_home reports the resolved path: on a host
         # whose home is a symlink, naming it both ways reads as two directories.
@@ -1658,6 +1740,24 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         if had_dropin and dropin_gone:
             reload_cp = systemctl("daemon-reload")
         if rc != 0 or leftover.exists():
+            # A failed delete on the unit-less arm restores the pin it revoked:
+            # the pin carries the settings a retry must keep answering with
+            # (PORT= drives which port every later liveness judgment probes),
+            # so losing it here would make the retry judge a different pod
+            # than this attempt did.
+            restore_note = ""
+            if revoked_pin is not None:
+                try:
+                    atomic_write(
+                        cfg.env_file(name),
+                        revoked_pin.decode("utf-8", errors="replace"),
+                        newline="",
+                    )
+                except OSError as exc:
+                    restore_note = (
+                        f" Its boot pin could not be restored ({exc}); a later "
+                        f"`kirocrew pod up {name}` re-resolves and re-pins."
+                    )
             return subprocess.CompletedProcess(
                 args=[],
                 returncode=1,
@@ -1666,7 +1766,7 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
                     f"pod stopped but its isolated HOME is still at {leftover} — "
                     f"teardown is incomplete, so this pod is NOT zero-residue. "
                     f"Reclaim it with `kirocrew pod down {name}` once nothing is "
-                    "writing there."
+                    f"writing there.{restore_note}"
                 ),
             )
         if not dropin_gone:
@@ -1822,6 +1922,162 @@ def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
 
 
+def _proc_uids(base: str) -> tuple[int, ...]:
+    """The uid set (real, effective, saved, fs) of ``/proc`` entry *base*.
+
+    Read from ``status``, never from the directory's owner: a process that made
+    itself non-dumpable has its ``/proc`` entries re-owned to root while its
+    ``status`` still names the true uids — and that process is exactly the one
+    the ownership question must not misfile as somebody else's. A whole-file
+    read, because ``status`` is a kernel pseudo-file with a kernel-bounded
+    size, the same reading :func:`kiro_crew.platform_compat.get_ppid` applies
+    to it. Empty when the process vanished or the file is unparsable.
+    """
+    try:
+        text = Path(f"{base}/status").read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if line.startswith("Uid:"):
+                return tuple(int(f) for f in line.split()[1:5])
+    except (OSError, ValueError):
+        return ()
+    return ()
+
+
+def _cmdline_names_path(base: str, root: str) -> bool:
+    """Whether ``/proc`` entry *base*'s command line mentions *root*.
+
+    The one holder signal a non-dumpable process still exposes: ``cmdline``
+    stays world-readable when ``cwd``/``fd`` turn root-only, and a daemon
+    pointed into a pod HOME usually carries that path as an argument (a
+    ``--homedir``, a socket path, a config file). Best-effort by nature — a
+    path delivered through the environment is invisible here — which is why
+    this is a narrowing of the blind spot, never the primary detection.
+    """
+    try:
+        raw = Path(f"{base}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return root.encode() in raw
+
+
+def _home_holders(home: Path, proc_root: str = "/proc") -> list[int]:
+    """PIDs of this user's processes holding *home* (or anything under it) open.
+
+    The unit-less reclaim path has no cgroup to drain, so this ``/proc`` scan
+    stands in for it: a process whose cwd, root, exe, or any open descriptor
+    resolves under the HOME would recreate or corrupt the tree right behind
+    the delete — the exact defect the drain exists to prevent on the unit
+    path. *proc_root* exists for the tests: the non-dumpable shape below
+    requires a credential transition to produce for real, so they stage it.
+
+    Another user's process is skipped — a pod HOME is created ``0700``, so no
+    other non-root user can hold a file under it, and a root process inside a
+    user pod HOME is not a state this cooperative plane can produce or
+    arbitrate. Ownership is read from ``status``, which stays truthful for
+    the non-dumpable case below. A pid that vanishes mid-scan stopped
+    mattering.
+
+    A SAME-user process whose links are unreadable made itself non-dumpable
+    (a credential transition does that by default — every ssh session's own
+    ``sshd`` is one, so refusing on the shape would refuse every reclaim on
+    any host with an ssh session, the very defect this path exists to fix).
+    It is judged by the one signal it still exposes: a command line naming
+    the HOME is a holder and blocks. Past that signal this scan accepts the
+    posture :func:`drain_cgroup` codifies for an unobservable cgroup —
+    nothing better can be observed from here, the delete proceeds, and the
+    post-delete verification in :func:`stop_pod` reports a survivor loudly.
+    """
+    my_uid = platform_compat.local_user_id()
+    root = str(home).rstrip("/")
+    prefix = root + "/"
+    held: list[int] = []
+    for entry in os.listdir(proc_root):
+        if not entry.isdigit():
+            continue
+        base = f"{proc_root}/{entry}"
+        if my_uid not in _proc_uids(base):
+            continue
+        links: list[str] = []
+        unreadable = False
+        try:
+            for special in ("cwd", "root", "exe"):
+                links.append(os.readlink(f"{base}/{special}"))
+            fd_names = os.listdir(f"{base}/fd")
+        except (FileNotFoundError, ProcessLookupError):
+            # The whole process vanished mid-scan; it stopped mattering.
+            continue
+        except OSError:
+            fd_names = []
+            unreadable = True
+        for fd in fd_names:
+            try:
+                links.append(os.readlink(f"{base}/fd/{fd}"))
+            except (FileNotFoundError, ProcessLookupError):
+                # ONE descriptor closed mid-scan — expected, not a verdict on
+                # the process: the fd this scan's own directory listing holds
+                # is gone by the time it is read back, so treating a vanished
+                # descriptor as a vanished process would skip the scanner's
+                # own process and any holder that closes a file while being
+                # scanned.
+                continue
+            except OSError:
+                unreadable = True
+        if any(ln == root or ln.startswith(prefix) for ln in links):
+            held.append(int(entry))
+        elif unreadable and _cmdline_names_path(base, root):
+            held.append(int(entry))
+    return held
+
+
+def reclaim_blocker(cfg: PodConfig, name: str) -> str | None:
+    """Why pod *name*'s HOME must NOT be deleted with no unit behind it, or
+    ``None`` when the pod is provably dead and the HOME is reclaimable.
+
+    The service manager cannot answer this question. systemd's template unit
+    is machine-wide, so a pod running outside it — a gateway started by hand,
+    or by anything other than ``pod up`` — is live with NO unit, and from the
+    unit's side an abandoned directory and that live pod look identical.
+    Liveness is therefore judged from the pod's own evidence, three signals
+    none of which consults a unit:
+
+    * the gateway pid record inside the HOME, accepted only when the process
+      it names still carries the start-time identity it was recorded with —
+      the same recycled-pid rule :func:`port_owner` applies, so crash residue
+      cannot attest;
+    * whether anything answers on the derived port that is not PROVABLY a
+      foreign process — a recycled port proves somebody else is serving,
+      never that this pod is, so a foreign responder does not block;
+    * whether any process still holds a file under the HOME — the stand-in
+      for the cgroup drain that a unit-less pod does not get.
+
+    Fails CLOSED on every way of not knowing: a signal that cannot be read,
+    or a responder that cannot be attributed, blocks the delete. Whichever
+    way this defaults is either an unreclaimable directory or a deleted live
+    pod's data, and only one of those has a retry.
+
+    Consulted by BOTH the reporting path (:func:`orphan_homes`, so ``pod ls``
+    never advertises a delete against a pod that may be serving) and the
+    deleting path (:func:`stop_pod`, under the per-name mutex, so the answer
+    is re-derived at the moment it is acted on).
+    """
+    try:
+        port = derive_port(cfg, name)
+        if _pod_recorded_pid(cfg, name, port) is not None:
+            return f"its gateway pid record still names a live process on port {port}"
+        if _probe_health(port) != 0 and port_owner(cfg, name, port) != OWNER_FOREIGN:
+            return (
+                f"something answers on its port {port} and cannot be proven "
+                "to be another process"
+            )
+        holders = _home_holders(resolved_pod_home(cfg, name))
+        if holders:
+            shown = ", ".join(str(p) for p in holders[:5])
+            return f"{len(holders)} process(es) still hold files under its HOME (pid {shown})"
+    except Exception as exc:
+        return f"its liveness could not be judged ({exc})"
+    return None
+
+
 def orphan_homes(cfg: PodConfig) -> list[str]:
     """Pod HOMEs left on disk with no live pod and no installed definition.
 
@@ -1831,6 +2087,10 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     host reboot — leaves its isolated HOME behind. Reported rather than deleted so
     the operator decides, and so the delete still routes through
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
+
+    On Linux a name is reported only when :func:`reclaim_blocker` proves the
+    pod dead: the active-unit exclusion cannot see a gateway running outside
+    the template unit, and an orphan report is a printed delete command.
     """
     try:
         # never follow a link: a link under pod_root can point at a LIVE
@@ -1858,11 +2118,18 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
             continue
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
         # presence means the pod is installed rather than orphaned. Windows does
-        # the same with its per-pod `.cmd` wrapper. systemd's template unit is
-        # machine-wide, so liveness is the only signal there.
+        # the same with its per-pod `.cmd` wrapper.
         if IS_MACOS and launchd.plist_path(cfg, p.name).exists():
             continue
         if IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
+            continue
+        # systemd's template unit is machine-wide, so no per-pod artifact can
+        # vouch for a name here — and a gateway started outside the template
+        # unit is live with no active unit, which the exclusion above cannot
+        # see. Only a HOME the pod's own evidence proves dead is an orphan;
+        # anything less would print a reclaim command that deletes a serving
+        # pod's data.
+        if not IS_MACOS and not IS_WINDOWS and reclaim_blocker(cfg, p.name) is not None:
             continue
         out.append(p.name)
     return sorted(out)

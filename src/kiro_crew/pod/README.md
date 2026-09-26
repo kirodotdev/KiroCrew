@@ -255,6 +255,25 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+An orphan by definition has no loaded unit, so the reclaim's stop step reports
+`Unit … not loaded` — the one stop failure that cannot mean a live unit. The
+delete is then gated on the pod's own evidence rather than the service
+manager's (`runtime.reclaim_blocker`), because a gateway started outside the
+template unit serves with no unit at all: the gateway pid record in the HOME
+(accepted only with a matching start-time identity, so a recycled pid cannot
+attest), whether anything answers on the derived port that is not provably a
+foreign process, and whether any process still holds a file under the HOME (a
+`/proc` scan; a same-user process that hides its links by being non-dumpable
+is judged by the command line it still exposes).
+Only a HOME all three signals call dead is deleted — or listed as an orphan by
+`pod ls` in the first place — and an unreadable signal refuses, because a
+wrong default here deletes a live pod's data while the other way merely leaves
+a directory to retry. Before the delete, the pod's checkout pin
+(`~/.kiro/crew/pods/<name>.env`) is revoked: every boot reads that pin first
+and refuses terminally without it, so a boot racing the sweep cannot rebuild
+the HOME under the delete — the unit-less mirror of the stop step that guards
+the unit path.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
