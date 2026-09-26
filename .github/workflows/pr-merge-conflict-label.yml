@@ -50,6 +50,8 @@ jobs:
           LABEL: "merge conflict"
           # See the truncation guard below.
           PR_LIST_LIMIT: "900"
+          # See the UNKNOWN re-list below.
+          RECHECK_DELAY_SECONDS: "60"
         run: |
           set -euo pipefail
 
@@ -67,8 +69,11 @@ jobs:
           # in this sweep, the ones most likely to be missing the label. The
           # ceiling is a variable kept clear of the real set, and a hit is
           # reported as an action item rather than absorbed as a measurement.
-          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
-            --json number,mergeable,labels)"
+          list_prs() {
+            gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
+              --json number,mergeable,labels
+          }
+          prs="$(list_prs)"
           if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
             echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
               "the oldest open PRs were dropped and were not considered." \
@@ -76,7 +81,9 @@ jobs:
           fi
 
           add_label() {
-            jq -n --arg label "$LABEL" '{labels: [$label]}' \
+            # Not `--arg label`: `label` is a jq keyword, and jq 1.6 (the
+            # CodeBuild fleet's jq) rejects it as a variable name.
+            jq -n --arg name "$LABEL" '{labels: [$name]}' \
               | gh api --method POST "repos/$REPO/issues/$1/labels" --input - >/dev/null
           }
           remove_label() {
@@ -85,36 +92,54 @@ jobs:
             gh api --method DELETE "repos/$REPO/issues/$1/labels/$encoded" >/dev/null
           }
 
-          echo "$prs" | jq -c '.[]' | while read -r pr; do
-            number="$(jq -r '.number' <<<"$pr")"
-            mergeable="$(jq -r '.mergeable' <<<"$pr")"
-            has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"
+          # Only a definitive CONFLICTING/MERGEABLE ever adds or removes the
+          # label; UNKNOWN never does.
+          sync_prs() {
+            jq -c '.[]' <<<"$1" | while read -r pr; do
+              number="$(jq -r '.number' <<<"$pr")"
+              mergeable="$(jq -r '.mergeable' <<<"$pr")"
+              has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"
 
-            # GitHub computes mergeability lazily, so a freshly-listed PR is
-            # often UNKNOWN. Re-query it once -- a node read nudges GitHub to
-            # compute it. Anything still UNKNOWN is left untouched this pass and
-            # settles on a later sweep. Only a definitive CONFLICTING/MERGEABLE
-            # ever adds or removes the label; UNKNOWN never does.
-            if [ "$mergeable" = "UNKNOWN" ]; then
-              mergeable="$(gh pr view "$number" --repo "$REPO" \
-                --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")"
-            fi
+              case "$mergeable" in
+                CONFLICTING)
+                  if [ "$has_label" != "true" ]; then
+                    add_label "$number"
+                    echo "PR #$number: CONFLICTING -> added '$LABEL'"
+                  fi
+                  ;;
+                MERGEABLE)
+                  if [ "$has_label" = "true" ]; then
+                    remove_label "$number"
+                    echo "PR #$number: MERGEABLE -> removed '$LABEL'"
+                  fi
+                  ;;
+                *)
+                  echo "PR #$number: mergeability UNKNOWN -> unchanged"
+                  ;;
+              esac
+            done
+          }
 
-            case "$mergeable" in
-              CONFLICTING)
-                if [ "$has_label" != "true" ]; then
-                  add_label "$number"
-                  echo "PR #$number: CONFLICTING -> added '$LABEL'"
-                fi
-                ;;
-              MERGEABLE)
-                if [ "$has_label" = "true" ]; then
-                  remove_label "$number"
-                  echo "PR #$number: MERGEABLE -> removed '$LABEL'"
-                fi
-                ;;
-              *)
-                echo "PR #$number: mergeability UNKNOWN -> unchanged"
-                ;;
-            esac
-          done
+          # Settle every PR whose mergeability is already known first, so a
+          # push that cancels this run during the wait below loses nothing.
+          sync_prs "$(jq '[.[] | select(.mergeable != "UNKNOWN")]' <<<"$prs")"
+
+          # GitHub computes mergeability lazily: right after main moves, most
+          # open PRs list as UNKNOWN, and reading the field is what starts the
+          # computation. Wait once and re-list -- a handful of paged calls --
+          # instead of one `gh pr view` per UNKNOWN PR, which cost hundreds of
+          # calls from the shared GITHUB_TOKEN pool per sweep. A PR still
+          # UNKNOWN, or a failed re-list, leaves it for a later sweep.
+          unknown_ids="$(jq -c '[.[] | select(.mergeable == "UNKNOWN") | .number]' <<<"$prs")"
+          if [ "$unknown_ids" = "[]" ]; then
+            exit 0
+          fi
+          echo "$(jq 'length' <<<"$unknown_ids") open PRs have UNKNOWN mergeability;" \
+            "re-listing once in ${RECHECK_DELAY_SECONDS}s."
+          sleep "$RECHECK_DELAY_SECONDS"
+          if ! relisted="$(list_prs)"; then
+            echo "::warning::Re-listing open PRs failed; UNKNOWN PRs are left for the next sweep."
+            exit 0
+          fi
+          sync_prs "$(jq --argjson ids "$unknown_ids" \
+            '[.[] | select(.number as $n | $ids | index($n))]' <<<"$relisted")"
