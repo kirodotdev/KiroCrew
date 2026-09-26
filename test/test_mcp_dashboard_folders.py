@@ -1830,6 +1830,7 @@ class TestAdvertisedSet:
             "session_create",
             "session_fork",
             "session_stop",
+            "session_set_model",
             "session_close",
             "session_send",
             "session_read_message",

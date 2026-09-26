@@ -21,6 +21,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
+| `session_set_model` | `POST /api/session-control/set-model` | Record a pending model pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. A busy target is refused with `target_busy` and keeps its model |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |

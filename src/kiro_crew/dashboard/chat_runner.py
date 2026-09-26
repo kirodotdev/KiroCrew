@@ -10933,6 +10933,32 @@ async def _run_chat(
         default_model = await asyncio.to_thread(
             _default_session_model, loaded_cfg, slot, agent_model
         )
+        # Commit a pending session_set_model pick before get_or_create reads
+        # slot.model. The pick's authorization is re-checked in the same
+        # synchronous step as the write; when the model changed, queue a reset
+        # so the consume below cold-starts this turn on the new model.
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import (
+            apply_pending_model_pick,
+            prewarm_enabled_check,
+        )
+
+        if slot._pending_model_pick is not None:
+            # Warms the config the pick's fence re-check reads, so the
+            # synchronous gate below does no file IO on the loop.
+            await prewarm_enabled_check()
+        if apply_pending_model_pick(state, slot):
+            # Reset only a session that can still be on the old model: one
+            # already registered, or an eager spawn in flight that may register
+            # one before get_or_create. With neither, get_or_create cold-starts
+            # on the new model, and an armed reset would tear that session down
+            # at turn end for nothing.
+            _picked_key = effective_session_key(slot)
+            _eager = slot._eager_spawn_task
+            if state.sessions.get_provider(_picked_key) is not None or (
+                _eager is not None and not _eager.done()
+            ):
+                slot._pending_reset_history_key = slot._pending_reset_history_key or _picked_key
         # Consume a deferred project-change reset queued while idle, before
         # get_or_create or we'd reuse the stale session for one turn. Safe here:
         # no session lock is held yet, so reset() can't self-kill.
