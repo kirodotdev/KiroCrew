@@ -3319,10 +3319,107 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
     it here would leave a keystone temp writable through the edit gate while the
     read+write gate refused it, the same one-path-only hole the pairing notes above warn
     about.
+
+    The third clause (:func:`_is_venv_site_packages`) is not derived from the home
+    lists at all: it fences installed dependencies inside a worktree ``.venv`` whose
+    inode is shared, because ``pod provision`` with ``KIROCREW_PROVISION_USE_UV``
+    builds those venvs as hardlinks out of one shared uv cache and an in-place edit
+    to one would be an edit to all of them.
     """
-    return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+    return (
+        _path_in_home_dirs(path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir)
+        or _is_keystone_publish_artifact(path_str, base_dir)
+        or _is_venv_site_packages(path_str, base_dir)
+    )
+
+
+# Path components that mark an installed dependency inside a worktree venv. A
+# worktree's ``.venv`` is what ``pod provision`` builds (``pod/provision.py``); with
+# ``KIROCREW_PROVISION_USE_UV`` set, its ``site-packages`` holds wheels uv hardlinks
+# out of ONE global cache, so a single in-place write there is visible in every
+# venv sharing the inode AND in the cache the next provision reads from. The rule
+# is scoped to that hazard: a file under ``site-packages`` is refused only while
+# its inode is shared (``st_nlink > 1``). A pip-built venv shares nothing and stays
+# editable, and the checkout's editable-install ``.pth`` (written per venv, one
+# link) is never caught.
+_VENV_DIR_COMPONENT = ".venv"
+_SITE_PACKAGES_COMPONENT = "site-packages"
+_PATH_SEPARATORS = re.compile(r"[\\/]+")
+
+
+def _is_venv_site_packages(path_str: str, base_dir: str | None = None) -> bool:
+    """Return True if *path_str* is a SHARED installed-dependency file in a ``.venv``.
+
+    Agent file-tool writes under ``**/.venv/**/site-packages/**`` are refused when
+    the target file's inode has more than one link — the signature of a venv uv
+    provisioned out of its shared cache (``--link-mode hardlink``). ``pip`` and
+    ``uv`` never mutate an installed file in place (both install by
+    unlink-and-replace) and neither goes through the edit gate, so provisioning is
+    unaffected; what the rule stops is "add a print to that library and re-run"
+    followed by an in-place edit, which on a hardlinked venv has fleet-wide reach
+    instead of breaking one venv. A pip-built venv, or a uv venv built with
+    ``--link-mode copy``, shares no inodes and is not fenced: the edit there is a
+    local mistake, not a shared one, and the gate should not be broader than the
+    hazard. A shared dependency that genuinely must be patched is edited through a
+    shell or vendored into the checkout; this gate covers the file-edit tool only,
+    like the rest of :func:`is_sensitive_write_path`.
+
+    Matched on whole path components (either separator), so ``my.venv/`` or
+    ``site-packages-notes`` do not trip it. Reuses :func:`_candidate_forms` so a
+    symlink into a venv is judged by its resolved form, and fails closed on a
+    stalled resolution — or an unreadable ``stat`` — like the other gates. A
+    file that does not exist yet cannot share an inode and is not fenced.
+    """
+    if not path_str:
+        return False
+    try:
+        candidates = _candidate_forms(path_str, base_dir)
+    except PathResolutionStalled:
+        return True  # fail closed: see _path_in_home_dirs
+    for cand in candidates:
+        parts = _PATH_SEPARATORS.split(cand.casefold())
+        if _VENV_DIR_COMPONENT not in parts:
+            continue
+        venv_at = parts.index(_VENV_DIR_COMPONENT)
+        if _SITE_PACKAGES_COMPONENT not in parts[venv_at + 1 : -1]:
+            continue
+        try:
+            shared = _shares_inode(cand)
+        except PathResolutionStalled:
+            return True  # fail closed: the stat did not complete either
+        if shared:
+            return True
+    return False
+
+
+def _link_count(path: str) -> int:
+    """``st_nlink`` of *path*, or ``0`` when it does not exist; runs on the pool.
+
+    ``0`` is a safe sentinel: an existing file always has at least one link. Any
+    other ``OSError`` propagates and the pool reports it as a FAULT (``None``).
+    """
+    try:
+        return os.stat(path).st_nlink
+    except FileNotFoundError:
+        return 0
+
+
+def _shares_inode(path_str: str) -> bool:
+    """True when *path_str* is an existing file whose inode has more than one link.
+
+    The ``stat`` runs on the ``mc-pathres`` pool under the same budget and
+    per-prefix cooldown as candidate resolution (:func:`_run_resolution_bounded`),
+    so this clause adds no unbounded filesystem call to the event loop. A missing
+    path is not shared. A stat that stalls raises :class:`PathResolutionStalled`
+    to the caller's fail-closed handler; one that FAILS (permission, a component
+    that is not a directory, an I/O error, the pool shut down) comes back as
+    ``None`` and is treated as shared, because the gate cannot prove the write is
+    local.
+    """
+    nlink = _run_resolution_bounded(path_str, _link_count)
+    if nlink is None:
+        return True
+    return nlink > 1
 
 
 def sensitive_home_dirs() -> tuple[str, ...]:

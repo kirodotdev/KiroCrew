@@ -230,7 +230,14 @@ on passphrase-protected keys or hardware tokens use key files directly or leave
 `is_sensitive_write_path()` is its strict superset: it adds paths that stay
 readable but must not be modified by an agent tool (the data home's `config.json`
 / `config.local.json`, which carry resource ceilings, and the data-home migration
-marker, whose mere presence is a trust signal). Path matching checks the fully
+marker, whose mere presence is a trust signal), plus one rule that is not a data-home
+path at all: installed dependencies under a worktree `.venv/**/site-packages/`
+whose inode is shared (`st_nlink > 1`). With `KIROCREW_PROVISION_USE_UV` set, pod
+venvs are provisioned as hardlinks out of one shared uv cache, so an in-place edit
+to one installed file is an edit to every sibling venv and to the cache; the rule
+is scoped to that hazard, so a pip-built venv, the venv's own scripts and the
+checkout's editable source stay writable, and the link-count `stat` runs on the
+same bounded resolver pool as symlink resolution. Path matching checks the fully
 symlink-resolved target as well as the lexically normalized and raw forms, so a
 workspace symlink into a blocked directory is refused through the link.
 

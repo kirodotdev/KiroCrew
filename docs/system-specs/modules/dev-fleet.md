@@ -567,14 +567,39 @@ outcome teardown must never risk — but the path is logged at WARNING with the
 step needs before using them, so provisioning a **fresh** worktree (no
 `.venv`, no gitignored `website/node_modules`) does not fail on missing tools:
 
-- **venv (`ensure_venv`)** — after `python -m venv`, upgrades pip, then runs
+- **venv (`ensure_venv`)** — builds with `python -m venv` + pip by default.
+  When `KIROCREW_PROVISION_USE_UV` is truthy (opt-in; the default flip is
+  Phase 2 of the shared-dependency-cache RFC and waits on that document being
+  on main) and `_find_uv` locates `uv`
+  (`kiro_crew.env.resolve_uv`: `uv.find_uv_bin()` from the declared `uv` wheel
+  first, then `PATH` — the one ladder pptx-maker's `resolve_uv` also consumes),
+  it runs
+  `uv venv --seed --python <py3.12> .venv` then `uv pip install --link-mode hardlink
+  --python .venv/bin/python --project <checkout> --editable <checkout> --group
+  dev`. `--seed` keeps `pip` in the venv (uv omits it by default) so `make
+  backend` and ad-hoc `.venv/bin/pip` keep working on a pod-provisioned
+  worktree. The explicit hardlink link-mode is what makes every worktree venv share
+  one global wheel cache (`uv cache dir`) — ~1 MB of unique disk and ~10 s per
+  worktree instead of ~400 MB and ~1 min — and `--project` pins `--group` to
+  the worktree's `pyproject.toml` regardless of the caller's cwd (the Dev Fleet
+  backend and a login shell provision from different directories). Because those
+  site-packages share inodes with every sibling venv and the cache, the agent
+  file-edit gate refuses in-place writes to a shared `site-packages` file
+  (`security.is_sensitive_write_path`, scoped to `st_nlink > 1`, so pip-built
+  venvs stay editable). If uv cannot be located or its install exits nonzero,
+  the pip path runs over the existing
+  `.venv` as-is — nothing is deleted, so two provisioners racing on one
+  checkout (CLI and Dev Fleet) cannot remove each other's finished venv, and
+  `python -m venv` takes over a half-built directory exactly as it already does
+  after an interrupted pip run. The pip path is unchanged: after `python -m venv`, upgrades pip, then runs
   `pip install --editable <checkout> --group dev` so the PEP 735 `dev`
   dependency-group (pytest, flake8, isort, mypy, …) is present and the build
   gate can run inside the pod venv (issue #230). `pip --group` needs pip
   ≥ 25.1; if the command exits nonzero (older pip) it falls back to a
   runtime-only `pip install --editable <checkout>` and `_say`s a warning that
   dev tools were skipped — provisioning never hard-fails just because the dev
-  extras could not be installed.
+  extras could not be installed. Design record: the "Shared Dependency Cache
+  for Worktrees" RFC under `docs/request-for-change/`, landing on its own PR.
 - **dist (`build_dist`)** — before `npm run build`, calls
   `ensure_node_modules(website)`: if `website/node_modules/.bin/tsc` is missing
   it runs `npm ci` (falling back to a NON-MUTATING `npm install

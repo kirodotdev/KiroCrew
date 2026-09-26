@@ -7,7 +7,11 @@ module collapses them into one command (``kirocrew pod provision`` /
 ``pod up --provision``).
 
 Cost asymmetry drives the design:
-  * venv  — pure pip editable install, ~1 min, idempotent → safe to auto-run.
+  * venv  — editable install, idempotent → safe to auto-run. By default it is a
+            plain pip install, ~1 min and ~400 MB per worktree. With
+            :data:`USE_UV_ENV` set it is built by ``uv`` instead: ~10 s, and its
+            site-packages are hardlinks into uv's global cache (~1 MB of unique
+            disk per worktree).
   * dist  — the Vite/npm SPA build, minutes → only on explicit consent.
 
 So plain ``pod up`` auto-builds the venv but never the dist (it fails loud and
@@ -26,7 +30,8 @@ import threading
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.env import find_node_tool, node_augmented_path
+from kiro_crew.constants import env_flag_enabled
+from kiro_crew.env import find_node_tool, node_augmented_path, resolve_uv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: How many trailing stderr lines of the step that FAILED provisioning are
@@ -114,7 +119,15 @@ def _find_python_via_launcher(version: str) -> str | None:
         return None
     try:
         out = subprocess.check_output(
-            [launcher, f"-{version}", "-I", "-X", "utf8", "-c", "import sys; print(sys.executable)"],
+            [
+                launcher,
+                f"-{version}",
+                "-I",
+                "-X",
+                "utf8",
+                "-c",
+                "import sys; print(sys.executable)",
+            ],
             timeout=_PY_LAUNCHER_TIMEOUT_S,
             stderr=subprocess.DEVNULL,
             **UTF8_TEXT,
@@ -337,17 +350,107 @@ def _npm_bin() -> str | None:
     return None
 
 
+#: Set to a truthy value (``1``/``true``/``yes``/``on``) to build the venv with
+#: ``uv`` out of its shared, hardlinked global cache instead of the default
+#: ``python -m venv`` + pip. Opt-in, not default: hardlinked site-packages are
+#: shared with every sibling venv and with the cache, so an in-place edit to one
+#: installed file reaches all of them. Flipping the default is Phase 2 of the
+#: "Shared Dependency Cache for Worktrees" RFC and waits on that document being
+#: accepted on main.
+USE_UV_ENV = "KIROCREW_PROVISION_USE_UV"
+
+
+def _find_uv() -> str | None:
+    """Absolute path to ``uv``, or ``None`` when the pip path should be used.
+
+    ``None`` unless :data:`USE_UV_ENV` is set: the pip path is the default, and
+    a host opts into uv because every worktree venv is the same few hundred MB
+    of wheels — uv installs them as hardlinks out of ONE global cache
+    (``uv cache dir``), so the twentieth worktree costs about as much disk as
+    the first, and the install itself is seconds rather than a minute.
+
+    Resolution is :func:`kiro_crew.env.resolve_uv` — ``uv`` is a declared
+    dependency shipped as a wheel, located through ``uv.find_uv_bin()`` and then
+    ``PATH`` — the same ladder the pptx-maker engine uses. ``None`` is a
+    reportable condition (the pip path runs), never an exception.
+    """
+    if not env_flag_enabled(USE_UV_ENV):
+        return None
+    return resolve_uv()
+
+
+def _venv_python(checkout: Path) -> Path:
+    name = "python.exe" if platform_compat.IS_WINDOWS else "python"
+    return venv_bin_dir(checkout) / name
+
+
+def _ensure_venv_uv(checkout: Path, uv: str, py: str) -> bool:
+    """Build the venv with ``uv``. Returns True when ``.venv/bin/kirocrew`` exists
+    afterward; False leaves the caller free to fall back to pip.
+
+    ``--link-mode hardlink`` is explicit rather than left to uv's default: the
+    disk saving IS the point of this path, and the default has been observed to
+    silently copy on hosts where hardlinking works. When the cache and the
+    worktree sit on different filesystems uv warns and copies — the install
+    still succeeds, it just does not share. ``--project`` points ``--group`` at
+    the worktree's ``pyproject.toml`` regardless of the caller's cwd (the Dev
+    Fleet backend and a login shell provision from different directories).
+    ``--seed`` installs ``pip`` into the venv, which ``uv venv`` otherwise omits:
+    nothing here needs it, but ``make backend`` drives ``$(VENV)/bin/pip`` and a
+    contributor's ad-hoc ``.venv/bin/pip …`` must keep working on a worktree a
+    pod provisioned — a venv that differs from the pip-built one only by lacking
+    pip is a trap, not a saving.
+    """
+    venv_dir = checkout / ".venv"
+    _say(f"[provision] creating venv for {checkout.name} with uv (one-time, ~10 s)…")
+    if _run([uv, "venv", "--seed", "--python", py, str(venv_dir)], checkout) != 0:
+        return False
+    install = [
+        uv,
+        "pip",
+        "install",
+        "--link-mode",
+        "hardlink",
+        "--python",
+        str(_venv_python(checkout)),
+        "--project",
+        str(checkout),
+        "--editable",
+        str(checkout),
+        "--group",
+        "dev",
+    ]
+    if _run(install, checkout) != 0:
+        return False
+    return has_venv(checkout)
+
+
 def ensure_venv(checkout: Path) -> bool:
     """Create the worktree's editable venv if missing. Idempotent. Returns True if
-    the venv is ready afterward."""
+    the venv is ready afterward.
+
+    Builds with ``python -m venv`` + pip by default. When :data:`USE_UV_ENV` is
+    set it tries ``uv`` first (shared global cache, hardlinked site-packages,
+    seconds) and falls back to the pip path when uv cannot be located or fails
+    part-way. The fallback never deletes
+    ``.venv``: ``python -m venv`` runs over whatever uv left, exactly as it
+    already does over a venv an interrupted pip provision left behind, and two
+    provisioners racing on one checkout (CLI and Dev Fleet) can therefore never
+    remove each other's finished venv.
+    """
     if has_venv(checkout):
         return True
     py = _find_python()
     if not py:
         _say("FATAL: no python3.12 found (need it to build the venv)")
         return False
-    _say(f"[provision] creating venv for {checkout.name} (one-time, ~1 min)…")
     venv_dir = checkout / ".venv"
+    uv = _find_uv()
+    if uv:
+        if _ensure_venv_uv(checkout, uv, py):
+            return True
+        _say("[provision] uv provisioning failed — falling back to python -m venv + pip")
+    _say(f"[provision] creating venv for {checkout.name} (one-time, ~1 min)…")
     if _run([py, "-m", "venv", str(venv_dir)], checkout) != 0:
         return _fail()
     pip = venv_bin_dir(checkout) / ("pip.exe" if platform_compat.IS_WINDOWS else "pip")
@@ -359,10 +462,13 @@ def ensure_venv(checkout: Path) -> bool:
     # If `--group` is unsupported (pip < 25.1) the command exits
     # nonzero, so fall back to a runtime-only editable install and warn — never
     # hard-fail provisioning just because the dev extras could not be installed.
-    if _run(
-        [str(pip), "install", "--editable", str(checkout), "--group", "dev"],
-        checkout,
-    ) != 0:
+    if (
+        _run(
+            [str(pip), "install", "--editable", str(checkout), "--group", "dev"],
+            checkout,
+        )
+        != 0
+    ):
         _say(
             "[provision] `pip install --group dev` failed (pip < 25.1?) — falling "
             "back to a runtime-only editable install; dev tools (pytest/flake8) "

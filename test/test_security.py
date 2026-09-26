@@ -5594,6 +5594,193 @@ class TestKeystonePublishArtifacts:
         assert is_sensitive_path(str(link)) is True
 
 
+class TestVenvSitePackagesWriteFence:
+    """Shared installed dependencies inside a worktree ``.venv`` are write-fenced.
+
+    ``pod provision`` with ``KIROCREW_PROVISION_USE_UV`` builds venvs as hardlinks
+    out of one shared uv cache, so an in-place edit of one installed file lands in
+    every sibling venv and in the cache. The edit-tool gate refuses exactly that:
+    a ``site-packages`` file whose inode has more than one link. A pip-built venv
+    (one link per file), the venv's own scripts, the checkout's source and
+    look-alike paths stay writable; provisioning (pip/uv, never through the gate,
+    never in place) is untouched.
+    """
+
+    @staticmethod
+    def _site_packages(root: Path) -> Path:
+        sp = root / ".venv" / "lib" / "python3.12" / "site-packages"
+        sp.mkdir(parents=True, exist_ok=True)
+        return sp
+
+    @classmethod
+    def _shared_file(cls, root: Path, cache: Path, name: str = "requests/api.py") -> Path:
+        """An installed file hardlinked to a cache entry — uv's ``hardlink`` mode."""
+        cached = cache / "wheel" / name
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text("def get(): ...\n", encoding="utf-8")
+        installed = cls._site_packages(root) / name
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        os.link(cached, installed)
+        assert installed.stat().st_nlink == 2  # guard the fixture
+        return installed
+
+    def test_a_hardlinked_dependency_file_is_write_fenced(self, tmp_path: Path) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        shared = self._shared_file(tmp_path / "wt-a", tmp_path / "uv-cache")
+        assert is_sensitive_write_path(str(shared)) is True
+
+    def test_a_relative_path_is_anchored_then_judged(self, tmp_path: Path) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        self._shared_file(tmp_path / "wt-a", tmp_path / "uv-cache")
+        rel = "wt-a/.venv/lib/python3.12/site-packages/requests/api.py"
+        assert is_sensitive_write_path(rel, base_dir=str(tmp_path)) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/workplace/me/wt-a/.venv/lib/python3.12/site-packages/requests/api.py",
+            "~/Repos/kc/.venv/lib/python3.13/site-packages/uv/__init__.py",
+            "/w/x/.venv/Lib/site-packages/requests/api.py",  # Windows layout
+            "/w/x/.VENV/lib/python3.12/Site-Packages/pkg.py",  # case-insensitive FS
+            r"C:\w\x\.venv\Lib\site-packages\requests\api.py",  # Windows separators
+            "wt-a/.venv/lib/python3.12/site-packages/six.py",  # relative, anchored
+        ],
+    )
+    def test_the_lexical_stage_matches_components_in_either_spelling(
+        self, path: str, monkeypatch
+    ) -> None:
+        """Casefolded whole-component match on either separator: a
+        case-insensitive filesystem or a Windows-spelled path cannot slip past the
+        lexical stage. The inode stage is pinned to "shared" here so only the
+        lexical decision is under test."""
+        from kiro_crew.security import paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "_shares_inode", lambda cand: True)
+        assert paths_mod._is_venv_site_packages(path, base_dir="/workplace/me") is True
+
+    def test_a_pip_built_venv_is_not_fenced(self, tmp_path: Path) -> None:
+        """One link per file means no sibling shares the inode: the edit is a
+        local mistake, not a shared one, and the gate is not broader than the
+        hazard."""
+        from kiro_crew.security import is_sensitive_write_path
+
+        installed = self._site_packages(tmp_path / "wt-b") / "requests" / "api.py"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("def get(): ...\n", encoding="utf-8")
+        assert installed.stat().st_nlink == 1
+        assert is_sensitive_write_path(str(installed)) is False
+
+    def test_the_editable_install_pth_is_not_fenced(self, tmp_path: Path) -> None:
+        """The checkout's editable install is a per-venv ``.pth`` (one link) that
+        points at source OUTSIDE site-packages; it is never caught."""
+        from kiro_crew.security import is_sensitive_write_path
+
+        pth = self._site_packages(tmp_path / "wt-a") / "__editable__.kiro_crew.pth"
+        pth.write_text(str(tmp_path / "wt-a" / "src") + "\n", encoding="utf-8")
+        assert is_sensitive_write_path(str(pth)) is False
+
+    def test_a_file_that_does_not_exist_yet_is_not_fenced(self, tmp_path: Path) -> None:
+        """Creating a NEW file under site-packages cannot reach a sibling venv."""
+        from kiro_crew.security import is_sensitive_write_path
+
+        new = self._site_packages(tmp_path / "wt-a") / "sitecustomize.py"
+        assert not new.exists()
+        assert is_sensitive_write_path(str(new)) is False
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "src/kiro_crew/pod/provision.py",  # the checkout itself
+            ".venv/bin/activate",  # venv, not an installed package
+            ".venv/pyvenv.cfg",
+            ".venv/lib/python3.12/site-packages",  # the dir itself
+            "my.venv/lib/site-packages/x.py",  # not a `.venv` component
+            "site-packages-notes/.venv-todo.md",  # look-alikes
+            "docs/site-packages/.venv/readme.md",  # wrong order
+        ],
+    )
+    def test_source_and_look_alikes_stay_writable_even_when_shared(
+        self, tmp_path: Path, rel: str
+    ) -> None:
+        """The lexical stage runs first: a hardlinked file OUTSIDE
+        ``.venv/**/site-packages/`` is never fenced by this clause, however many
+        links it has."""
+        from kiro_crew.security import is_sensitive_write_path
+
+        root = tmp_path / "wt-a"
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if rel.endswith("site-packages"):
+            target.mkdir()
+        else:
+            target.write_text("x\n", encoding="utf-8")
+            os.link(target, tmp_path / ("twin-" + target.name))
+            assert target.stat().st_nlink == 2
+        assert is_sensitive_write_path(str(target)) is False
+
+    def test_the_read_gate_is_not_widened(self, tmp_path: Path) -> None:
+        """Reading a shared installed dependency is routine; only writes are fenced."""
+        shared = self._shared_file(tmp_path / "wt-a", tmp_path / "uv-cache")
+        assert is_sensitive_path(str(shared)) is False
+
+    def test_a_symlink_into_site_packages_is_judged_by_its_target(self, tmp_path: Path) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        shared = self._shared_file(tmp_path / "wt-a", tmp_path / "uv-cache")
+        link = tmp_path / "innocent.py"
+        link.symlink_to(shared)
+        assert is_sensitive_write_path(str(link)) is True
+
+    def test_a_stat_fault_fails_closed(self, tmp_path: Path, monkeypatch) -> None:
+        """A stat the pool cannot complete (fault, not stall) is treated as
+        shared: the gate cannot prove the write is local."""
+        from kiro_crew.security import paths as paths_mod
+
+        installed = self._site_packages(tmp_path / "wt-a") / "requests" / "api.py"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("x\n", encoding="utf-8")
+
+        def boom(path: str) -> int:
+            raise PermissionError(path)
+
+        monkeypatch.setattr(paths_mod, "_link_count", boom)
+        assert paths_mod._is_venv_site_packages(str(installed)) is True
+
+    def test_a_stalled_stat_is_a_refusal_not_an_exception(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A stat that STALLS after the path resolved is refused, like a stalled
+        resolution: the gate returns True instead of letting
+        ``PathResolutionStalled`` escape and abort the edit authorization."""
+        from kiro_crew.security import paths as paths_mod
+
+        installed = self._site_packages(tmp_path / "wt-a") / "requests" / "api.py"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("x\n", encoding="utf-8")
+
+        def stalled(path: str) -> bool:
+            raise paths_mod.PathResolutionStalled(path, path)
+
+        monkeypatch.setattr(paths_mod, "_shares_inode", stalled)
+        assert paths_mod._is_venv_site_packages(str(installed)) is True
+        # And the public gate stays a boolean predicate under the same stall.
+        assert paths_mod.is_sensitive_write_path(str(installed)) is True
+
+    def test_removing_the_clause_would_be_caught(self, tmp_path: Path) -> None:
+        """Guard the guard: the clause is the ONLY reason a shared site-packages
+        file is refused — with it patched out, the same path is writable."""
+        from unittest import mock
+
+        from kiro_crew.security import paths as paths_mod
+
+        shared = self._shared_file(tmp_path / "wt-a", tmp_path / "uv-cache")
+        with mock.patch.object(paths_mod, "_is_venv_site_packages", return_value=False):
+            assert paths_mod.is_sensitive_write_path(str(shared)) is False
+        assert paths_mod.is_sensitive_write_path(str(shared)) is True
+
+
 class TestHomeDirTargetsCache:
     """Tests for the TTL cache in front of ``_home_dir_targets_uncached``.
 
