@@ -39,6 +39,7 @@ from typing import (
     Any,
     AsyncGenerator,
     AsyncIterator,
+    Awaitable,
     Callable,
     Collection,
     Mapping,
@@ -62,6 +63,7 @@ from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     DRAIN_YIELD_AFTER_S,
     _dumps_degraded,
+    _loggable_request_id,
     _measure_tool_output,
     agent_version_from_init,
     build_permission_event,
@@ -2860,6 +2862,282 @@ _WAIT_RESPONSE_MAX_TIMEOUT = 600.0  # 10 min absolute ceiling
 # and must never gate tool dispatch, so a wedged SEL backend is abandoned (the
 # worker thread may leak, which is survivable) after this timeout.
 _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
+# No-progress bound on delivering a response or error frame to the backend's
+# stdin (permission answers, unknown-method errors). ``StreamWriter.drain()``
+# returns at once while the pipe has room; it only parks when the writer is
+# flow-control paused -- the kernel pipe buffer is full and the transport's
+# own buffer is past its high-water mark. That is what a backend that has
+# stopped reading stdin looks like once frames have backed up behind it, but
+# it is ALSO what a healthy backend looks like while it consumes a multi-MB
+# prompt frame queued ahead of the response on the same writer (the shared
+# runtime multiplexes sessions on one stdin). The two are told apart by
+# progress, not by elapsed time: the bound is the longest the transport's
+# write buffer may go without shrinking. A reader that is consuming, however
+# slowly, keeps the wait alive; a reader that consumed nothing for this long
+# is gone, and the write is raised as the process death it is (AcpProcessDied
+# / AcpRuntimeDead) so the caller takes the same session-reset + bounded-
+# requeue recovery the broken-pipe case already uses. The bound cannot observe
+# delivery of a frame the pipe accepted (the protocol gives no ack for a
+# response); it bounds the wait on a paused writer. Sized like chat_runner's
+# _STEER_NOTICE_BOUND_SECS: far below the turn deadline.
+_RESPONSE_WRITE_BOUND_SECS = 5.0
+# The least the write-buffer level must DROP within one window for the drop
+# to count as the reader consuming. Without a floor, a reader that takes one
+# byte per window extends the wait forever; with a flat elapsed cap instead, a
+# healthy-but-slow reader draining a co-tenant's multi-MB frame would be
+# killed by the cap -- the very failure the progress bound exists to avoid.
+# 4 KiB per 5s window is under 1 KB/s: a reader that slow would need hours
+# for a single image frame, which is dead for every practical purpose.
+_RESPONSE_WRITE_MIN_PROGRESS_BYTES = 4096
+# The wait is bounded in TOTAL by construction, not by a flat figure: no fixed
+# ceiling can be right when the largest frame is unbounded (a prompt may carry
+# any number of 5 MiB image blocks) -- a fixed one either kills a live reader
+# on a valid large frame or lets a trickling one run long. Instead: the write
+# buffer's level is finite and non-negative, and every window that continues
+# the wait removed at least the floor from it, so a wait on a backlog of B
+# bytes lasts at most B / _RESPONSE_WRITE_MIN_PROGRESS_BYTES + 1 windows (plus
+# the same for any frame a sibling writer appends meanwhile). That is the
+# derived ceiling -- backlog over the minimum accepted rate -- and it needs no
+# constant of its own.
+# Window used when the transport cannot show progress at all. Windows's
+# proactor pipe transport reports ``get_write_buffer_size()`` as the whole
+# in-flight overlapped write until that write completes, so its level is flat
+# for the entire time a healthy reader consumes a large frame -- flatness is
+# not a stall there, and the only signal left is elapsed time. With no backlog
+# to derive from, this is the one place a fixed figure remains, sized for the
+# largest frame a healthy local reader plausibly drains: ~30 MiB at ~40 KiB/s
+# (test-pinned). Platform-limited, like the Windows watchdog: a dead reader is
+# detected in 15 minutes there instead of 5 seconds.
+_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS = 900.0
+
+
+def _is_proactor_loop(loop: asyncio.AbstractEventLoop) -> bool:
+    """Whether ``loop`` is Windows's proactor loop (the only loop that drives
+    subprocess pipes through overlapped I/O). Keyed to the public
+    ``asyncio.ProactorEventLoop`` class the platform owns, which exists only
+    on Windows, rather than to a private transport class name."""
+    proactor = getattr(asyncio, "ProactorEventLoop", None)
+    return proactor is not None and isinstance(loop, proactor)
+
+
+def _level_is_progress_signal(transport: object) -> bool:
+    """Whether a transport's write-buffer level moves as the reader consumes.
+
+    True under the selector loops (the pipe transport trims its buffer per
+    readiness callback). False under the proactor loop Windows uses for
+    subprocess pipes: the level is the whole in-flight overlapped write until
+    it completes, so it is flat while a live reader consumes a large frame.
+    Decided from the running loop, not the transport's class name.
+    """
+    return not _is_proactor_loop(asyncio.get_running_loop())
+
+
+def _pending_write_bytes(stdin: asyncio.StreamWriter) -> int | None:
+    """Bytes the writer still holds for the pipe, or ``None`` when that level
+    is not a progress signal.
+
+    ``None`` -- a transport without ``get_write_buffer_size`` (a test double),
+    or one whose level does not move mid-frame (``_level_is_progress_signal``)
+    -- means progress cannot be observed; the bounded wait then falls back to
+    the platform-limited elapsed window, ``_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS``.
+    """
+    transport = getattr(stdin, "transport", None)
+    size = getattr(transport, "get_write_buffer_size", None)
+    if not callable(size) or not _level_is_progress_signal(transport):
+        return None
+    value = size()
+    return value if isinstance(value, int) else None
+
+
+async def await_under_no_progress_bound(
+    aw: Awaitable[Any],
+    stdin: asyncio.StreamWriter,
+    *,
+    bound_secs: float,
+) -> bool:
+    """Await ``aw`` while the writer behind ``stdin`` keeps showing activity.
+
+    Returns ``True`` when ``aw`` completed (its exception, if any, propagates).
+    Returns ``False`` -- after cancelling ``aw`` -- when the transport's write
+    buffer showed no activity for ``bound_secs``. The total wait is bounded by
+    construction -- each continued window removed at least the floor from a
+    finite, non-negative level, so a backlog of B bytes is waited on for at
+    most B / floor + 1 windows (plus the same for any frame a sibling writer
+    appends meanwhile). Activity at a window's end
+    is either a DROP of at least ``_RESPONSE_WRITE_MIN_PROGRESS_BYTES`` (the reader consumed a
+    real amount; a large frame ahead of this one is being drained) or a RISE
+    (a frame from a writer the lock woke ahead of this caller landed on the
+    pipe); both continue the wait, measured again from the new level. A level
+    that held still, or dropped by less than the floor, is a reader that is
+    gone -- the floor is what keeps a byte-per-window trickle from extending
+    the wait forever without capping a genuinely draining frame.
+
+    When the level is not a progress signal at all (``_pending_write_bytes``
+    returns ``None``: a proactor transport, or a test double without one) the
+    single window is ``_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS`` and elapsed
+    time alone decides
+    -- platform-limited, never extended, since nothing can be observed to
+    extend it on.
+
+    ``aw`` is shielded from the caller's cancellation so a window closing does
+    not abort it; an awaitable found complete when a window closes counts as
+    completed, never as a stall. On a stall verdict or a cancellation it is
+    cancelled if still pending. An awaitable that completed in the meantime is
+    NOT undone here -- a caller whose awaitable acquires something must release
+    it on those paths (see ``write_response_frame_bounded`` /
+    ``_release_if_acquired``).
+
+    The level measurement needs one writer in flight at a time to mean
+    anything, which is why every stdin write on a transport goes through that
+    transport's write lock. Without it, concurrent appends interleave with the
+    reader's consumption and a level that merely looks flat could hide both.
+    """
+    task = asyncio.ensure_future(aw)
+    last = _pending_write_bytes(stdin)
+    window = _RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS if last is None else bound_secs
+    try:
+        while True:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=window)
+            except asyncio.TimeoutError:
+                if task.done():
+                    task.result()  # completed as the window closed; re-raise its error
+                    return True
+                now = _pending_write_bytes(stdin)
+                if now is not None and last is not None:
+                    if now > last or last - now >= _RESPONSE_WRITE_MIN_PROGRESS_BYTES:
+                        last = now  # the level moved: activity, measure again from here
+                        continue
+                task.cancel()
+                return False
+            return True
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+def _release_if_acquired(lock: asyncio.Lock, acquire: "asyncio.Future[bool]") -> None:
+    """Undo a ``lock.acquire()`` whose caller has given up on it.
+
+    ``await_under_no_progress_bound`` shields the acquire task, so an outer
+    cancellation (or a stall verdict) can land AFTER the acquire completed and
+    the task holds the lock with nobody left to release it -- and this lock is
+    the one every stdin write on the transport waits for. If the acquire is
+    done and succeeded, release now; otherwise cancel it and release from its
+    done callback should it still complete with the lock.
+    """
+
+    def _done(task: "asyncio.Future[bool]") -> None:
+        if not task.cancelled() and task.exception() is None and task.result():
+            lock.release()
+
+    if acquire.done():
+        _done(acquire)
+    else:
+        acquire.cancel()
+        acquire.add_done_callback(_done)
+
+
+async def write_response_frame_bounded(
+    stdin: asyncio.StreamWriter,
+    lock: asyncio.Lock,
+    data: bytes,
+    *,
+    bound_secs: float,
+    before_write: Callable[[], None] | None = None,
+) -> bool:
+    """Write one response/error frame under the transport's write lock and a
+    no-progress bound on BOTH waits -- for the lock and for the drain.
+
+    ``before_write`` runs under the lock, just before the frame is written, and
+    may raise to abort the write -- the shared runtime uses it to re-check that
+    it was not marked dead while this caller waited for the lock, so no frame
+    is written into a pipe whose owner has already been torn down.
+
+    Waiting for the lock is waiting for the previous frame's drain: a
+    flow-control-paused writer holding a multi-MB prompt is a live reader as
+    long as its buffer level moves, and a dead one when it does not. Returns
+    ``False`` on a stall in either phase without writing (lock phase) or after
+    cancelling the drain (drain phase); the caller maps that to its own
+    process-death exception. Pipe errors from ``drain()`` propagate. The lock
+    is never left held: a stall verdict or a cancellation that lands after the
+    shielded acquire completed releases it (``_release_if_acquired``).
+    """
+    acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
+    try:
+        acquired = await await_under_no_progress_bound(acquire, stdin, bound_secs=bound_secs)
+    except BaseException:
+        _release_if_acquired(lock, acquire)
+        raise
+    if not acquired:
+        _release_if_acquired(lock, acquire)
+        return False
+    try:
+        if before_write is not None:
+            before_write()
+        stdin.write(data)
+        return await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
+    finally:
+        lock.release()
+
+
+def response_write_window_secs(stdin: asyncio.StreamWriter, bound_secs: float) -> float:
+    """The no-progress window ``await_under_no_progress_bound`` applies to this
+    writer -- ``bound_secs`` when its level is a progress signal, the
+    platform-limited window when it is not -- so a stall log line states the
+    window that was actually measured."""
+    return (
+        bound_secs
+        if _pending_write_bytes(stdin) is not None
+        else _RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS
+    )
+
+
+async def write_notification_best_effort(
+    stdin: asyncio.StreamWriter,
+    lock: asyncio.Lock,
+    data: bytes,
+    *,
+    bound_secs: float,
+    before_write: Callable[[], None] | None = None,
+) -> str:
+    """Write a fire-and-forget notification (``session/cancel``) without letting
+    the write lock swallow it.
+
+    A cancel is the one cooperative signal that can end a wedged turn, so it
+    must not queue forever behind a holder parked on a reader that stopped. Wait
+    for the lock under the no-progress bound; if the lock does not come, append
+    the frame UNLOCKED (no drain) so the transport enqueues it the moment the
+    pipe has room -- a single extra append the lock-holder's measurement reads
+    as activity for one window, which is the price of delivering the cancel.
+    Under the lock the drain is bounded the same way. Returns what happened, for
+    the caller's log line: ``"drained"`` (written and drained under the lock),
+    ``"appended_unlocked"`` (the lock did not come; the frame sits in the
+    transport's buffer with no drain observed), or ``"stalled"`` (the locked
+    drain made no progress). Pipe errors propagate.
+    """
+    acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
+    try:
+        acquired = await await_under_no_progress_bound(acquire, stdin, bound_secs=bound_secs)
+    except BaseException:
+        _release_if_acquired(lock, acquire)
+        raise
+    if not acquired:
+        _release_if_acquired(lock, acquire)
+        if before_write is not None:
+            before_write()
+        stdin.write(data)
+        return "appended_unlocked"
+    try:
+        if before_write is not None:
+            before_write()
+        stdin.write(data)
+        drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
+        return "drained" if drained else "stalled"
+    finally:
+        lock.release()
+
+
 # Canonical ACP tool-kind value for shell/exec tools. kiro-cli and
 # claude-agent-acp both report shell commands with kind="execute", and so does
 # codex-acp -- for its MCP tool calls too. _is_shell_kind() is therefore only
@@ -10625,12 +10903,60 @@ class AcpClient:
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"
         try:
-            self._process.stdin.write(data.encode())
-            await self._process.stdin.drain()
+            # Under the write lock so a response frame waiting behind this
+            # (caller-sized, deliberately unbounded) frame measures the
+            # reader's progress exactly; see await_under_no_progress_bound.
+            async with self._stdin_write_lock():
+                self._process.stdin.write(data.encode())
+                await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
         self._last_activity = time.monotonic()
         return req_id
+
+    def _stdin_write_lock(self) -> asyncio.Lock:
+        """The one lock every stdin write on this client takes (see
+        ``await_under_no_progress_bound`` for why the bound needs it). Created on
+        first use so a client built without ``__init__`` (test doubles) has one."""
+        lock = getattr(self, "_stdin_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._stdin_lock = lock
+        return lock
+
+    async def _write_response_bounded(self, data: bytes, request_id: str | int) -> None:
+        """Write a response/error frame under the write lock and a no-progress bound.
+
+        Left alone, a deny path answering a permission request would sit on a
+        flow-control-paused writer until the turn deadline. A writer whose
+        buffer stops shrinking for ``_RESPONSE_WRITE_BOUND_SECS`` -- while
+        waiting for the lock or while draining -- is the same undeliverable-
+        response condition a closed pipe reports as an error, so it is mapped to
+        the same exception: ``AcpProcessDied`` sends the caller down the existing
+        session-reset + bounded-requeue recovery instead of hanging. The request
+        id appears only through ``_loggable_request_id``.
+        """
+        assert self._process is not None and self._process.stdin is not None
+        if await write_response_frame_bounded(
+            self._process.stdin,
+            self._stdin_write_lock(),
+            data,
+            bound_secs=_RESPONSE_WRITE_BOUND_SECS,
+        ):
+            return
+        safe_id = _loggable_request_id(request_id)
+        window = response_write_window_secs(self._process.stdin, _RESPONSE_WRITE_BOUND_SECS)
+        logger.warning(
+            "ACP stdin stalled: no write progress for %gs (floor %d bytes/window) while "
+            "delivering response to req=%s; treating the backend as dead",
+            window,
+            _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
+            safe_id,
+        )
+        raise AcpProcessDied(
+            f"ACP stdin stalled: no write progress for {window:g}s while "
+            f"delivering response to req={safe_id}"
+        )
 
     async def _send_response(self, request_id: str | int, result: dict) -> None:
         if not self._process or not self._process.stdin:
@@ -10639,8 +10965,7 @@ class AcpClient:
         msg = {"jsonrpc": "2.0", "id": request_id, "result": result}
         data = json.dumps(msg) + "\n"
         try:
-            self._process.stdin.write(data.encode())
-            await self._process.stdin.drain()
+            await self._write_response_bounded(data.encode(), request_id)
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
         self._last_activity = time.monotonic()
@@ -10658,8 +10983,7 @@ class AcpClient:
         msg = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
         data = json.dumps(msg) + "\n"
         try:
-            self._process.stdin.write(data.encode())
-            await self._process.stdin.drain()
+            await self._write_response_bounded(data.encode(), request_id)
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
         self._last_activity = time.monotonic()
@@ -10869,13 +11193,15 @@ class AcpClient:
             if msg.method:
                 logger.debug(
                     "Deferring inbound server request: method=%s id=%s (waiting for %d)",
-                    msg.method,
-                    msg.id,
+                    _loggable_request_id(msg.method),
+                    _loggable_request_id(msg.id),
                     req_id,
                 )
             else:
                 logger.debug(
-                    "Deferring non-matching response: id=%s (waiting for %d)", msg.id, req_id
+                    "Deferring non-matching response: id=%s (waiting for %d)",
+                    _loggable_request_id(msg.id),
+                    req_id,
                 )
             deferred.append(msg)
 
@@ -11689,7 +12015,12 @@ class AcpClient:
 
         async for action, msg in self._prompt_loop(req_id, timeout):
             if action != "update":
-                logger.debug("ACP event: method=%s id=%s action=%s", msg.method, msg.id, action)
+                logger.debug(
+                    "ACP event: method=%s id=%s action=%s",
+                    _loggable_request_id(msg.method),
+                    _loggable_request_id(msg.id),
+                    action,
+                )
 
             # Reset staleness only on events that indicate active work.
             # Passive updates (usage_update, tool_call_update after completion,
@@ -12162,7 +12493,7 @@ class AcpClient:
                 "reject_tool: no deny option advertised for req=%s; answering "
                 "'cancelled', which the backend may treat as cancelling the "
                 "remainder of the turn's tool calls",
-                request_id,
+                _loggable_request_id(request_id),
             )
             await self._send_response(request_id, {"outcome": {"outcome": OUTCOME_CANCELLED}})
 
@@ -12283,10 +12614,21 @@ class AcpClient:
                 "params": {"sessionId": self._session_id},
             }
             data = json.dumps(notification) + "\n"
-            self._process.stdin.write(data.encode())
-            await self._process.stdin.drain()
-            self._last_activity = time.monotonic()
-            logger.debug("cancel_session: wrote session/cancel notification")
+            # Best effort, never swallowed by the write lock: a cancel is the
+            # one signal that can end a wedged turn, so it is appended unlocked
+            # if the lock does not come within the no-progress bound.
+            outcome = await write_notification_best_effort(
+                self._process.stdin,
+                self._stdin_write_lock(),
+                data.encode(),
+                bound_secs=_RESPONSE_WRITE_BOUND_SECS,
+            )
+            # Only a drained frame is evidence the backend moved: an unlocked
+            # append or a stall must not refresh the activity clock the
+            # wedged-turn probes read.
+            if outcome == "drained":
+                self._last_activity = time.monotonic()
+            logger.debug("cancel_session: wrote session/cancel notification (%s)", outcome)
         except Exception:
             logger.debug("Cancel notification failed", exc_info=True)
 
@@ -13019,7 +13361,11 @@ class AcpClient:
         """
         if msg.id is None:
             return
-        logger.warning("ACP: rejecting unknown server request: method=%s id=%s", msg.method, msg.id)
+        logger.warning(
+            "ACP: rejecting unknown server request: method=%s id=%s",
+            _loggable_request_id(msg.method),
+            _loggable_request_id(msg.id),
+        )
         await self._send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, f"Method not found: {msg.method}")
 
     def _extract_text_chunk(self, msg: JsonRpcMessage) -> tuple[str | None, bool]:
@@ -13962,7 +14308,11 @@ class AcpClient:
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
         self._note_pi_gate_asked(msg)
-        logger.info("Permission requested for tool: %s (req=%s)", event.title, event.request_id)
+        logger.info(
+            "Permission requested for tool: %s (req=%s)",
+            event.title,
+            _loggable_request_id(event.request_id),
+        )
         if logger.isEnabledFor(logging.DEBUG):
             params = msg.params if isinstance(msg.params, dict) else {}
             tool_call = params.get("toolCall", {})

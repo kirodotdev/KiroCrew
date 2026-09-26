@@ -7763,9 +7763,9 @@ class TestDispatchToolResultContentShapes:
         to abort the turn it is reporting on."""
         import logging
 
-        from kiro_crew.acp._dispatch import _build_tool_result_event, redacted_tool_id
+        from kiro_crew.acp._dispatch import _build_tool_result_event, _loggable_request_id
 
-        assert redacted_tool_id(1234) == "1234"
+        assert _loggable_request_id(1234) == "1234"
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
             assert (
@@ -7785,9 +7785,18 @@ class TestDispatchToolResultContentShapes:
         entry, so a frame that pads them cannot be held in memory in full. Bounds
         are applied AFTER redaction, never before -- a cut taken first can split a
         credential into fragments no pattern matches."""
-        from kiro_crew.acp._dispatch import redacted_tool_id, unrenderable_content_shapes
+        from kiro_crew.acp._dispatch import (
+            _REQUEST_ID_LOG_CAP,
+            _loggable_request_id,
+            unrenderable_content_shapes,
+        )
 
-        assert len(redacted_tool_id("t" * 100_000)) == 200
+        # Under the input cap and left intact by the redactor (a single repeated
+        # letter matches no credential pattern), so the display slice is what
+        # bounds it -- pinned by equality.
+        assert len(_loggable_request_id("t" * 3000)) == _REQUEST_ID_LOG_CAP
+        # Over the input cap the value is replaced by the length-only marker.
+        assert _loggable_request_id("t" * 100_000).startswith("<id too long: ")
         padded = [{"type": f"x{i}", "pad": "y" * 200} for i in range(2000)]
         assert len(unrenderable_content_shapes(padded)) == 4000
 
