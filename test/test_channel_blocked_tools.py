@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_TOOLS, _stream_task
+from kiro_crew.channel import (
+    CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS,
+    CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS,
+    CHANNEL_AGENT_BLOCKED_TOOLS,
+    _stream_task,
+)
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST
 
 
@@ -138,3 +143,147 @@ def test_every_session_control_tool_is_contained():
 
     missing = sorted(set(SESSION_CONTROL_TOOLS) - set(CHANNEL_AGENT_BLOCKED_TOOLS))
     assert not missing, f"session-control tools reachable from a channel agent: {missing}"
+
+
+def test_blocked_tools_cover_every_dispatch_verb():
+    """The dispatch verbs reach the interactive guard through the same list.
+
+    They are appended to ``CHANNEL_AGENT_BLOCKED_TOOLS`` rather than respelled
+    there, so this asserts the concatenation actually happened: a verb present in
+    the dispatch tuple but absent from the rendered-title list would be refused
+    at MCP dispatch and approved at the permission prompt, which is two answers
+    to one question.
+    """
+    missing = sorted(set(CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS) - set(CHANNEL_AGENT_BLOCKED_TOOLS))
+    assert not missing, f"dispatch verbs missing from the rendered-title list: {missing}"
+
+
+def test_dispatch_tuple_names_the_verbs_that_start_work():
+    """Pinned by name, because the set IS the security boundary.
+
+    Reading it off the advertised tool list is not possible: the advertised list
+    mixes verbs that start work with verbs that only watch it, and only a human
+    reading of each verb decides which is which.
+    """
+    assert set(CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS) == {
+        "spawn_run",
+        "spawn_sub_agents",
+        "spawn_continue",
+        "spawn_steer",
+        "workflow_run",
+        "workflow_author",
+        "workflow_rerun_subtree",
+        "task_run",
+        "register_hook",
+        "pod_up",
+    }
+
+
+def test_operation_map_names_the_operations_that_start_work():
+    """A passthrough tool is held by operation, so the operations are pinned too.
+
+    ``ops_mission_control_api`` carries a whole API surface behind one name, and
+    only ``POST /rotation/arm`` starts work that outlives the turn: it arms the
+    app's crons, which fire unattended afterwards. Every other operation reads, or
+    writes a record inside the turn, so the tool itself is not on the name list.
+    """
+    assert CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS == {
+        "ops_mission_control_api": (("POST", "/rotation/arm"),),
+    }
+
+
+def test_blocked_operations_are_real_operations_of_their_tool():
+    """A typo here would deny nothing and read as protection.
+
+    The operation is matched against the arguments a caller sends, so a method or
+    path that the tool's own schema does not accept can never match, and the deny
+    would be silently dead. The tool's validator holds the authoritative surface,
+    so the pair is asserted against it rather than against a second spelling.
+    """
+    from kiro_crew.validation import OPS_MISSION_CONTROL_ALLOWED_CALLS
+
+    for tool, operations in CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS.items():
+        assert tool == "ops_mission_control_api", f"no known surface for {tool}"
+        for operation in operations:
+            assert operation in OPS_MISSION_CONTROL_ALLOWED_CALLS, operation
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "spawn_list",
+        "spawn_status",
+        "spawn_release",
+        "workflow_status",
+        "workflow_result",
+        "workflow_list",
+        "workflow_cancel",
+        "workflow_library_list",
+        "pod_ls",
+        "pod_status",
+        "pod_down",
+    ],
+)
+def test_observe_and_teardown_verbs_stay_reachable(tool):
+    """Their absence from the boundary is a decision, so it is asserted.
+
+    Each of these reads a context that already exists or ends one; none starts a
+    turn, so none is on the dispatch list. ``spawn_status`` is the one worth
+    naming: it returns a retained transcript, and how widely that read is scoped
+    is a question about read scope rather than about this boundary. A change that
+    decides to contain it should fail here and say so.
+    """
+    assert tool not in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", list(CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS))
+async def test_dispatch_verb_rejected_even_on_trusted_channel(monkeypatch, tool):
+    sel_mock = MagicMock()
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: sel_mock)
+    events = [
+        SimpleNamespace(
+            kind=EVENT_PERMISSION_REQUEST,
+            text=f"{tool} (kirocrew-core)",
+            title="",
+            request_id=11,
+            tool_input="{}",
+        ),
+        SimpleNamespace(kind=EVENT_COMPLETE),
+    ]
+    client = _make_client(events)
+    # trusted=True is the case that matters: channel trust auto-approves every
+    # request the containment list does not hold back, so no human sees this one.
+    await _stream_task(_make_agent(), _make_channel(), client, "hi")
+    client.reject_tool.assert_awaited_once_with(11)
+    client.approve_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "rendered,expected",
+    [
+        # Positive: every rendered form kiro-cli and opencode emit.
+        ("spawn_run", True),
+        ("spawn_sub_agents (kirocrew-core)", True),
+        ("kirocrew-core___spawn_run", True),
+        ("mcp__kirocrew-core__workflow_run", True),
+        ("kirocrew-core_task_run", True),
+        ('Tool: "register_hook"', True),
+        ("Running: kirocrew-core_spawn_steer", True),
+        ("workflow_rerun_subtree", True),
+        # Negative: an identifier or filename that merely CONTAINS one of the
+        # names is not a tool call. A longer tail keeps the name from standing
+        # alone, which is what the boundary lookahead tests.
+        ("Editing task_runner.py", False),
+        ("Reading /tmp/spawn_run_backup.txt", False),
+        ("fs_write path=src/workflow_runner.ts", False),
+        ("grep register_hooks", False),
+        ("my_task_run", False),
+        ("kirocrew-core_spawn_run_v2", False),
+        ("cat /tmp/kirocrew-core_spawn_run", False),
+    ],
+)
+def test_dispatch_verb_matcher_precision(rendered, expected):
+    from kiro_crew.channel import _blocked_tool_named
+
+    assert _blocked_tool_named(rendered) is expected

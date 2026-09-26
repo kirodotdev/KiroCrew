@@ -43,6 +43,7 @@ from kiro_crew.mcp_core import (
     _crew_identity,
     _crew_machine_markers,
     _crew_public_text,
+    _deny_channel_agent_dispatch,
     _deny_channel_agent_messaging,
     _get_ppid,
     _governance_app,
@@ -242,6 +243,286 @@ class TestDenyChannelAgentMessaging:
         with patch("kiro_crew.sel.sel", boom):
             out = _deny_channel_agent_messaging("channel:C1:a", "send_notification")
         assert out is not None and "not available to channel agents" in out
+
+
+class TestDenyChannelAgentDispatch:
+    """The channel-agent boundary at the one chokepoint every core tool passes.
+
+    A spawned descendant's session key is ``subagent:<id>`` and carries no trace
+    of the chain it came from, so the confinement cannot be recognised one hop
+    down. These cases pin that it is recognised at the hop where it can be: the
+    channel agent's own call to the verb that would create the descendant.
+    """
+
+    @staticmethod
+    def _as(session_key: str) -> Any:
+        """Patch the strict resolver to answer *session_key*.
+
+        The guard reads identity through ``require_strict_session_key`` and never
+        the lenient ancestor walk, so this is the seam every case sets.
+        """
+        return patch.object(
+            mcp_core, "require_strict_session_key", lambda *a, **k: (session_key, "")
+        )
+
+    def test_non_channel_caller_is_not_denied(self) -> None:
+        with self._as("dashboard:chat-1-9"):
+            assert _deny_channel_agent_dispatch("spawn_run") is None
+
+    def test_unattributable_caller_is_not_treated_as_a_channel_agent(self) -> None:
+        """An empty strict key is not a channel agent.
+
+        The gateway injects a session key into every agent subprocess it
+        launches, so a channel agent's key is always resolvable; an empty one
+        means the launch was not a gateway launch at all.
+        """
+        with self._as(""):
+            assert _deny_channel_agent_dispatch("spawn_run") is None
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "spawn_run",
+            "spawn_sub_agents",
+            "spawn_continue",
+            "spawn_steer",
+            "workflow_run",
+            "workflow_author",
+            "workflow_rerun_subtree",
+            "task_run",
+            "register_hook",
+            "pod_up",
+        ],
+    )
+    def test_every_dispatch_verb_is_denied_and_audited(self, tool: str) -> None:
+        rec = _RecordingSel()
+        with self._as("channel:C123:agent-1"), patch("kiro_crew.sel.sel", lambda: rec):
+            out = _deny_channel_agent_dispatch(tool)
+        assert out is not None
+        assert f"{tool} is not available to channel agents" in out
+        assert rec.tools[0]["outcome"] == "rejected_blocked_tool"
+        assert rec.tools[0]["session_key"] == "channel:C123:agent-1"
+        assert rec.tools[0]["tool_kind"] == "kirocrew-core"
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "spawn_list",
+            "spawn_status",
+            "spawn_release",
+            "workflow_status",
+            "workflow_result",
+            "workflow_list",
+            "workflow_cancel",
+            "workflow_library_list",
+            "pod_ls",
+            "pod_status",
+            "pod_down",
+        ],
+    )
+    def test_observe_and_teardown_verbs_stay_reachable(self, tool: str) -> None:
+        """A channel agent may still watch and end an existing context.
+
+        ``spawn_status`` returns a retained transcript and is scoped by the
+        gateway route it reads, not by this guard; this case records that the
+        boundary deliberately leaves that read alone, so a later decision to
+        contain it has to change this expectation on purpose.
+        """
+        with self._as("channel:C1:a"):
+            assert _deny_channel_agent_dispatch(tool) is None
+
+    def test_an_unlisted_verb_resolves_no_identity(self) -> None:
+        """A verb this gate does not hold must leave without resolving identity.
+
+        Every handler resolves its own caller, and the identity gate on a read
+        verb admits exactly one strict resolve, so resolving here too changes the
+        behaviour of a call the boundary has no business touching. The verb name
+        is therefore the first test, and identity is read only once a name is on
+        the list.
+        """
+        calls: list[str] = []
+
+        def _record(*a: Any, **k: Any) -> tuple[str, str]:
+            calls.append("resolved")
+            return ("channel:C1:a", "")
+
+        with patch.object(mcp_core, "require_strict_session_key", _record):
+            assert _deny_channel_agent_dispatch("workflow_list") is None
+        assert calls == []
+
+        with (
+            patch.object(mcp_core, "require_strict_session_key", _record),
+            patch("kiro_crew.sel.sel", lambda: _RecordingSel()),
+        ):
+            assert _deny_channel_agent_dispatch("workflow_run") is not None
+        assert calls == ["resolved"]
+
+    def test_the_arming_operation_is_denied_and_audited(self) -> None:
+        """A passthrough tool is held by operation, not by name.
+
+        ``POST /rotation/arm`` arms the app's crons, which fire unattended after
+        the confined turn has ended, so it starts work that outlives the turn just
+        as a spawn verb does.
+        """
+        rec = _RecordingSel()
+        with self._as("channel:C123:agent-1"), patch("kiro_crew.sel.sel", lambda: rec):
+            out = _deny_channel_agent_dispatch(
+                "ops_mission_control_api",
+                {"method": "POST", "path": "/rotation/arm"},
+            )
+        assert out is not None
+        assert "POST /rotation/arm on ops_mission_control_api" in out
+        assert rec.tools[0]["outcome"] == "rejected_blocked_tool"
+        assert rec.tools[0]["tool_name"] == "ops_mission_control_api"
+
+    def test_the_denial_names_the_operation_not_the_whole_tool(self) -> None:
+        """Naming the tool would tell the caller its reads are gone. They are not.
+
+        The agent reads this message and decides what to do next, so a message
+        that overstates the refusal sends it to report a blocked SOP it could in
+        fact have read.
+        """
+        with (
+            self._as("channel:C1:a"),
+            patch("kiro_crew.sel.sel", lambda: _RecordingSel()),
+        ):
+            out = _deny_channel_agent_dispatch(
+                "ops_mission_control_api",
+                {"method": "POST", "path": "/rotation/arm"},
+            )
+        assert out is not None
+        assert not out.startswith("Error: ops_mission_control_api is not available")
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            {"method": "GET", "path": "/state"},
+            {"method": "GET", "path": "/rotation"},
+            {"method": "POST", "path": "/ledger"},
+            {"method": "POST", "path": "/incident/claim"},
+        ],
+    )
+    def test_the_other_operations_of_that_tool_stay_reachable(
+        self, operation: dict[str, str]
+    ) -> None:
+        """Only the operation that starts work is held, so the rest must pass.
+
+        ``GET /rotation`` is the one worth naming: it reads the same rotation the
+        arming operation writes, and a deny keyed on the tool would have taken it
+        too.
+        """
+        with self._as("channel:C1:a"):
+            assert _deny_channel_agent_dispatch("ops_mission_control_api", operation) is None
+
+    def test_a_read_operation_resolves_no_identity(self) -> None:
+        """The operation test is as cheap as the name test, and runs before identity.
+
+        A held tool whose operation is not held must leave by the same free path
+        an unheld name leaves by, or the one-resolve contract breaks for every
+        read of this tool rather than for every read of every tool.
+        """
+        calls: list[str] = []
+
+        def _record(*a: Any, **k: Any) -> tuple[str, str]:
+            calls.append("resolved")
+            return ("channel:C1:a", "")
+
+        with patch.object(mcp_core, "require_strict_session_key", _record):
+            out = _deny_channel_agent_dispatch(
+                "ops_mission_control_api", {"method": "GET", "path": "/state"}
+            )
+        assert out is None
+        assert calls == []
+
+    def test_a_held_tool_called_with_no_arguments_is_not_denied(self) -> None:
+        """Absent arguments name no operation, so the operation deny cannot fire.
+
+        The arguments are the only thing that identifies the call, so a guard that
+        guessed here would refuse reads it has no evidence about. The tool's own
+        validator refuses the argument-less call straight after.
+        """
+        with self._as("channel:C1:a"):
+            assert _deny_channel_agent_dispatch("ops_mission_control_api") is None
+            assert _deny_channel_agent_dispatch("ops_mission_control_api", {}) is None
+
+    def test_audit_failure_never_unblocks_the_deny(self) -> None:
+        def boom() -> Any:
+            raise RuntimeError("SEL file unwritable")
+
+        with self._as("channel:C1:a"), patch("kiro_crew.sel.sel", boom):
+            out = _deny_channel_agent_dispatch("spawn_run")
+        assert out is not None and "not available to channel agents" in out
+
+    def test_call_tool_inner_refuses_before_the_handler_runs(self) -> None:
+        """The refusal has to beat the handler, not merely accompany it.
+
+        A guard that ran after ``dispatch`` would already have spawned the
+        descendant it exists to prevent, so the sentinel asserts the handler is
+        never reached.
+        """
+        reached: list[str] = []
+
+        def _sentinel(name: str, args: dict[str, Any]) -> str:
+            reached.append(name)
+            return "handler ran"
+
+        with self._as("channel:C9:a"), patch("kiro_crew.sel.sel", lambda: _RecordingSel()):
+            with patch.object(mcp_core, "dispatch", _sentinel):
+                out = _call_tool_inner("spawn_run", {"task": "x"})
+        assert "spawn_run is not available to channel agents" in out
+        assert reached == []
+
+    def test_call_tool_inner_hands_the_arguments_to_the_guard(self) -> None:
+        """The operation deny reads the arguments, so the chokepoint must pass them.
+
+        A name-only call site would leave the operation set unreachable in
+        production while every direct test of the guard still passed, so the
+        arming call is driven through the real entry point here.
+        """
+        reached: list[str] = []
+
+        def _sentinel(name: str, args: dict[str, Any]) -> str:
+            reached.append(name)
+            return "handler ran"
+
+        with self._as("channel:C9:a"), patch("kiro_crew.sel.sel", lambda: _RecordingSel()):
+            with patch.object(mcp_core, "dispatch", _sentinel):
+                out = _call_tool_inner(
+                    "ops_mission_control_api",
+                    {"method": "POST", "path": "/rotation/arm"},
+                )
+        assert "POST /rotation/arm on ops_mission_control_api" in out
+        assert reached == []
+
+    def test_call_tool_inner_serves_a_read_of_a_held_tool(self) -> None:
+        """Only the arming operation is refused, so a read reaches its handler."""
+        reached: list[str] = []
+
+        def _sentinel(name: str, args: dict[str, Any]) -> str:
+            reached.append(name)
+            return "handler ran"
+
+        with self._as("channel:C9:a"):
+            with patch.object(mcp_core, "dispatch", _sentinel):
+                out = _call_tool_inner(
+                    "ops_mission_control_api", {"method": "GET", "path": "/state"}
+                )
+        assert out == "handler ran"
+        assert reached == ["ops_mission_control_api"]
+
+    def test_call_tool_inner_still_serves_an_unlisted_tool(self) -> None:
+        """The gate is keyed on the verb, so a channel agent keeps the rest."""
+        reached: list[str] = []
+
+        def _sentinel(name: str, args: dict[str, Any]) -> str:
+            reached.append(name)
+            return "handler ran"
+
+        with self._as("channel:C9:a"):
+            with patch.object(mcp_core, "dispatch", _sentinel):
+                out = _call_tool_inner("spawn_status", {"agent_id": "abc123"})
+        assert out == "handler ran"
+        assert reached == ["spawn_status"]
 
 
 class TestAuditGovernanceDeny:

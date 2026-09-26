@@ -1076,6 +1076,94 @@ def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | 
     )
 
 
+def _deny_channel_agent_dispatch(tool_name: str, args: dict[str, Any] | None = None) -> str | None:
+    """Return an ``Error:`` denial when a channel agent calls a dispatch verb.
+
+    The dispatch verbs are the ones that start work outside the caller's own
+    turn: they create a descendant agent, drive one that is already running, or
+    open a context something else can drive later. The full list, and the reason
+    each name is on it, live with ``CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS`` in
+    ``channel.py`` -- imported here rather than respelled, so the interactive
+    permission guard and this one cannot drift apart.
+
+    A name alone does not identify one of these calls when the tool is a
+    passthrough carrying a whole API surface, so a second set keyed on the
+    operation, ``CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS``, holds those: the
+    tool stays callable and only the operations that start work are refused.
+    That is why this takes the call's arguments as well as its name.
+
+    Why the refusal lands HERE, on the channel agent's own hop, rather than on
+    the descendant: a descendant's session key is ``subagent:<id>``, carrying no
+    trace of where its chain began, so a containment check keyed on a
+    ``channel:`` identity sees an ordinary sub-agent and allows the call. Marking
+    descendants instead would mean an unmarked descendant is indistinguishable
+    from a legitimate one, so a path that is missed allows silently. Refusing the
+    verb that creates the descendant uses the one identity that is verified at
+    this point, and a path that is missed refuses.
+
+    Identity comes from the STRICT resolver, never the lenient ancestor walk: a
+    channel agent is launched by the gateway with its session key injected, so
+    its key is always resolvable, while the lenient walk would let an
+    unattributable caller inherit a parent's identity.
+
+    Best-effort SEL audit mirrors channel.py's ``rejected_blocked_tool``
+    outcome; an audit failure never unblocks the deny.
+    """
+    # The name and operation tests run first because they are the tests with no
+    # observable cost. This gate sits on every kirocrew-core call, and each handler
+    # resolves its own caller: a resolve here as well means a verb this gate does
+    # not hold resolves identity twice, which a read verb's identity contract pins
+    # against at exactly one strict resolve. So a call that is not held leaves
+    # through the cheapest possible path, having touched nothing. The import is a
+    # ``sys.modules`` hit once the first call has paid it.
+    from kiro_crew.channel import (
+        CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS,
+        CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS,
+    )
+
+    denied = tool_name in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
+    # What the denial names. A whole tool when the name is held; the single
+    # operation when it is not, because naming the tool there would tell a caller
+    # its reads are gone when they are not.
+    subject = tool_name
+    if not denied:
+        operations = CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS.get(tool_name)
+        if not operations:
+            return None
+        call = args or {}
+        # Upper-cased so the deny is never spelled more narrowly than the
+        # operation it holds; the path is compared as given, because the tool's
+        # schema admits only an exact member of its own allowlist there.
+        operation = (str(call.get("method", "")).upper(), str(call.get("path", "")))
+        if operation not in operations:
+            return None
+        subject = f"{operation[0]} {operation[1]} on {tool_name}"
+    caller_session = require_strict_session_key("channel-agent containment")[0]
+    if not caller_session.startswith("channel:"):
+        return None
+    try:
+        # Resolved from ``kiro_crew.sel`` at call time, not through the
+        # module-level binding, so a substituted SEL factory is observed.
+        from kiro_crew.sel import sel
+
+        sel().log_tool_invocation(
+            session_key=caller_session,
+            source="mcp",
+            tool_name=tool_name,
+            tool_kind="kirocrew-core",
+            outcome="rejected_blocked_tool",
+        )
+    except Exception:
+        # File-backed SEL write; stdio-silent (no logger -- stderr would
+        # corrupt the JSON-RPC stream). The deny below still holds.
+        pass
+    return (
+        f"Error: {subject} is not available to channel agents -- a channel "
+        "agent may not start work that outlives its own turn. Do the work in "
+        "the turn and report it as a channel post."
+    )
+
+
 def _vet_messaging_governance(
     caller_session: str,
     tool_name: str = "send_message",
@@ -2734,7 +2822,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     this module's plumbing (``_post``, the identity resolvers, the governance
     vets) as attributes of ``mcp_core``, so a test that rebinds one still
     intercepts.
+
+    Channel-agent containment sits here rather than in each handler because this
+    is the one place every kirocrew-core tool call passes through: a per-handler
+    check is a check the next dispatch verb's author has to remember, and the
+    boundary this holds is exactly the kind that fails by omission. The
+    interactive guard in ``channel.py`` rejects the same verbs at the
+    permission-request event, but an auto-approved call emits no such event --
+    under global YOLO or channel trust the request is approved with no human in
+    the loop -- so the boundary has to hold at MCP dispatch too.
     """
+    chan_err = _deny_channel_agent_dispatch(name, args)
+    if chan_err:
+        return chan_err
     return dispatch(name, args)
 
 

@@ -2052,7 +2052,8 @@ def _deny_channel_agent_cron(tool_name: str) -> str | None:
 
     Channel agents (session keys ``channel:<channel_id>:<agent_id>``) are
     confined to channel-post communication -- ``CHANNEL_AGENT_BLOCKED_TOOLS``
-    holds back ``send_*`` and every ``session_*`` verb for exactly that reason.
+    holds back ``send_*``, every ``session_*`` verb, and every verb that starts
+    work outside the caller's own turn, for exactly that reason.
     Scheduling a cron job is the same shape made durable: ``cron_add`` takes an
     ``agent`` and ``approval_mode`` that flow straight to ``add_job``, so a
     channel agent could schedule ``agent="kirocrew", approval_mode="auto"`` and
