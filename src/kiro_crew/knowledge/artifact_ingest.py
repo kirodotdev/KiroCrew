@@ -60,7 +60,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
+from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline, run_to_completion
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -247,6 +247,48 @@ def _write_state_row(
             kind,
         ),
     )
+
+
+def _write_ownership_if_intact(
+    kstore: KnowledgeStore,
+    source_id: str,
+    slug: str,
+    content_hash: str,
+    item_ids: list[str],
+    name: str,
+    kind: str | None = None,
+) -> bool:
+    """Name ``item_ids`` as the slug's active group, but only while they all exist.
+
+    For a retry after the plain ownership write failed. The dedup sweep may have
+    collapsed this group in the meantime; it can only record that on a row that
+    already named the ids, and a winner deletion may since have revived the row.
+    Either way the row now holds a verdict this write must not replace, so a
+    missing id means: write nothing. The next reconcile re-ingests the artifact.
+
+    ``BEGIN IMMEDIATE`` waits for the writer lock instead of failing on it, and
+    holds it across the check and the write. Returns ``True`` when written.
+    """
+    kstore.db.execute("BEGIN IMMEDIATE")
+    try:
+        # Bounded by chunker.MAX_CHUNKS_PER_FILE, like surviving_group_in_txn.
+        placeholders = ",".join("?" for _ in item_ids)
+        found = kstore.db.execute(
+            f"SELECT COUNT(*) FROM items WHERE id IN ({placeholders}) "  # noqa: S608
+            "AND source_id = ?", (*item_ids, source_id)).fetchone()[0] if item_ids else 0
+        intact = found == len(set(item_ids))
+        if intact:
+            _write_state_row(kstore, source_id, slug, content_hash, item_ids, name,
+                             status="active", kind=kind)
+        kstore.db.execute("COMMIT")
+    except BaseException:
+        kstore.db.execute("ROLLBACK")
+        raise
+    if not intact:
+        logger.warning(
+            "artifact %s lost committed items to a concurrent dedup; leaving its "
+            "state row as the sweep left it", slug)
+    return intact
 
 
 def refresh_artifact_name(
@@ -445,6 +487,15 @@ async def ingest_artifact(
             _set_state(kstore, source_id, slug, content_hash, new_ids, title,
                        kind=art.kind)
             ownership_persisted = True
+            return
+        except Exception:
+            logger.warning(
+                "could not persist artifact ownership for %s inside the commit "
+                "callback; retrying under the writer lock", slug, exc_info=True)
+        try:
+            _write_ownership_if_intact(kstore, source_id, slug, content_hash,
+                                       list(new_ids), title, kind=art.kind)
+            ownership_persisted = True
         except Exception:
             logger.warning(
                 "could not persist artifact ownership for %s inside the commit "
@@ -497,30 +548,25 @@ async def ingest_artifact(
             except OSError:
                 pass
 
-    status = (pipeline.get_job_status(job_id) or {}).get("status") if job_id else None
-    if status == DUPLICATE_JOB_STATUS:
-        # The gate refused the write and recorded the terminal state through the
-        # ``on_duplicate`` finalizer above, so there is nothing left to write here.
-        return job_id
+    def _settle() -> str | None:
+        # The status read and the fallback write are ONE worker unit: off the
+        # loop (get_job_status blocks under busy_timeout), and drained once
+        # entered, so no cancellation lands between the read and the write.
+        status = (pipeline.get_job_status(job_id) or {}).get("status") if job_id else None
+        if status == "completed" and not ownership_persisted:
+            # Only for a hop write that failed and was swallowed as fail-safe.
+            # Guarded, never a blind restore: a concurrent dedup sweep may have
+            # collapsed the group since, and its verdict must stand.
+            _write_ownership_if_intact(kstore, source_id, slug, content_hash,
+                                       list(committed_ids), title, kind=art.kind)
+        return status
+
+    status = await run_to_completion(_settle)
     if status != "completed":
-        # Partial/failed ingest: ingest_file kept the old group and rolled back
-        # the new items. Leave the recorded state untouched so the next event
-        # retries from the prior good group.
+        # DUPLICATE_JOB_STATUS: the gate recorded the terminal state through
+        # ``on_duplicate``. Anything else is a partial/failed ingest that kept the
+        # old group, so the recorded state stays for the next event to retry.
         return job_id
-    if not ownership_persisted:
-        # Fallback ONLY for a hop write that failed and was swallowed as
-        # fail-safe. Never an unconditional re-write: the awaits between the
-        # finalize hop and here (temp-file cleanup, job-status read) are windows
-        # where a concurrent dedup sweep may legitimately rewrite this slug's
-        # state row (collapse the group, mark it deduped), and blindly restoring
-        # the captured ids would resurrect an 'active' row over that result --
-        # unchanged ingests would then short-circuit against stale ids forever.
-        # Offloaded: the plausible reason the hop write failed is writer-lock
-        # contention, and retrying the same blocking SQLite write (busy_timeout
-        # up to 10s) on the event loop would stall the gateway loop.
-        await asyncio.to_thread(
-            _set_state, kstore, source_id, slug, content_hash,
-            list(committed_ids), title, kind=art.kind)
     sel().log_tool_invocation(
         session_key="gateway",
         agent="knowledge-artifacts",

@@ -1235,3 +1235,85 @@ def test_removing_a_deduped_artifact_releases_its_claim_on_the_winner(tmp_path):
         assert store.get_item(iid) is None
     finally:
         store.db.close()
+
+
+class TestPostIngestOwnershipSettle:
+    """The status read and the ownership fallback after ``ingest_file`` returns."""
+
+    @pytest.mark.asyncio
+    async def test_job_status_read_runs_off_the_loop_thread(
+        self, pipeline, art_store, kstore, monkeypatch, opened
+    ):
+        # Closes every thread's connection, including the workers' ones.
+        opened(kstore)
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="some body", kind="markdown")
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real = pipeline.get_job_status
+
+        def _spy(job_id):
+            seen.append(threading.get_ident())
+            return real(job_id)
+
+        monkeypatch.setattr(pipeline, "get_job_status", _spy)
+        assert await ingest_artifact(
+            pipeline, art_store, art.slug, sid, DEFAULT_KINDS) is not None
+        assert seen, "the post-ingest status read never ran"
+        assert loop_thread not in seen, "get_job_status ran on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_in_hop_retry_names_the_group_when_the_plain_write_fails(
+        self, pipeline, art_store, kstore, monkeypatch, opened
+    ):
+        import sqlite3
+
+        # Closes every thread's connection, including the workers' ones.
+        opened(kstore)
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="retried body", kind="markdown")
+
+        def _locked(*_a, **_kw):
+            raise sqlite3.OperationalError("database is locked")
+
+        # Snapshot the row when the post-ingest settle starts: the in-hop retry
+        # must already have named the group, before any cancellation point.
+        at_settle: list = []
+        real = pipeline.get_job_status
+
+        def _spy(job_id):
+            at_settle.append(artifact_ingest._get_state(kstore, sid, art.slug)[1])
+            return real(job_id)
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", _locked)
+        monkeypatch.setattr(pipeline, "get_job_status", _spy)
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        owned = await asyncio.to_thread(_item_ids, kstore, sid)
+        assert owned and [set(ids) for ids in at_settle] == [owned]
+
+    @pytest.mark.asyncio
+    async def test_a_concurrent_dedup_verdict_survives_the_retry(
+        self, pipeline, art_store, kstore, monkeypatch, opened
+    ):
+        """The sweep collapses the group and records its verdict between the
+        failed plain write and the retries. Neither retry may overwrite it."""
+        import sqlite3
+
+        # Closes every thread's connection, including the workers' ones.
+        opened(kstore)
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="collapsed body", kind="markdown")
+
+        def _swept_then_locked(ks, source_id, slug, _hash, item_ids, name, **_kw):
+            ks.delete_items_batch(list(item_ids), owner_source_id=source_id)
+            artifact_ingest._write_state_row(
+                ks, source_id, slug, "sweep-verdict", [], name, status="deduped")
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", _swept_then_locked)
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        row = await asyncio.to_thread(lambda: kstore.db.execute(
+            "SELECT content_hash, item_ids, status FROM artifact_item_state "
+            "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone())
+        assert (row["content_hash"], row["item_ids"], row["status"]) == (
+            "sweep-verdict", "[]", "deduped")

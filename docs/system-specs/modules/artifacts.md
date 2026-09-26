@@ -980,11 +980,13 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   `ensure_artifact_source`, `refresh_artifact_name`, `ingest_artifact`'s
   `_get_state` read and `release_stale_claim` write, the per-job
   `get_job_status` read in `reconcile_artifacts`, and `remove_artifact` (a
-  `delete_items_batch` → graph rebuild). The one take still on the loop is
-  `ingest_artifact`'s post-ingest `get_job_status` read: it sits between the
-  commit and the fallback ownership write, so offloading it belongs with the
-  ownership-write change that keeps those two from being separated by a
-  cancellation point. The ordering the handler describes is preserved across
+  `delete_items_batch` → graph rebuild). `ingest_artifact`'s post-ingest
+  `get_job_status` read travels with the fallback ownership write as one
+  `run_to_completion` unit, so no cancellation point separates them. That
+  fallback, and the in-hop retry of a failed ownership write, go through
+  `_write_ownership_if_intact`: under `BEGIN IMMEDIATE` it names the group only
+  while every committed id still exists, so a concurrent dedup verdict on the
+  row is never overwritten. The ordering the handler describes is preserved across
   the hops — name refresh before ingest, the kind-change reconcile before the
   ingest — and the deduped/ownership finalizers still run on the pipeline's own
   worker hop, not the loop.
