@@ -269,13 +269,11 @@ async def test_mcp_apps_gate_labels_stale_bootstrap_denial() -> None:
 
 @pytest.mark.asyncio
 async def test_agents_gate_labels_stale_bootstrap_denial() -> None:
-    # agents' former module-local ``_require_owner`` delegates to the shared
-    # ``require_owner_dashboard_request`` guard; pin the relabel contract on
-    # the guard itself.
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers import agents
 
     request = _mocked_request()
-    resp = await require_owner_dashboard_request(request, "agents.update")
+    with patch.object(agents, "_sel", return_value=MagicMock()):
+        resp = await agents._require_owner(request, "agents.update")
     assert resp is not None and resp.status == 401
     assert resp.text is not None and STALE in resp.text
 

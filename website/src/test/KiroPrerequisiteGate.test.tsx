@@ -560,7 +560,7 @@ describe('KiroPrerequisiteGate', () => {
       missing_agent_specs: ['kirocrew.json'],
     }))
     vi.mocked(api.repairKiroPrerequisiteSpecs).mockRejectedValue(
-      new ApiError(403, 'owner authorization required'),
+      new ApiError(403, 'dashboard owner required'),
     )
 
     renderWithProviders(
@@ -569,7 +569,7 @@ describe('KiroPrerequisiteGate', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Check again' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('owner authorization required')
+    expect(await screen.findByRole('alert')).toHaveTextContent('dashboard owner required')
   })
 
   it('leaves a healthy install untouched by the spec check', async () => {

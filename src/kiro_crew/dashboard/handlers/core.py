@@ -2789,44 +2789,19 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         _log_sel("denied", resources or msg)
         return web.json_response({"error": msg}, status=status)
 
+    denied = await require_owner_dashboard_request(request, "config.patch")
+    if denied is not None:
+        return denied
+
     try:
         body = await request.json()
     except Exception:
-        body = None
-
-    path_key: str = ""
-    value: Any = None
-    if isinstance(body, dict):
-        path_key = body.get("path", "")
-        value = body.get("value")
-
-    # ── Owner gate: every write but the one that STOPS billed spend ──
-    # The route is owner-only because a dashboard token is not ownership: an
-    # allow-listed messaging user holds one, and these fields are machine-global.
-    #
-    # `dashboard.usage_text_scrape_enabled` is asymmetric. Enabling it makes the
-    # credit pill fall back to a REAL billed `kiro-cli /usage` turn and repeat it
-    # every refresh interval, and nothing self-corrects an enabled state, so the
-    # ENABLE needs the owner like every other write here. The DISABLE does not:
-    # refusing it would leave someone able to see spend they cannot stop, and the
-    # narrower choice always composes.
-    # `test_a_non_owner_may_still_switch_the_billing_off` pins that direction.
-    #
-    # This gate is the ONE place that distinction is enforced. A second per-field
-    # gate for the same field, sitting with the telemetry ones below, would be
-    # unreachable behind this one -- an authorization record that cannot fire and
-    # is free to drift from the one that does.
-    #
-    # Reading the requested direction first is what makes the carve-out possible;
-    # an unparseable or bodyless request names no direction, so it is not the
-    # carve-out and is refused here, before any field is validated.
-    if not (path_key == "dashboard.usage_text_scrape_enabled" and value is False):
-        denied = await require_owner_dashboard_request(request, "config.patch")
-        if denied is not None:
-            return denied
-
+        return _deny("invalid JSON", "invalid JSON body")
     if not isinstance(body, dict):
         return _deny("invalid JSON", "invalid JSON body")
+
+    path_key: str = body.get("path", "")
+    value: Any = body.get("value")
 
     spec = _EDITABLE_CONFIG.get(path_key)
     if not spec:

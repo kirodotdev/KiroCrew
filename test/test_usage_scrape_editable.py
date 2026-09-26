@@ -78,13 +78,16 @@ async def test_the_config_patch_refuses_the_key(cfg_home) -> None:
     """The dashboard's write path answers "field not editable", like any unknown path."""
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
+    from dashboard_owner_helpers import as_owner
 
     from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
     cfg_home.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
     app = web.Application()
     app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
-    async with TestClient(TestServer(app)) as c:
+    # The route is owner-gated, so the field-not-editable answer is only reached
+    # as the owner; a non-owner would land on the gate first.
+    async with TestClient(TestServer(as_owner(app))) as c:
         resp = await c.patch("/api/config/kirocrew", json={"path": FIELD, "value": True})
         assert resp.status == 400, await resp.text()
     written = json.loads(cfg_home.read_text(encoding="utf-8"))

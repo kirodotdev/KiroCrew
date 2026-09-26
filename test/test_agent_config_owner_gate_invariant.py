@@ -57,27 +57,13 @@ _PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset()
 # The test_known_ungated_routes_not_growing test enforces this via the
 # _MAX_KNOWN_UNGATED_ROUTES ceiling below.
 # --------------------------------------------------------------------------- #
-_KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset(
-    {
-        # --- MCP discover route (mcp_discover.py) ---
-        # Discovery-based installation. Authenticated-only, predating the
-        # owner-gate migration.
-        ("POST", "/api/mcp/discover/install"),
-        # --- Kiro Crew config routes (core.py) ---
-        # Application-level configuration routes that predated owner-gating.
-        # They configure the Kiro Crew application itself but were registered
-        # before ownership semantics existed.
-        ("PUT", "/api/config/kirocrew"),
-        ("PATCH", "/api/config/kirocrew"),
-        ("PUT", "/api/config/theme"),
-    }
-)
+_KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset()
 
 # Ceiling for the debt list above, asserted by
 # ``test_known_ungated_routes_not_growing``. Raising it is the reviewable act
 # that adding a new ungated route costs; lower it whenever an entry is gated and
 # removed, so the ratchet stays tight.
-_MAX_KNOWN_UNGATED_ROUTES = 4
+_MAX_KNOWN_UNGATED_ROUTES = 0
 
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.

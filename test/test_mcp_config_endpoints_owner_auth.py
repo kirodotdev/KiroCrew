@@ -1,9 +1,11 @@
-"""Enumerate-the-invariant coverage for the remaining MCP/config mutations.
+"""App-token and internal-auth boundary coverage for the MCP/config mutations.
 
-The real ``agent_config`` registrar is walked so a newly registered targeted
-mutation cannot silently omit the owner gate. Requests deliberately omit JSON
-bodies: a handler that parses before authorizing returns 400 instead of the
-required 403.
+The route walk and the non-owner refusal are enforced by
+``test_agent_config_owner_gate_invariant.py`` over the whole registrar. What is
+specific here is that the two ways a NON-owner can still hold a valid token --
+an app-scoped token, and the server-registration internal-auth marker -- are
+refused on these mutations. Requests deliberately omit JSON bodies: a handler
+that parses before authorizing returns 400 instead of the required 403.
 """
 
 from __future__ import annotations
@@ -25,28 +27,6 @@ _TARGET_HANDLER_MODULES = frozenset(
         "kiro_crew.dashboard.handlers.mcp_discover",
     }
 )
-_EXPECTED_MUTATING_ROUTES = {
-    ("PUT", "/api/config/kirocrew"),
-    ("PATCH", "/api/config/kirocrew"),
-    ("POST", "/api/mcp/discover/install"),
-    ("POST", "/api/mcp/custom"),
-    ("PUT", "/api/mcp/custom/{name}"),
-    ("POST", "/api/mcp/sync"),
-    ("POST", "/api/mcp/apply"),
-    ("POST", "/api/mcp/toggle"),
-    ("POST", "/api/mcp/toggle-tool"),
-    ("POST", "/api/mcp/toggle-all"),
-    ("POST", "/api/mcp/remove"),
-    ("PUT", "/api/mcp/servers/{name}"),
-    ("DELETE", "/api/mcp/servers/{name}"),
-    ("POST", "/api/mcp/probe"),
-    ("POST", "/api/mcp/quarantine/clear"),
-    ("POST", "/api/mcp/measure"),
-    ("POST", "/api/mcp-gateway/enable"),
-    ("POST", "/api/mcp-gateway/servers/stub"),
-    ("POST", "/api/mcp-gateway/resolve-refresh"),
-    ("PUT", "/api/config/theme"),
-}
 
 
 class _FakeState:
@@ -85,33 +65,6 @@ def _target_mutating_routes(app: web.Application) -> set[tuple[str, str]]:
 
 def _route_path(canonical: str) -> str:
     return canonical.replace("{name}", "example")
-
-
-async def test_route_walk_covers_every_targeted_mutation() -> None:
-    app = _build_app()
-    found = _target_mutating_routes(app)
-    assert found == _EXPECTED_MUTATING_ROUTES, (
-        "targeted MCP/config mutation route set drifted: "
-        f"missing={sorted(_EXPECTED_MUTATING_ROUTES - found)} "
-        f"unexpected={sorted(found - _EXPECTED_MUTATING_ROUTES)}"
-    )
-
-
-async def test_every_targeted_mutation_rejects_non_owner_before_body_parse() -> None:
-    app = _build_app()
-    async with TestClient(TestServer(app)) as client:
-        for method, canonical in sorted(_target_mutating_routes(app)):
-            response = await client.request(
-                method,
-                _route_path(canonical),
-                headers={"X-Test-User": "someone-else"},
-            )
-            assert response.status == 403, (
-                f"{method} {canonical} answered {response.status}; "
-                "owner authorization must run before body parsing"
-            )
-            body = await response.json()
-            assert body["code"] == "owner_only", (method, canonical)
 
 
 async def test_every_targeted_mutation_rejects_app_tokens() -> None:

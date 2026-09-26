@@ -223,7 +223,7 @@ async def test_theme_config_put_persists_crewmates_onboarded() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"crewmates_onboarded": True})
         resp = await core_mod.api_theme_config(req)
@@ -239,7 +239,7 @@ async def test_theme_config_put_validates_crewmates_onboarded_boolean() -> None:
     cfg = _make_cfg()
     with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
         mock_cls.load.return_value = cfg
-        req = MagicMock(spec=web.Request)
+        req = _owner_request()
         req.method = "PUT"
         req.json = AsyncMock(return_value={"crewmates_onboarded": "true"})
         with pytest.raises(web.HTTPBadRequest):
