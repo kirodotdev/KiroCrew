@@ -103,10 +103,17 @@ _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
 _DSH_GATE_ARTIFACT_PREFIX = "kirocrew_dsh_gate_"
 _DSH_PATCH_ARTIFACT_PREFIX = "kirocrew_dsh_patch_"
 _DSH_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".mjs", ".patch.yml", ".tmp")
+# Bridge extension copies share the pi-gate leaf with the permissions gate; their
+# prefix is distinct so the sweep can retire them by the owning gateway PID.
+_PI_MCP_BRIDGE_ARTIFACT_PREFIX = "kirocrew_pi_mcp_bridge_"
+_PI_MCP_BROKER_ARTIFACT_PREFIX = "pmb_"
 _PI_GATE_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
     _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
     _DSH_GATE_ARTIFACT_PREFIX: _DSH_GATE_ARTIFACT_SUFFIXES,
     _DSH_PATCH_ARTIFACT_PREFIX: (".tmp",),
+    _PI_MCP_BRIDGE_ARTIFACT_PREFIX: (".ts", ".tmp"),
+    # Host broker unix-socket anchors under pi-gate (credential-free IPC endpoint).
+    _PI_MCP_BROKER_ARTIFACT_PREFIX: (".sock", ".sock.lock", ".tmp"),
 }
 
 # Bind-mount SOURCES staged by the namespace launcher (empty dirs/files bound

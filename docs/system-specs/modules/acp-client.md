@@ -4,6 +4,43 @@
 
 The primary ACP session transport path spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
 
+## Pi MCP broker admission and lifecycle
+
+Pi's MCP extension connects to a session-owned host broker. Same-user socket
+admission is only the transport check: every tool call must consume an exact,
+single-use host permission for its tool-call id, tool name and JSON arguments.
+Only a successfully delivered, recognized allow response grants that permission;
+a racing call waits for delivery, while send failure or cancellation revokes it.
+Each delivery carries a request generation: replacement, terminal tool events
+and delivery timeout invalidate it, so late completion cannot grant a reused
+call id. A mismatched request does not consume another call's grant. Denied, truncated,
+changed and replayed calls fail before reaching a server. Server specifications
+remain in host memory; no credential-bearing server-list artifact is written.
+Pooled stubs obey the same projected tools allowlist and fresh per-tool denies
+as direct servers; a failed projection admits no stubs. Tool descriptions are
+limited to 4096 characters.
+The aggregate serialized tool index is limited to 7 MiB, below the extension's
+8 MiB receive ceiling. Schemas are preserved; a server whose metadata exceeds
+the remaining budget is reported unavailable without discarding healthy siblings.
+
+Broker children use the session sandbox mode, resource-limited spawn path, and
+their own declared server environment. Third-party children keep the Pi adapter's
+credential-directory mask. Only host-managed control-plane children whose
+invocation matches the current managed entry omit that mask, so they can read
+their protected session binding; a server name alone cannot grant the exception.
+Failed or cancelled broker startup reaps all registered children; a 60-second
+aggregate startup budget bounds serial handshakes. Session MCP reports carry
+broker initialization failures and bridge-unavailable outcomes to the dashboard.
+The sealed extension probe verifies loading; it does not prove a server started.
+MCP inputs remain complete within the existing 200,000-character gate envelope
+ceiling. The bridge preserves supported text and image result blocks, appends structured
+output as model-visible text, retains the full MCP result in details, and carries
+MCP error status through Pi's tool-result hook. MCP stderr
+is redacted and bounded before logging. Windows child teardown retires the owned
+process tree even when its root has already exited. One child cleanup failure
+does not skip sibling teardown or broker state cleanup, and startup retains its
+original exception if cleanup also fails.
+
 ## Native skill startup views
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness

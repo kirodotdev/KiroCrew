@@ -1477,11 +1477,10 @@ class TestSpecDisabledToolRefusal:
     def test_every_site_that_answers_a_permission_request_runs_the_refusal(self):
         """Structural: the refusal is paired with EVERY ``_build_permission_event``.
 
-        Three sites answer a ``session/request_permission`` -- the event-yielding
-        dispatch loop and the two auto-approve paths through ``_handle_permission``
-        -- and a restriction that holds on two of them is not a restriction. Pinned
-        on the source in this file's neighbour's idiom, because the sites have no
-        unit-level seam of their own.
+        The dispatch loop and the judging branch of ``_handle_permission``
+        build events that can reach the codex refusal. Pi also builds an event
+        in ``_handle_permission`` for its gate tripwire, without judging a codex
+        request. Pin all three calls so a new answering path cannot go unnoticed.
         """
         import inspect
 
@@ -1489,8 +1488,13 @@ class TestSpecDisabledToolRefusal:
 
         source = inspect.getsource(client_mod)
         builds = source.count("self._build_permission_event(")
-        # One per answering site; `_build_permission_event` is defined once more.
-        assert builds == 2, "a site that answers a permission request was added or removed"
+        assert builds == 3, "a permission-event build site was added or removed"
+        assert (
+            inspect.getsource(client_mod.AcpClient._handle_permission).count(
+                "self._build_permission_event("
+            )
+            == 2
+        )
         for site in ("_dispatch_events", "_handle_permission"):
             body = inspect.getsource(getattr(client_mod.AcpClient, site))
             assert "_build_permission_event(" in body and "_deny_spec_disabled_tool(" in body, site

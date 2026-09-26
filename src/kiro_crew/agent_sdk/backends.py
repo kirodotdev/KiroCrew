@@ -79,6 +79,11 @@ with no row here.
        probe and the driver seams resolve it from that row)
    * - ``ACP_BACKENDS_SESSION_MCP_ARRAY``
      - driver-internal (which channel carries the MCP server list)
+   * - ``ACP_BACKENDS_PI_MCP_BRIDGE``
+     - driver-internal (whether Crew MCP tools reach the session through the
+       sealed Pi bridge extension rather than the ``session/new`` array; the
+       card/projection marker for that side channel so LINE_CREW_TOOLS stays
+       honest without putting pi on the array)
    * - ``ACP_BACKENDS_META_IDENTITY``
      - driver-internal (which harnesses publish a ``_meta`` tool identity, and so
        accept being refused when a frame classifies as nothing)
@@ -400,6 +405,14 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
     }
 )
+
+#: Pi receives Crew MCP tools through a sealed bridge extension, not the
+#: session/new ``mcpServers`` array (that array is inert on pi-acp — see
+#: ``ACP_BACKENDS_SESSION_MCP_ARRAY``). This set is the card/projection marker
+#: for that side channel so LINE_CREW_TOOLS can name the channel without putting
+#: pi on the array. Per-session mount still requires the bridge probe on
+#: get_commands before ``KIROCREW_PI_MCP_BROKER_SOCK`` is advertised (host broker; secrets never enter Pi).
+ACP_BACKENDS_PI_MCP_BRIDGE: FrozenSet[str] = frozenset({ACP_BACKEND_PI})
 
 # ── The selectable registry ──
 
@@ -1463,18 +1476,21 @@ def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
 # The unresolved-``@server``-ref detector (``agent_sdk.mcp_refs``) judges a spec's
 # ``tools`` refs against the servers the session actually receives, and for an
 # array-backed host that is the wire array: what is not in it is not mounted.
-# These two hosts mount the spec's servers by another channel, so for them the
+# These hosts mount the spec's servers by another channel, so for them the
 # spec's own server names are satisfied by construction and only a ref naming a
 # server the spec does NOT declare is unresolved. kiro-cli resolves ``--agent``
 # itself and loads the spec's servers from disk, which is why Crew hands it an
 # empty array. KAS receives the spec's servers as a projected agent definition in
 # ``_meta.kiro.customAgents`` (``acp/kas_agents.py``), with only the broker stubs
-# on the array. codex is NOT a member: the array Crew sends is the whole of what
-# it mounts, so judging its refs against that array is exactly right. Read by
-# membership rather than as "is kiro": a host added later that mounts a spec's
-# servers by its own channel joins here, and the detector says nothing wrong about
-# it on day one.
-ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# on the array. Pi receives the same ACP-shaped stdio list other backends put on
+# the wire through the sealed MCP bridge extension (``ACP_BACKENDS_PI_MCP_BRIDGE``),
+# not the inert ``session/new`` array -- which is why its mirror kind is EXTERNAL
+# and why it belongs here beside kiro/KAS. codex is NOT a member: the array Crew
+# sends is the whole of what it mounts, so judging its refs against that array is
+# exactly right. Read by membership rather than as "is kiro": a host added later
+# that mounts a spec's servers by its own channel joins here, and the detector
+# says nothing wrong about it on day one.
+ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI})
 
 # Backends whose teardown verb actually EVICTS the session from the adapter's own
 # session map, freeing what it held.
