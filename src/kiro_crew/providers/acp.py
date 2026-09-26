@@ -617,6 +617,22 @@ class AcpProvider(LLMProvider):
         return capabilities_for(self._client.backend)
 
     @property
+    def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
+        """What this session's registered agent batch auto-approves, or ``None``.
+
+        Only a wire-registered host (KAS) has a batch; see
+        ``AcpSessionHandle.kas_auto_approved``.
+        """
+        value = getattr(self._client, "kas_auto_approved_capabilities", None)
+        return value if isinstance(value, frozenset) else None
+
+    @property
+    def kas_projected_agent(self) -> str:
+        """The agent this session's registered batch was built for, or ``""``."""
+        value = getattr(self._client, "kas_projected_agent", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def is_codex_backend(self) -> bool:
         """True when this ACP provider talks to codex-acp (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_CODEX

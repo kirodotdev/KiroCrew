@@ -450,6 +450,29 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
+        """The capabilities this session's registered agent batch auto-approves.
+
+        ``None`` means the session registered no batch: a host that took its agent
+        at spawn time, or a provider that has not started a session yet. Only a
+        wire-registered host (KAS) answers with a set; see
+        :func:`kiro_crew.agent_sdk.spec_hooks.hook_projection_stale`, whose answer
+        for ``None`` is "not stale", because such a session has nothing a later
+        hook could have been left out of.
+        """
+        return None
+
+    @property
+    def kas_projected_agent(self) -> str:
+        """The agent this session's registered agent batch was built for.
+
+        ``""`` when no batch was registered. A turn that names no agent of its own
+        runs this one, so this is whose spec hooks it meets (see
+        :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`).
+        """
+        return ""
+
+    @property
     def tool_search_settings(self) -> "ToolSearchSettings | None":
         """The operator's MCP Tool Search choice this provider spawned with, or
         ``None`` when it carries none.

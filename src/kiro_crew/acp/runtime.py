@@ -65,7 +65,11 @@ from kiro_crew.acp.harness import (
 )
 from kiro_crew.acp.harness.kas import PROTOCOL_VERSION_KAS
 from kiro_crew.acp.harness.kiro import KIRO_CLI_SUBCMD, PROTOCOL_VERSION
-from kiro_crew.acp.kas_agents import hoist_managed_servers, load_agent_spec
+from kiro_crew.acp.kas_agents import (
+    hoist_managed_servers,
+    load_agent_spec,
+    projected_auto_approved,
+)
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
@@ -6503,6 +6507,11 @@ class AcpRuntime:
         # session's permission requests. Empty for a host with no mirror and for a
         # caller-supplied array, and the handle's check is a no-op on empty.
         handle.spec_denied_tools = denied_tools
+        # What this session's registered agent auto-approves; the batch stays as
+        # registered for the session's life, so the turn loop compares it with the
+        # hooks as they stand now.
+        handle.kas_auto_approved = projected_auto_approved(kas_agents, active_agent)
+        handle.kas_projected_agent = active_agent if kas_agents else ""
         if self._mirrored_spec_check_needed(mirrored_snapshot):
             await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
@@ -7080,6 +7089,9 @@ class AcpRuntime:
         # Mirrors create_session: the resumed session re-declares the array, so it
         # re-derives the deny set that array came with and re-checks the generation.
         handle.spec_denied_tools = denied_tools
+        # Mirrors create_session: the re-registered batch is what this session now runs.
+        handle.kas_auto_approved = projected_auto_approved(kas_agents, active_agent)
+        handle.kas_projected_agent = active_agent if kas_agents else ""
         if self._mirrored_spec_check_needed(mirrored_snapshot):
             await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
         handle.store_session_config(resp)
