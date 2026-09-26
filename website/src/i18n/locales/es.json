@@ -6733,6 +6733,7 @@
       "unknown_error": "La importación falló"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "conectado",
       "connected_refresh": "conectado · actualización en {{time}}",
       "connected_refreshing": "conectado · actualizando…",
@@ -6755,7 +6756,9 @@
       "unpin_crew": "Dejar de fijar {{name}}",
       "pinned_no_room": "fijado, sin espacio en la cabecera",
       "keep_tab_order_fixed": "Mantener el orden de las pestañas",
-      "instances_load_failed": "No se pudieron cargar los equipos remotos."
+      "instances_load_failed": "No se pudieron cargar los equipos remotos.",
+      "unreachable": "sin acceso",
+      "unreachable_via": "sin acceso — {{via}} está caído"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -15819,7 +15822,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Aplicar mis cambios al crew tal como está ahora",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Tus crews"
+        "your_crews": "Tus crews",
+        "reported_host": "{{host}} (declarado)",
+        "reported_host_hint": "Este equipo declara estar en esta máquina. Este panel no tiene ruta hasta ella y nunca la marca: la conexión pasa por el equipo que sí la alcanza."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

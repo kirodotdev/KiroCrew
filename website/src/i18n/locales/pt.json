@@ -6733,6 +6733,7 @@
       "unknown_error": "A importação falhou"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "conectado",
       "connected_refresh": "conectado · atualização {{time}}",
       "connected_refreshing": "conectado · atualizando…",
@@ -6755,7 +6756,9 @@
       "unpin_crew": "Desafixar {{name}}",
       "pinned_no_room": "fixado, sem espaço no cabeçalho",
       "keep_tab_order_fixed": "Manter a ordem das abas",
-      "instances_load_failed": "Não foi possível carregar as equipes remotas."
+      "instances_load_failed": "Não foi possível carregar as equipes remotas.",
+      "unreachable": "sem acesso",
+      "unreachable_via": "sem acesso — {{via}} está fora"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -15819,7 +15822,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Aplicar minhas alterações à crew como ela está agora",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Suas crews"
+        "your_crews": "Suas crews",
+        "reported_host": "{{host}} (declarado)",
+        "reported_host_hint": "Esta equipe declara estar nesta máquina. Este painel não tem rota até ela e nunca a disca — a conexão passa pela equipe que a alcança."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",

@@ -276,6 +276,27 @@ DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS: float = 20.0
 # bites on a hostile or broken peer.
 CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
 
+# Timeout (secs) for asking a parent crew to mint a token for a crew chained
+# behind it. The parent answers by running `kirocrew token` over ITS OWN hop to
+# that crew, so the budget has to cover the parent's whole remote mint plus the
+# round trip through the hub's forward to the parent -- which is why it is not
+# the 8s capability budget, whose reads answer from state the peer already holds.
+# It sits ABOVE the widest mint the parent can arm. Not above SSM's DEFAULT alone:
+# `mint_timeout_secs` is operator-settable up to MINT_TIMEOUT_CEILING_SECS, so the
+# ceiling plus relay margin is the only bound that holds for every configuration.
+# That ordering is the point: the parent's own timeout fires first, so a slow crew
+# is reported as a mint failure carrying the parent's reason rather than as an
+# unreachable parent. The budget spans the WHOLE call including its single retry,
+# not each attempt, so the worst case here is what a caller holding a lock waits for.
+DEFAULT_CHAINED_MINT_TIMEOUT_SECS: float = MINT_TIMEOUT_CEILING_SECS + 15.0
+
+# Byte ceiling for one chained-mint reply, enforced BEFORE JSON decoding. The
+# honest payload is one token and one port -- a few hundred bytes -- so 64 KiB is
+# already orders of magnitude of slack and only ever bites on a hostile or broken
+# parent. Far tighter than the capability cap above because, unlike a roster, this
+# reply has no list in it whose length depends on how the parent is configured.
+CHAINED_MINT_REPLY_MAX_BYTES: int = 64 * 1024
+
 # Byte ceiling for one peer's live-slots reply, enforced BEFORE JSON decoding for
 # the same reason as the two caps above. The peer answers with a full slot
 # projection per OPEN session — a few KiB each — so even a gateway holding a

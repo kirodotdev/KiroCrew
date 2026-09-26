@@ -114,6 +114,13 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/instances/{id}/refresh-token", handlers_instances.api_instances_refresh_token
     )
+    # Chained-crew mint: a hub that reaches this crew by riding one of OUR
+    # forwards has no key for it, so it asks us to mint with its own dashboard
+    # port as the token's embed-parent claim. Registered here, before the
+    # catch-all proxy route, so `{path:.*}` cannot swallow it.
+    app.router.add_post(
+        "/api/instances/{id}/embed-token", handlers_instances.api_instances_embed_token
+    )
     app.router.add_post(
         "/api/instances/{id}/disconnect", handlers_instances.api_instances_disconnect
     )

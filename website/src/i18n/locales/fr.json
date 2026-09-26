@@ -6733,6 +6733,7 @@
       "unknown_error": "L'importation a échoué"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "connecté",
       "connected_refresh": "connecté · actualisation {{time}}",
       "connected_refreshing": "connecté · actualisation…",
@@ -6755,7 +6756,9 @@
       "unpin_crew": "Désépingler {{name}}",
       "pinned_no_room": "épinglé, pas de place dans l’en-tête",
       "keep_tab_order_fixed": "Conserver l’ordre des onglets",
-      "instances_load_failed": "Impossible de charger les équipes distantes."
+      "instances_load_failed": "Impossible de charger les équipes distantes.",
+      "unreachable": "injoignable",
+      "unreachable_via": "injoignable — {{via}} est hors service"
     },
     "instancesViewport": {
       "connecting": "Connexion…",
@@ -15819,7 +15822,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Appliquer mes modifications à la crew dans son état actuel",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Tes crews"
+        "your_crews": "Tes crews",
+        "reported_host": "{{host}} (annoncé)",
+        "reported_host_hint": "Cette équipe annonce se trouver sur cette machine. Ce tableau de bord n'y a aucune route et ne l'appelle jamais — la connexion passe par l'équipe qui l'atteint."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",

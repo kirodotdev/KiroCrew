@@ -51,15 +51,20 @@ from kiro_crew.instances.constants import (
 )
 from kiro_crew.instances.registry import (
     DEFAULT_REMOTE_PORT,
+    MAX_CHAINED_PER_PARENT,
+    MAX_VIA_HOPS,
     DuplicateInstanceError,
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
     InvalidInstanceError,
+    ancestor_ids,
+    descendant_ids,
     validate_ttl,
 )
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 from kiro_crew.validation import sanitize_string
@@ -76,6 +81,18 @@ logger = logging.getLogger(__name__)
 # well above any honest value (local snippets are a short match window and
 # titles are one line) so it only ever bites on garbage.
 _PEER_FIELD_MAX_CHARS = 2048
+
+# Serializes the registry mutations that read the chain and then write it. A
+# chained add validates its parent and inserts the child in two separate awaits;
+# a removal snapshots the subtree and deletes it in several more. Interleaved,
+# the add's row lands after the removal's snapshot was taken and outlives the
+# parent it names -- a crew whose only route is a hop that is gone.
+# Every add and every removal takes this, so the pair is atomic rather than
+# merely quick. Operator-paced actions, so the serialization costs nothing a user
+# can perceive, and nothing under it calls back into these handlers.
+# `LoopBoundLock`, not a bare `asyncio.Lock`: a module global binds to the first
+# loop that acquires it and then refuses every other one.
+_CHAIN_MUTATION_LOCK = LoopBoundLock()
 
 
 def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "") -> None:
@@ -199,6 +216,13 @@ def _status_for(state: "DashboardState", instance_id: str) -> dict:
             ttl = mgr.token_ttl_remaining(instance_id)
             if ttl is not None:
                 d["token_ttl_remaining"] = ttl
+            # And the total it was issued for. The remaining is a countdown from
+            # THIS number, so a reader measuring how far a token has run must
+            # divide by it: a chained crew's token is issued by its parent, and
+            # the row's own TTL is a different figure entirely.
+            total = mgr.token_ttl_total(instance_id)
+            if total is not None:
+                d["token_ttl_total"] = total
             return d
         last_err = mgr.last_error(instance_id)
         if last_err:
@@ -288,8 +312,127 @@ async def api_instances_status(request: web.Request) -> web.Response:
 # ── write endpoints ──────────────────────────────────────────────────────
 
 
+async def _chain_refusal(
+    reg, via_instance_id: str, via_remote_id: str = "", name: str = ""
+) -> dict | None:
+    """Why this gateway will not chain behind *via_instance_id*, or ``None``.
+
+    Server-side, and the only authority on it: the frontend shows this reason but
+    never decides it, because the request can come from inside an embedded pane
+    whose code the hub does not control.
+
+    Five refusals, each naming what the user has to change:
+
+    * the named crew is not configured here — nothing to ride;
+    * that crew ALREADY has a row for this remote crew. One row per remote crew
+      is an invariant about stored state, so it is settled here rather than by
+      the announcing pane: the pane decides from a list it refreshes only after
+      the add and the connect it triggers, so a second announcement arriving
+      inside that multi-second window reads a list without the first row and asks
+      for a duplicate -- which the registry would accept under a suffixed id,
+      giving one remote crew two rows, two forwards and two tabs;
+    * riding it would make the chain deeper than :data:`MAX_VIA_HOPS`. This is
+      the depth cap, and it is checked BEFORE any tunnel is opened;
+    * that parent already carries :data:`MAX_CHAINED_PER_PARENT` crews. Depth
+      and width are separate bounds: a chain of legal depth can still be added
+      without end, and these rows come from the parent's own pane rather than
+      from anyone at this dashboard;
+    * the named crew is reached over SSM, whose forwarder takes no second local
+      forward from this gateway.
+
+    The hop PORT is left to the registry's own validator: it is a shape check on
+    one field, and a copy here would be a second place to widen.
+
+    Every refusal is a whole sentence naming the crew and the action. The panel
+    renders this text raw and it can land after the connect already looked like it
+    succeeded, so a subjectless clause left the reader unable to tell what was
+    refused. ``name`` is the announced crew's name; the caller holds it, this
+    function only sees ids.
+    """
+    subject = f"crew {name}" if name else "that crew"
+    instances = await asyncio.to_thread(reg.list)
+    parent = next((i for i in instances if i.id == via_instance_id), None)
+    if parent is None:
+        return {
+            "error": (
+                f"Connecting {subject} needs a crew with id {via_instance_id!r} to "
+                f"reach it through, and none is configured here."
+            ),
+            "code": "chain_parent_unknown",
+        }
+    # Checked before the caps and the depth: if this crew is already here, none of
+    # those questions is the true answer, and "already added" is both the least
+    # alarming thing to say and the only one that is correct.
+    if via_remote_id:
+        already = next(
+            (
+                i
+                for i in instances
+                if i.via_instance_id == via_instance_id and i.via_remote_id == via_remote_id
+            ),
+            None,
+        )
+        if already is not None:
+            return {
+                "error": (
+                    f"Connecting {subject} is unnecessary: it is already configured "
+                    f"here as {already.name!r}, reached through {parent.name}."
+                ),
+                "code": "chain_duplicate",
+            }
+    # Hops counted from THIS gateway: one to reach the parent, one more for every
+    # crew the parent itself rides through, and one for the new record. So a crew
+    # chained behind a top-level crew is 2 — the cap — and one chained behind THAT
+    # is 3, which is refused. The count is HOPS and not machines in between: it
+    # includes the link to the new crew itself, so a refused 3 is two intermediary
+    # machines, and the message says hops for that reason.
+    hops = 2 + len(ancestor_ids(instances, parent.id))
+    if hops > MAX_VIA_HOPS:
+        return {
+            "error": (
+                f"Connecting {subject} through {parent.name} would put it {hops} hops "
+                f"from this dashboard, and {MAX_VIA_HOPS} is the limit. Connect it "
+                f"from a dashboard closer to it."
+            ),
+            "code": "chain_too_deep",
+        }
+    # Counted over this parent's DIRECT children, which is the population the
+    # parent's pane can grow: one announcement adds one row naming that parent.
+    # Crews further down belong to their own parent's count.
+    riding = sum(1 for i in instances if i.via_instance_id == parent.id)
+    if riding >= MAX_CHAINED_PER_PARENT:
+        return {
+            "error": (
+                f"Connecting {subject} is refused because crew {parent.name} already "
+                f"carries {riding} chained crews, and {MAX_CHAINED_PER_PARENT} is the limit. "
+                f"Remove one, or connect it from a dashboard closer to it."
+            ),
+            "code": "chain_parent_full",
+        }
+    parent_method = (parent.connection_method or "ssh").strip().lower()
+    if parent_method != "ssh":
+        return {
+            "error": (
+                f"Connecting {subject} is refused because crew {parent.name} is reached "
+                f"over {parent_method}, and a further crew can only be chained through an "
+                f"ssh hop."
+            ),
+            "code": "chain_parent_not_ssh",
+        }
+    return None
+
+
 async def api_instances_add(request: web.Request) -> web.Response:
-    """POST /api/instances — add a configured instance."""
+    """POST /api/instances — add a configured instance.
+
+    ``via_instance_id`` + ``via_remote_port`` add a CHAINED crew: one this gateway
+    reaches by riding a hop an already-configured crew holds. ``via_remote_id`` is
+    that crew's id in the PARENT's registry, which is the id the parent looks it up
+    by when asked to mint its token -- an id derived from the name here would only
+    coincide with it by luck. The depth cap and the parent's own suitability are
+    decided here, before anything is written or dialled -- see
+    :func:`_chain_refusal`.
+    """
     denied = _guard(request, "add")
     if denied is not None:
         return denied
@@ -303,35 +446,58 @@ async def api_instances_add(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "invalid_body"}, status=400
         )
-    try:
-        inst = await asyncio.to_thread(
-            reg.add,
-            name=str(body.get("name", "")),
-            ssh_host=str(body.get("ssh_host", "")),
-            remote_port=int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
-            ttl=str(body.get("ttl", "20h")),
-            remote_bin=str(body.get("remote_bin", "")),
-            connection_method=str(body.get("connection_method", "ssh")),
-            ssm_target=str(body.get("ssm_target", "")),
-            ssm_run_as=str(body.get("ssm_run_as", "")),
-            aws_profile=str(body.get("aws_profile", "")),
-            aws_region=str(body.get("aws_region", "")),
-            instance_id=body.get("id"),
-        )
-    except DuplicateInstanceError as e:
-        # Split from InvalidInstanceError because the two are different user
-        # actions: a name collision is resolved by renaming, a rejected field by
-        # correcting it. A client that cannot tell them apart has to parse prose.
-        _audit("add", "denied", error=str(e))
-        return web.json_response({"error": str(e), "code": "instance_duplicate"}, status=400)
-    except InvalidInstanceError as e:
-        _audit("add", "denied", error=str(e))
-        return web.json_response({"error": str(e), "code": "instance_invalid"}, status=400)
-    except (TypeError, ValueError) as e:
-        _audit("add", "denied", error=str(e))
-        return web.json_response(
-            {"error": f"invalid field: {e}", "code": "invalid_field"}, status=400
-        )
+    via_instance_id = str(body.get("via_instance_id", ""))
+    via_remote_id = str(body.get("via_remote_id", ""))
+    # One critical section from the parent check to the insert. Validating and
+    # then writing in two awaits lets a removal of that parent land between them:
+    # its subtree snapshot predates this row, so the cascade never sees it and the
+    # child survives its parent. It is also what makes the one-row-per-remote-crew
+    # check decisive: two announcements racing would otherwise both read a list
+    # without the other's row. See `_CHAIN_MUTATION_LOCK`.
+    async with _CHAIN_MUTATION_LOCK:
+        if via_instance_id:
+            refusal = await _chain_refusal(
+                reg, via_instance_id, via_remote_id, str(body.get("name", ""))
+            )
+            if refusal is not None:
+                _audit("add", "denied", error=refusal["code"])
+                # Spelled out rather than passed through: the error-code contract
+                # is a static check, and a variable body is a body it cannot read.
+                return web.json_response(
+                    {"error": refusal["error"], "code": refusal["code"]}, status=400
+                )
+        try:
+            inst = await asyncio.to_thread(
+                reg.add,
+                name=str(body.get("name", "")),
+                ssh_host=str(body.get("ssh_host", "")),
+                remote_port=int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
+                ttl=str(body.get("ttl", "20h")),
+                remote_bin=str(body.get("remote_bin", "")),
+                connection_method=str(body.get("connection_method", "ssh")),
+                ssm_target=str(body.get("ssm_target", "")),
+                ssm_run_as=str(body.get("ssm_run_as", "")),
+                aws_profile=str(body.get("aws_profile", "")),
+                aws_region=str(body.get("aws_region", "")),
+                via_instance_id=via_instance_id,
+                via_remote_port=int(body.get("via_remote_port", 0)),
+                via_remote_id=via_remote_id,
+                instance_id=body.get("id"),
+            )
+        except DuplicateInstanceError as e:
+            # Split from InvalidInstanceError because the two are different user
+            # actions: a name collision is resolved by renaming, a rejected field by
+            # correcting it. A client that cannot tell them apart has to parse prose.
+            _audit("add", "denied", error=str(e))
+            return web.json_response({"error": str(e), "code": "instance_duplicate"}, status=400)
+        except InvalidInstanceError as e:
+            _audit("add", "denied", error=str(e))
+            return web.json_response({"error": str(e), "code": "instance_invalid"}, status=400)
+        except (TypeError, ValueError) as e:
+            _audit("add", "denied", error=str(e))
+            return web.json_response(
+                {"error": f"invalid field: {e}", "code": "invalid_field"}, status=400
+            )
     _audit("add", "success", request_id=inst.id)
     return web.json_response(_instance_view(state, inst), status=201)
 
@@ -350,6 +516,11 @@ _PATCH_FIELD_TYPES: dict[str, type] = {
     "aws_profile": str,
     "aws_region": str,
     "remote_port": int,
+    # Re-points an existing chained crew at its parent's NEW loopback port after
+    # the parent reconnects. `via_instance_id` is deliberately NOT editable: a
+    # crew's parent is chosen when it is added, and letting a PATCH re-parent one
+    # would move a crew onto a hop whose depth was never checked.
+    "via_remote_port": int,
 }
 
 
@@ -410,6 +581,10 @@ async def api_instances_update(request: web.Request) -> web.Response:
         "aws_profile",
         "aws_region",
         "remote_bin",
+        # The far end of a chained forward. A live tunnel holding the parent's
+        # OLD port forwards to a port nothing listens on any more, which is the
+        # same wrongness as an edited host.
+        "via_remote_port",
     }
     current = await asyncio.to_thread(reg.get, instance_id)
     if current is None:
@@ -566,6 +741,25 @@ async def api_instances_remove(request: web.Request) -> web.Response:
     that window: once the record is gone, ``connect`` refuses the unknown id,
     so a final teardown after the successful remove cannot itself be raced —
     any tunnel it finds is the leftover of a reconnect that slipped in.
+
+    Crews CHAINED behind this one go with it. Their only route is this crew's
+    hop, so a record left behind would describe a forward that can never be
+    opened again -- it names a port on a machine this gateway has no way to
+    reach. Every captured crew is disconnected FIRST, deepest first, and a stop
+    that raises refuses the whole removal with nothing deleted: rows deleted over
+    a live forwarder strand it together with its minted token, and the row that
+    goes carries the ``forwarder_pid`` reclaim hint with it. Only once everything
+    is down do the rows go, LEAVES FIRST and this crew last, so an interrupted
+    sweep can only ever leave a parent with fewer children -- a valid, connectable
+    state -- never a row naming a parent that is already gone.
+
+    A second pass follows the deletion, naming every crew CAPTURED above rather
+    than just this one: ``reg.remove`` is offloaded and therefore yields, so a tab
+    reconnect can re-establish a forward between the teardown and the deletion,
+    and ``disconnect`` cannot find a crew's children once their rows are gone. That
+    pass cannot refuse -- the removal has already happened -- so a forward it fails
+    to stop is logged as a warning instead of raising a 500 over rows that are
+    already gone.
     """
     denied = _guard(request, "remove")
     if denied is not None:
@@ -574,14 +768,95 @@ async def api_instances_remove(request: web.Request) -> web.Response:
     reg = _registry(state)
     instance_id = request.match_info["id"]
     mgr = getattr(state, "instances_manager", None)
+    # Read the chain BEFORE the disconnect: the teardown does not touch registry
+    # rows, but reading first keeps the list from depending on that.
+    #
+    # Snapshot and deletions under one critical section: a chained add that
+    # validated this crew as its parent before the snapshot would otherwise insert
+    # its row after it and survive the cascade. See `_CHAIN_MUTATION_LOCK`. The
+    # sweep below is outside it -- it touches no rows, and an ssh teardown that
+    # hangs must not hold an unrelated add.
+    async with _CHAIN_MUTATION_LOCK:
+        instances = await asyncio.to_thread(reg.list)
+        # Whether this crew exists is settled BEFORE anything is deleted. The rows
+        # still go leaves first -- a parent must never outlive its children -- but
+        # deciding existence from the parent's OWN removal meant the descendants
+        # were already gone by the time a missing parent answered 404, so a DELETE
+        # of an id whose row another path had removed (an orphan left by an
+        # unregister, which removes one row and cascades nothing) reported "not
+        # found" having just deleted the crews under it and dropped the list of
+        # which ones they were.
+        if not any(i.id == instance_id for i in instances):
+            _audit("remove", "denied", request_id=instance_id, error="not found")
+            return web.json_response({"error": "not found"}, status=404)
+        chained = descendant_ids(instances, instance_id)
+        if mgr is not None:
+            # Every captured crew comes DOWN before any row goes, deepest first,
+            # and a stop that raises aborts the whole removal with nothing deleted.
+            # The distinction from a status reading matters: `status` cannot tell a
+            # stop that failed from a reconnect that landed after one succeeded, so
+            # refusing on it turned an ordinary race into an undeletable row -- but
+            # an EXCEPTION out of `stop` is unambiguous, and deleting rows over it
+            # strands a live forwarder and a minted token whose row is gone, taking
+            # the `forwarder_pid` reclaim hint with it. Each descendant is torn down
+            # by name rather than through the parent's own cascade, which suppresses
+            # a child's failure because a shutdown must not abort on one stuck crew.
+            for candidate in [*reversed(chained), instance_id]:
+                try:
+                    # keep_intent, for the ABORT path: on the success path these rows
+                    # are deleted a moment later and the flag is moot, but if a later
+                    # candidate's stop raises we return "Nothing was removed" -- and
+                    # the default would already have cleared the sticky connect
+                    # intent on every descendant torn down before it, dropping their
+                    # tabs and making that sentence false. The manager's own cascade
+                    # passes it for the same reason; this loop goes by name instead,
+                    # to get an unambiguous per-crew failure, so it has to say so.
+                    await mgr.disconnect(candidate, keep_intent=True)
+                except Exception as e:
+                    _audit("remove", "denied", request_id=instance_id, error="teardown_failed")
+                    logger.warning(
+                        "Refusing to remove %s: tearing down %s failed (%s)",
+                        instance_id,
+                        candidate,
+                        type(e).__name__,
+                    )
+                    return web.json_response(
+                        {
+                            "error": (
+                                f"crew {candidate} could not be disconnected, so its forward "
+                                f"is still running. Nothing was removed. Retry once it is down."
+                            ),
+                            "code": "remove_teardown_failed",
+                        },
+                        status=409,
+                    )
+
+        for child_id in reversed(chained):
+            if await asyncio.to_thread(reg.remove, child_id):
+                _audit("remove", "success", request_id=child_id)
+        await asyncio.to_thread(reg.remove, instance_id)
     if mgr is not None:
-        await mgr.disconnect(instance_id)  # tear down any live tunnel first
-    existed = await asyncio.to_thread(reg.remove, instance_id)
-    if not existed:
-        _audit("remove", "denied", request_id=instance_id, error="not found")
-        return web.json_response({"error": "not found"}, status=404)
-    if mgr is not None:
-        await mgr.disconnect(instance_id)  # sweep any reconnect that raced the removal
+        # Second pass, for the one case the first cannot cover: `reg.remove` is
+        # offloaded, so it yields, and a tab reconnect can re-establish a forward
+        # between the teardown above and the deletion. By now the rows are gone, so
+        # `disconnect` cannot find this crew's children -- the ids captured before
+        # the deletion are the only remaining record of who was down there.
+        #
+        # This pass must NOT raise: the removal has already happened, and a 500 here
+        # would report failure for rows that are gone. A forward it cannot stop goes
+        # to the log rather than into the response -- it was created after everything
+        # was confirmed down, so it is a residual rather than the defect the first
+        # pass closes, and the operator who can act on it reads the log.
+        for candidate in [*reversed(chained), instance_id]:
+            try:
+                await mgr.disconnect(candidate)
+            except Exception as e:
+                logger.warning(
+                    "Removed %s but could not stop a forward that reappeared for %s (%s)",
+                    instance_id,
+                    candidate,
+                    type(e).__name__,
+                )
     _audit("remove", "success", request_id=instance_id)
     return web.json_response({"removed": instance_id})
 
@@ -709,6 +984,35 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                 body["error"] = "token expired and re-mint failed"
                 body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
                 return web.json_response(body, status=502)
+        # The token and the port it is paired with are one answer. `body` froze the
+        # port before the probe and the re-mint, both of which await for seconds,
+        # and `status` is the tunnel's LIVE status object -- a teardown in that
+        # window pops the tunnel without zeroing the port on it, and the allocator
+        # hands a just-freed port to the next connect first. So the frozen port can
+        # name a forward that now belongs to a different crew, and the pane would
+        # load that one while holding this crew's token. Re-read the live object and
+        # refuse the pair rather than answer with one half of it; a retry gets a
+        # coherent one, which is what this failure code already means.
+        if status.state.value != "connected" or int(status.local_port or 0) != int(
+            body.get("local_port") or 0
+        ):
+            _audit(
+                "connect",
+                "failure",
+                request_id=instance_id,
+                error="forward moved while the token was being confirmed",
+            )
+            return web.json_response(
+                {
+                    "instance_id": body.get("instance_id"),
+                    "state": body.get("state"),
+                    "local_port": body.get("local_port"),
+                    "remote_port": body.get("remote_port"),
+                    "error": ("the forward moved while its token was being confirmed; try again"),
+                    "code": _connect_failure_code(body, "instance_token_unconfirmed"),
+                },
+                status=502,
+            )
         body["token"] = token  # delivered to owner only
         _audit("connect", "success", request_id=instance_id)
         return web.json_response(body)
@@ -751,6 +1055,73 @@ async def api_instances_refresh_token(request: web.Request) -> web.Response:
     body = st.to_dict() if st is not None else {"instance_id": instance_id, "state": "connected"}
     body["token"] = token  # delivered to owner only
     return web.json_response(body)
+
+
+async def api_instances_embed_token(request: web.Request) -> web.Response:
+    """POST /api/instances/{id}/embed-token — mint this crew's token for a HUB.
+
+    Called by a gateway that reaches ``{id}`` by riding OUR hop to it, and that
+    therefore has no key of its own for that machine. The caller names the port it
+    serves its own dashboard on; we mint a fresh token over the transport we
+    already hold, carrying that port as the token's embed-parent claim, so the
+    crew's own CSP admits the caller's page as its pane's frame ancestor.
+
+    Distinct from ``refresh-token``, which mints for OURSELVES and REPLACES the
+    stored credential. Nothing is stored here: this token belongs to the caller's
+    pane, and writing it over ours would break our own pane for the same crew.
+
+    Refuses a crew we ourselves reach through a further hop. That is the depth cap
+    seen from this end and it is the only place it can be seen: the caller counts
+    hops in its own registry and cannot know that ours adds another one.
+    """
+    denied = _guard(request, "embed_token")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("embed_token", "denied", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_manager_unavailable"},
+            status=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "invalid_body"}, status=400
+        )
+    port = body.get("embed_parent_port")
+    # bool is excluded explicitly: `isinstance(True, int)` is True, so True would
+    # otherwise be accepted as port 1 and mint a token no page can use.
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        _audit("embed_token", "denied", request_id=instance_id, error="bad embed_parent_port")
+        return web.json_response(
+            {
+                "error": "embed_parent_port must be a number in [1, 65535]",
+                "code": "invalid_field",
+            },
+            status=400,
+        )
+    ok, payload = await mgr.mint_embed_token(instance_id, port)
+    if not ok:
+        status = int(payload.pop("status", 502))
+        _audit("embed_token", "failure", request_id=instance_id, error=str(payload.get("code")))
+        # Spelled out, not passed through. A computed status is only readable to
+        # the error-code contract when the body is a literal dict carrying `code`,
+        # and these are the only two keys the mint leaves once `status` is popped.
+        return web.json_response(
+            {
+                "error": str(payload.get("error", "could not mint a token for this crew")),
+                "code": str(payload.get("code", "embed_token_failed")),
+            },
+            status=status,
+        )
+    _audit("embed_token", "success", request_id=instance_id)
+    return web.json_response(payload)  # token delivered to the authenticated hub only
 
 
 async def api_instances_disconnect(request: web.Request) -> web.Response:

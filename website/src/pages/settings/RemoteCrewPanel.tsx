@@ -16,7 +16,7 @@
  * enable/disable gate mirror InstancesPanel; the add-existing form and the
  * StatusBadge are reused from it directly.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Server,
@@ -70,6 +70,12 @@ import {
 } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import {
+  announceChainedCrew,
+  clearChainRefusal,
+  readChainRefusal,
+  subscribeChainRefusal,
+} from '../../lib/chainAnnounce'
 import {
   BUILTIN_REMOTE_PROVISIONER_KINDS,
   canRenderRemoteProvisionerKind,
@@ -900,6 +906,15 @@ function CrewRow({
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
   const target = usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host
+  // A CHAINED row's host is a RECORD, not a target. It arrives in the announcing
+  // pane's payload and this gateway never dials it: `_resolve_transport` returns the
+  // PARENT's host for any row carrying `via_instance_id`, so the row's own `ssh_host`
+  // and `remote_port` are never reached. Rendering them where a verified target goes
+  // let an untrusted string borrow that authority -- a compromised pane could make a
+  // row read like a production database while reaching nothing. So they are labelled
+  // as reported, and the port is dropped: it is the crew's own gateway port, which is
+  // not what this dashboard forwards to either.
+  const reportedOnly = !!inst.via_instance_id
   // A fargate crew has no dashboard; while its forward is up, the card shows
   // the turn URL the status carries instead of offering something to open.
   const turnUrl = inst.connection_method === 'fargate' && connected ? inst.status?.turn_url || '' : ''
@@ -932,8 +947,16 @@ function CrewRow({
               // ECS target, which the row's truncation cuts off; the short form
               // keeps that tail visible and the title carries the full target.
               ? <span title={target}>{shortenEcsTarget(target)}</span>
-              : target}
-            {usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port}
+              : reportedOnly
+                ? (
+                  <span title={i18nT('pages.settings.remoteCrewPanel.reported_host_hint')}>
+                    {i18nT('pages.settings.remoteCrewPanel.reported_host', { host: target })}
+                  </span>
+                )
+                : target}
+            {reportedOnly
+              ? ''
+              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             <StatusBadge status={inst.status} />
@@ -1512,6 +1535,20 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
+  // A crew connected HERE that the gateway showing this page declined to adopt as
+  // a tab of its own. Separate from `actionErr` because the connect succeeded:
+  // folding it in would report a working crew as a failed connect.
+  // Read from the module store, not from state set by a listener mounted here: the
+  // host answers while the user is watching the crew connect, and this panel may
+  // be closed by then. See `chainAnnounce.ts`.
+  const chainRefusalNotice = useSyncExternalStore(
+    subscribeChainRefusal,
+    readChainRefusal,
+    readChainRefusal,
+  )
+  const chainRefusal = chainRefusalNotice
+    ? chainRefusalNotice.reason || i18nT('pages.settings.instancesPanel.unknown_error')
+    : null
   // The last sign-in fetch/recheck outcome, for the job it belongs to. Rendered
   // inside that job's sign-in block, beside the button that produced it.
   const [signinNotice, setSigninNotice] = useState<({ jobId: string } & SigninNotice) | null>(null)
@@ -1774,10 +1811,34 @@ export function RemoteCrewPanel() {
     void queryClient.invalidateQueries({ queryKey: ['cloud', 'launches'] })
   }, [queryClient])
 
+  // The other half of the announce. When the gateway showing this page refuses a
+  // crew we announced, only IT holds the reason -- the depth cap and the cycle
+  // guard are its decisions, taken against a registry this pane never sees -- so
+  // without this the crew connects here and silently never appears up there. The
+  // listener and the sender check live in `chainAnnounce.ts`, which catches the
+  // answer whether or not this panel is open; `chainRefusal` above reads it.
+
   const connectMutation = useMutation({
     mutationFn: (id: string) => api.connectInstance(id),
     onMutate: () => { setActionErr(null); setDiagNote(null) },
-    onSuccess: st => { if (st.state !== 'connected') setActionErr(st.error || i18nT('pages.settings.instancesPanel.connection_did_not_complete_try_diagnose_for_det')) },
+    onSuccess: (st, id) => {
+      if (st.state !== 'connected') { setActionErr(st.error || i18nT('pages.settings.instancesPanel.connection_did_not_complete_try_diagnose_for_det')); return }
+      // Inside a pane, this gateway is itself a crew of the one showing the page,
+      // so a crew connected here is reachable from up there only through our hop —
+      // and the host never sees our registry. Tell it. A no-op at top level. The
+      // notice carries no credential: the host mints its own over the credential
+      // it already holds for us.
+      const inst = instancesQuery.data?.instances?.find(i => i.id === id)
+      if (inst && st.local_port) {
+        announceChainedCrew({
+          id,
+          name: inst.name,
+          sshHost: inst.connection_method === 'ssh' ? inst.ssh_host : inst.ssm_target,
+          remotePort: inst.remote_port,
+          port: st.local_port,
+        })
+      }
+    },
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.connect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: reloadInstances,
   })
@@ -2113,6 +2174,18 @@ export function RemoteCrewPanel() {
           message here (a refused connect, a failed diagnose, a rejected launch)
           is a gateway-side failure the agent can look into. */}
       {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" askAgent />}
+      {chainRefusal && (
+        // askAgent on: the reason names a limit of the arrangement (too deep, a
+        // loop) rather than something to retype here, so the next step is a
+        // conversation about the topology, not another press of Connect.
+        <ErrorNotice
+          message={chainRefusal}
+          onDismiss={clearChainRefusal}
+          className="mb-3"
+          askAgent
+          testId="remote-crew-chain-refused"
+        />
+      )}
       {/* A `warn` diagnosis names the broken link (`diagnosis.reason`, or the
           tunnel's own `status.error`), so it is an error surface. The structured
           `report` is passed when the journal produced one, so the hand-off carries

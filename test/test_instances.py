@@ -2167,6 +2167,9 @@ class _ConnectedMgr:
     def token_ttl_remaining(self, instance_id):
         return None
 
+    def token_ttl_total(self, instance_id):
+        return None
+
     def last_error(self, instance_id):
         return None
 
@@ -2653,12 +2656,99 @@ class TestHandlers:
             def token_ttl_remaining(self, iid):
                 return 72000 if iid in self._tok else None
 
+            def token_ttl_total(self, iid):
+                return None
+
         state = _State(reg, FakeMgr())
         r = asyncio.run(handlers.api_instances_connect(_FakeReq(state, match={"id": "cd-1"})))
         assert r.status == 200 and _body(r)["token"] == "SECRET_TOK"
         # list must NOT leak the token
         r = asyncio.run(handlers.api_instances_list(_FakeReq(state)))
         assert "SECRET_TOK" not in r.body.decode()
+
+    def test_a_forward_that_moves_during_the_token_probe_is_refused(self, tmp_path, monkeypatch):
+        """The token and the port are one answer. `body` freezes the port before the
+        probe and the re-mint, both of which await for seconds, while the status
+        object stays live -- a teardown in that window pops the tunnel without
+        zeroing the port on it, and the allocator hands a just-freed port to the
+        next connect first. So the frozen port can name a forward that now belongs
+        to another crew, and the pane would load that one holding this crew's token.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        class FakeMgr:
+            def __init__(self):
+                self.live = None
+
+            async def connect(self, iid, *, rebuild=False, only_if_connected=False):
+                reg.update(iid, was_connected=True, local_port=7778)
+                self.live = TunnelStatus(
+                    iid, TunnelState.CONNECTED, local_port=7778, remote_port=7777
+                )
+                return self.live
+
+            def get_token(self, iid):
+                return "SECRET_TOK"
+
+            async def token_validates(self, local_port, token):
+                # The crew is torn down and another takes the freed port while the
+                # probe is in flight. The status object survives with the old port.
+                self.live.local_port = 7779
+                return True
+
+            async def refresh_token(self, iid):
+                return "FRESH_TOK"
+
+        state = _State(reg, FakeMgr())
+        r = asyncio.run(handlers.api_instances_connect(_FakeReq(state, match={"id": "cd-1"})))
+
+        assert r.status == 502, "answered with a token paired to a port it no longer owns"
+        body = _body(r)
+        assert "token" not in body, "handed the pane a credential for a moved forward"
+        assert body["code"] == "instance_token_unconfirmed"
+        assert "SECRET_TOK" not in r.body.decode()
+
+    def test_a_forward_that_drops_during_the_token_probe_is_refused(self, tmp_path, monkeypatch):
+        """The same reading, on the half a teardown does not reach: a probe marks the
+        live status ERROR with the port unchanged, so comparing ports alone still
+        agrees while there is no forward left to load.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        class FakeMgr:
+            def __init__(self):
+                self.live = None
+
+            async def connect(self, iid, *, rebuild=False, only_if_connected=False):
+                reg.update(iid, was_connected=True, local_port=7778)
+                self.live = TunnelStatus(
+                    iid, TunnelState.CONNECTED, local_port=7778, remote_port=7777
+                )
+                return self.live
+
+            def get_token(self, iid):
+                return "SECRET_TOK"
+
+            async def token_validates(self, local_port, token):
+                self.live.state = TunnelState.ERROR
+                return True
+
+        state = _State(reg, FakeMgr())
+        r = asyncio.run(handlers.api_instances_connect(_FakeReq(state, match={"id": "cd-1"})))
+
+        assert r.status == 502, "answered for a forward that had dropped"
+        assert "token" not in _body(r)
+        assert _body(r)["local_port"] == 7778, "the port never moved, so only the state can refuse"
 
     def test_connect_rebuild_query_reaches_the_manager(self, tmp_path, monkeypatch):
         """``?rebuild=1`` is the pane's Retry after a watchdog verdict; it must be
@@ -3000,6 +3090,9 @@ class TestHandlers:
                 return None  # never connected — no live tunnel
 
             def token_ttl_remaining(self, iid):
+                return None
+
+            def token_ttl_total(self, iid):
                 return None
 
             def last_error(self, iid):
@@ -3379,6 +3472,9 @@ class TestHandlers:
             def token_ttl_remaining(self, instance_id):
                 return None
 
+            def token_ttl_total(self, instance_id):
+                return None
+
         mgr = _FreshTunnelManager()
         mgr.reconfigure = _fake_reconfigure(mgr)  # type: ignore[method-assign]
         state = _State(reg, manager=mgr)
@@ -3477,6 +3573,9 @@ class TestHandlers:
             def token_ttl_remaining(self, instance_id):
                 return None
 
+            def token_ttl_total(self, instance_id):
+                return None
+
         state = _State(reg, manager=_OrderingManager())
         r = asyncio.run(
             handlers.api_instances_update(
@@ -3523,6 +3622,9 @@ class TestHandlers:
                 return None
 
             def token_ttl_remaining(self, instance_id):
+                return None
+
+            def token_ttl_total(self, instance_id):
                 return None
 
         state = _State(reg, manager=_WedgedManager())
@@ -3650,7 +3752,7 @@ class TestHandlers:
                 self.disconnect_calls = 0
                 self.live = False
 
-            async def disconnect(self, instance_id):
+            async def disconnect(self, instance_id, *, keep_intent=False):
                 self.disconnect_calls += 1
                 if self.disconnect_calls == 1:
                     # A reconnect slips in right after the pre-removal teardown.
@@ -5685,7 +5787,18 @@ class TestStartupRevive:
         )
         monkeypatch.setattr(server, "KiroCrewConfig", types.SimpleNamespace(load=lambda: cfg))
         monkeypatch.setattr(server, "InstancesRegistry", lambda: object())
-        monkeypatch.setattr(server, "SshTunnelManager", lambda *a, **k: object())
+        # The manager double carries `sync_hop_holds` because startup genuinely calls
+        # it: a lent hop's lease is persisted and its listening socket is not, so the
+        # restart has to re-take those ports. Recorded rather than ignored so the
+        # ordering below can be asserted.
+        armed: list[str] = []
+
+        class _ManagerDouble:
+            def sync_hop_holds(self):
+                armed.append("armed")
+                return set()
+
+        monkeypatch.setattr(server, "SshTunnelManager", lambda *a, **k: _ManagerDouble())
 
         started = asyncio.Event()
         release = asyncio.Event()
@@ -5695,6 +5808,8 @@ class TestStartupRevive:
             await release.wait()  # simulate a hung SSH connect that never returns
 
         monkeypatch.setattr(server, "_revive_intended_instances", _blocking_revive)
+        # The hook schedules the sequencer, which re-takes the hop holds off the
+        # boot path and THEN awaits the revive above.
 
         app = web.Application()
         state = types.SimpleNamespace(
@@ -5706,9 +5821,20 @@ class TestStartupRevive:
         # Must return promptly even though revive never completes.
         await asyncio.wait_for(startup_handler(app), timeout=2.0)
 
+        # NOT on the boot path. `on_startup` runs inside `runner.setup()`, before the
+        # HTTP port is bound, and re-taking the holds costs a registry read plus one
+        # bind per live lease -- data-scaled work the desktop app's gateway-wait window
+        # measures. So by the time the handler returns it must NOT have run yet.
+        assert armed == [], "the hop re-take ran on the boot path"
+
         # Revive was scheduled as a tracked background task, not awaited.
         assert len(state._background_tasks) == 1
         await asyncio.wait_for(started.wait(), timeout=2.0)  # it did start in the bg
+
+        # ...but it ran BEFORE the revive, which is the ordering that matters: revive
+        # reconnects instances that allocate ports, and a lease whose hold is not yet
+        # taken is a port the allocator avoids and nothing owns.
+        assert armed == ["armed"], "revive started before the hop holds were re-taken"
 
         # Cleanup: release the hung revive and drain the task.
         release.set()

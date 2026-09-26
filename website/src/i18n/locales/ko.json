@@ -6523,6 +6523,7 @@
       "unknown_error": "가져오기에 실패했습니다"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "연결됨",
       "connected_refresh": "연결됨 · 갱신 {{time}}",
       "connected_refreshing": "연결됨 · 갱신 중…",
@@ -6545,7 +6546,9 @@
       "unpin_crew": "{{name}} 고정 해제",
       "pinned_no_room": "고정됨, 헤더에 공간 없음",
       "keep_tab_order_fixed": "탭 순서 고정",
-      "instances_load_failed": "원격 크루를 불러올 수 없습니다."
+      "instances_load_failed": "원격 크루를 불러올 수 없습니다.",
+      "unreachable": "연결 불가",
+      "unreachable_via": "연결 불가 — {{via}} 중단"
     },
     "instancesViewport": {
       "connecting": "연결 중…",
@@ -15407,7 +15410,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "지금 상태의 크루에 내 편집 적용",
         "your_code": "Your code: {{code}}",
-        "your_crews": "내 크루"
+        "your_crews": "내 크루",
+        "reported_host": "{{host}}(스스로 보고)",
+        "reported_host_hint": "이 crew가 이 머신에 있다고 보고합니다. 이 대슬부는 경로가 없어 직접 연결하지 않으며, 연결은 중게 crew를 거칩니다."
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

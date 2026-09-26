@@ -6523,6 +6523,7 @@
       "unknown_error": "导入失败"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "已连接",
       "connected_refresh": "已连接 · {{time}} 后刷新",
       "connected_refreshing": "已连接 · 刷新中…",
@@ -6545,7 +6546,9 @@
       "unpin_crew": "取消置顶 {{name}}",
       "pinned_no_room": "已置顶，顶栅空间不足",
       "keep_tab_order_fixed": "固定标签页顺序",
-      "instances_load_failed": "无法加载远程团队。"
+      "instances_load_failed": "无法加载远程团队。",
+      "unreachable": "连不上",
+      "unreachable_via": "连不上 — {{via}} 挂了"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -15407,7 +15410,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "将我的编辑应用到当前的 Crew 上",
         "your_code": "Your code: {{code}}",
-        "your_crews": "你的 Crew"
+        "your_crews": "你的 Crew",
+        "reported_host": "{{host}}（对方告知）",
+        "reported_host_hint": "这个 crew 自称在这台机器上。本面板没有到它的路由，也从不拨它；连接要靠能到达它那个 crew 转。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

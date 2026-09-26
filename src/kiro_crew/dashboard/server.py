@@ -2680,6 +2680,42 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     )
 
 
+async def _retake_hops_then_revive(registry: InstancesRegistry, manager: SshTunnelManager) -> None:
+    """Re-take the lent hop ports, then revive. Both off the boot path, in this order.
+
+    A hop lease is PERSISTED and the listening socket that enforces it is not, so a
+    restart arrives holding leases that keep ports out of this gateway's own allocator
+    and own them in no other sense -- the window the lease alone cannot close, reopened
+    by the restart. Re-taking them is therefore startup work, not a nicety.
+
+    But it is not BOOT-PATH work. `_instances_startup` is an `on_startup` hook, so it
+    runs inside `runner.setup()` before the HTTP port is bound, and the re-take costs a
+    registry read plus one bind per live lease -- data-scaled work on the path the
+    desktop app's gateway-wait window measures. So it moves in here, behind the same
+    tracked task that already backgrounds the revive below for that exact reason, and
+    the read itself goes to a thread because it is a file read on the event loop.
+
+    Ordering is load-bearing and is why this is one task rather than two: the revive
+    reconnects instances that will ALLOCATE ports, and a lease whose hold is not yet
+    taken is a port the allocator already avoids but nothing owns. Re-taking first
+    means no reconnect can race a lease that is still unenforced.
+    """
+    try:
+        unheld = await asyncio.to_thread(manager.sync_hop_holds)
+    except Exception:
+        logger.exception("Could not re-take lent hop ports after restart")
+    else:
+        if unheld:
+            logger.error(
+                "Could not re-take %d lent hop port(s) after restart: %s. A chained "
+                "credential naming each is still valid, so another process may hold "
+                "it; the guard retries each until it is taken or its lease lapses.",
+                len(unheld),
+                sorted(unheld),
+            )
+    await _revive_intended_instances(registry, manager)
+
+
 async def _revive_intended_instances(
     registry: InstancesRegistry, manager: SshTunnelManager
 ) -> None:
@@ -3899,7 +3935,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         # the port bind immediately; tunnels reconnect (or surface their error
         # on the instance tab, which persists on failure) without gating
         # startup.
-        revive_task = asyncio.create_task(_revive_intended_instances(registry, manager))
+        revive_task = asyncio.create_task(_retake_hops_then_revive(registry, manager))
         state._background_tasks.add(revive_task)
         revive_task.add_done_callback(state._background_tasks.discard)
 

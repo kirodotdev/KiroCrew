@@ -6838,6 +6838,7 @@
       "unknown_error": "Не удалось выполнить импорт"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "подключено",
       "connected_refresh": "подключено · обновление {{time}}",
       "connected_refreshing": "подключено · обновление…",
@@ -6860,7 +6861,9 @@
       "unpin_crew": "Открепить {{name}}",
       "pinned_no_room": "закреплено, нет места в заголовке",
       "keep_tab_order_fixed": "Сохранять порядок вкладок",
-      "instances_load_failed": "Не удалось загрузить удалённые команды."
+      "instances_load_failed": "Не удалось загрузить удалённые команды.",
+      "unreachable": "недоступен",
+      "unreachable_via": "недоступен — {{via}} не работает"
     },
     "instancesViewport": {
       "connecting": "Подключение…",
@@ -16025,7 +16028,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Применить мои изменения к команде в её текущем виде",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Ваши команды"
+        "your_crews": "Ваши команды",
+        "reported_host": "{{host}} (заявлено)",
+        "reported_host_hint": "Эта команда заявляет, что находится на этой машине. У этой панели нет к ней маршрута, и она никогда не подключается напрямую."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Входящие webhooks",

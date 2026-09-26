@@ -6628,6 +6628,7 @@
       "unknown_error": "Der Import ist fehlgeschlagen"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "verbunden",
       "connected_refresh": "verbunden · Aktualisierung {{time}}",
       "connected_refreshing": "verbunden · wird aktualisiert…",
@@ -6650,7 +6651,9 @@
       "unpin_crew": "{{name}} von der Kopfzeile loslösen",
       "pinned_no_room": "angepinnt, kein Platz in der Kopfzeile",
       "keep_tab_order_fixed": "Tab-Reihenfolge beibehalten",
-      "instances_load_failed": "Die Remote-Crews konnten nicht geladen werden."
+      "instances_load_failed": "Die Remote-Crews konnten nicht geladen werden.",
+      "unreachable": "nicht erreichbar",
+      "unreachable_via": "nicht erreichbar — {{via}} ist aus"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -15613,7 +15616,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Meine Änderungen auf die Crew in ihrem aktuellen Zustand anwenden",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Deine Crews"
+        "your_crews": "Deine Crews",
+        "reported_host": "{{host}} (gemeldet)",
+        "reported_host_hint": "Diese Crew gibt an, auf dieser Maschine zu laufen. Dieses Dashboard hat keine Route dorthin und wählt sie nie an — die Verbindung läuft über die Crew, die sie erreicht."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",

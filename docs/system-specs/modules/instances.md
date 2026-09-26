@@ -50,6 +50,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
 - [16. The Fargate connection method (`connection_method = "fargate"`)](#16-the-fargate-connection-method-connection_method--fargate)
+- [17. Chaining (a crew reached through another crew)](#17-chaining-a-crew-reached-through-another-crew)
 
 ---
 
@@ -474,27 +475,30 @@ request with no `request["user"]` with `401`, and rejects a disabled feature wit
 | `GET /api/instances` | List instances + live status + `warm_set_cap` + `active`. |
 | `POST /api/instances` | Add an instance. A rejection carries a machine-readable `code` beside its human message, so a client can branch without parsing prose: `invalid_json` / `invalid_body` (unreadable request), `invalid_field` (a named field failed validation), `instance_duplicate` (the name is taken), `instance_invalid` (the record as a whole is not addressable) and `instances_manager_unavailable`. The dashboard forwards the code into its error → agent hand-off, which is why it has to be on the wire rather than derived from the message. |
 | `PATCH /api/instances/{id}` | Edit `name`/`ssh_host`/`remote_port`/`ttl`/`remote_bin`/`connection_method`/`ssm_target`/`ssm_run_as`/`aws_profile`/`aws_region` (`id` and internal hints are not editable). Editing a field the tunnel is BUILT from (everything except `name` and `ttl`) disconnects a live tunnel first, because it would otherwise keep forwarding the old port to the old host under the new label; the teardown passes `keep_intent=True` so it does not touch `was_connected` — that flag records a USER disconnect, so a reconfiguration leaves it alone and a real disconnect arriving mid-edit still wins. The crew therefore keeps its switcher entry and reconnects in one click. The teardown and the coordinate rewrite happen as ONE operation, `SshTunnelManager.reconfigure()`, which holds the manager lock across both. Done as two steps a `connect` can read the OLD record in between, and whether its tunnel is already CONNECTED or still CONNECTING when the write lands decides whether any after-the-fact sweep would notice it — so the window is removed rather than narrowed: a racing `connect` either completes before (and is torn down inside the section) or starts after (and reads the new coordinates). It also cancels and AWAITS that instance's in-flight self-heal first: recovery reads the record before it takes the lock, so a recovery already running carries the pre-edit coordinates and would reinstall a tunnel to the old machine. Because that cancellation itself awaits, a reconfiguration additionally raises a per-instance BARRIER before its first await; while the barrier is up the scheduling seams refuse to start work — `_on_tunnel_exit` will not begin a self-heal, a backed-off one returns without acting, and `_schedule_token_refresh` will not restart a mint loop — so nothing can slip into the window. Self-heal is cancelled AND awaited before the coordinates move, because it rebuilds from the record it read. The token-refresh loop is unwound by the teardown instead — after the stop succeeds — so a REJECTED edit leaves the live tunnel holding both its credential and its refresh; in both cases the cancellation is awaited, since a mint already in flight would otherwise store a token for a tunnel that is being replaced. A teardown that raises ABORTS the edit with `503` / `code: tunnel_teardown_failed` and persists nothing: a stop that failed leaves the old forward live, so advancing the record would describe one machine while the still-open tunnel serves another — and that tunnel is the one the user reaches. Nothing is discarded unless the stop succeeded — the tunnel keeps its place in `_tunnels` along with its token and refresh task — so a failed stop can neither leave an untracked process holding the port nor a live forward without a credential. The registry write is also shielded from cancellation: a client hanging up mid-write must not unwind the `async with` and free the lock while the write is still in flight. An edit sends only the fields that DIFFER from an IMMUTABLE snapshot of the record taken when its form opened (not the live polled record, which a concurrent CLI edit would move under the user), so the later of two concurrent saves cannot revert the earlier one's corrections; optional fields travel as explicit empty values, so emptying one clears it instead of being read as "leave as-is". The dashboard does NOT reconnect afterwards: any automatic reconnect races an explicit Disconnect arriving mid-save, so the row offers **Connect** instead. A crew CORRELATED to a cloud stack has its `connection_method`/`ssm_target`/`aws_profile`/`aws_region` frozen in the edit form and omitted from the request — Stop/Start/Delete resolve the machine through those, so editing them would strand a billing instance. That freeze is now enforced **server-side too**: this endpoint rejects the four addressing fields for a correlated cloud instance with `400` / `code: cloud_instance_addressing_locked`, so a non-dashboard caller (CLI, script, the agent driving this owner-only API) can no longer rewrite the coordinates and strand a billing instance. Correlation is resolved against the cloud launch store via `_is_correlated_cloud_instance()`, checked against the record already fetched for the edit. An SSM crew that cannot be correlated is offered no lifecycle action, so its fields stay editable — that identity is how the dashboard finds the machine to stop or delete, and editing it away would strand a billing instance. |
-| `DELETE /api/instances/{id}` | Disconnect then remove. |
-| `POST /api/instances/{id}/connect` | Open tunnel + mint token. Returns the token. Idempotent by default; `?rebuild=1` (Retry after a load-watchdog verdict: tear down and re-spawn on a different local port) and `?only_if_connected=1` (auto-warm: answer an up tunnel, never bring one up — a down tunnel is a `200` with `code: instance_not_connected`) are the two opt-in exceptions, mutually exclusive (`400`), described in §4 step 1. A failure carries a machine-readable `code`, and that code is the failure-diagnosis ladder's OWN verdict (`ssh_unreachable`, `remote_down`, `tunnel_down`, …) promoted to the top level, so a client reads which link broke without walking into `diagnosis`. Only a verdict that is present AND **negative** is promoted: the stored diagnosis is the last ladder RUN, so a stale `ok` from before the failure would otherwise be published as this call's reason. With no usable verdict the stage that failed names itself — `instance_connect_failed`, or `instance_token_unconfirmed` when the tunnel came up but its credential did not confirm. The frontend applies the same present-AND-negative rule before quoting a verdict or its probe chain into the agent hand-off, for the same staleness reason. |
+| `DELETE /api/instances/{id}` | Disconnect then remove, cascading over the crews chained behind this one. Every captured crew comes down first, deepest first, and a stop that raises answers `409 remove_teardown_failed` with NOTHING deleted: rows removed over a live forwarder strand it with its minted token and take the `forwarder_pid` reclaim hint with them. `404` when no row has that id, decided before any deletion so a missing parent cannot take its orphaned descendants with it. On success the body carries `removed` and nothing else. A second pass follows the deletion and cannot refuse, because the removal has already happened, so a forward a racing connect re-established after the rows went is written to the gateway's warning log rather than into the response -- see §17.4. |
+| `POST /api/instances/{id}/connect` | Open tunnel + mint token. Returns the token. Idempotent by default; `?rebuild=1` (Retry after a load-watchdog verdict: tear down and re-spawn on a different local port) and `?only_if_connected=1` (auto-warm: answer an up tunnel, never bring one up — a down tunnel is a `200` with `code: instance_not_connected`) are the two opt-in exceptions, mutually exclusive (`400`), described in §4 step 1. A failure carries a machine-readable `code`, and that code is the failure-diagnosis ladder's OWN verdict (`ssh_unreachable`, `remote_down`, `tunnel_down`, …) promoted to the top level, so a client reads which link broke without walking into `diagnosis`. Only a verdict that is present AND **negative** is promoted: the stored diagnosis is the last ladder RUN, so a stale `ok` from before the failure would otherwise be published as this call's reason. With no usable verdict the stage that failed names itself — `instance_connect_failed`, or `instance_token_unconfirmed` when the tunnel came up but its credential did not confirm, which also covers the forward MOVING while the credential was being confirmed: the probe and any re-mint both await for seconds while the response's port is already frozen, so the live status is re-read before the token is attached and a port or state that has changed is refused rather than answered with half a pair. The frontend applies the same present-AND-negative rule before quoting a verdict or its probe chain into the agent hand-off, for the same staleness reason. |
 | `POST /api/instances/{id}/refresh-token` | Force a fresh mint and return the new token. See below. |
+| `POST /api/instances/{id}/embed-token` | Mint that crew's token for ANOTHER gateway's pane, carrying the caller's own dashboard port as the embed-parent claim. Called by a hub that reaches the crew by riding one of OUR forwards and so holds no key for it. Stores nothing -- our own credential for the crew is untouched. Refuses a crew we reach through a further hop (`chain_too_deep`), which is the depth cap seen from this end, and a crew whose forward moved while its token was in flight (`instance_hop_changed`): the token and the port it is paired with are one claim, and the mint is taken without the manager lock. See §17.3. |
 | `POST /api/instances/{id}/disconnect` | Tear down one tunnel. |
 | `GET /api/instances/{id}/status[?diagnose=1]` | Live status; `?diagnose=1` runs the failure ladder and merges the result. |
 | `POST /api/instances/{id}/restart` | Restart the remote gateway over SSH. |
 | `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, for a local session bound to it: `version` (+ `local_version` and the `version_match` gate the relay enforces), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy above, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models`, ~15s worst case), so an 8s budget killed every cold read and reported a healthy peer as `capability_unreachable` (#10621). One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, …), so the frontend disables exactly that control. The dashboard (`useRemoteCapabilities`) re-polls a partial document every 8s while the peer is version-compatible and the per-field code is the transient `capability_unreachable` — never for version-skewed, disconnected, or terminally-failing peers — and its model pickers render a loading row (`aria-busy`) rather than an empty list while the model roster is pending, and an inline `ErrorNotice` with in-place retry when the read itself fails — an empty list would claim the peer offers no models. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
 | `ANY /api/instances/{id}/proxy/{path}` | Generic chat proxy — the carrier for the remote-crew chat view. Forwards a **bounded slice** of a CONNECTED peer's `/api/` surface over the already-open tunnel via `SshTunnelManager.proxy_request`, streaming the reply chunk-by-chunk (a proxied chat turn streams SSE for minutes, so the client timeout is connect + read-idle, never total). Credential rules match the federated search: the manager-held token travels as the port-scoped cookie and never reaches the browser; a `401/403` gets exactly one transparent re-mint retry; `allow_redirects=False` (a compromised peer answering 30x must not steer the hub — SSRF). Path policy is a **canonicalization**, not a pattern check, and runs before any URL is built: the caller's path is percent-decoded to a fixed point (bounded by `PROXY_PATH_MAX_DECODE_PASSES`, a deeper chain is refused), then every segment must be a plainly-named token — no empty segment, no all-dots segment, and only unreserved/sub-delim characters — and the forwarded path is **rebuilt from exactly those vetted segments**. Vetting the decoded form and forwarding the rebuilt one is what closes encoded traversal at any depth: a half-decoded `%252e%252e` matches no denylist rule yet still normalizes back into the control plane. On that canonical form the vet policy is a **positive prefix allowlist** (`_PROXY_ALLOWED_PREFIXES`, `api/chat` + `api/stream` today): only the peer's `api/chat` subtree and its `api/stream` event feed are forwarded — each a prefix grant, so every route under one is reachable, which is the chat feature's own wire surface — and everything outside the named prefixes is refused by default: the peer's own `api/instances` plane (one hub cannot chain through a peer into a third machine's SSH control plane), the peer's token-minting routes (whose JSON replies would carry a minted peer credential back through the hub in-band), and any endpoint the peer grows outside the allowlisted prefixes. `api/stream` is the peer's own SSE broadcast endpoint and the out-of-turn half of the chat view: the per-turn reply streams back from `api/chat`, while session-list and slot-state changes arrive on `api/stream`. It is deliberately that endpoint and **not** its WebSocket sibling `api/ws` — a WS row would need a `101 Switching Protocols` to cross this proxy, and the reply content-type gate below exists precisely to stop a peer serving anything but JSON/SSE onto the authenticated hub origin, so an upgrade would tunnel straight through it. Note what the row admits: that feed is per-client but not per-slot, so a hub holding it receives the peer's whole notification/slot broadcast rather than only the session on screen — peer content crossing to a hub user who is already the peer's owner (this route is owner-only), so it widens volume, not privilege, and is the reason it is a named row rather than a blanket `api/` grant. A new prefix is added to the constant explicitly, never by widening back to deny-only; the constant's exact value is pinned by a test so widening is always a reviewed act. Methods limited to GET/POST/PUT/PATCH/DELETE; inbound bodies capped at `PROXY_REQUEST_BODY_MAX_BYTES` before buffering. No browser Origin or cookies are forwarded to the peer (the hub presents as a same-origin loopback client), and the hub's own `?token=` credential is **stripped from the forwarded query** — the browser may authenticate the proxy request with it, and forwarding it would hand the peer a replayable hub credential. Replies are gated to an **allowlist**: only `application/json` and `text/event-stream` content types are forwarded (a compromised peer must not serve active content that executes on the hub origin), and only allowlisted headers (`Content-Type`, `Cache-Control`, `X-Accel-Buffering`) cross back — `Set-Cookie` and everything else is dropped, with `X-Content-Type-Options: nosniff` added. Typed failures (`proxy_peer_not_connected`, `proxy_no_credential`, `proxy_unauthorized`, `proxy_peer_unreachable`) map to 5xx with a machine-readable `code`. |
 
-**Two routes cross the token boundary, not one.** `connect` and `refresh-token`
-both return a minted dashboard token in their response body, and they are the
-**only** two that do. `refresh-token` exists because the browser needs to replace
+**Three routes cross the token boundary, and they are the only three.** `connect`,
+`refresh-token` and `embed-token` each return a minted dashboard token in their
+response body. `refresh-token` exists because the browser needs to replace
 an embedded pane's credential without tearing the tunnel down: proactively at
 ~80% of the TTL for a non-active pane, and reactively when an embedded dashboard
 posts `mc-auth-expired` for the active pane (rate-limited client-side to one
 re-mint per instance per 10s so a persistently-rejecting remote cannot spin a
-reload storm). The invariant is the same on both: the token is delivered to the
-authenticated owner only, is **never logged**, and **never** appears in a list or
-status payload. The count is what to keep straight, since a single-route reading
-would leave `refresh-token` out of any audit of where tokens leave the gateway:
-the pair is `connect` + `refresh-token`, and nothing else.
+reload storm). `embed-token` exists because a hub chaining through us has no key of
+its own for the crew behind us, so we mint with the hub's embed-parent port and hand
+the result back (§17.3). The invariant is the same on all three: the token is
+delivered to the authenticated owner only, is **never logged**, and **never**
+appears in a list or status payload. The count is what to keep straight, since a
+narrower reading would leave a route out of any audit of where tokens leave the
+gateway: the set is `connect` + `refresh-token` + `embed-token`, and nothing else.
 
 Status codes worth knowing: `503` when the manager is not running (feature
 enabled after startup), `404` for an unknown id, `502` when a connect, refresh,
@@ -2298,3 +2302,460 @@ save. A failed connect step beside a non-terminal status is the combination
 -- so persisting the step on its own would leave a window where a restart turns the
 intended `DONE` into a red card over a running crew, which is the outcome this whole
 path exists to avoid.
+
+---
+
+## 17. Chaining (a crew reached through another crew)
+
+Real setups are multi-hop. The machine showing the dashboard (A) connects a dev
+machine (B), and B -- not A -- is the one that can reach a third box (C): a freshly
+provisioned desktop, a host whose key lives on B. Before chaining, reaching C meant
+backing out to A and connecting from there, which fails when only B holds C's key.
+
+**The decision to allow this is recorded in issue #13744**, which this section
+implements. Chaining reverses a stated property of Remote Crew -- "a connected
+instance cannot connect onward to another instance" -- and that issue is where the
+reversal was asked for, in those words, with the reason above it: B, not A, is the
+one that can reach C.
+
+Worth stating plainly, because the previous behaviour reads like a design decision
+and was not one: no sentence in this spec tree ever declared Remote Crew
+single-level. The constraint lived entirely in the frontend -- `SettingsPage.tsx`
+dropped the Remote Crew tab from `baseTabs` when `isEmbeddedPane()` -- with no
+depth check, no cycle check and no width check on the gateway side at all. Inside a
+pane the tab simply vanished with no explanation, so what looked like a boundary
+read to a user as a missing feature. Chaining therefore adds the server-side guards
+that a real single-level rule would have needed in the first place (§17.4).
+
+**C is not nested inside B's pane. C becomes a top-level tab of A.** B does the
+connecting; A does the showing. Every crew and further crew sits in one tab bar,
+drawn as a tree in the switcher. Because no pane is nested, C's pane is one iframe
+deep exactly like every other pane, so the two gaps a nested design would hit -- a
+CSP `frame-ancestors` chain, and a level-2 tunnel port the top browser cannot reach
+-- do not arise.
+
+### 17.1 The record
+
+`Instance` gains two fields, which travel as a pair:
+
+| Field | Meaning |
+|---|---|
+| `via_instance_id` | The crew in THIS registry whose hop this record rides. |
+| `via_remote_port` | The loopback port ON THAT CREW where its own forward to this one listens. |
+
+Both empty is a top-level crew, which is every record written before chaining
+existed -- the loader defaults them, so an existing `instances.json` reads unchanged.
+Either half alone is refused rather than half-applied: every consumer would read it
+as top-level while the record plainly means something else.
+
+A chained record keeps its own `ssh_host` and `remote_port`. They describe the crew
+on ITS machine and name the row in the switcher; they are never dialled from here,
+because this gateway has no route to them. That is the whole reason the chain exists.
+
+### 17.2 The forward
+
+`_resolve_chained_transport` builds the forward from the PARENT's coordinates:
+`ssh -L <local>:127.0.0.1:<via_remote_port> <parent host>`. That is a second
+connection to the parent, targeting the port where the parent's own forward already
+listens, so the browser reaches C at A's `localhost:<local>` like any other pane.
+Nothing is executed on the parent, so the chained params carry no `remote_bin`.
+
+The reclaim path builds the same argv: an orphaned forwarder is identified by its
+EXACT argv, so a reclaim computed from the crew's own port could never match, and a
+mismatch reads as "not our child" -- the leaked forwarder would keep the port forever.
+
+Disconnecting a crew tears down every crew chained behind it first, deepest last.
+Their forwards ride the hop being closed, so leaving them up would leave a pane that
+looks connected and answers nothing. The children keep `was_connected`: the user
+turned off the PARENT, so reconnecting it must be able to bring its crews back.
+Removing a crew removes those rows too -- a row left behind describes a forward that
+can never be opened again.
+
+### 17.3 The token, and why it is not the generic proxy
+
+A pane's token carries an `embed_parent_port` claim, and the crew's CSP admits only
+that port as its pane's frame ancestor. A hub therefore needs a token for C minted
+with the HUB's port -- and it has no key for C.
+
+So it asks B. `POST /api/instances/{id}/embed-token` takes one field
+(`embed_parent_port`) and mints over the transport B already holds, returning the
+token, B's own loopback port for that crew, the lifetime B issued the token under,
+and B's own IDENTITY for the hop -- `hop_id` and `hop_gen`. It is owner-only like every other
+route in this plane. B stores nothing: the token belongs to the hub's page, and
+writing it over B's own credential would break B's own pane for the same crew.
+
+The token and that port are ONE claim. B's mint is a multi-second round trip taken
+without its manager lock, and `status()` hands out the tunnel's live status object,
+which a teardown pops without zeroing the port on it -- while B's allocator gives
+the port a teardown just freed to the next connect first, since it takes the first
+free port above its base. So a crew disconnected mid-mint, and any crew connected
+before the mint returns, would pair one crew's token with another crew's forward,
+and the hub would forward to whatever now answers there. B reads the hop once
+before the mint, confirms the tunnel generation, connected state and port are all
+unmoved after it, and refuses (`instance_hop_changed`) rather than answering with a
+pair it cannot vouch for. The generation is compared as well as membership because
+a reconnect satisfies membership again.
+
+This is a NARROW carrier (`_mint_through_parent`), deliberately not a widening of the
+generic `/proxy/{path}` route in §6. That route's prefix allowlist refuses the peer's
+`api/instances` plane precisely so one hub cannot chain through a peer into a third
+machine's SSH control plane, and refuses the peer's token-minting routes so a minted
+credential never returns in-band through a caller-chosen path. Both refusals stand
+unchanged. What chaining adds is one endpoint whose target is derived here from the
+child's id, never supplied by a caller.
+
+The pane's postMessage to its host carries only the notification -- "crew X is up on
+my port N" -- and never a token. That is what makes it safe for the notice to travel
+through frame code at all: the hub mints its own over a credential it already holds.
+
+#### The credential-and-hop pairing
+
+A dashboard token is a bearer credential for ONE crew, and it reaches that crew only
+over the forward it was minted against. Deliver it over a different forward and it
+reaches whoever is behind that one instead. Minting is a multi-second round trip, so
+the forward can move inside it, which gives one rule:
+
+> A chained credential may only be stored or returned after proving that the hop the
+> forward currently rides is the same hop it was minted for. Otherwise discard the
+> mint.
+
+It is enforced in ONE place rather than at each exit. `_credential_forward_moved`
+answers why a credential must not be used, or nothing, and `_store_token` -- which
+every credential store passes through -- calls it and discards. `minted_at_epoch` is
+a required argument there, so a caller cannot store without saying which forward it
+minted against, and a store site added later cannot forget the rule. The parent-side
+mint is the one exit that RETURNS a credential instead of storing it, so it calls the
+same function and refuses with `instance_hop_changed`.
+
+BOTH sides of the pairing pass through that one place. The mint returns the parent's
+whole answer -- credential, hop and lifetime together -- and publishes none of it; the
+store writes the hop and the lifetime behind the generation fence, then compares. That
+ordering is the point: the hop is the very value the comparison reads, so a mint that
+published on its way out could put a superseded port where the check looks and leave it
+comparing stale to stale.
+
+Three readings, because the forward moves three ways. It is gone. Another forward took
+its place -- membership reads true again after any reinstall, so the generation counter
+is what tells one from the next. Or the crew holding the hop now serves this crew on a
+different loopback port, which neither membership nor the generation can see, because
+our own tunnel was never touched. Both values compared are already recorded:
+`_chained_hop_port` holds what the mint reply named, and a chained tunnel's
+`remote_port` IS the hop it dials.
+
+This is why the self-heal mints before it rebuilds and stores AFTER: its mint is where
+the parent names its current port, and until a rebuild has that forward on that port
+there is no forward this credential may travel over. A heal whose rebuilds never land
+stores nothing, and the credential already held stays -- a stale token yields a 403 the
+client recovers from, where one delivered over another crew's forward is a disclosure
+nothing downstream re-checks.
+
+What this rule proves, and what it does not. It proves the forward rides the hop the
+mint named AND that the hop is the same one this forward was built against, by the
+parent's own identity for it -- the id it knows the crew by plus the generation of its
+forward to it, both stated in the reply. That is why the comparison is on an identity
+and not on the port number: the parent's allocator hands a just-freed port to the next
+connect, so the same number names a different forward after ordinary churn, and a
+comparison on numbers clears exactly the case it exists to refuse.
+
+Both fields are REQUIRED, with the lifetime's strictness rather than the port's: an
+unreadable port is dropped and the caller refuses to dial, while an unidentifiable hop
+would let the dial succeed and weaken only the check guarding the credential. Requiring
+them costs no compatibility, because the endpoint and the fields ship in the same
+change -- a parent that answers this route at all has them, and a parent that predates
+the feature has no route, which the `404` branch already names.
+
+Identifying the hop is not enough on its own, because it only decides whether to
+accept a NEW credential. The forward and token ALREADY in place are the ones riding a
+hop that changed hands, and refusing a replacement leaves them exactly where they were.
+Three things therefore act, and they are not redundant -- but they do not all do the
+same KIND of work, and which does what is the point of the paragraphs below: two keep
+the credential from reaching the wrong gateway, and the third retires a forward that
+cannot work any more.
+
+**Prevention: a lent hop is withheld from allocation.** When this gateway mints a
+chained credential it records the hop it named and the moment that credential expires,
+and `_reserved_ports` keeps that port out of `allocate` until then. So while a hub's
+token is valid, the port it forwards to is never handed to another crew, and the moment
+the disclosure needs does not arise. The deadline is the TTL this gateway itself issued,
+so nothing is expected of the hub and no state crosses the boundary -- this is not a
+lease. After the deadline the token is dead, so withholding the port any longer would
+leak ports for no benefit.
+
+That record lives at the DOCUMENT level of the registry file, keyed by port
+(`_RegistryDoc.hop_leases`, written by `lend_hop`, read back by `live_hop_leases`), and
+NOT on the row of the crew whose hop was lent. The placement is the whole of its reach,
+because the two ways a reservation could be lost are exactly the two a document-level
+record survives: removing the crew deletes its row, and restarting the process drops
+anything held only in memory, while the credential the reservation protects stays live
+through both. Removal is the case that decides it -- `remove` filters the instance list
+and structurally cannot reach the lease table -- and row placement was tried and
+rejected for exactly that reason rather than never considered.
+
+The reservation is a PRECONDITION of handing the token over, not a note taken on the way
+out, and three things make it one. It is written under the manager lock, in the same
+critical section as the check that the hop is still ours -- validating outside the lock
+and writing inside would leave a gap the width of the acquire, and that gap is the whole
+hazard. The write propagates its error rather than going through the registry's
+best-effort hint helper, whose documented behaviour is to swallow one: right for a hint
+that only has to be usually-there, wrong for the record that keeps this port away from
+another crew. And a reservation that cannot be written refuses the mint with `503`
+`instance_hop_lease_failed`, because a credential this gateway cannot protect is one it
+does not issue.
+
+**The reservation is not ownership, so the port is also held by the OS.** Everything
+above keeps a lent port out of THIS gateway's `allocate`, and that is a smaller
+guarantee than it reads as: the port is still free at the OS level. Once the forward
+serving the lent crew is torn down, any other local process may bind it -- including a
+second gateway with its own registry, which cannot see this reservation at all -- and
+the hub goes on dialling that port, so whatever bound it is handed a live bearer token.
+Neither identity check helps, because both run on a MINT and an established pane does
+not re-mint per request; the proactive re-mint is scheduled at ~80% of the token's
+lifetime, so on the default 20h TTL the exposure would last hours. `HopPortGuard`
+(`hop_port_guard.py`) closes it by binding the port itself for the reservation's life,
+armed by the teardown that frees it and by `sync_hop_holds` at startup -- load-bearing
+there, because the reservation is persisted and a listening socket is not, so a restart
+would otherwise hold every lease and own nothing.
+
+The socket LISTENS, and that is forced rather than chosen: a socket that is bound but
+not listening does not refuse a second `SO_REUSEADDR` bind, which is what both OpenSSH's
+forward listener and this module's own availability probe issue. The OPTION differs by
+platform, because its meaning inverts: on Windows `SO_REUSEADDR` lets another process
+steal an ACTIVE listener, and omitting it is not enough either, so the non-POSIX branch
+sets `SO_EXCLUSIVEADDRUSE` instead -- the same branch, for the same reason, as
+`browser_cli.view` and the dashboard's own listener. Setting `SO_REUSEADDR`
+unconditionally holds nothing at all on Windows, which is a platform-specific no-op of
+exactly the kind #9731 exists to catch.
+
+So the handshake completes and a stale client does transmit -- "the credential is never
+sent" is not reachable -- and what is reachable is that nothing reads it. The guard
+accepts and closes at once with `SO_LINGER` 0, never reading a byte, so **a stale pane
+sees its connection RESET immediately** rather than hanging on a queued connection or
+reading an orderly empty reply it could mistake for success. The refusal is deliberately
+blunt: answering something courteous like `410` would mean draining the request first,
+and the request is what carries the credential. Each hold carries its own deadline and
+expires itself, so it cannot outlive the credential and squat a port that is free again.
+
+**Where the holds are taken, and why the placement is part of the mechanism.** Reading
+the lease table is a file read plus a parse of every row, so it never runs on the event
+loop -- the same rule `_reserved_ports` already follows, whose comment says a synchronous
+version "would stall unrelated requests and heartbeats". At startup the whole re-take
+runs in a thread behind the tracked task that also backgrounds the revive, so it is off
+the gateway boot path, and it completes BEFORE the revive because a revive reconnects
+instances that allocate ports. In teardown the read is taken AHEAD of the forward's stop
+rather than after it: awaiting anything between the port's release and its bind would
+stretch the one gap this mechanism cannot close from two adjacent statements to however
+long the shared default executor takes to schedule, so only the bind -- one non-blocking
+loopback syscall, one port rather than one per lease -- stays in line.
+
+A hold that cannot be taken is REMEMBERED and retried, not logged and forgotten: a lease
+whose bind failed once and is never retried is a live lease with no socket, which is the
+exposure itself reached by a different route. The usual cause is one of this gateway's own
+leaked forwarders still occupying the port after a hard kill, and the retry takes it the
+moment that process goes.
+
+**A port counts as in use only while a forward is actually LISTENING on it -- CONNECTED
+state -- not while any tunnel object remembers the number.** An unexpected `ssh` exit
+leaves its tunnel in `_tunnels` with `local_port` intact and the state ERROR, and past
+`max_recovery_attempts` it stays there, so counting it as in use would skip the hold for a
+port the OS has already freed while the credential naming it is still valid. This is
+deliberately NARROWER than `_reserved_ports`, which counts every port any tunnel or row
+remembers and is right to: the two run in opposite safety directions, since over-counting
+costs the allocator only a port it declines to reuse, while over-counting here withholds a
+hold. Under-counting here is the cheap error -- the bind loses to the live forward and the
+port is recorded as owed and retried.
+
+The exit path therefore takes the holds BEFORE its backoff, not after the rebuild: the
+child is already gone, so waiting would leave the port unheld for the whole delay on every
+flap and permanently once attempts run out. The recovery releases its own hold immediately
+before the rebuild rebinds -- otherwise the hold blocks the self-heal -- and re-settles the
+holds in a `finally`, which one call covers both outcomes because of the invariant above: a
+rebuild that succeeded leaves the tunnel CONNECTED and its port in use, and one that failed
+or gave up leaves the port free and therefore held.
+
+Reclaiming such a forwarder is REFUSED while its port carries a live lease. The reclaim
+exists to hand a crew its recorded port back, and a lent port is one `allocate`
+deliberately routes around, so freeing it recovers nothing and converts a port safely
+occupied by this gateway's own dead child into a free one a stranger can bind while a hub
+still forwards a bearer token to it. The orphan is the ownership in that state, and a
+stronger one than a held socket; it is reclaimed by the next connect once the lease
+lapses, and lingering is already a tolerated outcome on that path.
+
+One window stays open by construction and is not claimed closed: the forward must release
+the port before the guard can bind it, which is the gap between two adjacent statements.
+
+**Why detection is still needed: an identity mismatch is not a port reuse.** Prevention
+answers every route by which a lent port could be handed to a different crew, so the
+case left over is the one where no port is reused at all: the parent still holds this
+crew and simply serves it on a DIFFERENT port. No reservation ever applied to that new
+port, and the old one is still withheld -- so prevention has nothing to withhold that
+would help, and the forward here is left dialling a port the crew it was built for has
+moved off. That is a gap in principle rather than in an unlucky deployment, which is
+what makes comparing the identity load-bearing rather than a second opinion on a
+question prevention already settled.
+
+**Detection on the parent's own answer -- retirement, not a second guard.** With the
+reservation at the document level a removed crew's port stays withheld, and the guard
+holds it, so this path is not what keeps the credential away from another process --
+prevention and that hold are. What it does is
+retire a forward that cannot work again, because the crew it reaches is gone from the
+parent. Recording that here is worth more than counting it as a third guard it is not.
+A re-mint that fails because the parent ANSWERS that the crew is not connected there, or
+not there at all, is terminal for the forward: retrying cannot recover a hop that is not
+ours, and the forward still points at a port the parent is free to reassign once the
+reservation lapses. The two codes are read from the reply's
+`code`, never from its sentence, and raised as `HopRetiredError` so the caller acts on
+which failure it saw rather than inferring "gone" from "failed". The code is read BEFORE
+any status branch, because the status alone cannot separate the two 404s: a build with no
+chaining route and a parent that no longer holds this crew both answer 404, and only the
+second is a retired hop. That body is read under the same cap as the success reply -- an
+error body from another gateway must not be the one unbounded read on the wire -- and a
+reply past the cap is not parsed, so it stays an ordinary retryable failure. Every other mint
+failure keeps the deliberate non-terminal retry: a timeout is a blip, and tearing a
+working chain down over one would turn every hiccup into a disconnect the user has to
+undo.
+
+**Detection on a disagreeing identity.** Fires at a different moment -- the parent
+still holds the crew and merely serves it somewhere else -- so the comparison above
+runs and the credential is refused. The forward is retired with it, because that
+forward is the one riding the moved hop. Prevention normally has that port withheld
+already, so this branch is depth rather than the only guard -- one mechanism protecting
+the credential would make a bug in it silent. Only this branch retires: a superseded
+generation is rejected by the store's own fence before the comparison is reached, and a
+port-only disagreement is also what the connect path produces while a forward is being
+built, so retiring on either would tear down a healthy tunnel. A port-only
+disagreement needs no retirement anyway, because the port the forward still dials is
+one prevention is holding.
+
+Retirement keeps the user's intent (`was_connected` stays set), so an ordinary
+reconnect brings the crew back on a hop that is actually ours. Clearing it would
+present a security teardown as the user having turned the crew off.
+
+What none of this does is LEASE the hop: nothing asks the parent to hold a port until
+the hub says it is finished, and no notification crosses the boundary in either
+direction. The reservation expires on a clock the parent already owns.
+
+**What a chained row's own coordinates are, and are not.** For a row carrying
+`via_instance_id`, the dial target is the PARENT's host plus `via_remote_port`; the row's
+own `ssh_host` and `remote_port` are records and are never dialled from here. That is
+worth stating because those two fields arrive in the announcing pane's payload, which is
+untrusted -- and an origin check cannot help, since the sender is the remote gateway the
+owner deliberately connected to and therefore holds the correct origin. What makes a
+forged value harmless is the branch, not a check on the value. In
+`ssh_tunnel_manager.py`: `_resolve_transport` returns `_resolve_chained_transport` as its
+FIRST branch whenever `via_instance_id` is set, that resolver builds its
+`_TransportParams` with `ssh_host=validate_ssh_host(parent.ssh_host)`, and the
+`via_instance_id` field's own declaration states the rule. The branch that reads
+`inst.ssh_host` is the unchained one, below the return; a chained row never reaches it.
+Cited by symbol rather than by line, because a name survives the refactor that moves a
+line -- and a stale citation is how an auditable claim quietly becomes an asserted one.
+
+So a forged notice can put an arbitrary string on a row, and cannot make this gateway
+connect anywhere new. What it can influence is `via_remote_port` -- a loopback port on
+the PARENT, a machine the actor in this threat model already holds, and one whose own
+gateway mints the token regardless. The depth cap, the width cap, the duplicate guard and
+the cycle guard are all applied here against a registry the pane never sees, so the
+bounded result is rows pointing back through the same parent, visible in the Remote Crew
+list and removable with the cascade.
+
+Because those fields are records rather than targets, the dashboard does not render them
+where a verified target goes: a chained row shows its host marked as reported and omits
+the crew's own gateway port, so an attacker-chosen string cannot borrow the authority of
+a field the rest of the list uses for something this gateway actually dials.
+
+### 17.4 The four guards
+
+All four are decided SERVER-SIDE on the hub, because the request can originate
+inside an embedded pane whose code the hub does not control. The frontend displays
+the reason and decides nothing.
+
+**Depth cap.** `MAX_VIA_HOPS` is 2 -- A to B to C, three levels counting the hub --
+and `api_instances_add` refuses a deeper chain before anything is written or dialled
+(`chain_too_deep`). It also refuses a parent that is not configured here
+(`chain_parent_unknown`) and one reached over SSM, whose forwarder takes no second
+local forward from this gateway (`chain_parent_not_ssh`).
+
+The cap is enforced from BOTH ends, and the second end is not redundant: a hub counts
+hops in its own registry and cannot see that the parent reaches that crew through a
+further one. So `mint_embed_token` refuses to mint for a crew it is itself chained
+behind.
+
+**Width cap.** `MAX_CHAINED_PER_PARENT` is 8, counted over one parent's direct
+children, and `api_instances_add` refuses a further crew behind a parent already
+carrying that many (`chain_parent_full`). Depth and width are independent: a chain
+two hops deep is legal however many crews sit at the second level, so the depth cap
+alone bounds nothing about population. It needs its own cap because these rows are
+created by the parent's pane announcing crews rather than by anyone at this
+dashboard, and each one the hub accepts is another forward it opens and another
+token it mints. Counted per parent so one parent cannot crowd out the others.
+
+**One row per remote crew.** `api_instances_add` refuses a chained add whose
+`(via_instance_id, via_remote_id)` pair is already on the record
+(`chain_duplicate`), inside the same `_CHAIN_MUTATION_LOCK` critical section as the
+insert -- which is what makes it decisive, since two racing announcements would
+otherwise both read a list without the other's row. It belongs on the hub and not
+in the announcing pane: the pane decides from a list it refreshes only AFTER the
+add and the connect that add triggers, so a second announcement arriving inside
+that multi-second window reads a list without the first row and asks for a
+duplicate. The registry would take it, under a `-2` suffixed id, leaving one
+remote crew with two rows, two forwards, two tabs and two charges against the
+width cap, removable only by hand. The announcing pane treats this one refusal as
+benign -- it refreshes its list and relays nothing, because the crew is present
+and nothing the user did failed.
+
+**A residual forward is logged, not returned.** The `409 remove_teardown_failed`
+refusal reaches the user: it is an error response, so the removal mutation rejects
+and the panel shows the gateway's sentence. The other case cannot be an error at
+all -- a forward a racing connect re-established after the rows were deleted, which
+the second pass could not stop. The removal itself succeeded, so the response says
+so and the residual goes to the gateway's warning log naming the crew.
+
+It is deliberately NOT a field on the success body. An earlier revision published a
+`stranded` list there, and nothing read it: both callers of `removeInstance` await
+without touching the body, and no component references the name. A field on a public
+response with no reader is a contract to keep with nothing depending on it, and it
+let a real gap look answered. The honest surface for this is a persistent warning
+about a forward with no row -- a notification affordance, not a line in a panel that
+is about to lose the row it would hang off -- and until that exists the log is where
+an operator reads it.
+
+`via_instance_id` is not PATCH-editable. Re-parenting would move a crew onto a hop
+whose depth was never checked; only `via_remote_port` is editable, which is how a
+child is re-pointed after its parent reconnects on a new port.
+
+**Cycle guard.** A stable `gateway_id` (one random id per `KIROCREW_HOME`, minted on
+first read, exposed on `/api/health` behind the same direct-local gate as `version`)
+is what tells two dashboard ports apart. After a chained forward comes up, the hub
+reads the far end's id: equal to its own, or to any ancestor's, and the forward is
+torn down and the connect refused. Ids are compared, never `ssh_host` strings -- one
+machine answers to many spellings, so a string comparison would refuse unrelated
+crews and still admit real loops.
+
+Two deliberate limits. A crew that reports no id is allowed: the loop it cannot rule
+out is a nested pane, not an escape from a boundary, and the depth cap already bounds
+the arrangement -- refusing would make chaining unusable against every crew that has
+not been updated. Note that "no id" covers two cases, not one: a build older than the
+field, and a caller the direct-local gate above fences off. The hub's own read rides
+the loopback end of a forward it just opened, which that gate treats as direct-local,
+so the second case does not arise on this path. And a TOP-LEVEL crew is not
+cycle-checked at all: one pointing back at this gateway is what the product already
+allows, and refusing it here would break a working setup over an arrangement chaining
+does not introduce.
+
+### 17.5 What the user sees
+
+Remote Crew is reachable inside a pane. The tab used to disappear there, which read
+as a missing feature or a stale build rather than an intentional limit; now it is
+present and a refused connect explains itself.
+
+The switcher draws the tree: a chained crew renders under its parent, indented one
+step with a connector glyph, and its subtitle names the crew it goes through as well
+as the machine. Children grey out with their parent, because they share its tunnel.
+The tab bar itself stays flat -- a chained crew's chip carries the path
+(`parent > child`) instead of an indent, so it does not read as just another
+top-level crew.
+
+### 17.6 Out of scope
+
+SSM as the B-to-C transport. The hop A rides must be ssh, and a chained crew's own
+transport is whatever B uses to reach it -- which A never touches. Chaining a crew
+behind an SSM-reached parent is refused with a named code rather than half-working.
