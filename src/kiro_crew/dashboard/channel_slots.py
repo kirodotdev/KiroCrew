@@ -178,6 +178,11 @@ def project_channel_turn_live(
     slot = live_dashboard_slot(dashboard_state, session_key)
     if slot is None:
         return None
+    # These rows are a channel conversation's words landing in a dashboard
+    # conversation's context, so the slot is marked before the first append
+    # (see ``_ChatSlot._channel_turn_seen``). This projection bypasses the queue
+    # and the runner, the mark's other two writers.
+    slot._channel_turn_seen = True
     try:
         user_mid = (
             row_mid(
@@ -234,6 +239,9 @@ def project_channel_row_live(
     slot = live_dashboard_slot(dashboard_state, session_key)
     if slot is None:
         return None
+    # A channel turn's outcome row: same mark as the turn it closes, so this entry
+    # point is sufficient on its own (``_ChatSlot._channel_turn_seen``).
+    slot._channel_turn_seen = True
     try:
         mid = row_mid(slot.append(role, text, cls)) or ""
     except Exception:

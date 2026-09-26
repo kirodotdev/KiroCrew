@@ -9,6 +9,8 @@ an empty list clears them.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -19,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import folder_steering, pinned_fs
+from kiro_crew.dashboard import chat_folders as cf
 from kiro_crew.dashboard.chat_folders import (
     MAX_FOLDER_STEERING_DIR_LEN,
     MAX_FOLDER_STEERING_DIRS,
@@ -659,11 +662,25 @@ def _state(folders: list[dict[str, Any]]) -> DashboardState:
     state.push_slots_update = MagicMock()
     state.conversation_log = None
 
-    async def _mutate(fn: Any, on_committed: Any = None) -> Any:
+    async def _mutate(fn: Any, on_committed: Any = None, revalidate: Any = None) -> Any:
+        before = [dict(f) for f in state._folders]
         changed, value = fn(state._folders)
-        if changed and on_committed is not None:
+        if not changed:
+            return value
+        # The confirmed write suspends; a test can hook it to land state meanwhile.
+        await state._during_write()
+        refused = revalidate() if revalidate is not None else None
+        if refused is not None:
+            state._folders[:] = before
+            return refused
+        if on_committed is not None:
             on_committed()
         return value
+
+    async def _no_write_side_effects() -> None:
+        return None
+
+    state._during_write = _no_write_side_effects
 
     async def _read(fn: Any) -> Any:
         return fn(state._folders)
@@ -843,3 +860,281 @@ def test_walk_refuses_where_descriptor_relative_opens_are_unavailable(
     assert docs == []
     assert listed == []  # nothing was listed by name
     assert any("relative to a descriptor" in r.getMessage() for r in caplog.records)
+
+
+# ── the steering write is bound to the caller slot it was judged on ──
+
+
+class _FakeSessionStore:
+    """The two ``SessionMap`` reads the bound steering write makes, with the
+    thread each ran on recorded (they must run off the event loop)."""
+
+    def __init__(self) -> None:
+        self.mirror = None
+        self.slack = (None, None)
+        self.fail = False
+        self.threads: list[int] = []
+        self.epoch = 0
+
+    def link_epoch(self):
+        return self.epoch
+
+    def get_mirror_link(self, key):
+        import threading
+
+        self.threads.append(threading.get_ident())
+        if self.fail:
+            raise OSError("session store unreadable")
+        return self.mirror
+
+    def get_slack_link(self, key):
+        return self.slack
+
+
+def _bound_state(tmp_path):
+    d = tmp_path / "standards"
+    d.mkdir()
+    folders = [{"id": "fldr0001", "name": "Org", "parent_id": None, "order": 0}]
+    state = _state(folders)
+    state.get_slot = lambda key: state._slots.get(key)
+    state.sessions = _FakeSessionStore()
+    state.approval_requests = []
+    state.approval_answer = True
+
+    async def _request_approval(approval_id, source, tool, **kwargs):
+        state.approval_requests.append(
+            {"id": approval_id, "source": source, "tool": tool, **kwargs}
+        )
+        answer = state.approval_answer
+        if isinstance(answer, BaseException):
+            raise answer
+        if answer == "hang":
+            await asyncio.sleep(3600)
+        return answer
+
+    state.request_approval = _request_approval
+    caller = state._slots["chat-1-100"]
+    return state, folders, caller, str(d.resolve())
+
+
+async def _bound_patch(state, directory, generation):
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/fldr0001",
+            json={"steering_dirs": [directory], "steering_caller_generation": generation},
+            headers={"X-Session-Key": "dashboard:chat-1-100"},
+        )
+        return resp.status, await resp.json()
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_bound_write_asks_the_person_on_a_human_only_card(tmp_path):
+    """Provenance gates cannot see a web page or file the agent read, so every
+    tool-bound write needs the person's own click on this exact change."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 200, body
+    assert len(state.approval_requests) == 1
+    req = state.approval_requests[0]
+    assert req["human_only"] is True
+    assert req["slot"] == "chat-1-100"
+    # The card body is one JSON object carrying exactly what is stored, so no
+    # value is ambiguous or able to spoof another line of the card.
+    assert json.loads(req["tool_input"]) == {
+        "folder_id": "fldr0001",
+        "folder": "Org",
+        "steering_dirs": [directory],
+    }
+    assert folders[0]["steering_dirs"] == [directory]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_path_the_card_would_mask_is_refused_before_any_card(tmp_path):
+    """A benign symlink whose RESOLVED target is credential-shaped would be
+    shown masked on the card while the unmasked path is stored: refused."""
+    state, folders, caller, _directory = _bound_state(tmp_path)
+    target = tmp_path / "AKIAIOSFODNN7EXAMPLE"
+    target.mkdir()
+    link = tmp_path / "standards-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    status, body = await _bound_patch(state, str(link), caller._slot_generation)
+
+    assert status == 400, body
+    assert body["code"] == "steering_dirs_invalid"
+    assert state.approval_requests == []
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [False, "timeout"])
+async def test_a_declined_or_unanswered_approval_stores_nothing(tmp_path, monkeypatch, answer):
+    state, folders, caller, directory = _bound_state(tmp_path)
+    if answer == "timeout":
+        monkeypatch.setattr(cf, "STEERING_APPROVAL_TIMEOUT_SECS", 0.05)
+        state.approval_answer = "hang"
+    else:
+        state.approval_answer = False
+
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 403, body
+    assert body["code"] == "steering_approval_declined"
+    assert "steering_dirs" not in folders[0]
+
+
+@pytest.mark.asyncio
+async def test_the_persons_own_ui_write_asks_nothing(tmp_path):
+    """Only the agent verb (it sends the caller binding) is gated on a card."""
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.patch("/api/chat/folders/fldr0001", json={"steering_dirs": []})
+        assert resp.status == 200, await resp.text()
+    assert state.approval_requests == []
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_bound_write_from_the_same_clean_slot_lands(tmp_path):
+    state, folders, caller, directory = _bound_state(tmp_path)
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+    assert status == 200, body
+    assert folders[0]["steering_dirs"] == [directory]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_same_key_replacement_refuses_the_bound_write(tmp_path):
+    """The key now names a fresh slot object: its clean state proves nothing
+    about the conversation the tool judged, so nothing is stored."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    seen_generation = caller._slot_generation
+    state._slots["chat-1-100"] = _ChatSlot("chat-1-100")
+    assert state._slots["chat-1-100"]._slot_generation != seen_generation
+
+    status, body = await _bound_patch(state, directory, seen_generation)
+
+    assert status == 409
+    assert body["code"] == "steering_caller_changed"
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["marked", "in_flight", "linked", "mirrored", "closed"])
+async def test_a_caller_that_changed_since_the_read_refuses(tmp_path, change):
+    state, folders, caller, directory = _bound_state(tmp_path)
+    if change == "marked":
+        caller._channel_turn_seen = True
+    elif change == "in_flight":
+        caller._channel_marks_in_flight = 1
+    elif change == "linked":
+        caller.linked_session_key = "slack:C1:1.2"
+    elif change == "mirrored":
+        # An inbound-capable non-Slack mirror lives in the session store, not on
+        # the slot.
+        state.sessions.mirror = object()
+    else:
+        state._slots.pop("chat-1-100")
+
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    # A closed caller is refused even earlier (the endpoint cannot attribute the
+    # write at all); every other change is this binding's refusal.
+    if change == "closed":
+        assert status >= 400, body
+    else:
+        assert status == 409, body
+        assert body["code"] == "steering_caller_changed"
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_an_unreadable_link_store_refuses_the_bound_write(tmp_path):
+    """The mirror lookup fails closed on the agent path."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    state.sessions.fail = True
+
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 409, body
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["marked", "mirrored"])
+async def test_a_caller_that_changes_during_the_confirmed_write_is_rolled_back(tmp_path, change):
+    """The in-lock check passes, then the write suspends; a mark (or a link)
+    that lands while it is in flight rolls the change back instead of letting
+    steering persist for a caller that now fails the test."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+
+    async def _land_during_write() -> None:
+        if change == "marked":
+            caller._channel_turn_seen = True
+        else:
+            state.sessions.mirror = object()
+            state.sessions.epoch += 1
+
+    state._during_write = _land_during_write
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 409, body
+    assert body["code"] == "steering_caller_changed"
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_link_bound_while_the_commit_waits_refuses_it(tmp_path):
+    """The store probe runs off the loop before the folder lock is taken. A
+    mirror bound after that probe (while the commit waited for the lock) moves
+    the store's link epoch, and ``_apply`` refuses on the moved epoch."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    real_mutate = state.mutate_folders
+
+    async def _contended(fn, **kwargs):
+        # The link lands between the probe and the in-lock recheck.
+        state.sessions.mirror = object()
+        state.sessions.epoch += 1
+        return await real_mutate(fn, **kwargs)
+
+    state.mutate_folders = _contended
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 409, body
+    assert body["code"] == "steering_caller_changed"
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_the_store_link_probe_runs_off_the_event_loop(tmp_path):
+    """``SessionMap`` reads take a threading lock another path can hold across a
+    write, so the bound write must not make them on the gateway loop."""
+    import threading
+
+    state, folders, caller, directory = _bound_state(tmp_path)
+    status, body = await _bound_patch(state, directory, caller._slot_generation)
+
+    assert status == 200, body
+    assert state.sessions.threads, "the store must be probed"
+    assert threading.get_ident() not in state.sessions.threads
+
+
+@pytest.mark.asyncio
+async def test_a_non_integer_binding_is_refused(tmp_path):
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    status, body = await _bound_patch(state, directory, "7")
+    assert status == 400
+    assert "steering_dirs" not in folders[0]
+
+
+def test_each_slot_object_gets_its_own_generation():
+    assert _ChatSlot("a")._slot_generation != _ChatSlot("a")._slot_generation

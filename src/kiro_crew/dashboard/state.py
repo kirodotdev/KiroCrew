@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -144,6 +145,11 @@ _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
 #: The entry point the gateway serves (``server.py``'s ``_DIST_DIR``).
 _SERVED_INDEX = Path(__file__).resolve().parent.parent / "static" / "dist" / "index.html"
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
+
+#: Process-wide source of ``_ChatSlot._slot_generation``. Every slot OBJECT gets a
+#: fresh value, so a slot closed and recreated under the same key reads as a
+#: different generation even though its key, and possibly its tab id, match.
+_SLOT_GENERATIONS = itertools.count(1)
 
 
 def note_crew_log_class(state: Any, slot: Any) -> None:
@@ -2529,6 +2535,9 @@ class _ChatSlot:
         "_slack_thread_ts",
         "channel_origin",
         "_channel_runtime_origin",
+        "_channel_turn_seen",
+        "_channel_marks_in_flight",
+        "_slot_generation",
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
@@ -3092,6 +3101,34 @@ class _ChatSlot:
         self._stage_descriptions: list[list[str]] = []  # bullet points per stage
         self._plan_goal: str = ""  # goal from 📋 Plan for: header
         self._slack_linked: bool = False  # True when linked to a Slack thread
+        # STICKY: True once any message admitted from a channel (a reply in a
+        # linked Slack thread, carrying the queue's ``_directive_channel_origin``
+        # flag) has been queued into or run in this slot. Channel-authored text
+        # then lives in the conversation's context, so any LATER turn -- a
+        # successor synthesis turn, a subagent-completion delivery, a turn the
+        # person types -- can act on it; a per-turn provenance bit cannot bound
+        # that, and link state is mutable (an unlink is an ordinary action).
+        # So this is set and never cleared, and read back through the slot
+        # projection as ``channel_turn_seen``, where
+        # ``chat_folder_steering_set`` refuses on it: a host-read setting is not
+        # writable from a conversation channel words have entered. Set by
+        # :meth:`queue_append` / :meth:`queue_insert` and by ``_run_chat`` at
+        # entry, so a direct dispatch that bypasses the queue is covered too. It
+        # is NOT persisted: the transcript's metadata is agent-writable, so every
+        # hydrated slot is restored marked instead (``restore_channel_mark``).
+        self._channel_turn_seen: bool = False
+        # Process-local count of peer steers carrying channel words that are
+        # mid-RPC into this slot's running turn: the slot projection reads it as
+        # marked while it is non-zero, so the refusal is in place before the
+        # steered text can land, without persisting a mark for a steer that ends
+        # up delivering nothing (``send_to_target``).
+        self._channel_marks_in_flight: int = 0
+        # Which slot OBJECT this is (see ``_SLOT_GENERATIONS``). A host-read
+        # setting decided against one generation must be written against the
+        # same one: ``chat_folder_steering_set`` carries the generation it saw
+        # and the folder endpoint re-checks it, with the mark, under the store
+        # lock, so a same-key replacement cannot launder a marked caller.
+        self._slot_generation: int = next(_SLOT_GENERATIONS)
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
         self.folder_id: str = ""  # project folder assignment
@@ -4217,6 +4254,8 @@ class _ChatSlot:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
     ) -> str:
+        if directive_channel_origin:
+            self._channel_turn_seen = True
         return self._queue_repository.queue_append(
             self,
             content,
@@ -4228,6 +4267,21 @@ class _ChatSlot:
 
     def _note_enqueue(self) -> None:
         self._queue_repository.note_enqueue(self)
+
+    def carries_foreign_words(self) -> bool:
+        """Whether words that are not the person's may be in this conversation.
+
+        The one reading the slot projection publishes as ``channel_turn_seen``
+        and the folder endpoint re-checks under its lock: the sticky mark, a tab
+        born to display a channel transcript, a peer steer still in flight, or a
+        slot whose turns run on a remote crew (its transcript is peer-authored).
+        """
+        return bool(
+            self._channel_turn_seen
+            or self.channel_origin
+            or self._channel_marks_in_flight > 0
+            or getattr(self, "executor", "") == "remote"
+        )
 
     def queue_insert(
         self,
@@ -4241,6 +4295,8 @@ class _ChatSlot:
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
     ) -> str:
+        if directive_channel_origin:
+            self._channel_turn_seen = True
         return self._queue_repository.queue_insert(
             self,
             index,
@@ -6231,8 +6287,13 @@ class DashboardState:
         tool_purpose: str = "",
         slot: str = "",
         is_background: bool = False,
+        human_only: bool = False,
     ) -> bool:
-        """Request interactive approval and deny on timeout or cancellation."""
+        """Request interactive approval and deny on timeout or cancellation.
+
+        ``human_only`` marks a card only a person's click may answer: a bulk
+        trust/yolo mode switch leaves it pending.
+        """
         return await _approvals_for(self).request(
             self,
             approval_id,
@@ -6244,6 +6305,7 @@ class DashboardState:
             is_background=is_background,
             redact_url=redact_exfiltration_urls,
             redact_secret=redact_credentials,
+            human_only=human_only,
         )
 
     def pending_coordinator_approvals(self, slot_key: str) -> list[dict]:
@@ -7370,12 +7432,15 @@ class DashboardState:
         self,
         mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
         on_committed: Callable[[], None] | None = None,
+        revalidate: Callable[[], _T | None] | None = None,
     ) -> _T:
         """Serialize a folder mutation and confirm its off-loop persistence.
 
         ``on_committed`` runs under the repository lock only after the write
         is proven, so callers can attach side effects that must not outlive a
-        rolled-back or no-op transaction.
+        rolled-back or no-op transaction. ``revalidate`` (see
+        ``FolderRepository.mutate``) re-decides a precondition after that write
+        and rolls the transaction back when it answers non-``None``.
         """
 
         def _mark_committed() -> None:
@@ -7394,6 +7459,7 @@ class DashboardState:
             lambda: config_dir() / self._FOLDERS_FILE,
             self._write_folders_confirmed,
             _mark_committed,
+            revalidate,
         )
 
     async def read_folders(self, read: Callable[[list[dict[str, Any]]], _T]) -> _T:

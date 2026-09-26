@@ -112,6 +112,21 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 _TITLE_ORIGINS = ("auto", "user")
 
 
+def restore_channel_mark(slot: _ChatSlot, meta: dict) -> None:
+    """Hydrate the sticky channel mark (``_ChatSlot._channel_turn_seen``).
+
+    Marks UNCONDITIONALLY. Every caller is hydrating a slot from a transcript on
+    disk (a restart, a History resume, an import), and that transcript's
+    metadata line is written by the gateway but lives where an agent can write
+    it too -- so nothing in it (a forged value, or an unreadable line that reads
+    back as ``{}``) may prove the conversation clean. Only a slot born in THIS
+    process that no foreign words have reached is clean. *meta* is accepted so
+    the call sites read uniformly and is deliberately not consulted.
+    """
+    del meta
+    slot._channel_turn_seen = True
+
+
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
     """Resolve a rehydrated slot's title origin from persisted metadata.
 
@@ -1597,6 +1612,11 @@ def _rehydrate_slot_from_history(
             # dropping `slots:user` for apps that legitimately hold it).
             origin=str(meta.get("origin", "")),
         )
+        # Sticky and additive, like the flag it guards: channel-authored text in
+        # the restored transcript is still in this conversation's context after a
+        # restart, so the mark must come back with it (see
+        # ``_ChatSlot._channel_turn_seen``). Never cleared by a restore.
+        restore_channel_mark(slot, meta)
         # Title comes from the metadata line we already read above. We deliberately
         # do NOT consult ``list_sessions()`` here: that call globbed + stat'd + read
         # the first line of EVERY session file in the history dir (O(all sessions))
@@ -2303,6 +2323,10 @@ def _apply_recent_session(
     # Legacy metadata has no ``created_at``: record the observation itself so
     # the guard's missing-file witness still fires for it.
     slot._disk_meta_observed = bool(meta)
+    # The channel mark comes back with the transcript on EVERY hydration path
+    # (see ``_ChatSlot._channel_turn_seen``): a folder'd/pinned/recent restore
+    # rebuilds the same channel-authored context the open-slots restore does.
+    restore_channel_mark(slot, meta)
     slot._memory_assignment_from_history = True
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.

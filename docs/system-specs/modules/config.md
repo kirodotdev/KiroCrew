@@ -283,6 +283,70 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   signal. Clearing to `[]` stays allowed for every principal (it only removes
   reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
+- **Agent surface** (`mcp_dashboard.py`, `chat_folder_steering_set`). The
+  same setting is operable by an agent through the `kirocrew-dashboard` MCP
+  server, which issues the same `PATCH /api/chat/folders/{id}` the Folder
+  settings dialog does, so validation, the principal gate and the Windows
+  refusal are the endpoint's single verdict for both. The tool adds
+  containment of its own: the verb is refused for an app- or member-owned
+  session for clearing as well as setting (the endpoint refuses such a principal
+  only a non-empty list and would let it clear a folder it owns, while only the
+  person could have declared the list), and it is accepted only from a
+  `dashboard:` caller
+  (the surface the person's UI runs in), for clearing as well as setting -- the
+  endpoint lets any principal clear, and a channel-bound app-less caller reaches
+  it with the person's authority, so an exemption for `[]` would let it erase
+  stored steering that has no prior value to recover -- and only from a turn
+  in a conversation no channel message has entered, in a tab that carries no
+  channel link. A tab a Slack thread is linked to keeps its `dashboard:` key
+  while running the thread's replies as turns, and their text then stays in the
+  context, where any later turn (a successor synthesis turn, a subagent
+  completion, a typed turn after an unlink) can act on it. So the unit is the
+  conversation: `_ChatSlot._channel_turn_seen` is set by `queue_append` /
+  `queue_insert` and at `_run_chat` entry whenever the admission-time
+  `_directive_channel_origin` flag is present or the turn's actor is foreign
+  (`_FOREIGN_TURN_ACTORS`: a cron notification reporting into the tab, an app,
+  a crew peer), when a resumed Discord/Telegram turn is projected into the
+  tab (`project_channel_turn_live` / `project_channel_row_live`), and when a
+  remote crew's session is adopted (`apply_adopted_backfill`; a remote-executor
+  slot also reads as foreign through `carries_foreign_words`); it is never
+  cleared, is carried to a fork's child and
+  to a `session_send` target and to a `session_read_message` reader, and is
+  NOT persisted: the transcript metadata line is agent-writable, so nothing read
+  back from it can prove a conversation clean. Every hydration path (open-slots
+  restore, recent-session restore, History resume/import) goes through one
+  `restore_channel_mark` that marks the restored slot unconditionally; only a
+  slot born in this process can be clean. It is projected as `channel_turn_seen` on every slot row
+  (folding in `channel_origin`, a tab born to display a channel transcript); the tool
+  refuses on it, then binds the write to the slot OBJECT it judged: the PATCH
+  carries that row's `slot_generation` (a per-object counter), and the endpoint
+  first holds the request for the person's own approval of this exact change on a
+  `human_only` dashboard card (`request_approval(..., human_only=True)`: no
+  trust/yolo sweep answers it, and the resolve routes refuse an internal-secret or
+  app caller, so the requesting agent cannot approve itself; declined or unanswered
+  within `STEERING_APPROVAL_TIMEOUT_SECS` is 403 `steering_approval_declined`),
+  because provenance gates cannot observe text a tool read into the conversation;
+  then it
+  re-checks generation, mark and the slot's own link fields under the folder store
+  lock, after probing the session store's mirror and Slack links off the event loop
+  (they sit behind a threading lock) immediately before that commit, and re-checks
+  the store's lock-free link epoch (`SessionMap.link_epoch`, moved by every Slack
+  or mirror bind) under the lock so a link bound while the commit waited refuses it,
+  and re-runs the same caller recheck after the confirmed write, still under the lock,
+  rolling the change back in memory and on disk if a mark or link landed while the
+  write was in flight (`FolderRepository.mutate`'s `revalidate`; the previous list is
+  first recorded as a confirmed `folders.json.rollback` image that `load` prefers, so a
+  refused change is never durable, even across a failed rollback and a restart), answering
+  409 `steering_caller_changed` when the key now names a replacement slot or the
+  caller gained a mark or link since the read. The slot's recorded link shape (`links`, `slack_linked`,
+  `linked_session_key`) is a second, independent refusal covering a linked tab
+  before any reply has arrived. `_ChatSlot.carries_foreign_words()` is the one
+  predicate for "words that are not the person's are in this conversation";
+  a future sensitive verb reuses it (and its propagation) rather than growing a
+  parallel check. The verb is also on
+  `CHANNEL_AGENT_BLOCKED_TOOLS`, which fires only at the permission event.
+  `chat_folder_tree` renders each folder's declared list (`steering=[…]`) as
+  the read half.
 - **Resolution** (`_resolve_folder_steering_dirs`) is ACCUMULATIVE up the
   `parent_id` chain (root ancestor first, then descendants), unlike the
   nearest-wins `project_dir` resolver: an org-standards folder above a per-repo

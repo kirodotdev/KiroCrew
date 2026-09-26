@@ -7934,6 +7934,15 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     MCP_APP_MESSAGE_KIND: "app",
 }
 
+#: Turn actors whose words are not the person's and not the agent's own work, so a
+#: turn they start marks the conversation the same way a channel turn does (see
+#: ``_ChatSlot._channel_turn_seen``): a scheduled job's notification, an app, a
+#: crew peer. ``user`` is the person; ``autonudge`` re-injects an instruction this
+#: session armed; ``subagent`` returns this session's own delegated work -- the
+#: same trust as a tool result it asked for; ``gateway`` is the stage loop and task
+#: runner driving work the person started in this tab.
+_FOREIGN_TURN_ACTORS: frozenset[str] = frozenset({"cron", "app", "crew", "other"})
+
 
 def _actor_for_queue_items(items: "list[dict]") -> str:
     """The turn actor the consumed queue entries name, or ``""`` for none.
@@ -9249,6 +9258,15 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
+    # Mark the conversation BEFORE anything the turn does can read it back: a
+    # direct dispatch (the linked-thread intercept starts ``_run_chat`` without
+    # the queue when the slot is idle) carries the channel flag only here. The
+    # mark is sticky -- see ``_ChatSlot._channel_turn_seen`` -- so a successor
+    # turn dispatched WITHOUT the flag can never clear it. A turn started by a
+    # foreign actor (a cron notification reporting into this tab, an app, a
+    # crew peer) marks it too: its words are no more the person's than a channel's.
+    if _directive_channel_origin or _turn_actor in _FOREIGN_TURN_ACTORS:
+        slot._channel_turn_seen = True
     # A decision outcome still pending when a turn STARTS belongs to a turn that
     # has already finished, and one whose own turn produced no assistant row has
     # no reply left to describe. Dropped here rather than on each way a turn can

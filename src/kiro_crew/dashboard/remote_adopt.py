@@ -641,7 +641,12 @@ def apply_adopted_backfill(slot: "_ChatSlot", backfill: AdoptBackfill) -> int:
 
     The notice goes FIRST, so it reads as a header on the history that follows
     rather than a footer on the conversation.
+
+    The slot is marked (``_channel_turn_seen``) before any row lands: every row
+    here was authored on the PEER, not by this person, and a later read or fork
+    of this slot must carry that mark on like any other replay door.
     """
+    slot._channel_turn_seen = True
     if backfill.notice:
         slot.append("system", backfill.notice, "msg msg-info", broadcast=False)
     for row in backfill.rows:

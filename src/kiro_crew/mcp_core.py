@@ -1783,13 +1783,20 @@ def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> d
     return _send(path, headers=headers, timeout=timeout)
 
 
-def _patch(path: str, body: dict | None = None, *, session_key: str | None = None) -> dict:
+def _patch(
+    path: str,
+    body: dict | None = None,
+    *,
+    session_key: str | None = None,
+    timeout: float = 30,
+) -> dict:
     """PATCH a loopback gateway path with the internal-secret handshake.
 
     ``session_key``: as in :func:`_put`. A caller gated on
     :func:`_resolve_session_key_strict` must send the key it verified —
     re-resolving through the lenient walk here would let the request carry a
     different session's authority than the one the gate approved.
+    ``timeout``: the read timeout, for a route that waits on a person.
     """
     data = json.dumps(body or {}).encode()
     headers = {
@@ -1804,7 +1811,7 @@ def _patch(path: str, body: dict | None = None, *, session_key: str | None = Non
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    return _send(path, data=data, headers=headers, method="PATCH")
+    return _send(path, data=data, headers=headers, method="PATCH", timeout=timeout)
 
 
 def _put(path: str, body: dict | None = None, session_key: str | None = None) -> dict:

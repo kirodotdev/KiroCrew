@@ -58,9 +58,22 @@ class TestPromptDashboardDeliver:
         call_args = slot.enqueue_or_run_prompt.call_args
         prompt = call_args.args[0]
         assert "Fix these comments" in prompt
-        # run_chat coro and state are passed through in the documented positional order
-        assert call_args.args[1] is _run_chat
+        # The run arm is _run_chat attributed to ``cron`` (a heartbeat result is a
+        # scheduled job's output), and the queue arm carries the same actor for the
+        # drain to read: that actor is what marks the tab as not the person's words.
+        import functools
+
+        from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+
+        runner = call_args.args[1]
+        assert isinstance(runner, functools.partial)
+        assert runner.func is _run_chat
+        assert runner.keywords == {"_turn_actor": "cron"}
         assert call_args.args[2] is state
+        assert call_args.kwargs["extra_meta"] == {TURN_ACTOR_META_KEY: "cron"}
+        # Marked at admission too: a queued entry's actor stamp does not survive
+        # a queue restore, so the runner-entry stamp alone would miss it.
+        assert slot._channel_turn_seen is True
 
     @pytest.mark.asyncio()
     async def test_prompt_warns_on_missing_slot(self, orchestrator, dashboard_state, caplog, monkeypatch):

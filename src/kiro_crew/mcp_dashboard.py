@@ -78,6 +78,7 @@ from urllib.parse import quote
 # process (measured) — under ``mcp_computer``'s own import cost, because
 # mcp_core's heavy dependencies are function-local.
 from kiro_crew.dashboard.chat_folders import (
+    STEERING_APPROVAL_TIMEOUT_SECS,
     _folder_owner_app,
     _subtree_holds_foreign_folder,
 )
@@ -96,6 +97,7 @@ from kiro_crew.validation import (
     CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+    CHAT_FOLDER_STEERING_SET_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
     CHAT_TAG_ASSIGN_SCHEMA,
     CHAT_TAG_CREATE_SCHEMA,
@@ -112,6 +114,11 @@ from kiro_crew.validation import (
     SESSION_STOP_SCHEMA,
     validate_tool_args,
 )
+
+#: The steering PATCH waits on the person's approval card for up to
+#: ``STEERING_APPROVAL_TIMEOUT_SECS``; the client waits a little longer so the
+#: endpoint's own refusal, not a transport timeout, is what the agent reads.
+STEERING_APPROVAL_CLIENT_TIMEOUT = STEERING_APPROVAL_TIMEOUT_SECS + 30
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +167,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "here is the one the person sees — which is what makes it safe to "
                 "pick a ``before``/``after`` anchor for chat_folder_move. Returns per "
                 "folder: id, human path, project directory, default "
-                "agent, and how many archived (history) sessions are filed there; "
+                "agent, and the steering directories it DECLARES (``steering=[…]``; "
+                "a folder inherits its ancestors' too, root-first, so read up the "
+                "tree for the full set); "
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
                 "get folder ids/paths and session keys before calling "
-                "chat_folder_create / chat_folder_move / chat_folder_move_session, "
-                "or when the user asks what their tree looks like. This is the "
+                "chat_folder_create / chat_folder_move / chat_folder_move_session / "
+                "chat_folder_steering_set, or when the user asks what their tree looks like. This is the "
                 "folder-shaped view; list_sessions is the flat newest-first one."
             ),
             "inputSchema": {"type": "object", "properties": {}},
@@ -305,6 +314,54 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         ),
                     },
                 },
+            },
+        },
+        {
+            "name": "chat_folder_steering_set",
+            "description": (
+                "Set the ADDITIONAL STEERING DIRECTORIES of a sidebar folder — the "
+                "same setting as Folder settings → Additional steering in the "
+                "dashboard, through the same endpoint. Every always-inclusion "
+                "``*.md`` under each directory (``.kiro/steering``-style) is "
+                "delivered to every session filed in the folder or its subfolders, "
+                "accumulating root-first with the ancestors' directories; read "
+                "chat_folder_tree for what a folder declares and inherits. "
+                "``steering_dirs`` REPLACES the folder's list: pass the full set you "
+                "want, and ``[]`` to clear it. Each entry is an absolute path to an "
+                "existing directory; the endpoint refuses a sensitive path, a "
+                "duplicate, or a list longer than the endpoint allows. Only the PERSON may declare "
+                "steering — a steering directory is a host-file read the gateway "
+                "performs on the folder's behalf, and folder permission is not "
+                "host-file permission — so this verb is accepted only from the "
+                "person's own dashboard tab, for setting AND clearing, and only "
+                "in a conversation no channel message, scheduled job, app or crew "
+                "peer has ever entered (a conversation restored from disk or "
+                "imported counts as entered), in a tab "
+                "with no channel link (a Slack-linked tab runs the thread's "
+                "replies as turns under its dashboard key, and their text stays "
+                "in the context; use a fresh tab or Folder settings then). An app "
+                "or crew-member "
+                "session is refused here for setting AND clearing (the endpoint would let it clear a folder it owns); a channel- "
+                "or schedule-bound session is refused here before any read. Not available on "
+                "native Windows (the endpoint refuses a non-empty list there)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": "Folder id or '/'-separated human path from chat_folder_tree.",
+                    },
+                    "steering_dirs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "The folder's complete steering-directory list: absolute "
+                            "paths to existing directories. ``[]`` clears."
+                        ),
+                    },
+                },
+                "required": ["folder", "steering_dirs"],
             },
         },
         {
@@ -1365,6 +1422,104 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
+def _refuse_channel_reachable_slot(caller_key: str, rows: list[dict]) -> str | None:
+    """Why words from a channel can still reach a ``dashboard:`` caller, or ``None``.
+
+    The ``dashboard:`` prefix says which SLOT a turn runs in, not where its
+    words came from. A tab linked to a Slack thread (``/kirocrew
+    link-to-dashboard``) keeps its ``dashboard:<slot>`` key and runs a reply
+    posted in that thread as a turn -- the link is recorded on the slot, not in
+    the key -- and a session born in a channel conversation is brought back by
+    a human reply there the same way. Either shape lets channel-origin text
+    reach a verb that names host directories the gateway reads unsandboxed into
+    every later chat in the folder, which is exactly what the prefix test was
+    added to exclude. Two refusals, either sufficient:
+
+    * ``channel_turn_seen`` -- whether channel-authored text has EVER entered
+      this conversation (set when a channel-flagged message is queued or run,
+      never cleared, and NOT persisted: every conversation restored from disk is
+      re-marked unconditionally, so a restart only ever makes the answer more
+      conservative). This is the decisive test.
+      Once channel words are in the context, ANY later turn can act on them --
+      a successor synthesis turn, a subagent-completion delivery, a turn the
+      person types -- so neither the current turn's provenance nor the link
+      state (which a human can flip mid-turn) can bound it; the conversation
+      is the unit. The person uses a fresh dashboard tab or Folder settings.
+    * the slot's SHAPE -- any channel link on record (``links``, which the
+      sidebar's channel control is built from, plus the older ``slack_linked``
+      and ``linked_session_key`` spellings). Kept beside the mark because a
+      linked tab can take a channel reply at any moment -- before any has
+      arrived there is no mark yet -- and because it fails closed on a row
+      that carries no mark field at all.
+
+    Both read from the caller's OWN row in the live slot list. A key that names
+    no live row is refused too: the tab closed mid-call or the key is wrong,
+    and a write to shared state is not where to assume otherwise.
+    """
+    if not caller_key.startswith("dashboard:"):
+        return (
+            "Error: steering directories can be set or cleared only from the "
+            "person's own dashboard session — this caller is bound to a channel "
+            "or a schedule. Change them from a dashboard tab (Folder settings → "
+            "Additional steering) or from an agent running in one."
+        )
+    slot_key = caller_key.split(":", 1)[1]
+    row = next((r for r in rows if str(r.get("key") or "") == slot_key), None)
+    if row is None:
+        return (
+            "Error: this session's dashboard slot is not in the live list, so "
+            "setting steering directories is refused — the tab may have closed "
+            "while this call was in flight."
+        )
+    if str(row.get("app") or "") or str(row.get("mode") or "") == "member":
+        # A non-person principal owns this slot: an App Kit session (``app``)
+        # or a crew member's thread (``mode == "member"``). The endpoint refuses
+        # such a principal a non-empty list but lets it clear a folder it owns,
+        # and only the person could have put steering there -- so the tool
+        # refuses set AND clear on the slot's owner, keeping one rule for both.
+        # Read from the same row as the checks below, so the owner and the
+        # provenance are judged on one snapshot. The endpoint is the
+        # authoritative gate: a tool-bound write (it carries the caller
+        # binding) from ANY non-person principal is refused there, set and
+        # clear, keyed on the resolved principal -- so a member driving an
+        # ordinary chat bound to its own store is refused too.
+        return (
+            "Error: this session belongs to an app or a crew member, so steering "
+            "directories can be neither set nor cleared from it — only the person "
+            "declares steering. Ask the person to change it from Folder settings "
+            "→ Additional steering."
+        )
+    if row.get("channel_turn_seen") is True:
+        # Checked before the link clause and on its own: the sticky fact about
+        # this conversation, which no unlink, successor turn or restart erases.
+        # The link-shape clause below is a second, independent refusal.
+        return (
+            "Error: this conversation has received messages from a channel (a "
+            "linked Slack thread) or from a scheduled job or app turn "
+            "(or it was restored from disk or imported, "
+            "so that cannot be ruled out), "
+            "so steering directories can be neither set nor "
+            "cleared from it — words in the context that are not yours must not "
+            "choose the host directories the gateway reads. Make the change from a fresh "
+            "dashboard tab, or from Folder settings → Additional steering."
+        )
+    links = row.get("links")
+    if (
+        row.get("slack_linked")
+        or str(row.get("linked_session_key") or "")
+        or (isinstance(links, list) and links)
+    ):
+        return (
+            "Error: this dashboard session is linked to a channel conversation "
+            "(a Slack thread or another channel can post turns into it), so "
+            "steering directories can be neither set nor cleared from here — "
+            "a channel reply would reach a setting that names host directories. "
+            "Unlink the conversation first, or make the change from a dashboard "
+            "tab that has no channel link (Folder settings → Additional steering)."
+        )
+    return None
+
+
 def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
     """The caller's OWN sidebar slot row, or why it has none to file.
 
@@ -1892,6 +2047,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 meta_bits.append(f"project={row['project_dir']}")
             if row.get("default_agent"):
                 meta_bits.append(f"agent={row['default_agent']}")
+            # What the folder DECLARES, verbatim from the row — the read half of
+            # chat_folder_steering_set, so an agent can see the list before
+            # replacing it. Inheritance is not rendered per folder: the tree is
+            # root-first already, so an ancestor's line above IS the inherited
+            # set, and re-deriving the ownership fence here would be a second
+            # copy of the delivery rule.
+            if isinstance(row.get("steering_dirs"), list) and row.get("steering_dirs"):
+                meta_bits.append(f"steering=[{', '.join(str(p) for p in row['steering_dirs'])}]")
             # No archived count. The invariant this server holds is that nothing it
             # emits discloses a non-persistent session — and the folders endpoint's
             # ``history_count`` covers archived transcripts with no memory_mode to
@@ -2327,6 +2490,139 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return redact(
             f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}"
         )
+    if name == "chat_folder_steering_set":
+        args = validate_tool_args(args, CHAT_FOLDER_STEERING_SET_SCHEMA)
+        # Declaring steering is tree shaping with a larger blast radius than a
+        # rename: it decides which host directories the gateway reads into every
+        # chat filed beneath the folder. So the same identity gate first (an
+        # unverifiable or delegated caller cannot be placed), and its verified
+        # key is what the write carries, per the gate's contract.
+        caller_key, caller_app, gate = _refuse_tree_shaping_if_unverifiable(
+            "setting steering directories"
+        )
+        if gate:
+            return gate
+        if caller_app:
+            # The PERSON-only rule holds for clearing too. The endpoint refuses a
+            # non-empty list from an app or member (``steering_dirs_forbidden``)
+            # but lets any principal clear a folder it owns, and only the person
+            # could have put steering there -- so an app-owned session sending
+            # ``[]`` would erase the person's declaration with no prior value
+            # retained. The gate already resolved the app this call is judged
+            # as; refusing on it here, before any read, keeps the tool's rule
+            # the same for set and clear rather than inheriting the endpoint's
+            # asymmetry. The member case is refused on the caller's own row
+            # below, where ``mode`` is visible.
+            return (
+                f"Error: this session belongs to the app `{redact(caller_app)}`, so "
+                "steering directories can be neither set nor cleared from it — "
+                "only the person declares steering (a steering directory is a "
+                "host-file read the gateway performs on the folder's behalf). Ask "
+                "the person to change it from Folder settings → Additional steering."
+            )
+        wanted: list[str] = [str(p) for p in args["steering_dirs"]]
+        # The person's UI for this setting is a dashboard tab, so the agent
+        # surface is bounded to the same place -- and to a tab that no channel
+        # can post into. A steering directory is a host read that lands in every
+        # later chat in the folder, so words from a thread other people are in
+        # must not reach this verb: not through a channel- or schedule-bound
+        # key, and not through a dashboard slot a Slack thread is linked to,
+        # which keeps its ``dashboard:`` key while running the thread's replies
+        # (see ``_refuse_channel_reachable_slot``). CLEARING is refused on the
+        # same rule, not exempted: the stored list has no prior value retained,
+        # so an erased list is config the person must retype, and it surfaces
+        # only as later chats silently missing the folder's documents. An empty
+        # list is an ordinary input from a channel session, and
+        # ``CHANNEL_AGENT_BLOCKED_TOOLS`` fires only at the permission event --
+        # an auto-approved MCP call never emits one -- so the refusal has to
+        # hold here regardless of list contents. The slot list is re-read here
+        # (the identity gate does not hand its rows back), as file_self does.
+        slot_rows, slot_rows_err = _get_rows("/api/chat/slots")
+        if slot_rows_err:
+            return redact(f"Error: {slot_rows_err}")
+        if (linked := _refuse_channel_reachable_slot(caller_key, slot_rows)) is not None:
+            return linked
+        # The generation of the slot object the checks above just judged. The
+        # endpoint re-checks it -- with the mark and the link shape -- under its
+        # store lock, so a same-key replacement or a mark gained between this
+        # read and the write refuses the write instead of passing a stale view.
+        caller_slot_key = caller_key.split(":", 1)[1]
+        caller_row = next((r for r in slot_rows if str(r.get("key") or "") == caller_slot_key), {})
+        caller_generation = caller_row.get("slot_generation")
+        if isinstance(caller_generation, bool) or not isinstance(caller_generation, int):
+            return (
+                "Error: this session's slot row carries no generation, so the write "
+                "cannot be bound to it and is refused."
+            )
+        # Agent-authored paths landing in durable state: redact like a folder
+        # name — but a REDACTED path names a different directory, so an entry the
+        # redactor rewrote is refused rather than stored under a spelling nobody
+        # asked for (the endpoint would only report it as not a directory).
+        for entry in wanted:
+            if redact(entry) != entry:
+                return (
+                    f"Error: steering directory `{redact(entry)}` carries a "
+                    "credential-shaped segment and was not stored — name the "
+                    "directory without it."
+                )
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return redact(f"Error: {folders_err}")
+        fld_id, fld_err = _resolve_chat_folder_id(args["folder"], chat_folders)
+        if fld_err:
+            return redact(f"Error: {fld_err}")
+        if not fld_id:
+            return "Error: 'root' is not a folder — name the folder whose steering to set."
+        # One PATCH, carrying only this field. Validation (absolute, existing,
+        # not sensitive, deduped, ≤16), the person-only principal gate and the
+        # Windows refusal are all the endpoint's under its lock — the same
+        # verdicts the dashboard UI gets — so none of them is re-derived here.
+        # The endpoint holds this request open until the person answers an
+        # approval card for this exact change (or its window lapses), so the
+        # read timeout outlasts that window.
+        d = _patch(
+            f"/api/chat/folders/{fld_id}",
+            {"steering_dirs": wanted, "steering_caller_generation": caller_generation},
+            session_key=caller_key,
+            timeout=STEERING_APPROVAL_CLIENT_TIMEOUT,
+        )
+        if d.get("error"):
+            hint = ""
+            if d.get("code") == "steering_dirs_forbidden":
+                hint = (
+                    " Folder permission does not grant host-file reads: ask the "
+                    "person to set this from Folder settings → Additional steering."
+                )
+            elif d.get("code") == "steering_approval_declined":
+                hint = (
+                    " The person answers an approval card on the dashboard for "
+                    "every steering change an agent asks for; ask them, or they "
+                    "can set it from Folder settings → Additional steering."
+                )
+            elif d.get("code") == "steering_caller_changed":
+                hint = (
+                    " Re-run from a fresh dashboard tab, or make the change from "
+                    "Folder settings → Additional steering."
+                )
+            return redact(f"Error: {d['error']}{hint}")
+        folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
+        stored = d.get("steering_dirs") if isinstance(d.get("steering_dirs"), list) else []
+        if not stored:
+            return redact(f"Cleared the steering directories of `{folder_label}` (id={fld_id}).")
+        lines = [
+            f"Set the steering directories of `{folder_label}` (id={fld_id}) to "
+            f"{len(stored)} director{'y' if len(stored) == 1 else 'ies'}:"
+        ]
+        lines.extend(f"  · {p}" for p in stored)
+        # The endpoint stores each entry RESOLVED (realpath), so what came back
+        # is what later chats read — echo that, not the caller's spelling.
+        lines.append(
+            "Every session filed in this folder or its subfolders receives the "
+            "always-inclusion *.md documents under these directories, after any "
+            "an ancestor folder declares; an app's or crew member's folder steers "
+            "only chats running as that principal."
+        )
+        return redact("\n".join(lines))
     if name == "chat_tag_list":
         validate_tool_args(args, CHAT_TAG_LIST_SCHEMA)
         # The vocabulary is one shared list of labels with no per-session or

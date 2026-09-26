@@ -2305,6 +2305,34 @@ CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
     ],
 )
 
+# Mirrors of the folder endpoint's steering bounds
+# (``chat_folders.MAX_FOLDER_STEERING_DIRS`` / ``MAX_FOLDER_STEERING_DIR_LEN``),
+# spelled here because this module sits below the dashboard package. The
+# endpoint re-checks both, so a drift only costs an earlier refusal here versus a
+# 400 there; the registration test pins the two pairs equal so the drift is
+# caught rather than lived with.
+_CHAT_FOLDER_STEERING_DIRS_MAX = 16
+_CHAT_FOLDER_STEERING_DIR_LEN_MAX = 4096
+
+CHAT_FOLDER_STEERING_SET_SCHEMA = ToolSchema(
+    tool_name="chat_folder_steering_set",
+    fields=[
+        FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        # Required even when empty: ``[]`` is the CLEAR, and an omitted list
+        # would otherwise be indistinguishable from it. Each entry is an absolute
+        # directory path; existence, sensitivity and dedup are the endpoint's
+        # verdict (``_validate_steering_dirs``), not re-derived here.
+        FieldSpec(
+            "steering_dirs",
+            list,
+            required=True,
+            item_type=str,
+            item_max_len=_CHAT_FOLDER_STEERING_DIR_LEN_MAX,
+            max_items=_CHAT_FOLDER_STEERING_DIRS_MAX,
+        ),
+    ],
+)
+
 # The tag endpoints store ``name[:60]`` (``chat_tags._NAME_MAX``); the cap is
 # mirrored here so the server refuses an overlong name instead of writing one
 # that no later ``chat_tag_assign`` name lookup can match.
@@ -3644,6 +3672,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
+    "chat_folder_steering_set": CHAT_FOLDER_STEERING_SET_SCHEMA,
     "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
     "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,

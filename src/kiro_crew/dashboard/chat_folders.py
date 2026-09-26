@@ -4,11 +4,13 @@ LLM emoji generator here serves both chat folders and the artifact library."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import unicodedata
 import uuid
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -560,8 +562,153 @@ MAX_FOLDER_STEERING_DIRS = 16
 MAX_FOLDER_STEERING_DIR_LEN = 4096
 
 
+def _steering_caller_changed(state: Any, session_key: str, generation: int) -> bool:
+    """Whether a bound steering write's caller differs from what it was read as.
+
+    Called under the folder store lock. True -- refuse -- unless *session_key*
+    still names a ``dashboard:`` slot whose object is the one read (same
+    generation), carries no foreign words and has no channel link. Any doubt
+    (not a dashboard key, no live slot) refuses.
+    """
+    if not session_key.startswith("dashboard:"):
+        return True
+    slot = state.get_slot(session_key.removeprefix("dashboard:"))
+    if slot is None or getattr(slot, "_slot_generation", None) != generation:
+        return True
+    if slot.carries_foreign_words():
+        return True
+    return bool(getattr(slot, "_slack_linked", False) or getattr(slot, "linked_session_key", ""))
+
+
+#: How long a tool-bound steering write waits for the person's click. Under the
+#: MCP client's request timeout (``STEERING_APPROVAL_CLIENT_TIMEOUT``), so an
+#: unanswered card is retired as a refusal before the caller gives up on it.
+STEERING_APPROVAL_TIMEOUT_SECS = 290.0
+
+
+def _unshowable_on_card(values: list[str]) -> str | None:
+    """The first value the approval card could not show verbatim, or ``None``.
+
+    The card's text passes through credential and URL redaction before it is
+    rendered, so a value redaction would rewrite (a symlink resolving to a
+    credential-shaped path, say) would be approved as masked text while the
+    unmasked value is stored. Such a change is refused instead of asked.
+    """
+    for value in values:
+        if redact_credentials(value)[0] != value or redact_exfiltration_urls(value)[0] != value:
+            return value
+    return None
+
+
+def _steering_card_text(fid: str, name: str, steering_dirs: list[str]) -> str:
+    """The approval card's body: one JSON object, so every value is quoted and
+    escaped and no name or path can spoof another line of the card."""
+    return json.dumps(
+        {"folder_id": fid, "folder": name, "steering_dirs": steering_dirs},
+        ensure_ascii=True,
+        indent=1,
+    )
+
+
+async def _await_person_steering_approval(
+    state: Any, fid: str, steering_dirs: list[str], session_key: str
+) -> str:
+    """Ask the person, on a human-only dashboard card, to approve this change.
+
+    Returns ``"approved"``, ``"declined"`` (declined or unanswered), or
+    ``"unshowable"`` when a value would be masked on the card.
+    """
+    folder = next((f for f in getattr(state, "_folders", []) if f.get("id") == fid), None)
+    name = str((folder or {}).get("name") or fid)
+    card = _steering_card_text(fid, name, steering_dirs)
+    # Every raw value AND the composed card: redaction must leave what the
+    # person reads byte-identical to what is stored.
+    if _unshowable_on_card([fid, name, *steering_dirs, card]) is not None:
+        return "unshowable"
+    try:
+        approved = await asyncio.wait_for(
+            state.request_approval(
+                f"steering-{uuid.uuid4().hex}",
+                "chat_folder_steering_set",
+                "chat_folder_steering_set",
+                tool_input=card,
+                tool_purpose=(
+                    "An agent asks to change the steering directories this folder "
+                    "loads into every chat in it"
+                ),
+                slot=session_key.removeprefix("dashboard:"),
+                human_only=True,
+            ),
+            timeout=STEERING_APPROVAL_TIMEOUT_SECS,
+        )
+    except asyncio.TimeoutError:
+        return "declined"
+    return "approved" if approved else "declined"
+
+
+def _store_links_moved(state: Any, fence: list[int | None]) -> bool:
+    """Whether a channel link may have been written since the off-loop probe.
+
+    Called under the folder store lock, on the loop: ``SessionMap.link_epoch`` is
+    a lock-free int read, so this takes no session-store lock. *fence* holds the
+    epoch the probe read before its link reads (empty when no probe ran, ``None``
+    when there was no store to fence). A moved epoch, or a store that cannot
+    answer, refuses.
+    """
+    if not fence or fence[0] is None:
+        return False
+    try:
+        return bool(state.sessions.link_epoch() != fence[0])
+    except Exception:
+        return True
+
+
+def _store_link_probe(state: Any, session_key: str) -> Callable[[], tuple[bool, int | None]] | None:
+    """A blocking session-store probe for the bound caller's channel links.
+
+    Resolved ON the loop (slot lookup, its effective session key), so the only
+    thing the returned callable does is the two ``SessionMap`` reads -- each
+    guarded by a threading lock another path can hold across a write, which is
+    why it must run off the loop (``asyncio.to_thread``). ``None`` when there is
+    no dashboard slot to probe; the in-lock recheck refuses that case anyway.
+    The callable answers ``(refuse, epoch)``: refuse is True for a recorded
+    mirror or Slack link and for a store that cannot answer (the agent path fails
+    closed); *epoch* is ``SessionMap.link_epoch()`` read before the link reads,
+    which ``_apply`` re-checks under the folder lock so a link added after the
+    probe refuses the commit (``None`` when there is no store to fence).
+    """
+    if not session_key.startswith("dashboard:"):
+        return None
+    slot = state.get_slot(session_key.removeprefix("dashboard:"))
+    if slot is None:
+        return None
+
+    store = getattr(state, "sessions", None)
+    effective_key = effective_session_key(slot)
+
+    def _probe() -> tuple[bool, int | None]:
+        # The epoch is read BEFORE the link reads, so a link written after it
+        # moves the epoch and the in-lock recheck refuses on the stale probe.
+        if store is None:
+            return False, None
+        try:
+            epoch = store.link_epoch()
+            mirror = store.get_mirror_link(effective_key)
+            thread_ts, channel_id = store.get_slack_link(effective_key)
+        except Exception:
+            return True, None
+        return bool(mirror or thread_ts or channel_id), epoch
+
+    return _probe
+
+
 def _refuse_principal_steering_dirs(
-    request_app: str, steering_dirs: list, *, operation: str, folder_id: str
+    request_app: str,
+    steering_dirs: list,
+    *,
+    operation: str,
+    folder_id: str,
+    refuse_clear: bool = False,
 ) -> web.Response | None:
     """Only the PERSON may declare steering directories; refuse everyone else.
 
@@ -578,8 +725,14 @@ def _refuse_principal_steering_dirs(
     calls carry the empty principal and are unaffected; a person can still
     declare steering on a folder an app or member owns, and the delivery gate
     then routes it to that principal's chats as before.
+
+    ``refuse_clear`` extends the refusal to ``[]`` for the agent verb
+    (``chat_folder_steering_set`` sends a caller binding): only the person could
+    have put steering on a folder, so a non-person principal -- an app, or a
+    crew member however its slot is shaped (a member DM, or an ordinary chat
+    bound to the member's private store) -- may not erase it through the tool.
     """
-    if not request_app or not steering_dirs:
+    if not request_app or not (steering_dirs or refuse_clear):
         return None
     sel().log_api_access(
         caller=request_app,
@@ -1404,6 +1557,9 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # stamped once at create from the authenticated caller and is not a field a
     # request can hand over, take, or clear.
     changes: dict[str, object] = {}
+    steering_binding: tuple[str, int] | None = None
+    # The session-store link epoch the off-loop probe read (see _store_links_moved).
+    store_fence: list[int | None] = []
     if "name" in body:
         new_name = str(body["name"]).strip()[:100]
         if not new_name:
@@ -1526,6 +1682,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             raw_steering if isinstance(raw_steering, list) else [raw_steering],
             operation="chat.folder_steering_dirs",
             folder_id=fid,
+            refuse_clear="steering_caller_generation" in body,
         )
         if refused is not None:
             return refused
@@ -1537,6 +1694,26 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
             )
         changes["steering_dirs"] = resolved_steering
+        # A caller binding (sent by ``chat_folder_steering_set``): the slot
+        # generation it read its provenance from. Re-checked in ``_apply``, under
+        # the store lock and with no await before the write, against the slot the
+        # request's session key names NOW -- so a same-key replacement, a mark
+        # gained since, or a link added since refuses the write instead of
+        # certifying a snapshot. A binding can only ADD a refusal, never grant.
+        if "steering_caller_generation" in body:
+            raw_gen = body["steering_caller_generation"]
+            if isinstance(raw_gen, bool) or not isinstance(raw_gen, int):
+                return web.json_response(
+                    {
+                        "error": "steering_caller_generation must be an integer",
+                        "code": "steering_dirs_invalid",
+                    },
+                    status=400,
+                )
+            steering_binding = (
+                str(request.headers.get("X-Session-Key", "") or ""),
+                raw_gen,
+            )
     if "tags" in body:
         # Vocabulary-constrained tag list. An empty list clears the folder's
         # tags; anything else must be ids that exist in the tag vocabulary.
@@ -1558,6 +1735,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         target = next((f for f in folders if f["id"] == fid), None)
         if target is None:
             return False, "not_found"
+        if steering_binding is not None and (
+            _steering_caller_changed(state, *steering_binding)
+            or _store_links_moved(state, store_fence)
+        ):
+            return False, "steering_caller_changed"
         # Ownership, decided here for the same reason the cycle rule is: a
         # concurrent reparent can change who the target or the destination
         # belongs to between validation and the write.
@@ -1621,7 +1803,79 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             _bump_icon_epoch(fid)
         committed_epoch.append(_CHAT_FOLDER_ICON_EPOCHS.get(fid, 0))
 
-    if "tags" in changes:
+    # A tool-bound steering write needs the PERSON's approval of this exact
+    # change, answered by their own click on a dashboard card: nothing in the
+    # caller's conversation can prove its words are the person's (a web page or
+    # file an agent read is in the context too), so provenance gates narrow the
+    # verb but only a per-call human decision authorizes it. The card is
+    # ``human_only`` (no trust/yolo sweep answers it), its resolve route is not
+    # reachable with the agent's credential, and it is asked BEFORE the commit
+    # fence below so the caller's state is still re-checked at the commit.
+    if steering_binding is not None:
+        verdict = await _await_person_steering_approval(
+            state, fid, [str(p) for p in resolved_steering or []], steering_binding[0]
+        )
+        if verdict == "unshowable":
+            return web.json_response(
+                {
+                    "error": (
+                        "a steering directory (after resolving links) or the folder "
+                        "name would be masked on the approval card, so it cannot be "
+                        "approved as shown; nothing was stored"
+                    ),
+                    "code": "steering_dirs_invalid",
+                },
+                status=400,
+            )
+        if verdict != "approved":
+            return web.json_response(
+                {
+                    "error": (
+                        "the person did not approve this steering change (declined, or no "
+                        "answer in time); nothing was stored"
+                    ),
+                    "code": "steering_approval_declined",
+                },
+                status=403,
+            )
+
+    # A bound steering write also checks the session store's channel links (a
+    # non-Slack mirror lives there, not on the slot). Those reads take a
+    # threading lock, so they run off the loop here, after every other await and
+    # immediately before the commit. ``_apply`` then re-checks, under the folder
+    # store lock, the slot's own state (generation, mark, link fields) and the
+    # store's lock-free link epoch against the one read before the probe, so a
+    # link added while the commit waited for the lock refuses it.
+    store_probe = (
+        _store_link_probe(state, steering_binding[0]) if steering_binding is not None else None
+    )
+    if store_probe is not None:
+        probe_refused, probed_epoch = await asyncio.to_thread(store_probe)
+        store_fence.append(probed_epoch)
+    else:
+        probe_refused = False
+
+    # The provenance fence holds THROUGH persistence: the confirmed write
+    # suspends under the folder lock, and a mark or link can land on the caller
+    # while it is in flight. The repository re-runs this after the write, still
+    # under the lock, and rolls the change back (restoring and re-persisting the
+    # previous list) when the caller now reads differently.
+    def _recheck_caller() -> str | None:
+        if steering_binding is not None and (
+            _steering_caller_changed(state, *steering_binding)
+            or _store_links_moved(state, store_fence)
+        ):
+            return "steering_caller_changed"
+        return None
+
+    # Passed only on a tool-bound write, so every other folder PATCH keeps the
+    # exact call it always made.
+    commit_kwargs: dict[str, Any] = {"on_committed": _bump_epoch_on_commit}
+    if steering_binding is not None:
+        commit_kwargs["revalidate"] = _recheck_caller
+    if probe_refused:
+        err = "steering_caller_changed"
+    elif "tags" in changes:
         # Same point-of-application rule as create: the authoritative
         # intersection and the store write are one critical section under
         # ``tags_write_lock``, so a concurrent tag deletion cannot slip a
@@ -1630,12 +1884,32 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         async with tags_write_lock(state):
             refreshed, _ = _validate_folder_tags(state, changes["tags"])
             changes["tags"] = refreshed if refreshed is not None else []
-            err = await state.mutate_folders(_apply, on_committed=_bump_epoch_on_commit)
+            err = await state.mutate_folders(_apply, **commit_kwargs)
     else:
-        err = await state.mutate_folders(_apply, on_committed=_bump_epoch_on_commit)
+        err = await state.mutate_folders(_apply, **commit_kwargs)
     if err == "not_found":
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+    if err == "steering_caller_changed":
+        sel().log_api_access(
+            caller=request_app or "dashboard",
+            operation="chat.folder_steering_dirs",
+            outcome="denied",
+            source="steering_provenance",
+            resources=fid,
+            error="calling session changed or took foreign words before the write",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "the calling session changed before the write (it was replaced, "
+                    "linked, or received words that are not the person's); nothing "
+                    "was stored"
+                ),
+                "code": "steering_caller_changed",
+            },
+            status=409,
+        )
     if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
         # Distinguished in the audit, not to the caller: one code for all three
         # keeps the response from reporting which folder was foreign.

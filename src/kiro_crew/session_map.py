@@ -432,7 +432,25 @@ class SessionMap:
         self._snapshot_seq = 0
         self._written_seq = 0
         self._io_lock = threading.Lock()
+        # Bumped (under ``_MAP_LOCK``) by every write that can ADD a channel link
+        # -- a Slack thread or a mirror binding -- and read lock-free through
+        # :meth:`link_epoch`, so a coroutine can fence "no link was added since I
+        # probed" without taking the lock on the event loop.
+        self._link_epoch = 0
         self._load()
+
+    def link_epoch(self) -> int:
+        """A counter that changes whenever a channel link may have been added.
+
+        Lock-free on purpose (a single int attribute read): a caller probes the
+        links off the loop, keeps the epoch it read BEFORE that probe, and
+        re-checks it inside its own critical section on the loop; a different
+        value means a link write landed in between and the probe is stale.
+        """
+        return self._link_epoch
+
+    def _bump_link_epoch(self) -> None:
+        self._link_epoch += 1
 
     @contextmanager
     def batched_save(self) -> Iterator[None]:
@@ -1374,6 +1392,10 @@ class SessionMap:
                 if evicted:
                     self._save()
                 return
+        # A binding is being added or changed from here on (re-registering the
+        # identical one above is not), so the link epoch moves.
+        self._bump_link_epoch()
+        if entry:
             # REBIND: the mute belonged to the binding being replaced, so it goes
             # with it rather than carrying onto a thread the user never muted.
             entry.pop("slack_paused", None)
@@ -1526,6 +1548,7 @@ class SessionMap:
         if link is None:
             self.clear_mirror_link(key, reason=reason)
             return
+        self._bump_link_epoch()
         if link.channel_type == SLACK_NAMESPACE:
             self.set_slack_link(key, link.thread_id or "", link.channel_id)
             return

@@ -3421,6 +3421,21 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     action = request.match_info["action"]
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
+    record = getattr(state, "_pending_approvals", {}).get(approval_id)
+    request_app = request.get("app")
+    if (
+        isinstance(record, dict)
+        and record.get("human_only") is True
+        and (request.get("internal_auth") is True or (isinstance(request_app, str) and request_app))
+    ):
+        # Answered only by the person's own click (see ApprovalCoordinator.request).
+        return web.json_response(
+            {
+                "error": "this approval can only be answered by the person",
+                "code": "approval_person_only",
+            },
+            status=403,
+        )
     ok = state.resolve_approval(
         approval_id, action == "approve", rejected_once=action == "reject_once"
     )

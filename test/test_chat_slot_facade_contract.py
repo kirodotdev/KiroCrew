@@ -69,6 +69,8 @@ _TO_DICT_KEYS = (
     "trust_reads",
     "trusted_patterns_count",
     "slack_linked",
+    "channel_turn_seen",
+    "slot_generation",
     "slack_channel",
     "slack_thread_ts",
     "folder_id",

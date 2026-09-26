@@ -47,6 +47,7 @@ class ApprovalCoordinator:
         is_background: bool,
         redact_url: _Redactor,
         redact_secret: _Redactor,
+        human_only: bool = False,
     ) -> bool:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
@@ -60,6 +61,10 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        if human_only:
+            # Only a person's click on this card answers it: a bulk trust/yolo
+            # sweep leaves it pending (``chat_handlers``' mode handler reads this).
+            state._pending_approvals[approval_id]["human_only"] = True
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is

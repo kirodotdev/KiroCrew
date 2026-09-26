@@ -284,6 +284,24 @@ class TestTelegramResumedDurability:
         )
         return state, slot
 
+    def test_a_projected_channel_turn_marks_the_dashboard_slot(self, tmp_path) -> None:
+        """A resumed Discord/Telegram turn lands channel words in the dashboard
+        conversation without the queue or runner, so the projection itself marks
+        it -- an unlink afterwards cannot make the slot read clean."""
+        state, slot = self._state_and_slot(tmp_path)
+        slot._channel_turn_seen = False
+        project = getattr(channel_slots, "project_channel_turn_live")
+        assert project(state, "dashboard:chat-1", "hello", "world", broadcast_user=True)
+        assert slot._channel_turn_seen is True
+        assert slot.to_dict()["channel_turn_seen"] is True
+
+    def test_a_projected_channel_outcome_row_marks_the_dashboard_slot(self, tmp_path) -> None:
+        state, slot = self._state_and_slot(tmp_path)
+        slot._channel_turn_seen = False
+        project_row = getattr(channel_slots, "project_channel_row_live")
+        project_row(state, "dashboard:chat-1", "error", "boom", "msg msg-err")
+        assert slot._channel_turn_seen is True
+
     @pytest.mark.parametrize("save_first", [True, False], ids=["save-first", "write-first"])
     def test_projected_pair_is_exactly_once_under_both_writer_orderings(
         self, tmp_path, save_first

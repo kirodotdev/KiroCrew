@@ -5029,7 +5029,9 @@ async def start_dashboard(
     # returning users. Fire-and-forget — a warm-up is never a boot dependency,
     # and the task is cancelled by the service's shutdown hook.
     app["kiro_prerequisite_service"].warm_up()
-    state.load_folders()
+    # Off-loop: folders.json (and a rollback image it may prefer) is read and
+    # JSON-parsed synchronously; a large one must not stall startup.
+    await asyncio.to_thread(state.load_folders)
     # Off-loop: a large cron_folders.json would otherwise block the event
     # loop with synchronous file I/O + JSON parsing during startup.
     await asyncio.to_thread(state.load_cron_folders)
@@ -6452,7 +6454,9 @@ async def start_api_server(
     # returning users. Fire-and-forget — a warm-up is never a boot dependency,
     # and the task is cancelled by the service's shutdown hook.
     app["kiro_prerequisite_service"].warm_up()
-    state.load_folders()
+    # Off-loop: folders.json (and a rollback image it may prefer) is read and
+    # JSON-parsed synchronously; a large one must not stall startup.
+    await asyncio.to_thread(state.load_folders)
     # Off-loop: a large cron_folders.json would otherwise block the event
     # loop with synchronous file I/O + JSON parsing during startup.
     await asyncio.to_thread(state.load_cron_folders)

@@ -443,4 +443,9 @@ async def api_session_control_read(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    await sc.mark_reader_for_mirrored_target(
+        state,
+        caller_session_key=_read_session_key(request),
+        target_slot_key=str(result.get("target") or ""),
+    )
     return web.json_response(result)

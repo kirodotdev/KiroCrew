@@ -1178,6 +1178,13 @@ async def fork_slot(
     new_slot.project = slot.project
     # Inherit the sidebar folder so the fork appears next to its parent in the UI.
     new_slot.folder_id = slot.folder_id
+    # The channel mark travels with the transcript it describes: a fork (head or
+    # tail) copies rows words that are not the person's may have authored, so the
+    # child is marked whenever the parent carries them -- sticky, read through the
+    # same predicate the slot projection publishes (``carries_foreign_words``:
+    # the mark, ``channel_origin``, a remote-crew transcript).
+    if slot.carries_foreign_words():
+        new_slot._channel_turn_seen = True
     # Inherit tags (copied, so later edits to either slot's list stay independent).
     new_slot.tags = list(slot.tags)
     # "tags changed => revision changed": the slot was constructed with an empty

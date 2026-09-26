@@ -8774,6 +8774,7 @@ class GatewayOrchestrator:
                         prompt = prefix + result_text
                     # Lazy import avoids circular dependency (chat → gateway)
                     from kiro_crew.dashboard.chat import _run_chat
+                    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
 
                     sel().log_api_access(
                         caller="heartbeat",
@@ -8782,7 +8783,22 @@ class GatewayOrchestrator:
                         source="gateway",
                         resources=f"requested={slot_name},resolved={slot.key}",
                     )
-                    ran = slot.enqueue_or_run_prompt(prompt, _run_chat, self.dashboard_state)
+                    # A heartbeat result is a scheduled job's output (web and tool
+                    # content the heartbeat turn collected), so it is attributed to
+                    # ``cron`` on both arms, the same as the cron delivery path: the
+                    # run arm through the runner's actor argument, the queue arm
+                    # through the stamped actor the drain reads. That actor is also
+                    # what marks the tab (``chat_runner._FOREIGN_TURN_ACTORS``).
+                    # The tab is also marked HERE, at admission: a queued entry's
+                    # actor stamp is dropped when the queue is restored after a
+                    # restart, so the runner-entry stamp alone would miss it.
+                    slot._channel_turn_seen = True
+                    ran = slot.enqueue_or_run_prompt(
+                        prompt,
+                        functools.partial(_run_chat, _turn_actor="cron"),
+                        self.dashboard_state,
+                        extra_meta={TURN_ACTOR_META_KEY: "cron"},
+                    )
                     if ran:
                         # Only push UI updates when the prompt actually started —
                         # queued prompts produce no visible change until dequeued.

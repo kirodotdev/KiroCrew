@@ -1724,6 +1724,9 @@ async def _install_arrived_bundle(
     meta = {
         "title": f"{_IMPORT_TITLE_MARKER}{source_title}{suffix}",
         "agent": resolved_agent,
+        # Restored as marked like every hydrated transcript
+        # (``restore_channel_mark``): the sender's tab may have taken a linked
+        # thread's replies, and nothing in the bundle can prove otherwise.
     }
 
     # Re-check the cap HERE, with no await between this test and the creation

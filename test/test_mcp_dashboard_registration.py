@@ -338,6 +338,17 @@ class TestWhatThisSetGrants:
         "chat_folder_move",
         "chat_folder_move_session",
         "chat_folder_file_self",
+        # The one folder verb with reach beyond the sidebar: it names host
+        # directories the gateway reads into every later chat in the folder.
+        # It belongs in THIS set rather than a server of its own because the
+        # gate it needs is already the endpoint's and the caller's: only the
+        # person's principal may declare a non-empty list (403
+        # ``steering_dirs_forbidden`` for an app or member, under the store
+        # lock), the tool accepts any call -- clearing included -- only from a
+        # ``dashboard:`` caller, and the verb is on ``CHANNEL_AGENT_BLOCKED_TOOLS``
+        # -- so granting the set grants an agent exactly what the person it runs
+        # for already has.
+        "chat_folder_steering_set",
     }
     #: The tag half of sidebar organization. Same posture as the folder tools —
     #: read, create, update (rename/recolor/status) and assign; no delete — so

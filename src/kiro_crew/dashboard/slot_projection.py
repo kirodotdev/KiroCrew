@@ -343,6 +343,23 @@ class SlotProjection:
             "trust_reads": slot._trust_reads,
             "trusted_patterns_count": len(slot._trusted_patterns),
             "slack_linked": slot._slack_linked,
+            # Whether channel-authored text has EVER entered this conversation,
+            # independent of the link state above (see ``_ChatSlot.
+            # _channel_turn_seen``): sticky, and restored as marked on every
+            # hydration, so neither an unlink, a successor turn, nor a restart
+            # can make a conversation carrying channel words read as dashboard-only.
+            #
+            # ``channel_origin`` counts too: a tab created to DISPLAY a channel
+            # transcript (a reconciler-surfaced thread, a History revive of a
+            # channel session) carries channel-authored text from its first
+            # turn without any channel-flagged message having been queued, and
+            # may be left unbound -- no ``links`` -- when its thread cannot be
+            # named. That flag is persisted and additive, like the mark.
+            "channel_turn_seen": slot.carries_foreign_words(),
+            # The slot OBJECT's generation, carried back by
+            # ``chat_folder_steering_set`` so the folder endpoint can refuse a
+            # write if the key now names a different (replacement) slot.
+            "slot_generation": slot._slot_generation,
             "slack_channel": slot._slack_channel,
             "slack_thread_ts": slot._slack_thread_ts,
             "folder_id": slot.folder_id,

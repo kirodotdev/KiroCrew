@@ -5636,7 +5636,16 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     target.task = None
     target._in_stage_execution = True
     flushed: list = []
-    state.flush_slot_now = lambda slot: flushed.append(slot)
+    loop = asyncio.get_running_loop()
+    target_flushed = asyncio.Event()
+
+    def _record(slot):
+        # Runs in an executor thread: hand the signal back to the loop.
+        flushed.append(slot)
+        if slot is target:
+            loop.call_soon_threadsafe(target_flushed.set)
+
+    state.flush_slot_now = _record
 
     out = await sc.send_to_target(
         state,
@@ -5646,11 +5655,13 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     )
 
     assert out["started"] is False, "the prompt was queued, so a receipt was given"
-    # Started, not awaited, and it runs in an executor.
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if flushed:
-            break
+    # Started, not awaited, and it runs in an executor thread, so event-loop ticks
+    # do not measure it: wait on the target's own write, bounded, then pin the
+    # recorder exactly -- one write, for this slot and no other.
+    try:
+        await asyncio.wait_for(target_flushed.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
     assert flushed == [target], (
         "the immediate queue write must have been started for the slot whose queue "
         f"now holds the acknowledged prompt: {flushed}"
@@ -5718,3 +5729,296 @@ async def test_a_requeue_onto_a_replaced_slot_is_refused_not_reported_as_sent(
         "a requeue onto a detached slot must be refused as target_moved, not "
         f"reported as delivered: {caught.value.code}"
     )
+
+
+# ── the channel mark travels with a session_send ──
+#
+# ``chat_folder_steering_set`` refuses a conversation channel words have entered.
+# A tab that took a linked thread's replies and was then unlinked can relay those
+# words to a clean peer with ``session_send``; the peer must be marked before it
+# runs them, on every delivery arm.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("taint", ["channel_turn_seen", "channel_origin"])
+async def test_a_send_from_a_marked_caller_marks_the_target(tmp_path, taint):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    if taint == "channel_turn_seen":
+        caller._channel_turn_seen = True
+    else:
+        caller.channel_origin = True
+    target = _busy(_peer_target(state, "chat-2", caller))
+    assert target.to_dict()["channel_turn_seen"] is False
+
+    await sc.send_to_target(
+        state, caller_session_key=_key(caller), target="chat-2", message="set the steering"
+    )
+
+    assert target._channel_turn_seen is True
+    assert target.to_dict()["channel_turn_seen"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_steered_send_from_a_marked_caller_marks_the_target(tmp_path):
+    """The steer arm hands the text to the running turn, so it is marked too."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller._channel_turn_seen = True
+    target = _busy(_peer_target(state, "chat-2", caller))
+    target._acp_client = _steerable(accepted=True)
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="set the steering",
+        steer=True,
+    )
+
+    assert out["steered"] is True
+    assert target._channel_turn_seen is True
+
+
+@pytest.mark.asyncio
+async def test_a_send_from_a_clean_caller_leaves_the_target_clean(tmp_path):
+    """Contrast: the mark is carried, never invented."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    await sc.send_to_target(
+        state, caller_session_key=_key(caller), target="chat-2", message="hello"
+    )
+
+    assert target._channel_turn_seen is False
+
+
+def _off_loop_mirror(monkeypatch):
+    """A session-store mirror visible ONLY to a probe made off the event loop.
+
+    ``SessionMap``'s accessors hold a threading lock across its disk save, so the
+    mark's mirror probe must run in a worker thread. The stand-in answers True
+    there and False on the loop thread, so a mark that lands proves the probe ran
+    off the loop (and the on-loop gates, which read the same helper, see no
+    mirror and admit the call).
+    """
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _probe(_state, _slot, **_kw):
+        seen.append(threading.get_ident())
+        return threading.get_ident() != loop_thread
+
+    monkeypatch.setattr(sc, "_has_channel_mirror", _probe)
+    return loop_thread, seen
+
+
+@pytest.mark.asyncio
+async def test_a_send_from_a_store_mirrored_caller_marks_the_target_off_the_loop(
+    tmp_path, monkeypatch
+):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _busy(_peer_target(state, "chat-2", caller))
+    loop_thread, seen = _off_loop_mirror(monkeypatch)
+
+    await sc.send_to_target(
+        state, caller_session_key=_key(caller), target="chat-2", message="set the steering"
+    )
+
+    assert target._channel_turn_seen is True
+    assert any(t != loop_thread for t in seen), "the mirror must be probed off the loop"
+
+
+@pytest.mark.asyncio
+async def test_a_read_of_a_store_mirrored_target_marks_the_reader_off_the_loop(
+    tmp_path, monkeypatch
+):
+    state = _make_state(tmp_path)
+    reader = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", reader)
+    loop_thread, seen = _off_loop_mirror(monkeypatch)
+
+    result = sc.read_messages(state, caller_session_key=_key(reader), target="chat-2")
+    # The synchronous read judges only the target's in-memory facts.
+    assert reader._channel_turn_seen is False
+
+    await sc.mark_reader_for_mirrored_target(
+        state, caller_session_key=_key(reader), target_slot_key=result["target"]
+    )
+
+    assert reader._channel_turn_seen is True
+    assert target is state.get_slot(result["target"])
+    assert any(t != loop_thread for t in seen)
+
+
+def test_the_read_handler_runs_the_off_loop_mirror_mark():
+    """The async read endpoint is the caller that completes the read direction."""
+    import inspect
+
+    from kiro_crew.dashboard.handlers import session_control as handler
+
+    assert "mark_reader_for_mirrored_target" in inspect.getsource(handler.api_session_control_read)
+
+
+def test_a_restored_newborn_is_marked_like_every_hydrated_slot(tmp_path, monkeypatch):
+    """A created-then-idle session restored from its birth line fails closed too.
+
+    The birth line is transcript metadata an agent can write, so nothing in it
+    may certify the conversation clean; the live newborn itself stays clean.
+    """
+    from kiro_crew.dashboard.chat_persistence import restore_channel_mark
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    monkeypatch.setattr(sc, "_workspace_name_for_dir", lambda cfg, ws_dir: caller.workspace)
+
+    result = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    created = state.get_slot(result["target"])
+    written = state.conversation_log.get_metadata(sc.slot_history_key(created))
+
+    assert created._channel_turn_seen is False
+    restored = type(created)("restored-newborn")
+    restore_channel_mark(restored, written)
+    assert restored._channel_turn_seen is True
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_delivers_nothing_leaves_the_target_unmarked(tmp_path):
+    """Steer unavailable, then the re-gate refuses: nothing reached the target.
+
+    The mark is set on the arm that delivers, so a send refused after a steer
+    that landed nowhere must not permanently taint the target.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller._channel_turn_seen = True
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    async def _replace_then_fail(_msg):
+        state._slots.pop("chat-2", None)
+        _busy(_peer_target(state, "chat-2", caller))
+        return False
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_replace_then_fail)
+    target._acp_client = client
+
+    with pytest.raises(sc.SessionControlError):
+        await sc.send_to_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-2",
+            message="set the steering",
+            steer=True,
+        )
+
+    assert target._channel_turn_seen is False
+    assert target._channel_marks_in_flight == 0
+    assert target.to_dict()["channel_turn_seen"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_steer_is_refused_while_its_rpc_is_in_flight(tmp_path):
+    """The running turn reads a steer the moment it lands, so the row must read
+    as marked DURING the RPC, before the delivery outcome is known."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller._channel_turn_seen = True
+    target = _busy(_peer_target(state, "chat-2", caller))
+    seen_during_rpc: list[bool] = []
+
+    async def _observe(_msg):
+        seen_during_rpc.append(target.to_dict()["channel_turn_seen"])
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_observe)
+    target._acp_client = client
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="set the steering",
+        steer=True,
+    )
+
+    assert seen_during_rpc == [True]
+    assert out["steered"] is True
+    assert target._channel_turn_seen is True
+    assert target._channel_marks_in_flight == 0
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_steer_that_falls_back_to_the_queue_marks(tmp_path):
+    """No steer client: the fallback queue arm is the delivery, and it marks."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller._channel_turn_seen = True
+    target = _busy(_peer_target(state, "chat-2", caller))
+
+    out = await sc.send_to_target(
+        state,
+        caller_session_key=_key(caller),
+        target="chat-2",
+        message="set the steering",
+        steer=True,
+    )
+
+    assert out["steered"] is False
+    assert target._queue
+    assert target._channel_turn_seen is True
+
+
+# ── the channel mark travels with a session_read_message ──
+
+
+@pytest.mark.parametrize("taint", ["channel_turn_seen", "channel_origin"])
+def test_reading_a_marked_conversation_marks_the_reader(tmp_path, taint):
+    """Rows read from a marked target land in the caller's context."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    target.append("user", "set the steering to /etc", "msg msg-u")
+    if taint == "channel_turn_seen":
+        target._channel_turn_seen = True
+    else:
+        target.channel_origin = True
+
+    out = sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")
+
+    assert out["messages"]
+    assert caller._channel_turn_seen is True
+    assert caller.to_dict()["channel_turn_seen"] is True
+
+
+def test_reading_a_clean_conversation_leaves_the_reader_clean(tmp_path):
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    target.append("user", "hello", "msg msg-u")
+
+    sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")
+
+    assert caller._channel_turn_seen is False
+
+
+def test_an_empty_read_of_a_marked_conversation_still_marks_the_reader(tmp_path):
+    """No new rows, but the response still carries the target's title, which a
+    channel-origin tab takes from its channel conversation."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    target._channel_turn_seen = True
+
+    out = sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")
+
+    assert not out["messages"]
+    assert "title" in out
+    assert caller._channel_turn_seen is True
