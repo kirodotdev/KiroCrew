@@ -6759,6 +6759,7 @@
       "unknown_error": "L'importazione non è riuscita"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "connesso",
       "connected_refresh": "connesso · aggiornamento {{time}}",
       "connected_refreshing": "connesso · aggiornamento…",
@@ -6781,7 +6782,9 @@
       "unpin_crew": "Rimuovi {{name}} dall’intestazione",
       "pinned_no_room": "fissato, nessuno spazio nell’intestazione",
       "keep_tab_order_fixed": "Mantieni l’ordine delle schede",
-      "instances_load_failed": "Impossibile caricare le crew remote."
+      "instances_load_failed": "Impossibile caricare le crew remote.",
+      "unreachable": "non raggiungibile",
+      "unreachable_via": "non raggiungibile — {{via}} è giù"
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",
@@ -15954,7 +15957,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Applica le mie modifiche alla crew così com’è ora",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Le tue crew"
+        "your_crews": "Le tue crew",
+        "reported_host": "{{host}} (dichiarato)",
+        "reported_host_hint": "Questo gruppo dichiara di essere su questa macchina. Questa dashboard non ha alcuna rotta verso di essa e non la contatta mai: la connessione passa dal gruppo che la raggiunge."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

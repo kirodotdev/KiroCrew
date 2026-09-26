@@ -85,6 +85,7 @@ from kiro_crew.dashboard.token_auth import (
 )
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
+from kiro_crew.gateway_identity import gateway_id
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
@@ -458,7 +459,7 @@ async def api_branding(request: web.Request) -> web.Response:
     )
 
 
-def _liveness_payload(request: web.Request) -> dict[str, object]:
+async def _liveness_payload(request: web.Request) -> dict[str, object]:
     """Return public liveness plus identity only for direct-local callers.
 
     Identity requires BOTH gates: a direct-local peer (loopback, no
@@ -469,6 +470,18 @@ def _liveness_payload(request: web.Request) -> dict[str, object]:
     keeps the exact-version fingerprint off that path. A rebound page then
     learns only ``{"ok": true}`` — indistinguishable from the TCP connect
     succeeding, which it could already observe.
+
+    ``gateway_id`` rides the same gate for the same reason: it is an identity
+    fingerprint, so it belongs behind the direct-local check rather than on the
+    public probe boundary. A hub reads it through the loopback end of a tunnel it
+    just opened, which IS a direct-local request, so the gate does not fence off
+    the caller that needs it. It is minted on first read
+    (:func:`kiro_crew.gateway_identity.gateway_id`) and reveals nothing about the
+    machine: a random id, not a derived one. It is read in a worker thread: the
+    first read on a fresh data home mints the file, and ``/api/health`` is the
+    most-polled route there is, so a stalled filesystem would otherwise stall the
+    loop that answers every other request. Later reads are served from the
+    module's cache and the hop costs only a thread round-trip.
     """
     payload: dict[str, object] = {"ok": True}
     if is_direct_local_request(request) and check_host(request):
@@ -476,13 +489,19 @@ def _liveness_payload(request: web.Request) -> dict[str, object]:
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
         # exact-version fingerprint on the public probe boundary.
-        payload.update({"app": "kirocrew", "version": kiro_crew.__version__})
+        payload.update(
+            {
+                "app": "kirocrew",
+                "version": kiro_crew.__version__,
+                "gateway_id": await asyncio.to_thread(gateway_id),
+            }
+        )
     return payload
 
 
 async def api_health(request: web.Request) -> web.Response:
     """GET /api/health — liveness, with identity for direct-local callers."""
-    return web.json_response(_liveness_payload(request))
+    return web.json_response(await _liveness_payload(request))
 
 
 async def api_version(request: web.Request) -> web.Response:
@@ -509,7 +528,7 @@ async def api_version(request: web.Request) -> web.Response:
 
 async def api_live(request: web.Request) -> web.Response:
     """GET /api/live — Kubernetes-style liveness alias for /api/health."""
-    return web.json_response(_liveness_payload(request))
+    return web.json_response(await _liveness_payload(request))
 
 
 async def api_ready(request: web.Request) -> web.Response:

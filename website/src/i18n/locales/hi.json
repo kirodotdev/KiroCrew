@@ -6652,6 +6652,7 @@
       "unknown_error": "इंपोर्ट विफल रहा"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "कनेक्टेड",
       "connected_refresh": "कनेक्ट है · रिफ़्रेश {{time}}",
       "connected_refreshing": "कनेक्टेड · रिफ़्रेश हो रहा है…",
@@ -6674,7 +6675,9 @@
       "unpin_crew": "{{name}} को अनपिन करें",
       "pinned_no_room": "पिन किया गया, हेडर में जगह नहीं",
       "keep_tab_order_fixed": "टैब क्रम स्थिर रखें",
-      "instances_load_failed": "रिमोट क्रू लोड नहीं किए जा सके।"
+      "instances_load_failed": "रिमोट क्रू लोड नहीं किए जा सके।",
+      "unreachable": "पहुंĂ नहीं रहा",
+      "unreachable_via": "पहुंĂ नहीं रहा — {{via}} बंद है"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",
@@ -15742,7 +15745,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "मेरे संपादन क्रू पर उसकी अभी की स्थिति में लागू करें",
         "your_code": "Your code: {{code}}",
-        "your_crews": "तुम्हारे क्रू"
+        "your_crews": "तुम्हारे क्रू",
+        "reported_host": "{{host}} (बताया गया)",
+        "reported_host_hint": "यह crew कहता है कि वह इस मशीन पर है। इस डैशबोर्ड का उस तक कोई रास्ता नहीं है।"
       },
       "webhooksPanel": {
         "inbound_webhooks": "इनबाउंड webhooks",

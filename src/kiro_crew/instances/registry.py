@@ -38,6 +38,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -115,6 +116,21 @@ _DEFAULT_TTL = "20h"
 # (``ssm_target`` = ``ecs:<cluster>_<task-id>_<runtime-id>``) whose only listener
 # is the crew container's turn API: no dashboard, no token to mint, and nothing
 # to run ``kirocrew`` on, so the tunnel manager forwards and does nothing else.
+#: Longest crew name this registry will retain.
+#:
+#: A bound bounds every field it retains, and a name is retained: it is persisted
+#: per row and echoed in every list response, so an unbounded one turns the row
+#: caps into no bound at all -- eight chained rows of arbitrarily long names are
+#: still an arbitrarily large registry and an arbitrarily large reply.
+#:
+#: The number is the SAME one the relay already applies: `CHAINED_NAME_MAX` in
+#: `website/src/lib/chainAnnounce.ts` slices an announced name to it before
+#: anything is sent, so frame code could never exceed this. Repeating it here is
+#: what makes the bound a property of the STORE rather than of one caller, which
+#: is the only place it holds for a caller that does not go through the relay.
+#: `test_the_backend_name_cap_matches_the_relays` pins the two together.
+INSTANCE_NAME_MAX = 200
+
 CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm", "fargate")
 _DEFAULT_CONNECTION_METHOD = "ssh"
 # The methods whose forwarder is ``aws ssm start-session``; they share the
@@ -211,6 +227,30 @@ class Instance:
     # Provisioner that created this crew, when known. Empty means the machine
     # was added directly or predates source tracking.
     provisioner_id: str = ""
+    # Chaining coordinates. A CHAINED instance is one this gateway cannot reach
+    # directly: another instance already in this registry reaches it, and this
+    # gateway rides that hop. ``via_instance_id`` is that parent's id, and
+    # ``via_remote_port`` is the loopback port ON THE PARENT where the parent's
+    # own forward to this instance listens — so the forward opened here targets
+    # ``<parent's host>`` and ``via_remote_port`` rather than this record's own
+    # ``ssh_host``/``remote_port``, which describe where the crew's gateway
+    # listens on its OWN machine and stay informational.
+    #
+    # ``via_remote_id`` is this crew's id in the PARENT's registry, which is a
+    # different fact from either of those: ``via_instance_id`` names the parent
+    # here, while this names the CHILD there. The parent is the side that mints
+    # this crew's token, and it looks the crew up by its own id, so that is the
+    # id the mint request must carry. An id derived from the name here would only
+    # coincide with it by luck — a name collision, a rename on the parent, or an
+    # explicitly assigned id makes them differ, and the parent then answers 404
+    # for a crew it holds.
+    #
+    # All three empty is a top-level instance, which is every record written
+    # before chaining existed; the loader defaults them, so an old registry file
+    # is read unchanged.
+    via_instance_id: str = ""
+    via_remote_port: int = _UNALLOCATED_PORT
+    via_remote_id: str = ""
     # Sticky "connection intent" — the source of truth for whether a tab should
     # exist for this instance. Set True when a tunnel is opened and cleared ONLY
     # on an explicit user disconnect; deliberately LEFT TRUE across gateway
@@ -243,6 +283,11 @@ class Instance:
             )
         if not self.name or not self.name.strip():
             raise InvalidInstanceError("instance name must be non-empty")
+        if len(self.name) > INSTANCE_NAME_MAX:
+            raise InvalidInstanceError(
+                f"instance name is {len(self.name)} characters: at most "
+                f"{INSTANCE_NAME_MAX} are kept"
+            )
         if self.connection_method not in CONNECTION_METHODS:
             raise InvalidInstanceError(
                 f"invalid connection_method {self.connection_method!r}: "
@@ -316,6 +361,7 @@ class Instance:
             raise InvalidInstanceError(
                 f"invalid provisioner_id {self.provisioner_id!r}: must be a string"
             )
+        self._validate_chain()
         if not isinstance(self.forwarder_pid, int) or self.forwarder_pid < 0:
             raise InvalidInstanceError(
                 f"invalid forwarder_pid {self.forwarder_pid!r}: must be an int "
@@ -342,6 +388,60 @@ class Instance:
         if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
             raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
 
+    def _validate_chain(self) -> None:
+        """Reject a malformed chaining pair.
+
+        The two fields travel together: a parent with no port names a hop with no
+        destination, and a port with no parent names a destination with no hop.
+        Either half alone would be read as "top level" by every consumer while
+        the record clearly means something else, so the pair is refused rather
+        than silently half-applied.
+
+        A record naming ITSELF as its parent is refused here. Longer loops
+        (``a`` via ``b`` via ``a``) span two records and cannot be seen from one,
+        so they are refused by the handler that walks the chain.
+        """
+        if self.via_instance_id and not _ID_RE.match(self.via_instance_id):
+            raise InvalidInstanceError(
+                f"invalid via_instance_id {self.via_instance_id!r}: must match {_ID_RE.pattern}"
+            )
+        if self.via_instance_id == self.id and self.via_instance_id:
+            raise InvalidInstanceError(
+                f"invalid via_instance_id {self.via_instance_id!r}: an instance cannot be "
+                f"reached through itself"
+            )
+        if not isinstance(self.via_remote_port, int) or isinstance(self.via_remote_port, bool):
+            raise InvalidInstanceError(
+                f"invalid via_remote_port {self.via_remote_port!r}: must be an int"
+            )
+        if self.via_instance_id:
+            if not (1 <= self.via_remote_port <= 65535):
+                raise InvalidInstanceError(
+                    f"invalid via_remote_port {self.via_remote_port!r}: a chained instance "
+                    f"needs the port on its parent where the parent's own forward listens "
+                    f"(1-65535)"
+                )
+        elif self.via_remote_port != _UNALLOCATED_PORT:
+            raise InvalidInstanceError(
+                f"invalid via_remote_port {self.via_remote_port!r}: only a chained instance "
+                f"(one with via_instance_id) has a port on a parent"
+            )
+        if self.via_remote_id and not _ID_RE.match(self.via_remote_id):
+            raise InvalidInstanceError(
+                f"invalid via_remote_id {self.via_remote_id!r}: must match {_ID_RE.pattern}"
+            )
+        if self.via_instance_id and not self.via_remote_id:
+            raise InvalidInstanceError(
+                "a chained instance needs via_remote_id: the parent mints this crew's token "
+                "and looks it up by ITS OWN id for the crew, which an id derived here does "
+                "not reliably equal"
+            )
+        if self.via_remote_id and not self.via_instance_id:
+            raise InvalidInstanceError(
+                f"invalid via_remote_id {self.via_remote_id!r}: only a chained instance "
+                f"(one with via_instance_id) has an id on a parent"
+            )
+
     def to_dict(self) -> dict:
         """Serialize to the JSON shape stored in ``instances.json``."""
         return {
@@ -358,6 +458,9 @@ class Instance:
             "aws_region": self.aws_region,
             "ssm_run_as": self.ssm_run_as,
             "provisioner_id": self.provisioner_id,
+            "via_instance_id": self.via_instance_id,
+            "via_remote_port": self.via_remote_port,
+            "via_remote_id": self.via_remote_id,
             "was_connected": self.was_connected,
             "forwarder_pid": self.forwarder_pid,
             "forwarder_start": self.forwarder_start,
@@ -378,6 +481,19 @@ class Instance:
             except (TypeError, ValueError):
                 return default
 
+        def _as_epoch(value: object, default: float) -> float:
+            """Coerce a stored epoch second with this loader's own tolerance.
+
+            A file written before the reservation existed has no such key, and a
+            hand-edited one may hold anything, so an unreadable value reads as
+            "none outstanding" rather than raising out of the loader. The cost of
+            that is one port becoming allocatable early -- which is exactly the
+            behaviour before the field existed.
+            """
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return default
+            return default if float(value) < 0 else float(value)
+
         return cls(
             id=str(data.get("id", "")),
             name=str(data.get("name", "")),
@@ -395,6 +511,12 @@ class Instance:
             # empty string would fail validation — both mean "use the default".
             ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
             provisioner_id=str(data.get("provisioner_id", "") or ""),
+            via_instance_id=str(data.get("via_instance_id", "") or ""),
+            # max() for the same reason as forwarder_pid: a hand-edited negative
+            # normalizes to the "no hop" sentinel rather than failing every later
+            # update() on a field the caller never touched.
+            via_remote_port=max(_UNALLOCATED_PORT, _as_int(data.get("via_remote_port"), 0)),
+            via_remote_id=str(data.get("via_remote_id", "") or ""),
             was_connected=bool(data.get("was_connected", False)),
             # max(): a hand-edited negative pid normalizes to the sentinel
             # rather than poisoning every later update() with a validate error
@@ -411,6 +533,15 @@ class _RegistryDoc:
 
     instances: list[Instance] = field(default_factory=list)
     last_active_id: str = ""
+    #: port -> epoch second a chained credential minted against it stops being valid.
+    #:
+    #: Document-level, NOT a field on the crew whose hop was lent, and that placement
+    #: is the whole point: ``remove`` filters ``instances``, so a reservation held on
+    #: the row vanished with the crew while its credential was still live, handing the
+    #: port back to the allocator. Keyed by PORT because the port is what the holder of
+    #: the credential forwards to, and it must stay withheld whether or not the crew it
+    #: belonged to still exists.
+    hop_leases: dict[int, float] = field(default_factory=dict)
 
 
 _PATH_LOCKS: dict[str, threading.RLock] = {}
@@ -442,6 +573,86 @@ def _lock_for(path: Path) -> threading.RLock:
             lock = threading.RLock()
             _PATH_LOCKS[key] = lock
         return lock
+
+
+#: How many hops a chain may ride. A -> B -> C is the deepest arrangement the
+#: chaining feature supports: the hub holds one hop to B and a second hop that
+#: rides B's own forward to C. Two hops, three levels counting the hub.
+#:
+#: The cap is the safety mechanism, not a tuning knob: each extra level adds a
+#: forward, a token minted through one more relay, and one more machine whose
+#: failure takes the pane down, while the arrangement gets harder to read off the
+#: tab bar the deeper it goes.
+MAX_VIA_HOPS = 2
+
+#: How many crews may ride ONE parent's hop.
+#:
+#: The depth cap above bounds how far a chain reaches; this bounds how WIDE it
+#: gets, and the two are separate because a chain of legal depth can still be
+#: added without end. A chained row is created by the parent's own pane
+#: announcing a crew it connected, so the population behind one parent is
+#: decided by whatever runs in that pane rather than by anyone at this
+#: dashboard: without a cap a single parent can fill the registry, and every
+#: row it adds is another forward and another mint this gateway attempts.
+#:
+#: Counted per parent, not across the registry, so one parent cannot crowd the
+#: others out. Sized past any honest arrangement -- each crew behind a hop is a
+#: local port and a process here, and a person with more than this many behind
+#: one machine is better served connecting them from a dashboard closer to them.
+MAX_CHAINED_PER_PARENT = 8
+
+
+def ancestor_ids(instances: list[Instance], instance_id: str) -> list[str]:
+    """Ids on *instance_id*'s via chain, nearest parent first.
+
+    Walks ``via_instance_id`` outward. The walk is bounded and remembers where it
+    has been, so a registry a hand edit left holding a loop (``a`` via ``b`` via
+    ``a``) terminates and returns the ids it saw rather than spinning; a caller
+    reads a chain longer than :data:`MAX_VIA_HOPS` as "refuse this".
+
+    *instance_id* itself is never in the result. A parent id naming no record ends
+    the walk, because an absent parent is a hop with no host to ride.
+    """
+    by_id = {inst.id: inst for inst in instances}
+    seen: set[str] = {instance_id}
+    chain: list[str] = []
+    current = by_id.get(instance_id)
+    # One step past the cap so a caller can SEE an over-deep chain instead of
+    # being handed a truncated one that looks legal.
+    for _ in range(MAX_VIA_HOPS + 2):
+        if current is None or not current.via_instance_id:
+            break
+        parent_id = current.via_instance_id
+        chain.append(parent_id)
+        if parent_id in seen:
+            break
+        seen.add(parent_id)
+        current = by_id.get(parent_id)
+    return chain
+
+
+def descendant_ids(instances: list[Instance], instance_id: str) -> list[str]:
+    """Ids reached THROUGH *instance_id*, each parent before its own children.
+
+    A chained instance rides its parent's forward, so a parent going away takes
+    every record below it with it. Breadth-first and visit-guarded, so a looped
+    registry terminates; *instance_id* itself is never included.
+    """
+    children: dict[str, list[str]] = {}
+    for inst in instances:
+        if inst.via_instance_id:
+            children.setdefault(inst.via_instance_id, []).append(inst.id)
+    out: list[str] = []
+    seen = {instance_id}
+    queue = list(children.get(instance_id, ()))
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        out.append(current)
+        queue.extend(children.get(current, ()))
+    return out
 
 
 def _find(doc: _RegistryDoc, instance_id: str) -> Instance | None:
@@ -504,9 +715,25 @@ class InstancesRegistry:
                 if isinstance(entry, dict) and entry.get("id"):
                     instances.append(Instance.from_dict(entry))
         last_active = raw.get("last_active_id", "")
+        leases: dict[int, float] = {}
+        raw_leases = raw.get("hop_leases")
+        if isinstance(raw_leases, dict):
+            for key, value in raw_leases.items():
+                # Tolerant like the rest of this loader, and fail-OPEN by necessity:
+                # an unreadable entry is one this gateway cannot honour, so it is
+                # dropped rather than raising out of every read. The cost is that one
+                # port becomes allocatable early -- the behaviour before leases existed.
+                try:
+                    port = int(key)
+                    until = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= port <= 65535 and until > 0:
+                    leases[port] = max(until, leases.get(port, 0.0))
         return _RegistryDoc(
             instances=instances,
             last_active_id=str(last_active) if isinstance(last_active, str) else "",
+            hop_leases=leases,
         )
 
     def _write(self, doc: _RegistryDoc) -> None:
@@ -515,6 +742,8 @@ class InstancesRegistry:
         last_active = doc.last_active_id if doc.last_active_id in ids else ""
         payload = {
             "instances": [inst.to_dict() for inst in doc.instances],
+            # String keys, because JSON object keys are strings; read back as ints.
+            "hop_leases": {str(port): until for port, until in doc.hop_leases.items()},
             "last_active_id": last_active,
         }
         atomic_write(self._path, json.dumps(payload, indent=2) + "\n", fsync=True)
@@ -556,6 +785,9 @@ class InstancesRegistry:
         aws_region: str = "",
         ssm_run_as: str = _DEFAULT_SSM_RUN_AS,
         provisioner_id: str = "",
+        via_instance_id: str = "",
+        via_remote_port: int = _UNALLOCATED_PORT,
+        via_remote_id: str = "",
         instance_id: str | None = None,
     ) -> Instance:
         """Add a new instance and return it.
@@ -566,6 +798,14 @@ class InstancesRegistry:
 
         *connection_method* selects the transport ("ssh", "ssm" or "fargate"); the
         fields required depend on it -- see :meth:`Instance.validate`.
+
+        *via_instance_id* / *via_remote_port* / *via_remote_id* make the record
+        CHAINED: it is reached through another instance's already-open hop rather
+        than dialled directly. ``via_remote_id`` is this crew's id in the PARENT's
+        registry, which is what the parent looks it up by when it mints the token.
+        The trio is validated for shape here; that the parent exists, is itself
+        reachable, and does not make the chain too deep is decided by the caller,
+        which is the only layer that sees the whole chain.
         """
         with self._lock:
             doc = self._read()
@@ -597,6 +837,9 @@ class InstancesRegistry:
                 aws_region=aws_region,
                 ssm_run_as=ssm_run_as or _DEFAULT_SSM_RUN_AS,
                 provisioner_id=provisioner_id,
+                via_instance_id=via_instance_id,
+                via_remote_port=via_remote_port,
+                via_remote_id=via_remote_id,
                 was_connected=False,
             )
             inst.validate()
@@ -620,7 +863,8 @@ class InstancesRegistry:
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``, ``provisioner_id``,
         ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
-        ``forwarder_start``, ``forwarder_sig``.
+        ``forwarder_start``, ``forwarder_sig``, ``via_instance_id``,
+        ``via_remote_port``.
         The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
         as the auto-revive target in the SAME read-modify-write, so callers that
@@ -645,6 +889,10 @@ class InstancesRegistry:
             "forwarder_pid",
             "forwarder_start",
             "forwarder_sig",
+            # A parent that reconnects lands on a new loopback port, so the hop
+            # its children ride has to be re-pointed without re-adding them.
+            "via_instance_id",
+            "via_remote_port",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -664,6 +912,48 @@ class InstancesRegistry:
             self._write(doc)
             logger.info("Updated instance %s: %s", instance_id, sorted(changes))
             return target
+
+    def lend_hop(self, port: int, until: float) -> None:
+        """Withhold *port* from allocation until *until*, and prune what has lapsed.
+
+        Called when a chained credential is minted against *port*. Recorded on the
+        document rather than on the crew's row so that removing the crew cannot drop
+        it: the holder of that credential forwards to the PORT, and the port must stay
+        withheld for as long as the credential can be used, whoever still exists here.
+
+        ``max`` so a second mint cannot shorten a reservation an earlier one earned.
+        Lapsed entries are dropped on the way through, which bounds the map without a
+        timer -- the only thing that can add to it is a mint.
+        """
+        if not (1 <= int(port) <= 65535):
+            raise InvalidInstanceError(f"invalid hop lease port {port!r}: expected 1-65535")
+        if float(until) <= 0:
+            raise InvalidInstanceError(f"invalid hop lease deadline {until!r}: expected an epoch")
+        now = time.time()
+        with self._lock:
+            doc = self._read()
+            kept = {p: u for p, u in doc.hop_leases.items() if u > now}
+            kept[int(port)] = max(float(until), kept.get(int(port), 0.0))
+            doc.hop_leases = kept
+            self._write(doc)
+
+    def live_hop_leases(self) -> set[int]:
+        """Ports still withheld because a chained credential against them is valid."""
+        now = time.time()
+        with self._lock:
+            return {p for p, u in self._read().hop_leases.items() if u > now}
+
+    def live_hop_lease_deadlines(self) -> dict[int, float]:
+        """The same live leases, each with the epoch it lapses at.
+
+        Separate from :meth:`live_hop_leases` because the two answer different
+        questions: the allocator only needs to know WHICH ports to skip, while the
+        OS-level hold on a lent port needs to know how long to keep it, so it can let
+        go on its own rather than squatting a port whose credential has died.
+        """
+        now = time.time()
+        with self._lock:
+            return {int(p): float(u) for p, u in self._read().hop_leases.items() if u > now}
 
     def remove(self, instance_id: str) -> bool:
         """Remove an instance. Returns ``True`` if it existed, ``False`` otherwise."""

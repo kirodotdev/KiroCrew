@@ -2241,6 +2241,11 @@ export interface InstanceTunnelStatus {
   error?: string
   connected_at?: number
   token_ttl_remaining?: number
+  /** Seconds the CURRENT token was issued for -- what `token_ttl_remaining`
+   *  counts down from. Read it, never the row's `ttl`, when measuring how far a
+   *  token has run: a chained crew's token is minted by the crew holding the
+   *  hop, so the row's figure is a different number. See `lib/tokenTtl`. */
+  token_ttl_total?: number
   /** Fargate only: the loopback URL of the crew's turn API through the open
    *  forward. Present only while connected; never accompanied by a token. */
   turn_url?: string
@@ -2288,6 +2293,14 @@ export interface InstanceView {
   ssm_run_as: string
   /** Provisioner that created this crew, when it came from a launcher. */
   provisioner_id?: string
+  /** Set when this crew is reached by riding another crew's hop: that crew's id,
+   *  and the loopback port ON THAT CREW where its own forward listens. All empty
+   *  for a top-level crew, which is every crew added before chaining existed.
+   *  `via_remote_id` is this crew's id in the PARENT's registry -- the id the
+   *  parent looks it up by when it mints this crew's token. */
+  via_instance_id?: string
+  via_remote_port?: number
+  via_remote_id?: string
   was_connected: boolean
   status: InstanceTunnelStatus
 }
@@ -2307,6 +2320,14 @@ export interface AddInstanceBody {
   aws_profile?: string
   aws_region?: string
   ssm_run_as?: string
+  /** Chain this crew behind one already configured here: that crew's id, plus the
+   *  loopback port on it where its own forward to this crew listens, plus this
+   *  crew's own id IN THAT CREW's registry, which is what the parent looks it up
+   *  by when it mints the token. The gateway decides whether the chain is allowed
+   *  (depth cap, parent transport) and refuses with a `chain_*` code. */
+  via_instance_id?: string
+  via_remote_port?: number
+  via_remote_id?: string
   id?: string
 }
 

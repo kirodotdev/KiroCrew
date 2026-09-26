@@ -6652,6 +6652,7 @@
       "unknown_error": "ইমপোর্ট ব্যর্থ হয়েছে"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "সংযুক্ত",
       "connected_refresh": "সংযুক্ত · রিফ্রেশ {{time}}",
       "connected_refreshing": "সংযুক্ত · রিফ্রেশ হচ্ছে…",
@@ -6674,7 +6675,9 @@
       "unpin_crew": "{{name}} অানপিন করুন",
       "pinned_no_room": "পিন করা, হেডারে জায়গা নেই",
       "keep_tab_order_fixed": "ট্যাবের ক্রম স্থির রাখুন",
-      "instances_load_failed": "রিমোট ক্রু লোড করা যায়নি।"
+      "instances_load_failed": "রিমোট ক্রু লোড করা যায়নি।",
+      "unreachable": "পৌঁছানো যাচ্ছে না",
+      "unreachable_via": "পৌঁছানো যাচ্ছে না — {{via}} বন্ধ"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -15742,7 +15745,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "ক্রুটি এখন যেমন আছে তাতে আমার সম্পাদনাগুলো প্রয়োগ করো",
         "your_code": "Your code: {{code}}",
-        "your_crews": "তোমার ক্রু"
+        "your_crews": "তোমার ক্রু",
+        "reported_host": "{{host}} (জানানো)",
+        "reported_host_hint": "এই crew বলছে সে এই মেশিনে আছে। এই ড্যাশবোর্ডের সেখানে কোনো পথ নেই।"
       },
       "webhooksPanel": {
         "inbound_webhooks": "ইনবাউন্ড webhook",

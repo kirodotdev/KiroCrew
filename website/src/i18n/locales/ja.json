@@ -6545,6 +6545,7 @@
       "unknown_error": "インポートに失敗しました"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "connected": "接続済み",
       "connected_refresh": "接続済み · {{time}} に更新",
       "connected_refreshing": "接続済み · 更新中…",
@@ -6567,7 +6568,9 @@
       "unpin_crew": "{{name}} のピン留めを解除",
       "pinned_no_room": "ピン留め済み、ヘッダーに空きがありません",
       "keep_tab_order_fixed": "タブの順序を固定",
-      "instances_load_failed": "リモートクルーを読み込めませんでした。"
+      "instances_load_failed": "リモートクルーを読み込めませんでした。",
+      "unreachable": "到達不可",
+      "unreachable_via": "到達不可 — {{via}} が停止中"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -15530,7 +15533,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "現在の状態のクルーに自分の編集を適用する",
         "your_code": "Your code: {{code}}",
-        "your_crews": "あなたのクルー"
+        "your_crews": "あなたのクルー",
+        "reported_host": "{{host}}（申告値）",
+        "reported_host_hint": "この crew はこのマシン上にあると申告しています。このダッシュボードには経路がなく、接続は仲介する crew を経由します。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",

@@ -4568,12 +4568,15 @@
       "unknown_error": "The import failed"
     },
     "instanceTabBar": {
+      "chain_via": "{{via}} › {{name}}",
       "instances": "Remote crews",
       "local": "Local",
       "local_dashboard": "Local dashboard",
       "n_unread": "{{n}} unread",
       "switch_crew": "Switch crew",
-      "switch_crew_unread": "Switch crew, {{n}} unread elsewhere"
+      "switch_crew_unread": "Switch crew, {{n}} unread elsewhere",
+      "unreachable": "unreachable",
+      "unreachable_via": "unreachable — {{via}} is down"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -9186,7 +9189,9 @@
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Apply my edits to the crew as it is now",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Your crews"
+        "your_crews": "Your crews",
+        "reported_host": "{{host}} (reported)",
+        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

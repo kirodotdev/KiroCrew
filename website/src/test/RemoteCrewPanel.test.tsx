@@ -241,6 +241,38 @@ describe('RemoteCrewPanel', () => {
     expect(api.removeInstance).not.toHaveBeenCalled()
   })
 
+  it('labels a chained crew\u2019s host as reported rather than as a target', async () => {
+    // The host on a chained row arrives in the announcing pane's payload, which is
+    // untrusted, and this gateway never dials it -- the forward rides the parent. Shown
+    // bare, where every other row shows a verified target, an attacker-chosen string
+    // borrows that authority: a compromised pane could make a row read like a
+    // production database while reaching nothing at all.
+    const chained = {
+      ...MANUAL_INSTANCE,
+      id: 'c1',
+      name: 'Prod DB',
+      ssh_host: 'prod-db.internal.example',
+      via_instance_id: 'm1',
+      via_remote_port: 53999,
+      via_remote_id: 'c-2',
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true,
+      warm_set_cap: 5,
+      instances: [MANUAL_INSTANCE, chained],
+    })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    // The value is kept -- only the parent knows which machine the crew is on, and
+    // replacing it with the parent's host would state something false -- but it is
+    // marked as the crew's own claim.
+    expect(await screen.findByText(/prod-db\.internal\.example \(reported\)/i)).toBeInTheDocument()
+    // The unchained row beside it still shows its host plainly, so the label is a
+    // distinction and not a blanket hedge.
+    expect(screen.getByText(/dev-box-1 .*port 5476/i)).toBeInTheDocument()
+  })
+
   it('treats an EC2-stamped SSH crew with no launch job as possibly cloud', async () => {
     // The EC2 stamp (`provisioner_id`) survives in the instance record even when
     // this gateway's store has no launch job for it — a carried-over config dir,
