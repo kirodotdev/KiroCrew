@@ -4069,16 +4069,20 @@ set so repeat calls don't re-resolve.
     owner on save. Permission bits and the POSIX ACL are carried, so the effective
     grant does not widen — the previous owner loses access rather than a new
     principal gaining it — but the change is real and irreversible by this process.
-  - **A Windows DACL.** The carry is POSIX xattrs only
+  - **A Windows DACL.** The POSIX-xattr carry
     (`ACCESS_CONTROL_XATTRS_SUPPORTED` requires `os.listxattr`/`getxattr`/`setxattr`,
-    which Windows lacks), so on Windows the replacement lands on the DACL it
-    inherits from the containing directory rather than the one the replaced file
-    carried. A file the operator had tightened *below* its directory's inheritance
-    is therefore widened back to it. Closing this needs a `platform_compat`
-    primitive to READ a DACL — `restrict_to_owner` only writes one — and it belongs
-    to `atomic_write`, so it must land for all three surfaces at once rather than
-    by reverting one of them to an in-place write that a mid-write failure or a full
-    disk would turn into data loss.
+    which Windows lacks) does not cover Windows, so a separate primitive pair
+    carries the DACL there: `platform_compat.snapshot_windows_dacl` copies the
+    replaced file's DACL off its source descriptor into detached bytes that
+    outlive the handle, and `apply_windows_dacl` re-installs it on the staged
+    inode before publication. `atomic_write` exposes the opt-in
+    `preserve_windows_dacl=` keyword (mirroring the POSIX xattr carry), so any
+    surface can request the carry. On this branch only directory upload passes
+    the keyword; file write, skills update, and steering update keep their
+    previous behavior, where replacement lands on the DACL inherited from the
+    containing directory, until they opt in. For directory upload, a DACL that
+    cannot be read or applied raises `WindowsDaclError` and refuses the write
+    rather than silently changing the file's DACL.
 - `delete_skill(name)` — removes entire skill directory
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an

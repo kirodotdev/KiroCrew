@@ -38,6 +38,26 @@ _XATTR_UNSUPPORTED_ERRNOS = frozenset(
     if e is not None
 )
 
+#: Errnos that mean "this filesystem does not support hard links" rather than
+#: a transient or permission failure.  FAT/exFAT report ``EPERM``, many
+#: SMB/CIFS mounts report ``ENOTSUP``/``EOPNOTSUPP``, and FUSE layers
+#: occasionally surface ``ENOSYS``.  The ``create_only`` publish falls back
+#: to :func:`platform_compat.rename_noreplace` when it hits one of these --
+#: still one atomic only-if-absent syscall, never a claim-then-replace
+#: two-step -- and FAILS outright where even that primitive is unavailable,
+#: rather than complete the publish with a rename that could silently
+#: replace a concurrent writer's own file. ``EACCES`` is deliberately absent:
+#: Windows reports ERROR_ACCESS_DENIED as ``EACCES`` when a staging symlink is
+#: passed to ``CreateHardLinkW``; that is a refused operation, not evidence that
+#: the NTFS volume lacks hard-link support.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None) for name in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS")
+    )
+    if code is not None
+)
+
 #: Attributes an inode-replacing write reproduces on the replacement, and the
 #: ONLY ones -- losing any of these leaves the new file protected less than the
 #: one it replaced, which is what the carry exists to prevent.
@@ -390,6 +410,50 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
     os.replace(str(src), str(dst))
+
+
+def _unlink_with_retry(path: Path | str, *, dir_fd: int | None = None) -> None:
+    """``os.unlink(path)``, retrying the Windows sharing-violation window.
+
+    Create-only publication leaves its staging name as a second hard link until
+    cleanup removes it. On Windows an indexer or AV scanner can hold that name
+    open briefly and make ``os.unlink`` raise ``PermissionError`` even though
+    publication already succeeded. Retry only that transient class; every other
+    ``OSError`` propagates immediately to the committed-create warning path.
+
+    The retry has the same bounded budget and event-loop gate as
+    :func:`replace_with_retry`. The final attempt stays outside the loop so a
+    budget of 0 or 1 still unlinks once instead of reporting false success.
+    """
+    target = str(path)
+    for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
+        try:
+            if dir_fd is None:
+                os.unlink(target)
+            else:
+                os.unlink(target, dir_fd=dir_fd)
+            return
+        except PermissionError:
+            if not platform_compat.IS_WINDOWS:
+                raise
+            if on_event_loop():
+                logger.debug(
+                    "staging unlink contended at %s on the event loop; "
+                    "re-raising instead of sleeping (offload the write to retry)",
+                    target,
+                )
+                raise
+            logger.debug(
+                "staging unlink contended at %s; retrying (attempt %d/%d)",
+                target,
+                attempt + 1,
+                _REPLACE_MAX_ATTEMPTS,
+            )
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+    if dir_fd is None:
+        os.unlink(target)
+    else:
+        os.unlink(target, dir_fd=dir_fd)
 
 
 #: ``fsync`` on a directory that the platform or filesystem simply cannot express.
@@ -876,6 +940,59 @@ def _carry_xattrs(dest_fd: int, xattrs: list[tuple[str, bytes]], path: Path) -> 
             continue  # informational attribute -- keep going
 
 
+def _verify_create_only_publish(fd: int, path: Path, parent_dir_fd: int | None) -> None:
+    """Verify that a staging-name publish selected the still-open staging inode."""
+    staged_stat = os.fstat(fd)
+    try:
+        published_stat = (
+            os.lstat(path) if parent_dir_fd is None else os.lstat(path.name, dir_fd=parent_dir_fd)
+        )
+    except OSError as verify_err:
+        # Never unlink an entry this check cannot identify. It may be a
+        # concurrent writer's legitimate file, and deleting it would be data
+        # loss. It may instead be the attacker's symlink object, but their
+        # directory-write access already lets them create that object directly;
+        # leaving it grants no new capability and exposes no protected content
+        # as a regular file through the no-follow branch.
+        raise FileExistsError(
+            errno.EEXIST,
+            "create_only could not verify the staging publish; "
+            "the unverified destination was left unchanged",
+            str(path),
+        ) from verify_err
+    if (staged_stat.st_dev, staged_stat.st_ino) != (
+        published_stat.st_dev,
+        published_stat.st_ino,
+    ):
+        # The mismatch proves only that this is not the staging inode. Never
+        # delete an unverified destination: a legitimate concurrent publisher
+        # may own it, while an attacker's symlink is already within the power
+        # granted by directory-write access and is not a regular-file exposure.
+        raise FileExistsError(
+            errno.EEXIST,
+            "create_only staging name changed before publication; "
+            "the unverified destination was left unchanged",
+            str(path),
+        )
+
+
+def _create_only_staging_name_changed(fd: int, tmp: str, parent_dir_fd: int | None) -> bool:
+    """Whether the visible staging name identifies a different inode than the open fd."""
+    staged_stat = os.fstat(fd)
+    try:
+        visible_stat = (
+            os.lstat(tmp)
+            if parent_dir_fd is None
+            else os.lstat(os.path.basename(tmp), dir_fd=parent_dir_fd)
+        )
+    except OSError:
+        return False
+    return (staged_stat.st_dev, staged_stat.st_ino) != (
+        visible_stat.st_dev,
+        visible_stat.st_ino,
+    )
+
+
 def atomic_write(
     path: Path | str,
     content: str | bytes,
@@ -886,7 +1003,10 @@ def atomic_write(
     restrict_to_owner: bool = False,
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
+    preserve_macos_acl: platform_compat.MacOSAclSnapshot | None = None,
+    preserve_windows_dacl: platform_compat.WindowsDaclSnapshot | None = None,
     parent_dir_fd: int | None = None,
+    create_only: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -960,6 +1080,27 @@ def atomic_write(
     read pinned to the inode the caller validated. The carry is ADDITIVE to
     ``mode=``, not a replacement.
 
+    *preserve_macos_acl* is a detached snapshot returned by
+    :func:`platform_compat.snapshot_macos_acl` for the file being replaced. It is
+    applied to the staged descriptor before publication; any apply failure refuses
+    the replacement and leaves the original untouched. ``None`` also represents
+    Darwin's positive no-extended-ACL answer, so that case proceeds with mode carry
+    only. This explicit opt-in keeps existing ``preserve_access_control_from``
+    callers on their Linux-xattr behavior on macOS. Mutually exclusive with
+    *preserve_access_control_from* and *preserve_windows_dacl*, since all three are
+    platform-specific forms of the same carry.
+
+    *preserve_windows_dacl* is a detached snapshot returned by
+    :func:`platform_compat.snapshot_windows_dacl` for the file being replaced.
+    Windows stores access control in that DACL rather than POSIX xattrs, and a
+    fresh inode inherits the parent directory's DACL unless the old one is
+    explicitly reproduced. The snapshot is applied to the staged inode while its
+    descriptor pins the temp name; failure REFUSES the write and leaves the
+    original untouched. The source descriptor must already be closed before this
+    call -- Windows refuses ``os.replace`` while any other handle is open on
+    either path. Mutually exclusive with *preserve_access_control_from*, since
+    they are the platform-specific forms of the same carry.
+
     *parent_dir_fd* is an OPEN descriptor for the destination's directory,
     already pinned component-by-component by the caller (``pinned_fs`` supplies
     the walk). When given on a platform that can stage and rename through a
@@ -983,6 +1124,44 @@ def atomic_write(
     from *path*; only the directory it is resolved through is pinned. It is also
     REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
     file by name and so cannot address a descriptor-relative temp.
+
+    *create_only* publishes via ``os.link`` instead of a rename, so the publish
+    step ITSELF is the only-if-absent check: a rename would silently REPLACE
+    whatever is already at *path*, which is exactly the outcome a create-only
+    caller cannot allow two concurrent callers to race into (both see the name
+    as free, the second publish would otherwise destroy the first's file with
+    no evidence anything went wrong). The link's source is the still-open
+    staging descriptor through Linux's ``/proc/self/fd`` namespace, not the
+    replaceable temp name: a process able to write the directory can swap that
+    visible name, but it cannot make the descriptor select a different inode.
+    Platforms without that descriptor namespace publish from the staging name,
+    then compare ``os.fstat`` on the still-open staging descriptor with
+    ``os.lstat`` on the destination. macOS uses a no-follow hard link, so a staging
+    name swapped for a symlink publishes only the symlink object, never its target.
+    Windows uses its plain hard-link primitive because CPython exposes no
+    ``follow_symlinks=False`` support there; creating the symlink needed for a
+    staging-name swap requires ``SeCreateSymbolicLinkPrivilege``, and Windows
+    supplies the file identity used by the same verification through
+    ``GetFileInformationByHandle``. A verification failure always refuses the
+    write and NEVER unlinks the destination: an unverified entry may be a
+    concurrent writer's legitimate file, while an attacker's symlink is already
+    within their directory-write capability and leaving it grants no new access.
+    ``os.link`` otherwise fails atomically with ``FileExistsError`` the instant
+    something else has already claimed the name, which propagates to the caller
+    exactly like any other publish failure -- the temp is reclaimed and *path* is
+    left exactly as the winning writer left it. Where hard links are unsupported
+    (FAT/exFAT, many SMB/CIFS and FUSE mounts), the fallback is
+    :func:`platform_compat.rename_noreplace` -- still ONE atomic only-if-absent
+    syscall, never a claim-then-replace two-step, which would only narrow the race
+    rather than remove it: a claim proves the name was free at claim time, and a
+    concurrent writer's own publish landing in the window before the unconditional
+    replace that follows would be clobbered by it. Where even that primitive is
+    unavailable, this raises :class:`NotImplementedError` rather than complete the
+    publish with a rename that could silently destroy someone else's file --
+    refusing is the safe direction when the only-if-absent property cannot be
+    confirmed. Mutually exclusive with *preserve_access_control_from*: a fresh
+    create has no existing inode to carry access control from, so asking for both
+    is a caller-confusion error, not a request this can honour by picking one.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1021,6 +1200,36 @@ def atomic_write(
             "(pinned_parent_replace_supported() is False on this platform); pass "
             "None to take the by-name floor instead of an unpinned write"
         )
+    # create_only with parent_dir_fd when os.link is missing from
+    # os.supports_dir_fd: the primary publish path is descriptor-relative
+    # linkat, but the fallback (an atomic no-replace rename -- renameat2 with
+    # RENAME_NOREPLACE, or renameatx_np with RENAME_EXCL on macOS) only needs
+    # open and rename -- capabilities that pinned_parent_replace_supported()
+    # already probes and the validation above already requires.  So a missing
+    # linkat degrades gracefully at publish time rather than refusing the call.
+    if preserve_access_control_from is not None and preserve_windows_dacl is not None:
+        raise ValueError(
+            "preserve_access_control_from and preserve_windows_dacl are "
+            "platform-specific alternatives"
+        )
+    if preserve_macos_acl is not None and preserve_access_control_from is not None:
+        raise ValueError(
+            "preserve_macos_acl and preserve_access_control_from are "
+            "platform-specific alternatives"
+        )
+    if preserve_macos_acl is not None and preserve_windows_dacl is not None:
+        raise ValueError(
+            "preserve_macos_acl and preserve_windows_dacl are " "platform-specific alternatives"
+        )
+    if create_only and (
+        preserve_access_control_from is not None
+        or preserve_macos_acl is not None
+        or preserve_windows_dacl is not None
+    ):
+        # A create has no existing inode to carry access control FROM -- these
+        # parameters are the caller's own "which branch am I in" signal, and
+        # asking for either means the call site is confused about that branch.
+        raise ValueError("create_only has no existing file to preserve access control from")
     # restrict_to_owner wins: fchmod must not widen the file back to the umask
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
@@ -1079,14 +1288,251 @@ def atomic_write(
         # and leaves the original in place.
         if src_xattrs:
             _carry_xattrs(fd, src_xattrs, path)
+        if preserve_macos_acl is not None:
+            platform_compat.apply_macos_acl(fd, preserve_macos_acl)
+        if preserve_windows_dacl is not None:
+            platform_compat.apply_windows_dacl(tmp, preserve_windows_dacl)
         if fsync:
             os.fsync(fd)
-        # Close BEFORE the rename: on Windows os.replace cannot swap a file that
-        # still has an open handle. Clear fd first so the except branch below
-        # cannot double-close if this close is itself what fails.
-        fd, open_fd = -1, fd
-        os.close(open_fd)
-        if pin is None:
+        if not create_only:
+            # Close BEFORE the replacing rename: on Windows os.replace cannot
+            # swap a file that still has an open handle. Create-only publication
+            # is different: its hard link must stay pinned to this descriptor,
+            # so that branch closes only after the only-if-absent publish below.
+            # Clear fd first so the except branch cannot double-close if this
+            # close is itself what fails.
+            fd, open_fd = -1, fd
+            os.close(open_fd)
+        if create_only:
+            # os.link, not rename: a link fails atomically with FileExistsError
+            # when *path* already names something, where a rename would just as
+            # atomically REPLACE it -- the one behavior a create-only caller
+            # must never get. This is what actually closes a same-name race
+            # between two concurrent creates: classifying "nothing here yet"
+            # ahead of time and then publishing unconditionally leaves a window
+            # where both callers saw nothing and the second publish silently
+            # destroys the first's file. Making the publish ITSELF the
+            # exists-check removes that window -- exactly one linker can ever
+            # win the name, and the loser's FileExistsError propagates to the
+            # `except BaseException` below, which reclaims the temp the same
+            # way any other publish failure does.
+            #
+            # Fallback: FAT/exFAT, SMB/CIFS, and some FUSE mounts reject
+            # os.link outright with EPERM/ENOTSUP/EOPNOTSUPP. When that
+            # happens, ``rename_noreplace`` below remains one atomic
+            # only-if-absent publication syscall. It moves the staging directory
+            # entry rather than dereferencing it, so a planted symlink remains a
+            # symlink instead of becoming an ordinary hard-link alias for the
+            # protected inode; this finding's link-follow primitive does not
+            # carry into that path. Callers' existing destination symlink policy
+            # still governs whether such a moved link is usable.
+            #
+            # Python has no cross-platform ``linkat(fd, "", AT_EMPTY_PATH)``
+            # binding. Linux's /proc descriptor links provide the equivalent:
+            # following ``/proc/self/fd/<fd>`` resolves to the inode held by the
+            # still-open descriptor, NOT to whatever an attacker has swapped in
+            # at the visible temp name. That name is cleanup-only from here on.
+            #
+            # macOS has no /proc descriptor namespace, so it links the staging
+            # name with follow_symlinks=False. Windows exposes no no-follow
+            # support for os.link, so it uses the plain hard-link primitive.
+            # Both branches verify the destination's (st_dev, st_ino) against
+            # the still-open staging fd. Verification never unlinks the
+            # destination: an entry not proven to be ours may belong to a
+            # concurrent writer, and deleting it would be data loss. A planted
+            # symlink may remain, but directory-write access already permits
+            # creating it directly, so leaving it grants no new capability; the
+            # no-follow branch also never exposes its target as a regular file.
+            proc_self_fd = "/proc/self/fd"
+            link_staging_name = not os.path.isdir(proc_self_fd)
+            nofollow_link = os.link in os.supports_follow_symlinks
+            descriptor_source = f"{proc_self_fd}/{fd}"
+            try:
+                if link_staging_name:
+                    if pin is None:
+                        if nofollow_link:
+                            os.link(tmp, path, follow_symlinks=False)
+                        else:
+                            os.link(tmp, path)
+                    else:
+                        if nofollow_link:
+                            os.link(
+                                os.path.basename(tmp),
+                                path.name,
+                                src_dir_fd=pin,
+                                dst_dir_fd=pin,
+                                follow_symlinks=False,
+                            )
+                        else:
+                            os.link(
+                                os.path.basename(tmp),
+                                path.name,
+                                src_dir_fd=pin,
+                                dst_dir_fd=pin,
+                            )
+                elif pin is None:
+                    # ``src_dir_fd`` is ignored for an absolute source by the
+                    # kernel, but supplying it forces CPython onto ``linkat``;
+                    # plain ``link`` cannot request AT_SYMLINK_FOLLOW and would
+                    # hard-link the procfs magic link itself (EXDEV) instead of
+                    # resolving it to the staging inode. The already-open staging
+                    # fd is a valid ignored value and needs no extra descriptor.
+                    os.link(
+                        descriptor_source,
+                        path,
+                        src_dir_fd=fd,
+                        follow_symlinks=True,
+                    )
+                else:
+                    os.link(
+                        descriptor_source,
+                        path.name,
+                        src_dir_fd=fd,
+                        dst_dir_fd=pin,
+                        follow_symlinks=True,
+                    )
+                if link_staging_name:
+                    _verify_create_only_publish(fd, path, pin)
+            except OSError as link_err:
+                # CreateHardLinkW reports ERROR_ACCESS_DENIED (``EACCES``) when
+                # the visible staging name has been replaced by a symlink. NTFS
+                # still supports hard links: the refusal is about this source
+                # object, so verify its identity and report the create-only
+                # staging-swap refusal instead of entering the unsupported-link
+                # fallback. The destination, if any, remains untouched.
+                if (
+                    platform_compat.IS_WINDOWS
+                    and link_staging_name
+                    and link_err.errno == errno.EACCES
+                    and _create_only_staging_name_changed(fd, tmp, pin)
+                ):
+                    raise FileExistsError(
+                        errno.EEXIST,
+                        "create_only staging name changed before publication; "
+                        "the unverified destination was left unchanged",
+                        str(path),
+                    ) from link_err
+                # If /proc disappears between the capability check and link,
+                # preserve the same fail-closed contract instead of reporting a
+                # misleading destination-not-found error. An ENOENT while the
+                # namespace still exists means the supposedly-open fd vanished,
+                # which is an invariant failure and propagates unchanged.
+                if link_err.errno in (errno.ENOENT, errno.ENOTDIR) and not os.path.isdir(
+                    proc_self_fd
+                ):
+                    raise NotImplementedError(
+                        "create_only requires linking from the open staging descriptor; "
+                        "/proc/self/fd became unavailable before publication"
+                    ) from link_err
+                if link_err.errno not in _LINK_UNSUPPORTED_ERRNOS:
+                    raise
+                # Hard links unavailable. This does NOT fall back to an
+                # O_CREAT|O_EXCL "claim" followed by a separate replacing
+                # rename/replace_with_retry -- that two-step reopens exactly
+                # the race create_only exists to close: the claim only
+                # proves the name was free at CLAIM time, and a concurrent
+                # writer whose own publish lands in the window between the
+                # claim and the unconditional replace that follows it gets
+                # silently clobbered by that replace, with nothing to say a
+                # second file was ever there. The claim narrows the window;
+                # it does not remove it.
+                #
+                # The one remaining option that removes the window rather
+                # than narrowing it is platform_compat.rename_noreplace
+                # (renameat2/RENAME_NOREPLACE on Linux, renameatx_np/
+                # RENAME_EXCL on macOS): ONE syscall that is ITSELF the
+                # exists-check, exactly like os.link above, just without
+                # needing a link. Where that primitive is also unavailable
+                # (pre-5.3 kernels, glibc < 2.28, Windows, and the same
+                # network/FUSE mounts that already refused the link), this
+                # FAILS rather than fall back further -- an unconditional
+                # replace here would be exactly the silent-overwrite hazard
+                # this whole branch exists to avoid, so "cannot confirm the
+                # name is free" has to mean refuse, not proceed anyway.
+                _own_parent_fd: int | None = None
+                _publish_dir_fd = pin
+                try:
+                    if _publish_dir_fd is None:
+                        if not hasattr(os, "O_DIRECTORY"):
+                            raise NotImplementedError(
+                                "create_only: hard links are unsupported on this "
+                                "filesystem and this platform has no directory "
+                                "descriptor to publish a no-replace rename "
+                                "through -- refusing rather than risk a silent "
+                                "overwrite"
+                            ) from link_err
+                        _own_parent_fd = os.open(str(path.parent), os.O_DIRECTORY)
+                        _publish_dir_fd = _own_parent_fd
+                    if not platform_compat.RENAME_NOREPLACE_AVAILABLE:
+                        raise NotImplementedError(
+                            "create_only: hard links are unsupported on this "
+                            "filesystem and no atomic no-replace rename is "
+                            "available on this platform either -- refusing "
+                            "rather than risk a silent overwrite"
+                        ) from link_err
+                    platform_compat.rename_noreplace(
+                        os.path.basename(tmp),
+                        path.name,
+                        src_dir_fd=_publish_dir_fd,
+                        dst_dir_fd=_publish_dir_fd,
+                    )
+                    # As with a staging-name link, prove the published inode is
+                    # still the one held open before reporting success.
+                    if fd >= 0:
+                        _verify_create_only_publish(fd, path, _publish_dir_fd)
+                finally:
+                    if _own_parent_fd is not None:
+                        os.close(_own_parent_fd)
+            else:
+                # The link IS the publish: the destination exists the moment
+                # os.link returns, so nothing past this point may report
+                # failure. Verification completes while the staging descriptor
+                # is open, and Windows cannot unlink the staging name while that
+                # remains open, so release it before best-effort temp cleanup.
+                # A scanner or indexer can still race the unlink (EACCES/EPERM
+                # on Windows); that must not route a COMMITTED create into the
+                # link-unsupported fallback or out to the caller as an error the
+                # caller would read as "nothing was written".
+                fd, open_fd = -1, fd
+                try:
+                    os.close(open_fd)
+                except OSError:
+                    logger.warning(
+                        "create_only: published %s but could not close staging fd %d",
+                        path,
+                        open_fd,
+                        exc_info=True,
+                    )
+                try:
+                    if pin is None:
+                        _unlink_with_retry(tmp)
+                    else:
+                        _unlink_with_retry(os.path.basename(tmp), dir_fd=pin)
+                except OSError:
+                    logger.warning(
+                        "create_only: published %s but could not remove its "
+                        "temp file %s; leaving the orphan behind",
+                        path,
+                        tmp,
+                        exc_info=True,
+                    )
+            # The create is committed on either successful publication path.
+            # The direct-link path closes before temp cleanup above; the
+            # no-replace-rename fallback still owns the open staging descriptor
+            # here. Clear it before close so outer cleanup cannot double-close
+            # an uncertain descriptor if close reports an error.
+            if fd >= 0:
+                fd, open_fd = -1, fd
+                try:
+                    os.close(open_fd)
+                except OSError:
+                    logger.warning(
+                        "create_only: published %s but could not close staging fd %d",
+                        path,
+                        open_fd,
+                        exc_info=True,
+                    )
+        elif pin is None:
             replace_with_retry(tmp, path)
         else:
             # renameat, both ends relative to the pinned parent: neither the temp

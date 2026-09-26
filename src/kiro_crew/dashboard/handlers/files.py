@@ -57,6 +57,7 @@ from kiro_crew.config.sections import (
     LINK_PATTERNS_MAX,
     link_pattern_url_ok,
 )
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.dashboard import part_stream, upload_destination
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_utils import (
@@ -1986,6 +1987,668 @@ async def api_upload_file(request: web.Request) -> web.Response:
         resources=f"files:{len(paths)}",
     )
     return web.json_response({"paths": paths})
+
+
+async def api_directory_upload(request: web.Request) -> web.Response:
+    """POST /api/directory-upload?dir=<path>[&overwrite=1] — write an uploaded
+    file into a directory already visible in the Files panel.
+
+    Sibling of :func:`api_upload_file`, for a different destination: that
+    endpoint always writes into the fixed chat-attachment scratch directory
+    (``_upload_dir()``); this one writes into whatever directory the caller
+    named -- a drag-and-drop target row, the full-pane drop overlay's root, or
+    the "Upload files..." row-menu action -- which may be anywhere the
+    dashboard's own path gate (``_validate_dashboard_path`` /
+    ``is_sensitive_path``) permits, the same path gate ``/api/file-write``
+    trusts for writing INTO the workspace. Like ``/api/file-write``, the
+    handler opens with the dashboard owner gate
+    (``require_owner_dashboard_request``) before any query parse, path probe or
+    multipart read, so a non-owner holding a channel-created dashboard session
+    cannot use it to plant files into the workspace.
+
+    Reuses the existing admission gates rather than inventing new ones: the
+    SAME extension allowlist and the SAME magic-byte content-signature check
+    (``_content_matches_ext``)
+    ``api_upload_file`` applies to a chat attachment. The per-file size cap
+    here is ``_MAX_UPLOAD_BYTES`` (50 MB) for EVERY admitted file, video
+    containers included: unlike ``api_upload_file``, which streams a video
+    against the larger ``_MAX_VIDEO_UPLOAD_BYTES`` (512 MB), this endpoint
+    applies no video-specific cap, so a video the shared allowlist admits is
+    still refused past 50 MB (``file_too_large``). There is no
+    credential/secret content scan here, deliberately matching
+    ``api_upload_file``'s own boundary rather than the OUTBOUND ``file_send``
+    gate's (``_gate_upload_file``'s ``redact()`` scan): that scan protects
+    content leaving the workspace toward a third party, which is the opposite
+    trust direction from a user dropping their OWN file into their OWN
+    workspace, so porting it here would be inventing a new gate rather than
+    reusing an existing one. The ``file_delivery_consent`` module this handler's
+    own module already imports is not the missing piece either: its one class
+    (``CLASS_OWNER_DASHBOARD``) gates handing workspace content OUT to the
+    dashboard, so consulting it here would be asking permission for the
+    opposite direction of travel.
+
+    Unlike ``api_upload_file``'s aggressive ``[^\\w.\\-]`` character
+    replacement (harmless there -- every scratch upload is UUID-prefixed and
+    never user-facing by name), the filename here is the file's permanent,
+    user-visible identity in their own workspace, so only the traversal-
+    relevant part is stripped (``Path.name``); the rest of the name is
+    preserved byte-for-byte.
+
+    One file per request, by design: the frontend sends one multipart POST
+    per dropped/picked file (mirroring the Knowledge Base upload), which is
+    what makes per-file name-collision handling possible -- a batch endpoint
+    would have to decide the collision policy for the whole batch at once.
+
+    A name collision is refused with ``code: "name_collision"`` and a 409
+    UNLESS ``overwrite=1`` is set, so the frontend can prompt rather than
+    silently replace an existing file.
+
+    **Destination gating, not just directory gating.** ``dir`` alone passing
+    ``_validate_dashboard_path`` is not enough: the crew-home ROOT is
+    deliberately unfenced (only its leaves -- ``security_policy.json``,
+    ``profiles/``, ``admission_policy.json``, ``computer_use.json`` -- are, per
+    ``security/paths.py``), so ``dir=<crew-home>&overwrite=1`` with a ``file``
+    part named ``security_policy.json`` would otherwise reach the keystone
+    unfenced -- exactly the ``api_file_write`` sibling's own gate, which runs
+    the FULL path (filename included). ``dest`` is therefore re-validated here
+    the identical way, after the filename is known and before either the
+    extension check or the body is read, so a sensitive destination is refused
+    before any byte of the upload is even accepted off the wire.
+
+    **Ancestor-swap and short-write safety.** The write goes through the SAME
+    two primitives ``_file_write_blocking`` (this module's own ``api_file_write``
+    helper) uses, for the same reason spelled out there: ``pinned_fs.pin_parent``
+    walks ``target_dir`` -- already realpath-canonicalized by
+    ``_validate_dashboard_path`` above, so this walks that RECORDED chain
+    component-by-component with ``O_NOFOLLOW`` rather than re-resolving it (a
+    fresh resolution here would just as happily follow a swap that landed after
+    validation as the original lookup would). ``pin_parent`` on the parent, not
+    ``open_dir_pinned`` on the target -- ``open_dir_pinned`` resolves its own
+    parent chain internally, which is exactly the re-resolution this avoids. A
+    single ``os.open(dest, ..., O_NOFOLLOW)`` only guards the FINAL component;
+    the parents on the way to it are not covered by any flag on that one call.
+    ``atomic_write`` then stages the full payload in a same-directory temp file
+    and publishes it atomically -- by link for create-only writes (with an atomic
+    no-replace rename fallback where links are unsupported), and by rename for
+    overwrites. The publish uses the SAME pinned descriptor when the platform
+    supports descriptor-relative operations, by name otherwise. Either way a
+    short write or ``ENOSPC`` discards the temp and
+    leaves the original (on an overwrite) or nothing (on a fresh upload)
+    untouched, never a truncated destination. The existing-target lstat that
+    decides collision/symlink/directory happens through the SAME pinned
+    descriptor, so it is not a second by-name resolution the ancestor pin does
+    not cover.
+
+    Windows cannot pin a directory descriptor at all (no ``O_NOFOLLOW`` +
+    ``dir_fd`` support -- see ``pinned_fs.supports_pinned_walk``), so the
+    ancestor-swap protection above is NOT available in that FORM there -- but
+    the property it buys IS still available, through a different primitive:
+    ``platform_compat.pin_directory(target_dir)`` opens a handle without
+    ``FILE_SHARE_DELETE``, and Windows refuses to rename or delete that
+    directory OR ANY DIRECTORY ABOVE IT for as long as the handle stays open
+    (see ``TestPinDirectory::test_a_pinned_directory_cannot_be_renamed_or_removed``
+    in ``test_platform_compat.py``). The handle's kernel-reported final path
+    must first match the already-validated target, so an ancestor swap that
+    redirects the open itself is refused rather than trusted as a lock on the
+    wrong directory. Held across the whole classify-then-publish below, the
+    verified handle prevents a later ancestor swap, so the SAME by-name
+    classification and publish the POSIX floor already uses become safe on
+    Windows too -- ``platform_compat.is_link_or_junction`` still catches a
+    planted symlink OR junction at the final name (which
+    ``path.is_symlink()`` alone would miss), and
+    ``atomic_write``'s temp-then-rename (or, where hard links are
+    unsupported, ``platform_compat.rename_noreplace``) still makes a short
+    write or ``ENOSPC`` leave the original untouched. Where NEITHER
+    ancestor-pinning primitive exists on a platform (unreachable in the
+    current CI matrix: every one of Linux/macOS/Windows takes one branch or
+    the other), the upload refuses outright with ``ancestor_pin_unsupported``
+    rather than publish with no ancestor guard at all. This mirrors the
+    documented residual in ``pinned_fs.write_file_pinned``: the
+    everywhere-floor is "a planted NAME is never followed," not "no
+    same-process race exists."
+
+    An OVERWRITE carries the replaced file's mode and access controls onto the
+    staged replacement before publication. Linux reads supported ACL xattrs from
+    the pinned source descriptor. macOS snapshots the extended ACL from that same
+    descriptor and explicitly opts this endpoint into applying it to the staged
+    descriptor; ``ENOENT`` means no extended ACL and proceeds with mode only, while
+    every other read or apply failure refuses the overwrite. Windows snapshots the
+    source file's DACL, closes that source descriptor so ``os.replace`` can proceed,
+    and applies the detached snapshot to the staged descriptor; a DACL read or write
+    failure refuses the overwrite and leaves the original untouched.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Ahead of the query parse, the path probe and the multipart read. This route
+    # creates AND overwrites files anywhere off the sensitive floor -- which includes
+    # the steering documents, the skills and the MCP config whose own write routes are
+    # owner-gated -- so leaving it open would hand a non-owner (a channel-allowlisted
+    # user's dashboard session, created by send_dashboard_link) every file those gates
+    # protect. It is the same gate, and the same ordering, api_file_write uses. Ahead
+    # of the probe too, so whether a path exists is not a non-owner's to learn.
+    owner_denied = await require_owner_dashboard_request(request, "upload.directory")
+    if owner_denied is not None:
+        return owner_denied
+
+    caller = request.get("user", "dashboard")
+    # NOT stripped: a POSIX directory name may legitimately end in a space, and
+    # trimming one would resolve the upload to the space-less sibling instead
+    # -- silently writing the file into a different directory than the client
+    # named. An untrimmed value that is blank or bad is rejected below.
+    raw_dir = request.query.get("dir", "")
+    overwrite = request.query.get("overwrite", "") in ("1", "true")
+
+    def _denied(code: str, message: str, status: int, *, resources: str = "") -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="upload.directory",
+            outcome="rejected",
+            source="dashboard",
+            resources=resources or f"reason:{code}",
+        )
+        # Dispatched through literal-status branches, EACH with its own
+        # dict-literal body, rather than one `web.json_response(body,
+        # status=status)` call: the error-code contract gate
+        # (test/test_error_code_contract.py) statically reads a call's
+        # `status=` keyword and its body argument, and either one arriving as
+        # a variable is indistinguishable from a status/body that is
+        # genuinely runtime-decided -- which the gate correctly cannot verify
+        # and buckets as a violation-shaped finding on every call, new or
+        # not. Every status this handler ever passes is one of these four
+        # literals, so branching on the value keeps `_denied` as the one
+        # place that assembles `code`/``message`` while still giving the gate
+        # a literal status AND a literal, transparent, ``code``-bearing dict
+        # it can verify at each site.
+        if status == 400:
+            return web.json_response({"error": message, "code": code}, status=400)
+        if status == 403:
+            return web.json_response({"error": message, "code": code}, status=403)
+        if status == 409:
+            return web.json_response({"error": message, "code": code}, status=409)
+        if status == 413:
+            return web.json_response({"error": message, "code": code}, status=413)
+        if status == 501:
+            return web.json_response({"error": message, "code": code}, status=501)
+        raise ValueError(f"api_directory_upload._denied: unhandled status {status!r}")
+
+    if not raw_dir:
+        return _denied("missing_required_fields", "dir is required", 400)
+    if not (request.content_type or "").startswith("multipart/"):
+        return _denied("not_multipart", "expected multipart/form-data", 400)
+
+    def _validate_directory(raw: str) -> str | None:
+        """``_validate_dashboard_path`` plus the existence check, off the loop.
+
+        Both are blocking filesystem calls -- ``validate_file_path`` resolves
+        ``realpath`` and walks ``is_sensitive_path``'s candidate forms,
+        ``os.path.isdir`` is a ``stat`` -- so they go through
+        :func:`_run_path_probe`, this module's only sanctioned route for
+        filesystem work on a caller-supplied path. Not ``asyncio.to_thread``:
+        that is the loop's shared default executor, and a thread wedged in an
+        uninterruptible ``stat`` on a dead mount never returns, so a caller
+        naming one repeatedly would retire a shared worker per request until
+        every unrelated ``to_thread`` user queued behind them. On the probe
+        pool the same caller exhausts that pool and nothing else, and the
+        refusal surfaces as a 503 rather than a silent stall.
+        """
+        validated = _validate_dashboard_path(raw)
+        if not validated or not os.path.isdir(validated):
+            return None
+        return validated
+
+    try:
+        target_dir = await _run_path_probe(_validate_directory, raw_dir)
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=raw_dir, operation="upload.directory", caller=caller, source="dashboard"
+        )
+    if not target_dir:
+        return _denied(
+            "invalid_directory", "invalid or forbidden directory", 400, resources=raw_dir
+        )
+
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or not isinstance(part, BodyPartReader) or part.name != "file":
+        return _denied("missing_required_fields", "file is required", 400)
+
+    filename = part.filename or "upload"
+    # Strip any directory components the client sent (Path.name) -- the only
+    # traversal-relevant sanitization a filename needs. It also means `dest`
+    # below (`target_dir / safe_name`) is LEXICALLY always a direct child of
+    # `target_dir`: safe_name never carries a `/` or a `..` segment, so there
+    # is nothing left for a resolve()-based containment check to catch that
+    # candidate_dest's own re-validation just below does not already cover.
+    safe_name = Path(filename).name
+    if (
+        not safe_name
+        or safe_name in (".", "..")
+        or any(ch in '<>:"\\|?*' or ord(ch) < 0x20 for ch in safe_name)
+        or safe_name.endswith((".", " "))
+        or safe_name.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS
+    ):
+        return _denied("invalid_filename", "invalid filename", 400, resources=filename)
+
+    # Re-gate the FULL destination -- directory validation above is not
+    # enough on its own: the crew-home ROOT is deliberately not itself
+    # sensitive (only its leaves are -- security_policy.json, profiles/,
+    # admission_policy.json, computer_use.json), so dir=<crew-home> passes
+    # target_dir's own check and a filename naming one of those leaves would
+    # otherwise reach the keystone unfenced. This mirrors api_file_write,
+    # which runs its caller-supplied path (filename included) through this
+    # SAME gate -- the destination gets no lighter a check here just because
+    # part of it was already validated. Checked before the extension check
+    # and before any byte of the body is read, so a sensitive destination is
+    # refused as cheaply as every other early rejection in this handler.
+    # Through the probe pool for the same reason target_dir's own validation is
+    # above -- never the shared default executor.
+    candidate_dest = os.path.join(target_dir, safe_name)
+    try:
+        dest_ok = await _run_path_probe(_validate_dashboard_path, candidate_dest)
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=candidate_dest,
+            operation="upload.directory",
+            caller=caller,
+            source="dashboard",
+        )
+    if not dest_ok:
+        return _denied(
+            "sensitive_destination",
+            "destination path is not allowed",
+            403,
+            resources=candidate_dest,
+        )
+
+    ext = Path(safe_name).suffix.lower()
+    allowed = _ALLOWED_IMAGE_EXT | _ALLOWED_TEXT_EXT | _ALLOWED_DOC_EXT | _ALLOWED_VIDEO_EXT
+    if ext not in allowed:
+        detail = f"Unsupported file type: {ext}"
+        if ext in _VIDEO_HINT_EXT:
+            accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
+            detail = f"{detail} — accepted video containers: {accepted}"
+        return _denied("unsupported_file_type", detail, 400, resources=filename)
+
+    data = bytearray()
+    while True:
+        chunk = await part.read_chunk(8192)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > _MAX_UPLOAD_BYTES:
+            return _denied(
+                "file_too_large",
+                f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024}MB)",
+                413,
+                resources=filename,
+            )
+    raw = bytes(data)
+    if not raw:
+        return _denied("empty_upload", "no file content received", 400, resources=filename)
+    if not _content_matches_ext(ext, raw):
+        return _denied(
+            "content_signature_mismatch",
+            f"File content does not match its type: {ext}",
+            400,
+            resources=filename,
+        )
+
+    # No dest.resolve().is_relative_to(target_dir) check here: safe_name is
+    # already traversal-free (see its own comment above), so dest is
+    # LEXICALLY always a direct child of target_dir, and candidate_dest --
+    # the identical path -- was already re-validated through
+    # _validate_dashboard_path above. A resolve()-based containment check
+    # would add nothing that check does not already cover, while adding two
+    # more blocking realpath walks directly on the event loop.
+    dest = Path(target_dir) / safe_name
+
+    def _write() -> str | None:
+        """Publish ``raw`` at ``dest``, ancestor-pinned and short-write-safe.
+
+        See the handler's own docstring for why ``pin_parent`` walks the
+        already-resolved ``target_dir`` rather than re-resolving it, and why
+        ``atomic_write``'s temp-then-rename replaces a single O_EXCL/O_TRUNC
+        open. Both capabilities are probed together, matching
+        ``_file_write_blocking``: a platform that can pin a parent but cannot
+        stage-and-rename through the descriptor gets no benefit from pinning
+        (``atomic_write`` would refuse the descriptor and fall back anyway),
+        so it takes the by-name floor directly instead of holding an fd for
+        nothing.
+
+        The existing-target CLASSIFICATION below (missing/symlink/dir/file)
+        happens entirely through stat-shaped checks (``pinned_fs.stat_at``,
+        ``platform_compat.is_link_or_junction``, ``Path.is_dir``/``is_file``)
+        BEFORE any open is attempted, deliberately never by opening the
+        destination and branching on which exception comes back. The single
+        ``os.open(dest, O_EXCL/O_TRUNC | O_NOFOLLOW, ...)`` this replaced did
+        branch on the exception, and which one a given failure raises is not
+        the same across platforms -- opening an existing DIRECTORY with write
+        flags is ``IsADirectoryError`` on POSIX, but not that same type on
+        Windows, so a handler written to catch only the POSIX shape lets a
+        Windows request fall through as an unhandled 500 where POSIX gets the
+        intended 409. Classifying first removes the platform-specific
+        exception mapping from the decision entirely.
+
+        The classification decides WHICH publish `atomic_write` performs, not
+        just whether one is allowed. A `missing` target publishes with
+        `create_only=True`: the publish step itself is then the only place
+        that can observe two concurrent same-name uploads, and it is atomic
+        there (`os.link`, not rename), so the second writer's publish fails
+        with `FileExistsError` -- reported as `name_collision` -- rather than
+        silently replacing the first writer's file: the classification above
+        only describes the destination at the moment it ran, not at the
+        moment the write actually lands. An existing `file` being overwritten
+        instead carries its mode and access controls onto the replacement the
+        same way `_file_write_blocking` does for `api_file_write`: POSIX carries
+        supported ACL xattrs from the pinned source descriptor; Windows carries
+        a detached DACL snapshot after closing the source handle. Without that
+        carry the fresh inode `atomic_write` installs lands at the parent/default
+        access control, silently loosening whatever protection the replaced file
+        actually had.
+        """
+        pinned = pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported()
+        dir_fd: int | None = None
+        ancestor_guard_fd: int | None = None
+        if pinned:
+            try:
+                dir_fd = pinned_fs.pin_parent(target_dir, what="upload target directory")
+            except pinned_fs.PinnedPathRefusal:
+                return "symlink_refused"
+            except OSError:
+                return "invalid_directory"
+        elif platform_compat.IS_WINDOWS:
+            # Windows has no O_NOFOLLOW + dir_fd combination to pin a PARENT
+            # CHAIN with (pinned_fs.supports_pinned_walk() is False there),
+            # so the by-name classification and publish below are, on their
+            # own, exactly the by-name write an ancestor swapped for a
+            # junction after _validate_dashboard_path could still redirect --
+            # reaching a keystone leaf would be a governance-ceiling bypass,
+            # which AGENTS.md treats as absolute. platform_compat.pin_directory
+            # closes that window a different way: the handle it returns is
+            # opened WITHOUT FILE_SHARE_DELETE, and for as long as it stays
+            # open, Windows refuses to rename OR delete the directory it
+            # names -- NOR ANY DIRECTORY ABOVE IT (its own docstring; pinned
+            # by TestPinDirectory::
+            # test_a_pinned_directory_cannot_be_renamed_or_removed in
+            # test_platform_compat.py). The handle's final path is compared
+            # with the already-validated target before trusting that lock: an
+            # ancestor swapped for a junction before the open can otherwise
+            # redirect the open itself and make it pin the attacker's target.
+            # Held across the whole classify-then-publish below, a verified
+            # handle prevents any later ancestor swap. The open itself refuses
+            # a reparse point already sitting at target_dir's own name.
+            try:
+                ancestor_guard_fd = platform_compat.pin_directory(target_dir)
+                pinned_target = pinned_fs.fd_real_path(ancestor_guard_fd)
+                if pinned_target is None:
+                    raise OSError(
+                        errno.EIO,
+                        "the upload directory handle's final path is unavailable",
+                    )
+            except OSError:
+                if ancestor_guard_fd is not None:
+                    os.close(ancestor_guard_fd)
+                    ancestor_guard_fd = None
+                return "symlink_refused"
+            if ntpath.normcase(ntpath.normpath(pinned_target)) != ntpath.normcase(
+                ntpath.normpath(target_dir)
+            ):
+                os.close(ancestor_guard_fd)
+                ancestor_guard_fd = None
+                return "symlink_refused"
+        else:
+            # Neither ancestor-pinning primitive exists on this platform: no
+            # descriptor-relative walk (POSIX without O_NOFOLLOW/dir_fd
+            # support) and no Windows handle-based anti-rename lock either.
+            # Publishing by name here would be an unguarded ancestor-swap
+            # window with no mitigation at all, so this refuses the upload
+            # outright rather than risk a write landing wherever an ancestor
+            # was swapped to -- including a keystone leaf. In the current CI
+            # matrix (Linux, macOS, Windows) this branch is unreachable: all
+            # three either satisfy `pinned` above or are Windows, which takes
+            # the branch above instead.
+            return "ancestor_pin_unsupported"
+        try:
+            # 'missing' | 'symlink' | 'dir' | 'file' for whatever currently
+            # sits at the destination name. Through the pinned descriptor on
+            # POSIX, so this is not a second by-name resolution the ancestor
+            # pin above does not cover; by name via
+            # platform_compat.is_link_or_junction on the floor platform
+            # (Windows has no O_NOFOLLOW + dir_fd support to pin with), which
+            # is what still catches a planted symlink OR junction there even
+            # without ancestor pinning -- ``Path.is_symlink()`` alone would
+            # miss a junction.
+            if dir_fd is not None:
+                st = pinned_fs.stat_at(dir_fd, safe_name)
+                if st is None:
+                    kind = "missing"
+                elif _stat_mod.S_ISLNK(st.st_mode):
+                    kind = "symlink"
+                elif _stat_mod.S_ISDIR(st.st_mode):
+                    kind = "dir"
+                elif _stat_mod.S_ISREG(st.st_mode):
+                    kind = "file"
+                else:
+                    # FIFO / socket / device planted at the name: refused the
+                    # same way a symlink is, never opened as a plain file.
+                    kind = "symlink"
+            elif platform_compat.is_link_or_junction(dest):
+                kind = "symlink"
+            elif dest.is_dir():
+                kind = "dir"
+            elif dest.is_file():
+                kind = "file"
+            else:
+                kind = "missing"
+
+            if kind == "symlink":
+                return "symlink_refused"
+            if kind == "dir":
+                return "is_a_directory"
+            if kind == "file" and not overwrite:
+                return "name_collision"
+
+            # The pinned descriptor is handed to atomic_write only when it can
+            # actually stage-and-rename through one (the same
+            # ``pinned_parent_replace_supported`` probe folded into ``pinned``
+            # above) -- consuming ``fsync`` and its own temp-then-rename floor
+            # otherwise. Either way the full payload lands in a same-directory
+            # temp file first; a short write or ENOSPC discards that temp and
+            # leaves the original (on an overwrite) or nothing (on a fresh
+            # upload) untouched, never a truncated destination.
+            if kind == "missing":
+                # create_only=True makes the PUBLISH the exists-check: two
+                # concurrent uploads that both classified "missing" race on
+                # the same os.link, exactly one wins the name, and the other
+                # gets FileExistsError below instead of silently overwriting
+                # whatever the winner just published.
+                try:
+                    atomic_write(dest, raw, fsync=True, parent_dir_fd=dir_fd, create_only=True)
+                except FileExistsError:
+                    return "name_collision"
+                except NotImplementedError:
+                    # atomic_write's create_only publish refused rather than
+                    # fall back to an unsafe unconditional replace: hard
+                    # links are unsupported at this destination AND no
+                    # atomic no-replace rename is available either (see its
+                    # own docstring). Reported distinctly from
+                    # invalid_directory -- the directory itself is fine, this
+                    # specific publish cannot be done safely.
+                    return "atomic_create_unsupported"
+                return None
+
+            # kind == "file" and overwrite: carry the existing file's mode
+            # and supported access-control xattrs onto the replacement, mirroring
+            # _file_write_blocking's own carry for api_file_write a few hundred
+            # lines below -- opened through the SAME pinned descriptor so the
+            # metadata comes from the inode the classification above already
+            # looked at, not a fresh by-name resolution a swap could have
+            # redirected.
+            if platform_compat.IS_WINDOWS:
+                # Windows stores file access control in the DACL, not POSIX xattrs.
+                # Snapshot from the exact non-reparse descriptor classified above,
+                # then close it BEFORE atomic_write: os.replace refuses while any
+                # other handle is open on either path. The detached snapshot is
+                # applied to atomic_write's staged inode while its open descriptor
+                # pins the temp name until the metadata write completes.
+                try:
+                    source_fd = platform_compat.open_file_no_reparse(dest)
+                except OSError as exc:
+                    if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", errno.ELOOP)):
+                        return "symlink_refused"
+                    return "access_control_preservation_failed"
+                try:
+                    src_stat = os.fstat(source_fd)
+                    try:
+                        windows_dacl = platform_compat.snapshot_windows_dacl(source_fd)
+                    except platform_compat.WindowsDaclError:
+                        return "access_control_preservation_failed"
+                finally:
+                    os.close(source_fd)
+                try:
+                    atomic_write(
+                        dest,
+                        raw,
+                        fsync=True,
+                        mode=_stat_mod.S_IMODE(src_stat.st_mode),
+                        preserve_windows_dacl=windows_dacl,
+                    )
+                except platform_compat.WindowsDaclError:
+                    return "access_control_preservation_failed"
+                return None
+
+            src_fd: int | None = None
+            try:
+                try:
+                    src_fd = open_access_control_source(dest, dir_fd=dir_fd)
+                except OSError as exc:
+                    if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", errno.ELOOP)):
+                        return "symlink_refused"
+                    return "access_control_preservation_failed"
+                src_stat = os.fstat(src_fd) if src_fd is not None else os.stat(dest)
+                macos_acl: platform_compat.MacOSAclSnapshot | None = None
+                if platform_compat.IS_MACOS:
+                    if src_fd is None:
+                        return "access_control_preservation_failed"
+                    try:
+                        macos_acl = platform_compat.snapshot_macos_acl(src_fd)
+                    except platform_compat.MacOSAclError:
+                        return "access_control_preservation_failed"
+                try:
+                    atomic_write(
+                        dest,
+                        raw,
+                        fsync=True,
+                        mode=_stat_mod.S_IMODE(src_stat.st_mode),
+                        preserve_access_control_from=(
+                            None if platform_compat.IS_MACOS else src_fd
+                        ),
+                        preserve_macos_acl=macos_acl,
+                        parent_dir_fd=dir_fd,
+                    )
+                except platform_compat.MacOSAclError:
+                    return "access_control_preservation_failed"
+            finally:
+                if src_fd is not None:
+                    os.close(src_fd)
+            return None
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
+            if ancestor_guard_fd is not None:
+                os.close(ancestor_guard_fd)
+
+    # transfer=True: this holds a worker for the length of the write, so it
+    # belongs on the transfer pool rather than the probe pool a burst of these
+    # would otherwise starve validation behind. Shielding keeps the worker's
+    # result observable when the request is cancelled: the write cannot be
+    # interrupted mid-syscall, and a committed result is audited before the
+    # cancellation propagates.
+    write_task = asyncio.create_task(_run_path_probe(_write, transfer=True))
+    try:
+        outcome = await asyncio.shield(write_task)
+    except asyncio.CancelledError as cancelled:
+        try:
+            outcome = await asyncio.shield(write_task)
+        except BaseException:
+            raise cancelled
+        try:
+            if outcome is None:
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="upload.directory",
+                    outcome="success",
+                    source="dashboard",
+                    resources=str(dest),
+                )
+            else:
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="upload.directory",
+                    outcome="rejected",
+                    source="dashboard",
+                    resources=f"reason:{outcome}",
+                )
+        finally:
+            raise cancelled
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=str(dest), operation="upload.directory", caller=caller, source="dashboard"
+        )
+    if outcome == "name_collision":
+        return _denied(
+            "name_collision",
+            f"A file named {safe_name!r} already exists",
+            409,
+            resources=str(dest),
+        )
+    if outcome == "access_control_preservation_failed":
+        return _denied(
+            "access_control_preservation_failed",
+            "could not preserve the existing file's access controls; overwrite refused",
+            409,
+            resources=str(dest),
+        )
+    if outcome == "is_a_directory":
+        return _denied(
+            "is_a_directory",
+            "a directory with that name already exists",
+            409,
+            resources=str(dest),
+        )
+    if outcome == "symlink_refused":
+        return _denied(
+            "symlink_refused", "refusing to write through a symlink", 403, resources=str(dest)
+        )
+    if outcome == "invalid_directory":
+        return _denied(
+            "invalid_directory", "invalid or forbidden directory", 400, resources=str(dest)
+        )
+    if outcome == "atomic_create_unsupported":
+        return _denied(
+            "atomic_create_unsupported",
+            "this destination cannot safely guarantee create-only semantics "
+            "(no hard-link or atomic no-replace rename support here)",
+            501,
+            resources=str(dest),
+        )
+    if outcome == "ancestor_pin_unsupported":
+        return _denied(
+            "ancestor_pin_unsupported",
+            "this platform cannot guard the upload directory's ancestors "
+            "against being swapped mid-request",
+            501,
+            resources=str(dest),
+        )
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="upload.directory",
+        outcome="success",
+        source="dashboard",
+        resources=str(dest),
+    )
+    return web.json_response({"ok": True, "path": str(dest), "name": safe_name})
 
 
 async def api_screenshot(request: web.Request) -> web.Response:

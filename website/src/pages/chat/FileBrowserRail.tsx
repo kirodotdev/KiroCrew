@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Files, Diff, Search, X, RefreshCw, FileText } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
+import ChatDropOverlay, { useChatFileDrop } from '../../components/ChatDropOverlay'
 import ErrorNotice from '../../components/ErrorNotice'
 import { findReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
@@ -18,6 +19,8 @@ import Clickable from '../../components/Clickable'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { resolveUploadTargetDir } from './resolveUploadTargetDir'
+import { useDirectoryUpload } from './useDirectoryUpload'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -377,6 +380,31 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
       )}`
     : t('pages.chat.fileBrowserRail.changed')
 
+  // Shares the tree's own query (same key, cache-deduped) purely to read the
+  // ABSOLUTE root a drop's relative row path is resolved against — the tree
+  // component computes the identical fallback (`tree?.root ?? projectDir`)
+  // for the same reason: the backend answers with the realpath, which can
+  // differ from a symlinked projectDir.
+  const { data: tree } = useQuery({
+    queryKey: ['project-tree', projectDir],
+    queryFn: () => api.projectTree(projectDir),
+    enabled: !!projectDir,
+  })
+  const root = tree?.root ?? projectDir
+
+  const {
+    uploadFiles, pickAndUpload, error: uploadError, dismissError, fileInput, confirmDialog,
+  } = useDirectoryUpload(projectDir)
+  const { active: dragOver, dropTargetProps } = useChatFileDrop((dataTransfer, event) => {
+    const files = Array.from(dataTransfer.files)
+    if (!files.length) return
+    void uploadFiles(resolveUploadTargetDir(
+      root,
+      event.target,
+      event.nativeEvent.composedPath?.(),
+    ), files)
+  })
+
   // Both queries poll (10s tree / 5s status); this is the "I changed something
   // outside the app, show me now" escape hatch. `refetchQueries` (not
   // `invalidateQueries`) so `refreshing` tracks the actual network round trip
@@ -430,7 +458,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
         className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
         style={{ touchAction: 'none' }}
       />
-      <div style={{ width: rail.width }} className="shrink-0 min-h-0 border-l border-border flex flex-col">
+      <div
+        {...dropTargetProps}
+        style={{ width: rail.width }}
+        className="relative shrink-0 min-h-0 border-l border-border flex flex-col"
+      >
+        <ChatDropOverlay active={dragOver} label={t('pages.chat.fileBrowserRail.drop_to_upload')} />
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">
           {/* All/Changed scopes the TREE, and Content mode has no tree. Left
               rendered it kept its "Changed" highlight while the content results
@@ -571,6 +604,19 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             />
           </div>
         )}
+        {/* Files rail, no draft to lose on hand-off: the tree itself holds no
+            unsaved input, so askAgent is safe to leave on. */}
+        {uploadError && (
+          <div className="px-2 pt-1.5 shrink-0">
+            <ErrorNotice
+              variant="inline"
+              message={uploadError}
+              askAgent
+              onDismiss={dismissError}
+              testId="file-browser-rail-upload-error"
+            />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           {contentMode ? (
             <ContentResults
@@ -591,12 +637,15 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               persistExpansion
               onFileOpen={(abs) => onFileOpen(abs, changedMode)}
               onAddToContext={onAddToContext}
+              onUploadRequest={pickAndUpload}
               searchQuery={query || null}
               selectedPath={selectedPath ?? null}
             />
           )}
         </div>
       </div>
+      {fileInput}
+      {confirmDialog}
     </>
   )
 }

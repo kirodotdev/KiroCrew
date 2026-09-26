@@ -21,8 +21,10 @@ Run offline via:
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
+import sys
 
 import pytest
 
@@ -184,13 +186,13 @@ def test_happy_path_reproduces_the_source_attribute_on_the_replacement(tmp_path,
 
 
 def test_no_source_descriptor_is_opened_where_xattrs_do_not_exist(tmp_path, monkeypatch):
-    """On a platform without the xattr syscalls, no source handle is opened.
+    """Unpinned callers open no source handle when xattr carry is unavailable.
 
-    This is the Windows contract, and it is load-bearing rather than cosmetic:
-    ``os.replace`` there fails with ``PermissionError`` while ANY other handle is
-    open on either path, so a descriptor held for a carry that cannot happen
-    would fail every dashboard and steering save. Returning ``None`` keeps the
-    write on its plain path.
+    This is the pre-existing Windows and macOS contract, and it is load-bearing
+    rather than cosmetic: Windows cannot replace a file while another handle is
+    open, while macOS callers did not opt into native ACL reads through this
+    shared Linux-xattr parameter. Returning ``None`` keeps both on their plain
+    paths unless a new surface explicitly requests a native ACL snapshot.
     """
     import kiro_crew.atomic_write as aw
 
@@ -198,6 +200,7 @@ def test_no_source_descriptor_is_opened_where_xattrs_do_not_exist(tmp_path, monk
     target.write_text("before", encoding="utf-8")
 
     monkeypatch.setattr(aw, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
+    monkeypatch.setattr(aw.platform_compat, "IS_MACOS", True)
 
     opened: list[object] = []
     real_open = aw.os.open
@@ -423,3 +426,250 @@ def test_no_source_fd_leaves_the_write_untouched(tmp_path, monkeypatch):
     atomic_write(target, "new body")
     monkeypatch.undo()
     assert target.read_text(encoding="utf-8") == "new body"
+
+
+def test_windows_dacl_is_applied_to_staging_fd_then_closed_before_replace(tmp_path, monkeypatch):
+    """The DACL lands on the pinned staging inode, then its handle is closed."""
+    import kiro_crew.atomic_write as aw
+    from kiro_crew import platform_compat
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    snapshot = platform_compat.WindowsDaclSnapshot(acl=b"captured-dacl", protected=True)
+    staged_fd: list[int] = []
+    staged_path: list[str] = []
+    order: list[str] = []
+    real_mkstemp = aw.tempfile.mkstemp
+
+    def _mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        staged_fd.append(fd)
+        staged_path.append(path)
+        return fd, path
+
+    def _apply(path, got: platform_compat.WindowsDaclSnapshot) -> None:
+        assert got is snapshot
+        assert os.fspath(path) == staged_path[0]
+        os.fstat(staged_fd[0])
+        order.append("dacl")
+
+    real_replace = aw.replace_with_retry
+
+    def _replace(src, dst) -> None:
+        assert staged_fd
+        with pytest.raises(OSError) as caught:
+            os.fstat(staged_fd[0])
+        assert caught.value.errno == errno.EBADF
+        order.append("replace")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(aw.tempfile, "mkstemp", _mkstemp)
+    monkeypatch.setattr(aw.platform_compat, "apply_windows_dacl", _apply)
+    monkeypatch.setattr(aw, "replace_with_retry", _replace)
+
+    aw.atomic_write(target, "replacement", preserve_windows_dacl=snapshot)
+
+    assert target.read_text(encoding="utf-8") == "replacement"
+    assert order == ["dacl", "replace"]
+
+
+def test_windows_dacl_apply_failure_refuses_replace_and_keeps_original(tmp_path, monkeypatch):
+    """A staged DACL failure cannot publish broader inherited permissions."""
+    import kiro_crew.atomic_write as aw
+    from kiro_crew import platform_compat
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    snapshot = platform_compat.WindowsDaclSnapshot(acl=None, protected=True)
+
+    def _refuse(_path, _snapshot: platform_compat.WindowsDaclSnapshot) -> None:
+        raise platform_compat.WindowsDaclError(errno.EACCES, "DACL write refused")
+
+    monkeypatch.setattr(aw.platform_compat, "apply_windows_dacl", _refuse)
+
+    with pytest.raises(platform_compat.WindowsDaclError, match="DACL write refused"):
+        aw.atomic_write(target, "replacement", preserve_windows_dacl=snapshot)
+
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+class _FakeMacOSAclApi:
+    """A pointer-free acl(3) seam that records the descriptor flow."""
+
+    def __init__(
+        self,
+        *,
+        source_acl: bool = True,
+        source_error: int = errno.ENOENT,
+        set_error: int | None = None,
+    ) -> None:
+        self.source_acl = source_acl
+        self.source_error = source_error
+        self.set_error = set_error
+        self.calls: list[tuple[object, ...]] = []
+
+    def get_fd_extended(self, fd: int) -> int | None:
+        self.calls.append(("get_fd_extended", fd))
+        if not self.source_acl:
+            ctypes.set_errno(self.source_error)
+            return None
+        return 101
+
+    def to_bytes(self, acl: int) -> bytes:
+        self.calls.append(("to_bytes", acl))
+        return b"user:example:deny:write"
+
+    def from_bytes(self, value: bytes) -> int | None:
+        self.calls.append(("from_bytes", value))
+        return 202
+
+    def set_fd(self, fd: int, acl: int) -> int:
+        self.calls.append(("set_fd", fd, acl))
+        if self.set_error is not None:
+            ctypes.set_errno(self.set_error)
+            return -1
+        return 0
+
+    def free(self, acl: int) -> None:
+        self.calls.append(("free", acl))
+
+
+def _patch_macos_shape(monkeypatch: pytest.MonkeyPatch, aw, api: _FakeMacOSAclApi) -> None:
+    """Simulate Darwin on Linux: no xattrs, no /proc fd namespace, fake acl(3)."""
+    real_isdir = aw.os.path.isdir
+    monkeypatch.setattr(aw.platform_compat, "IS_MACOS", True)
+    monkeypatch.setattr(aw.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(aw, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
+    monkeypatch.setattr(aw.platform_compat, "_macos_acl_api", lambda: api, raising=False)
+    monkeypatch.setattr(
+        aw.os.path,
+        "isdir",
+        lambda path: False if path == "/proc/self/fd" else real_isdir(path),
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="simulates Darwin acl(3) by monkeypatch; os.replace over an open source fd is a Windows sharing violation",
+)
+def test_macos_preserve_access_control_from_does_not_consult_acl_api(tmp_path, monkeypatch):
+    """The shared POSIX-xattr carry must not opt existing callers into macOS ACLs."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    api = _FakeMacOSAclApi()
+    _patch_macos_shape(monkeypatch, aw, api)
+
+    src_fd = _open_source(target)
+    try:
+        aw.atomic_write(target, "replacement", preserve_access_control_from=src_fd)
+    finally:
+        os.close(src_fd)
+
+    assert target.read_text(encoding="utf-8") == "replacement"
+    assert api.calls == []
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="simulates Darwin acl(3) by monkeypatch; os.replace over an open source fd is a Windows sharing violation",
+)
+def test_macos_extended_acl_is_copied_from_source_fd_to_staged_fd(tmp_path, monkeypatch):
+    """Darwin reads the old inode by fd and applies its extended ACL by fd."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    api = _FakeMacOSAclApi()
+    _patch_macos_shape(monkeypatch, aw, api)
+
+    src_fd = _open_source(target)
+    try:
+        snapshot = aw.platform_compat.snapshot_macos_acl(src_fd)
+        aw.atomic_write(target, "replacement", preserve_macos_acl=snapshot)
+    finally:
+        os.close(src_fd)
+
+    assert target.read_text(encoding="utf-8") == "replacement"
+    assert api.calls[0] == ("get_fd_extended", src_fd)
+    set_call = next(call for call in api.calls if call[0] == "set_fd")
+    assert set_call[1] != src_fd, "the ACL must be applied to the staged inode"
+    assert api.calls == [
+        ("get_fd_extended", src_fd),
+        ("to_bytes", 101),
+        ("free", 101),
+        ("from_bytes", b"user:example:deny:write"),
+        set_call,
+        ("free", 202),
+    ]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="simulates Darwin acl(3) by monkeypatch; os.replace over an open source fd is a Windows sharing violation",
+)
+def test_macos_no_extended_acl_keeps_mode_only_overwrite(tmp_path, monkeypatch):
+    """acl_get_fd_np's ENOENT means no extended ACL, so mode carry may proceed."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    api = _FakeMacOSAclApi(source_acl=False)
+    _patch_macos_shape(monkeypatch, aw, api)
+
+    src_fd = _open_source(target)
+    try:
+        snapshot = aw.platform_compat.snapshot_macos_acl(src_fd)
+        aw.atomic_write(target, "replacement", preserve_macos_acl=snapshot)
+    finally:
+        os.close(src_fd)
+
+    assert target.read_text(encoding="utf-8") == "replacement"
+    assert api.calls == [("get_fd_extended", src_fd)]
+
+
+def test_macos_acl_apply_failure_refuses_publish_and_keeps_original(tmp_path, monkeypatch):
+    """A staged acl_set_fd failure cannot publish a less-protected inode."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    api = _FakeMacOSAclApi(set_error=errno.EACCES)
+    _patch_macos_shape(monkeypatch, aw, api)
+
+    src_fd = _open_source(target)
+    try:
+        snapshot = aw.platform_compat.snapshot_macos_acl(src_fd)
+        with pytest.raises(OSError, match="could not apply the source macOS extended ACL"):
+            aw.atomic_write(target, "replacement", preserve_macos_acl=snapshot)
+    finally:
+        os.close(src_fd)
+
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_macos_acl_read_failure_refuses_before_staging(tmp_path, monkeypatch):
+    """Only ENOENT proves absence; an unreadable ACL cannot be silently dropped."""
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "doc.md"
+    target.write_text("ORIGINAL", encoding="utf-8")
+    api = _FakeMacOSAclApi(source_acl=False, source_error=errno.EACCES)
+    _patch_macos_shape(monkeypatch, aw, api)
+
+    src_fd = _open_source(target)
+    try:
+        with pytest.raises(
+            aw.platform_compat.MacOSAclError,
+            match="could not read the source macOS extended ACL",
+        ):
+            aw.platform_compat.snapshot_macos_acl(src_fd)
+    finally:
+        os.close(src_fd)
+
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert api.calls == [("get_fd_extended", src_fd)]

@@ -36,6 +36,7 @@ import types
 import zlib
 from asyncio import subprocess as aio_subprocess
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional, Sequence
 
@@ -7122,6 +7123,300 @@ def pin_directory(path: str | os.PathLike) -> int:
         os.close(fd)
         raise
     return fd
+
+
+@dataclass(frozen=True)
+class MacOSAclSnapshot:
+    """A serialized macOS extended ACL detached from the source descriptor."""
+
+    text: bytes
+
+
+class MacOSAclError(OSError):
+    """A macOS extended ACL could not be copied without weakening access control."""
+
+
+_MACOS_ACL_TYPE_EXTENDED = 0x00000100
+
+
+class _MacOSAclApi:
+    """Typed libc acl(3) calls, kept behind a seam for platform-shape tests."""
+
+    def __init__(self, libc: Any) -> None:
+        self._acl_get_fd_np = libc.acl_get_fd_np
+        self._acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+        self._acl_get_fd_np.restype = ctypes.c_void_p
+        self._acl_to_text = libc.acl_to_text
+        self._acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+        self._acl_to_text.restype = ctypes.c_void_p
+        self._acl_from_text = libc.acl_from_text
+        self._acl_from_text.argtypes = [ctypes.c_char_p]
+        self._acl_from_text.restype = ctypes.c_void_p
+        self._acl_set_fd = libc.acl_set_fd
+        self._acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
+        self._acl_set_fd.restype = ctypes.c_int
+        self._acl_free = libc.acl_free
+        self._acl_free.argtypes = [ctypes.c_void_p]
+        self._acl_free.restype = ctypes.c_int
+
+    def get_fd_extended(self, fd: int) -> int | None:
+        value = self._acl_get_fd_np(fd, _MACOS_ACL_TYPE_EXTENDED)
+        return int(value) if value else None
+
+    def to_bytes(self, acl: int) -> bytes:
+        length = ctypes.c_ssize_t()
+        ctypes.set_errno(0)
+        value = self._acl_to_text(ctypes.c_void_p(acl), ctypes.byref(length))
+        if not value:
+            code = ctypes.get_errno()
+            raise MacOSAclError(
+                code or errno.EIO,
+                f"could not serialize the source macOS extended ACL (errno {code})",
+            )
+        try:
+            return ctypes.string_at(value, length.value)
+        finally:
+            self._acl_free(ctypes.c_void_p(value))
+
+    def from_bytes(self, value: bytes) -> int | None:
+        ctypes.set_errno(0)
+        acl = self._acl_from_text(value)
+        return int(acl) if acl else None
+
+    def set_fd(self, fd: int, acl: int) -> int:
+        return int(self._acl_set_fd(fd, ctypes.c_void_p(acl)))
+
+    def free(self, acl: int) -> None:
+        self._acl_free(ctypes.c_void_p(acl))
+
+
+def _macos_acl_api() -> _MacOSAclApi:
+    """Load the Darwin ACL functions from libc, or report an unusable ACL seam."""
+    if not IS_MACOS:
+        raise MacOSAclError(errno.ENOTSUP, "macOS extended ACLs are unavailable")
+    try:
+        return _MacOSAclApi(ctypes.CDLL(None, use_errno=True))
+    except (AttributeError, OSError) as exc:
+        raise MacOSAclError(errno.ENOTSUP, "macOS ACL APIs are unavailable") from exc
+
+
+def snapshot_macos_acl(fd: int) -> MacOSAclSnapshot | None:
+    """Read the extended ACL from the exact open Darwin source descriptor.
+
+    ``ENOENT`` is Darwin's positive "no extended ACL" answer and therefore
+    returns ``None``. Every other lookup failure is unknown rather than absent,
+    so replacing the inode is refused instead of silently dropping a deny or
+    inheritable ACE.
+    """
+    api = _macos_acl_api()
+    ctypes.set_errno(0)
+    acl = api.get_fd_extended(fd)
+    if acl is None:
+        code = ctypes.get_errno()
+        if code == errno.ENOENT:
+            return None
+        raise MacOSAclError(
+            code or errno.EIO,
+            f"could not read the source macOS extended ACL (errno {code})",
+        )
+    try:
+        return MacOSAclSnapshot(text=api.to_bytes(acl))
+    finally:
+        api.free(acl)
+
+
+def apply_macos_acl(fd: int, snapshot: MacOSAclSnapshot) -> None:
+    """Apply a copied Darwin extended ACL to the open staged inode."""
+    api = _macos_acl_api()
+    acl = api.from_bytes(snapshot.text)
+    if acl is None:
+        code = ctypes.get_errno()
+        raise MacOSAclError(
+            code or errno.EINVAL,
+            f"could not parse the source macOS extended ACL (errno {code})",
+        )
+    try:
+        ctypes.set_errno(0)
+        if api.set_fd(fd, acl) != 0:
+            code = ctypes.get_errno()
+            raise MacOSAclError(
+                code or errno.EIO,
+                f"could not apply the source macOS extended ACL (errno {code})",
+            )
+    finally:
+        api.free(acl)
+
+
+@dataclass(frozen=True)
+class WindowsDaclSnapshot:
+    """A copied Windows file DACL, detached from the source handle.
+
+    ``acl`` is ``None`` for a NULL DACL (full access), distinct from ``b""``.
+    ``protected`` records whether inheritance is disabled. The bytes own no
+    native allocation, so the source descriptor can be closed before an atomic
+    replacement -- required because Windows refuses ``os.replace`` while any
+    other handle is open on either path.
+    """
+
+    acl: bytes | None
+    protected: bool
+
+
+class WindowsDaclError(OSError):
+    """A Windows DACL could not be copied without weakening access control."""
+
+
+class _WindowsAclHeader(ctypes.Structure):
+    _fields_ = [
+        ("AclRevision", wintypes.BYTE),
+        ("Sbz1", wintypes.BYTE),
+        ("AclSize", wintypes.WORD),
+        ("AceCount", wintypes.WORD),
+        ("Sbz2", wintypes.WORD),
+    ]
+
+
+_WINDOWS_SE_FILE_OBJECT = 1
+_WINDOWS_DACL_SECURITY_INFORMATION = 0x00000004
+_WINDOWS_PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+_WINDOWS_SE_DACL_PROTECTED = 0x1000
+
+
+def _windows_dacl_apis() -> tuple[Any, Any]:
+    """Load and type the Win32 APIs used by the DACL copy pair."""
+    if not IS_WINDOWS:
+        raise WindowsDaclError(errno.ENOTSUP, "Windows DACLs are unavailable")
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    except (AttributeError, OSError) as exc:
+        raise WindowsDaclError(errno.ENOTSUP, "Windows security APIs are unavailable") from exc
+
+    acl_pointer = ctypes.POINTER(_WindowsAclHeader)
+    advapi32.GetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(acl_pointer),
+        ctypes.POINTER(acl_pointer),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetSecurityInfo.restype = wintypes.DWORD
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        acl_pointer,
+        acl_pointer,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    return advapi32, kernel32
+
+
+def snapshot_windows_dacl(fd: int) -> WindowsDaclSnapshot:
+    """Copy the DACL from an open Windows file descriptor.
+
+    The descriptor identifies the exact non-reparse inode the caller validated.
+    The returned Python bytes remain valid after it is closed, so callers can
+    release every source handle before ``os.replace``. Any unreadable or malformed
+    descriptor raises :class:`WindowsDaclError`; it is never interpreted as an
+    empty ACL that a replacement may safely omit.
+    """
+    advapi32, kernel32 = _windows_dacl_apis()
+    dacl = ctypes.POINTER(_WindowsAclHeader)()
+    descriptor = ctypes.c_void_p()
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))  # type: ignore[attr-defined]
+    rc = int(
+        advapi32.GetSecurityInfo(
+            handle,
+            wintypes.DWORD(_WINDOWS_SE_FILE_OBJECT),
+            wintypes.DWORD(_WINDOWS_DACL_SECURITY_INFORMATION),
+            None,
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+    )
+    if rc != 0:
+        raise WindowsDaclError(rc, f"could not read the source DACL (Windows error {rc})")
+    try:
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not advapi32.GetSecurityDescriptorControl(
+            descriptor, ctypes.byref(control), ctypes.byref(revision)
+        ):
+            code = int(ctypes.get_last_error())  # type: ignore[attr-defined]
+            raise WindowsDaclError(
+                code or errno.EIO,
+                f"could not read the source DACL control flags (Windows error {code})",
+            )
+        acl = None
+        if dacl:
+            size = int(dacl.contents.AclSize)
+            if size < ctypes.sizeof(_WindowsAclHeader):
+                raise WindowsDaclError(errno.EINVAL, "source DACL has an invalid size")
+            acl = ctypes.string_at(dacl, size)
+        return WindowsDaclSnapshot(
+            acl=acl,
+            protected=bool(int(control.value) & _WINDOWS_SE_DACL_PROTECTED),
+        )
+    finally:
+        if descriptor:
+            kernel32.LocalFree(descriptor)
+
+
+def apply_windows_dacl(path: str | os.PathLike, snapshot: WindowsDaclSnapshot) -> None:
+    """Apply a copied DACL to an open-and-pinned staged replacement path.
+
+    ``atomic_write`` calls this while its staged descriptor is still open. On
+    Windows that open prevents the temp name from being renamed or deleted, so
+    the named security update still selects the staged inode. SetNamedSecurityInfo
+    opens only the metadata handle it needs and closes it before returning; then
+    ``atomic_write`` closes its own descriptor before ``os.replace``, leaving no
+    handle on either path across publication. A descriptor-based SetSecurityInfo
+    would not work here because the CRT ``mkstemp`` handle lacks ``WRITE_DAC``.
+    """
+    advapi32, _kernel32 = _windows_dacl_apis()
+    acl_pointer = ctypes.POINTER(_WindowsAclHeader)
+    buffer = None
+    dacl = None
+    if snapshot.acl is not None:
+        if len(snapshot.acl) < ctypes.sizeof(_WindowsAclHeader):
+            raise WindowsDaclError(errno.EINVAL, "copied DACL has an invalid size")
+        buffer = ctypes.create_string_buffer(snapshot.acl, len(snapshot.acl))
+        dacl = ctypes.cast(buffer, acl_pointer)
+        if int(dacl.contents.AclSize) != len(snapshot.acl):
+            raise WindowsDaclError(errno.EINVAL, "copied DACL length does not match its header")
+
+    info = _WINDOWS_DACL_SECURITY_INFORMATION
+    if snapshot.protected:
+        info |= _WINDOWS_PROTECTED_DACL_SECURITY_INFORMATION
+    rc = int(
+        advapi32.SetNamedSecurityInfoW(
+            os.fspath(path),
+            wintypes.DWORD(_WINDOWS_SE_FILE_OBJECT),
+            wintypes.DWORD(info),
+            None,
+            None,
+            dacl,
+            None,
+        )
+    )
+    if rc != 0:
+        raise WindowsDaclError(rc, f"could not apply the source DACL (Windows error {rc})")
 
 
 def _win_open_without_following(path: str | os.PathLike) -> int:
