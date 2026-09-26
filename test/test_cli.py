@@ -498,7 +498,9 @@ class TestSetupWorkspaceDir:
 
             _setup_workspace_dir()
         prompt = mock_input.call_args[0][0]
-        assert "/custom/workspace" in prompt
+        # Path() normalizes separators, so the POSIX literal only matches on
+        # POSIX; compare against the normalized form on every platform.
+        assert str(Path("/custom/workspace")) in prompt
 
     def test_shows_configured_label_when_saved(self, tmp_path, monkeypatch, capsys):
         ws_file = tmp_path / "workspace_dir"
@@ -3464,7 +3466,9 @@ class TestRestart:
             flags = kw["creationflags"]
             assert flags & subprocess.DETACHED_PROCESS
             assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
-            assert "start_new_session" not in kw
+            # Passed explicitly as False (mypy-safe explicit flags, not **dict
+            # unpack); Windows ignores it, the creationflags do the detaching.
+            assert kw.get("start_new_session") is False
         else:
             assert kw["start_new_session"] is True
         # Must not inherit stdin from the parent — otherwise reading from
