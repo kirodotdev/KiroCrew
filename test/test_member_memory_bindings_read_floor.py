@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -268,3 +269,66 @@ def test_the_gateways_own_reader_still_resolves_a_retained_run(
         "app owner, so the floor entry reached a reader it must not reach"
     )
     assert execution.memory_mode == "persistent"
+
+
+def test_the_owning_spec_states_the_leafs_read_disposition() -> None:
+    """The document the router sends a reader to must not call the leaf readable.
+
+    ``AGENTS.md`` routes anyone touching sensitive paths to
+    ``docs/system-specs/modules/security.md`` FIRST, and that passage described both
+    roots as sharing "the file-tool write-only gate" with results that "remain
+    readable". That is the write-tier disposition, and it is the opposite of the
+    leaf's: an agent file tool may not open a binding record at all. A reader
+    designing against the spec would treat a raw session key as agent-readable.
+
+    Prose is asserted because prose is what drifted, and the two guards are what
+    keep the assertion honest rather than decorative. The PREMISE reads tier
+    membership from the CODE, so moving the leaf back fails here on the premise
+    instead of leaving a sentence that is true again by accident. The CONTROL pins
+    the sibling whose disposition did not change, so the passage cannot satisfy this
+    by being emptied.
+    """
+    from kiro_crew.security import sensitive_home_dirs, write_protected_home_paths
+
+    # PREMISE -- this test claims something about the SPEC only while the code puts
+    # the leaf on the floor and off the write tier.
+    assert any(entry.endswith(f"/{_LEAF}") for entry in sensitive_home_dirs()), (
+        f"{_LEAF} left the read+write floor. The spec wording pinned below describes "
+        "that placement, so decide the placement before rewording the passage"
+    )
+    assert not any(entry.endswith(f"/{_LEAF}") for entry in write_protected_home_paths())
+
+    spec = Path(__file__).resolve().parents[1] / "docs" / "system-specs" / "modules" / "security.md"
+    body = spec.read_text(encoding="utf-8")
+    start = body.index("### Member memory boundaries")
+    # The next heading at ANY level, so the slice is this passage and not everything
+    # up to the next same-level one -- a wider slice would let an unrelated paragraph
+    # satisfy the assertions below.
+    # Searched from the END of the heading's own line, because ``^`` matches at
+    # offset 0 of a slice and would otherwise find the heading itself.
+    body_after_heading = body.index("\n", start) + 1
+    after = re.search(r"^#{1,6} ", body[body_after_heading:], re.MULTILINE)
+    assert after is not None, "no heading follows the passage; the slice is unbounded"
+    end = body_after_heading + after.start()
+    # Collapsed to one line, so where the source happens to wrap cannot decide
+    # whether a phrase matches.
+    section = " ".join(body[start:end].split())
+
+    assert _LEAF in section, "the passage stopped naming the leaf it is about"
+    assert "read+write floor" in section, (
+        f"the passage does not state that {_LEAF} sits on the read+write floor, so a "
+        "reader routed here still learns the agent's file tools may open a record "
+        "carrying a raw session key"
+    )
+    assert re.search(r"Both roots[^.]*write-only gate", section) is None, (
+        f"the passage still puts both roots on the file-tool write-only gate. {_LEAF} "
+        "is not on that tier, and that tier is what security_posture publishes as "
+        "'Reads allowed'"
+    )
+
+    # CONTROL -- the canonical run records DID stay readable, and the passage must
+    # still say so. Without this, deleting the paragraph would pass.
+    assert "subagents" in section and "readable" in section, (
+        "the passage no longer describes the canonical run records as readable; this "
+        "pins one leaf moving tiers, not the passage being removed"
+    )
