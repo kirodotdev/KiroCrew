@@ -1,53 +1,31 @@
 /**
  * i18n runtime (react-i18next).
  *
- * ## Why every catalog is registered before first render
+ * ## Which catalogs are loaded, and when
  *
- * Catalogs are bundled and registered up front, so `t()` is always SYNCHRONOUS.
- * That is a deliberate correctness choice, not an oversight:
+ * English is bundled with this module and is always registered: it is the
+ * fallback for every missing key, so `t()` never renders a bare key.
  *
- *  - ~600 components call `t()` during render. With lazily-fetched catalogs
- *    every one of them becomes Suspense-sensitive, and any component rendering
- *    before its namespace resolves flashes the raw key (`settings.display.view`)
- *    or an English string that then swaps — a visible, hard-to-test artifact.
- *  - The test suite has ~4000 assertions matching visible English text. A
- *    synchronous `t()` keeps them all valid with no per-test `await`.
+ * The browser build boots through `./lazy`, which installs a loader that
+ * fetches ONE other catalog on demand as its own chunk. `main.tsx` awaits the
+ * stored language's catalog before the first render, so a returning user sees
+ * their language on the first paint, and `changeLanguage()` awaits the new
+ * catalog before switching. `t()` itself stays SYNCHRONOUS on every path: ~600
+ * components call it during render, and nothing suspends.
  *
- * The cost is bundle size: every language ships to every user (except the
- * pseudolocale, which is DEV-only). At 12 catalogs that is ~2.0 MB gzip,
- * ~173 KB of it for each language the user will never read, so this approach
- * does NOT scale indefinitely.
+ * `./all` registers every catalog up front instead. The tests that audit or
+ * switch between catalogs use it, so their `t()` works without any `await`.
  *
  * ## Which module owns the imports
  *
  * THIS module imports English only and seeds the registry with it. `./catalogs`
- * owns every catalog import; `./all` joins the two by calling
- * `registerCatalogs(CATALOGS)` at module scope and re-exporting this API.
- * Production boots through `./all`, so what reaches a browser is unchanged.
+ * owns every static catalog import and `./lazy` the dynamic ones.
  *
- * The split exists for the test path: `integration/setup.ts` is a vitest
- * `setupFiles` entry, so its module graph is re-fetched once per test FILE and
- * reaching all 14 catalogs from here cost more than running the tests. The cost is
- * the per-module round trip rather than the JSON, which is why the fix is to keep
- * modules OUT of this graph and why making them cheaper to parse would not have
- * worked. Numbers, and the rules that keep the split in place, live in
- * `website/docs/testing.md` § "What a `setupFiles` entry costs" — one owner, because
- * four copies of a measurement disagree the first time anyone re-measures.
- *
- * This is ownership, not lazy loading: no load is deferred on any path, and
- * `t()` is synchronous on all of them.
- *
- * ## Lazy-loading seam
- *
- * Korean is catalog #12 and the last one that lands in FRONT of the seam;
- * catalog #13 belongs behind it — switch to
- * `i18next-http-backend` + `Suspense`:
- * catalogs move to `public/locales/<lng>/<ns>.json` and only the active
- * language is fetched. Nothing in the call sites changes — `useTranslation()`
- * and `t()` keep the same signatures — so this is an isolated swap of
- * `./catalogs` plus a `<Suspense>` boundary in `main.tsx`. `registerCatalogs` is
- * where a backend hands its fetched catalog over, so the seam needs no change to
- * this module at all.
+ * The split keeps the vitest setup path small: `integration/setup.ts` is a
+ * `setupFiles` entry, so its module graph is re-fetched once per test FILE, and
+ * reaching all 14 catalogs from here cost more than running the tests. Numbers,
+ * and the rules that keep the split in place, live in `website/docs/testing.md`
+ * § "What a `setupFiles` entry costs".
  */
 
 import i18next from 'i18next'
@@ -89,8 +67,7 @@ const REGISTERED_CATALOGS: Record<string, { translation: Record<string, unknown>
  * That insurance is not free — `addResourceBundle` deep-copies what it is handed,
  * measured at 67-109 ms for the twelve catalogs, per file that imports `./all`. It
  * is kept unconditional anyway: skipping it for a language the store already holds
- * would silently drop a REPLACEMENT catalog, which is exactly what the lazy-backend
- * seam above hands over, and ~4 s across the suite is not worth that hole.
+ * would silently drop a REPLACEMENT catalog, and ~4 s across the suite is not worth that hole.
  */
 export function registerCatalogs(
   extra: Record<string, { translation: Record<string, unknown> }>,
@@ -109,6 +86,77 @@ export function registerCatalogs(
       i18next.addResourceBundle(lng, NAMESPACE, translation, true, true)
     }
   }
+}
+
+/** Fetches one language's catalog on demand; installed by `./lazy`. */
+export type CatalogLoader = (lng: string) => Promise<Record<string, unknown> | undefined>
+
+let catalogLoader: CatalogLoader | null = null
+const pendingCatalogs = new Map<string, Promise<boolean>>()
+let switchSeq = 0
+
+/** Maximum time the first paint or a language switch waits for a catalog chunk. */
+export const CATALOG_LOAD_TIMEOUT_MS = 4_000
+
+/**
+ * Install the on-demand catalog loader. The production entry (`./lazy`) calls
+ * this at module scope; `./all` never does, because it registers every catalog
+ * up front and so has nothing left to load.
+ */
+export function setCatalogLoader(loader: CatalogLoader): void {
+  catalogLoader = loader
+}
+
+/**
+ * Make sure `lng`'s catalog is registered before anything renders in it.
+ *
+ * Resolves `true` at once for English, for a language already registered, and
+ * when no loader is installed. Concurrent calls for one language share a single
+ * fetch. Resolves `false`, never rejects, when the fetch fails or the loader
+ * knows no catalog for `lng`: the caller then keeps rendering the language it
+ * already has (`changeLanguage` does not switch on `false`), so `i18next.language`
+ * and what is on screen stay in agreement. The pending entry is dropped either
+ * way, so the next request for that language fetches again.
+ */
+export function ensureCatalog(lng: string): Promise<boolean> {
+  if (REGISTERED_CATALOGS[lng] || !catalogLoader) return Promise.resolve(true)
+  let pending = pendingCatalogs.get(lng)
+  if (!pending) {
+    const load = catalogLoader
+    pending = new Promise<boolean>((resolve) => {
+      let settled = false
+      const finish = (translation?: Record<string, unknown>) => {
+        if (settled) {
+          // A chunk that lands after the timeout is still registered, so the
+          // next request for this language is served without another fetch.
+          if (translation) registerCatalogs({ [lng]: { translation } })
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        if (translation) registerCatalogs({ [lng]: { translation } })
+        resolve(Boolean(translation))
+      }
+      const timer = setTimeout(() => {
+        // A chunk request can stall without rejecting. Release first paint and
+        // let the provider retry rather than leaving #root empty indefinitely.
+        // eslint-disable-next-line no-console -- a failed chunk fetch must be visible
+        console.error(`i18n: loading the '${lng}' catalog timed out; keeping the current language`)
+        finish()
+      }, CATALOG_LOAD_TIMEOUT_MS)
+
+      load(lng).then(
+        finish,
+        (err: unknown) => {
+          // eslint-disable-next-line no-console -- a failed chunk fetch must be visible; the current language stays
+          console.error(`i18n: loading the '${lng}' catalog failed; keeping the current language`, err)
+          finish()
+        },
+      )
+    }).finally(() => { pendingCatalogs.delete(lng) })
+    pendingCatalogs.set(lng, pending)
+  }
+  return pending
 }
 
 /**
@@ -181,8 +229,8 @@ export function initI18n(initialLanguage?: string): typeof i18next {
     nsSeparator: false,
     debug: false,
     react: {
-      // All catalogs are preloaded, so nothing suspends. Explicit for clarity
-      // and so flipping to a lazy backend is a single-line change here.
+      // Catalogs are registered before anything renders in their language
+      // (see `ensureCatalog`), so nothing suspends.
       useSuspense: false,
     },
   })
@@ -198,8 +246,24 @@ export function initI18n(initialLanguage?: string): typeof i18next {
  * boot path apply a server-provided language WITHOUT echoing it straight back
  * to the server.
  */
-export async function changeLanguage(code: string): Promise<void> {
+export async function changeLanguage(code: string): Promise<boolean> {
   const resolved = resolveLanguage(code)
+
+  // Load before switching, so `languageChanged` (which drives the repaint)
+  // fires only once the new catalog is in the store and no key renders raw.
+  // The sequence check keeps rapid picks in click order: a slow fetch for an
+  // earlier pick must not land after, and override, a later one.
+  const seq = ++switchSeq
+  const loaded = await ensureCatalog(resolved)
+  if (seq !== switchSeq) return false
+
+  // A catalog that did not arrive (chunk fetch failed, or the loader has none
+  // for this code) leaves the language where it is. Switching anyway would make
+  // `i18next.language` -- and `<html lang>`, which the provider sets from the
+  // same request -- claim a language the store cannot render, so the page would
+  // announce Japanese and read English. `ensureCatalog` has already reported the
+  // failure and dropped its pending entry, so the next switch fetches again.
+  if (!loaded) return false
 
   // Switching to a language nobody registered is otherwise SILENT: i18next falls
   // back to English, nothing throws, no key renders raw, and in the browser the
@@ -220,12 +284,13 @@ export async function changeLanguage(code: string): Promise<void> {
     // eslint-disable-next-line no-console -- the report the block above specifies: throwing is ruled out
     console.error(
       `i18n: no catalog is registered for '${resolved}', so this switch renders `
-        + 'English. Import from `i18n/all` rather than `i18n` — same exports, same '
-        + 'synchronous `t()`, all twelve languages.',
+        + 'English. Import from `i18n/lazy` (browser entries) or `i18n/all` (tests) '
+        + 'rather than `i18n` — same exports, same synchronous `t()`.',
     )
   }
 
   await i18next.changeLanguage(resolved)
+  return true
 }
 
 export { i18next }

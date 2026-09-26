@@ -1,17 +1,17 @@
 /**
- * `registerCatalogs` has two branches, and PRODUCTION only ever takes the first.
+ * `registerCatalogs` has two branches, and the app windows only ever take the first.
  *
- * `./all` calls it at module scope, before anything calls `initI18n`, so on every
- * browser boot the catalogs land in the registry that `init({ resources })` later
- * consumes. Under vitest the opposite branch runs: `integration/setup.ts` has
- * already called `initI18n('en')` by the time any test file is imported, so a test
+ * `./all` calls it at module scope, before anything calls `initI18n`, so when an
+ * app window boots through it the catalogs land in the registry that
+ * `init({ resources })` later consumes. Under vitest the opposite branch runs:
+ * `integration/setup.ts` has already called `initI18n('en')` by the time any test file is imported, so a test
  * that reaches for another language arrives AFTER init and is served by
  * `addResourceBundle`.
  *
  * That asymmetry is the trap: every other test in the suite exercises the post-init
  * branch, so deleting the pre-init one leaves the whole suite green while shipping a
- * dashboard that renders English to everyone. These cases pin the branch production
- * depends on, with a fresh module registry so init has not run.
+ * window that renders English to everyone. These cases pin the branch the app windows
+ * depend on, with a fresh module registry so init has not run.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 

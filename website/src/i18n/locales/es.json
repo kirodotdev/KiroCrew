@@ -16604,7 +16604,8 @@
         "auto": "Automático",
         "description": "Idioma de la interfaz del panel.",
         "label": "Idioma",
-        "sync_failed": "No se pudo guardar esto en tu configuración de {{productName}}: el idioma se aplica solo en este navegador y puede restablecerse al recargar."
+        "sync_failed": "No se pudo guardar esto en tu configuración de {{productName}}: el idioma se aplica solo en este navegador y puede restablecerse al recargar.",
+        "catalog_failed": "No se pudo cargar el idioma seleccionado. El panel sigue usando el último idioma que se cargó correctamente."
       }
     },
     "groups": {

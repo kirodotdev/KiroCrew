@@ -1,8 +1,8 @@
 /**
  * Which i18n module an entry point boots through.
  *
- * `src/i18n/index.ts` imports the English catalog only; `src/i18n/all.ts` adds the
- * other twelve. Both export `initI18n` with the same signature, so a page entry can
+ * `src/i18n/index.ts` imports the English catalog only; `src/i18n/lazy.ts` loads each
+ * other catalog on demand and `src/i18n/all.ts` imports them all. Both export `initI18n` with the same signature, so a page entry can
  * boot through either one and `tsc` is happy either way — but through the
  * English-only module the dashboard renders English for a user who picked Japanese.
  * Nothing suspends, nothing throws, no key renders raw: i18next simply falls back.
@@ -11,7 +11,7 @@
  *
  * Both directions of the split are pinned, and each is anchored on a PROPERTY of the
  * module graph rather than on a module name: which catalogs the entry's transitive
- * static imports reach. Renaming `all.ts`, folding `catalogs.ts` back into it, or
+ * static imports reach, or load on demand. Renaming `all.ts`, folding `catalogs.ts` back into it, or
  * adding a thirteenth language all keep this green; pointing an entry at the
  * English-only module is what fails it.
  */
@@ -134,12 +134,51 @@ function staticSpecifiers(sf: ts.SourceFile): string[] {
 }
 
 /**
- * The languages an entry module registers, via its transitive static imports.
+ * The catalog files a module registers for on-demand loading through literal
+ * `import('…json')` calls.
  *
- * Static reachability is the right measure precisely because `t()` is synchronous:
- * a catalog that is not statically imported is not registered before first render,
- * so nothing renders it. `export … from` is followed as well as `import` — the
- * all-languages entry re-exports the runtime API that way.
+ * The browser entry (`src/i18n/lazy.ts`) reaches its catalogs this way, and
+ * `ensureCatalog` registers each one before anything renders in it, so an entry
+ * graph that reaches a catalog on demand registers it just as a static import
+ * does. Dynamic imports alone do not register anything: the containing module
+ * must install them through `setCatalogLoader`.
+ */
+function onDemandCatalogs(file: string, sf: ts.SourceFile): string[] {
+  const imports: string[] = []
+  let installsLoader = false
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const [arg] = node.arguments
+      if (ts.isIdentifier(node.expression) && node.expression.text === 'setCatalogLoader') {
+        installsLoader = true
+      } else if (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword
+        && arg
+        && ts.isStringLiteral(arg)
+      ) {
+        imports.push(arg.text)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+
+  if (!installsLoader) return []
+  return imports
+    .map(specifier => resolveModule(file, specifier))
+    .filter((catalog): catalog is string => Boolean(
+      catalog?.startsWith(LOCALES) && catalog.endsWith('.json'),
+    ))
+}
+
+/**
+ * The languages an entry module registers, via its transitive static imports and
+ * the catalogs those modules load on demand (`onDemandCatalogs`).
+ *
+ * `t()` is synchronous, so a catalog must be registered before anything renders in
+ * its language: statically, or through the lazy entry, whose loader `main.tsx` and
+ * `changeLanguage()` await first. `export … from` is followed as well as `import` —
+ * both entries re-export the runtime API that way.
  */
 function languagesReachedFrom(entry: string): Set<string> {
   const reached = new Set<string>()
@@ -153,7 +192,11 @@ function languagesReachedFrom(entry: string): Set<string> {
       continue
     }
     if (!/\.tsx?$/.test(file)) continue
-    for (const specifier of staticSpecifiers(parse(file, readSource(file)))) {
+    const sf = parse(file, readSource(file))
+    for (const catalog of onDemandCatalogs(file, sf)) {
+      reached.add(languageCodeOf(catalog.slice(LOCALES.length + 1)))
+    }
+    for (const specifier of staticSpecifiers(sf)) {
       const next = resolveModule(file, specifier)
       if (next && !seen.has(next)) {
         seen.add(next)
@@ -177,6 +220,8 @@ interface CallSite {
    * `readStoredLanguage()`, so it can land on any of the twelve.
    */
   englishOnly: boolean
+  /** The entry invokes the lazy catalog gate before its first render. */
+  callsEnsureCatalog: boolean
 }
 
 /**
@@ -199,6 +244,7 @@ function findCallSites(): CallSite[] {
     let calls = false
     let declares = false
     let nonEnglishCall = false
+    let callsEnsureCatalog = false
 
     const visit = (node: ts.Node): void => {
       if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -212,6 +258,9 @@ function findCallSites(): CallSite[] {
       }
       if (ts.isCallExpression(node)) {
         const callee = node.expression
+        if (ts.isIdentifier(callee) && callee.text === 'ensureCatalog') {
+          callsEnsureCatalog = true
+        }
         if (
           (ts.isIdentifier(callee) && callee.text === 'initI18n')
           || (ts.isPropertyAccessExpression(callee) && callee.name.text === 'initI18n')
@@ -248,7 +297,12 @@ function findCallSites(): CallSite[] {
     visit(sf)
 
     if (calls && !declares) {
-      sites.push({ file, specifiers: [...specifiers], englishOnly: !nonEnglishCall })
+      sites.push({
+        file,
+        specifiers: [...specifiers],
+        englishOnly: !nonEnglishCall,
+        callsEnsureCatalog,
+      })
     }
   }
 
@@ -317,15 +371,30 @@ describe('every entry point that boots i18n registers all languages', () => {
 
     expect(
       offenders,
-      'A page entry point must import `initI18n` from the ALL-LANGUAGES i18n entry '
-        + '(`src/i18n/all.ts`), not from `src/i18n/index.ts`. `index.ts` deliberately '
+      'A page entry point must import `initI18n` from an i18n entry that registers '
+        + 'every language (`src/i18n/lazy.ts` or `src/i18n/all.ts`), not from '
+        + '`src/i18n/index.ts`. `index.ts` deliberately '
         + 'imports the English catalog only, so booting through it registers English '
         + 'and nothing else: i18next then falls back for every other language and the '
         + 'dashboard renders English to a user who picked Japanese. Nothing throws and '
         + 'no key renders raw, so this scan is the only thing that reports it. Change '
-        + "the import to '<path>/i18n/all' — same exports, same synchronous `t()`.",
+        + "the import to '<path>/i18n/lazy' — same exports, same synchronous `t()`.",
     ).toEqual([])
   }, 20_000)
+
+  it('gates first render when booting through the lazy i18n entry', () => {
+    const lazyEntry = join(SRC, 'i18n', 'lazy.ts')
+    const offenders = CALL_SITES.filter(({ file, specifiers, callsEnsureCatalog }) => (
+      !callsEnsureCatalog
+      && specifiers.some(specifier => resolveModule(file, specifier) === lazyEntry)
+    )).map(({ file }) => rel(file))
+
+    expect(
+      offenders,
+      'An entry booting through `src/i18n/lazy.ts` must call `ensureCatalog` in '
+        + 'the same file so its first render waits for the active catalog.',
+    ).toEqual([])
+  })
 })
 
 describe('the vitest setup module graph stays English-only', () => {

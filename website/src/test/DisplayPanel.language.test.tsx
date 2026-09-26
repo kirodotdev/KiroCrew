@@ -12,6 +12,7 @@ import { renderWithProviders } from './helpers'
 // case asserts on is registered — `../i18n` registers English only.
 import { i18next } from '../i18n/all'
 import { LANG_STORAGE_KEY } from '../i18n/detect'
+import * as LanguageModule from '../i18n/LanguageProvider'
 
 // DisplayPanel pulls in the zoom / theme / UI-mode / palette contexts; none of
 // them matter here, so they are stubbed to their quiet defaults. Kept separate
@@ -148,5 +149,27 @@ describe('DisplayPanel — zoom level description', () => {
     // `{{mod}}` must survive interpolation — a missing value renders the raw
     // placeholder, which reads as broken copy rather than as a keyboard hint.
     expect(description.textContent).not.toContain('{{mod}}')
+  })
+})
+
+describe('DisplayPanel — catalog load failure', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders the failure without a hand-off that would discard drafts', () => {
+    vi.spyOn(LanguageModule, 'useLanguage').mockReturnValue({
+      language: 'zh-CN',
+      resolved: 'zh-CN',
+      detected: 'en',
+      setLanguage: vi.fn(),
+      syncFailed: false,
+      catalogFailed: true,
+    })
+
+    renderWithProviders(<DisplayPanel />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/couldn't load the selected language/i)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 })

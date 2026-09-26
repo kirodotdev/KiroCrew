@@ -7233,7 +7233,8 @@
         "auto": "Auto",
         "description": "Language for the dashboard interface.",
         "label": "Language",
-        "sync_failed": "Couldn't save this to your {{productName}} config — the language applies in this browser only and may reset on reload."
+        "sync_failed": "Couldn't save this to your {{productName}} config — the language applies in this browser only and may reset on reload.",
+        "catalog_failed": "Couldn't load the selected language. The dashboard kept the last language that loaded successfully."
       }
     },
     "groups": {

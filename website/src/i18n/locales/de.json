@@ -16378,7 +16378,8 @@
         "auto": "Automatisch",
         "description": "Sprache für die Dashboard-Oberfläche.",
         "label": "Sprache",
-        "sync_failed": "Dies konnte nicht in Ihrer {{productName}}-Konfiguration gespeichert werden — die Sprache gilt nur in diesem Browser und kann beim Neuladen zurückgesetzt werden."
+        "sync_failed": "Dies konnte nicht in Ihrer {{productName}}-Konfiguration gespeichert werden — die Sprache gilt nur in diesem Browser und kann beim Neuladen zurückgesetzt werden.",
+        "catalog_failed": "Die ausgewählte Sprache konnte nicht geladen werden. Das Dashboard verwendet weiterhin die zuletzt erfolgreich geladene Sprache."
       }
     },
     "groups": {

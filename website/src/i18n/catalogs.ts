@@ -3,8 +3,10 @@
  * no i18next dependency.
  *
  * Importing it pulls 14 modules and ~12 MB into the graph, which is why it is
- * separate from `./index`: only `./all` (the production entry) and the tests that
- * audit the full catalog set pay that cost. Under vitest that cost is charged
+ * separate from `./index`: only `./all` (the eager entry the catalog tests and
+ * the crew-companion / Mochi app windows use) and the tests that audit the full
+ * catalog set pay that cost. The browser entry, `./lazy`, imports each catalog
+ * dynamically instead. Under vitest that cost is charged
  * once per test FILE, and it is the module count rather than the bytes that
  * dominates. `./index`'s header carries the ownership split, the measurements,
  * and why `t()` stays synchronous regardless.
@@ -31,9 +33,10 @@ import { EN_TRANSLATION } from './enCatalog'
  * DEV builds only, and `CATALOGS` (not this constant) is the runtime registry.
  *
  * Exported via `CATALOGS` so tests read the same map the runtime uses instead of
- * maintaining a parallel copy. That parallel copy was a real trap: it made "add
- * a language" a 4-edit job where forgetting the 4th produced a confusing parity
- * failure pointing at the catalog rather than at the test's own map.
+ * maintaining a parallel copy: a test-owned copy of this list turns a forgotten
+ * entry into a parity failure that points at the catalog rather than at the map.
+ * The one other list that names each language, `AUTHORED_LOADERS` in `./lazy`,
+ * is pinned against `CATALOGS` by `lazy.test.ts` for the same reason.
  *
  * A language listed in `SUPPORTED_LANGUAGES` MUST appear here; `catalogParity.test.ts`
  * asserts the two lists agree, so a language added to one and not the other fails

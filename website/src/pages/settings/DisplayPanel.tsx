@@ -72,7 +72,7 @@ function StatusIndicator({ label }: { label: string }) {
 
 export function DisplayPanel() {
   const ime = useImeGuard()
-  const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
+  const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
@@ -434,14 +434,18 @@ export function DisplayPanel() {
             ]}
             onChange={setLanguage}
           />
-          {/* A failed write means the choice is browser-local only, and the next
-              load will silently revert it to the server's value. Say so rather
-              than letting the user discover it on reload. No hand-off: the
-              `shellDraft` and `installValue` fields further down this panel are
-              unsaved local state, and the navigation unmounts the panel. */}
+          {/* A catalog failure leaves the previous language active even though
+              the picker preserves the user's choice. Keep that mismatch visible
+              until a later switch succeeds. Neither failure offers a hand-off:
+              navigating away would discard `shellDraft` or `installValue`
+              further down this panel when either contains unsaved input. */}
           <ErrorNotice
             variant="inline"
-            message={langSyncFailed ? i18nT('settings.display.language.sync_failed') : null}
+            message={langCatalogFailed
+              ? i18nT('settings.display.language.catalog_failed')
+              : langSyncFailed
+                ? i18nT('settings.display.language.sync_failed')
+                : null}
           />
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} description={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
             options={[
