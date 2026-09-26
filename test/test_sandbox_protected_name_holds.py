@@ -273,8 +273,11 @@ class TestLeafOnlyPopulationIsRecorded:
     """
 
     #: Measured per tier. Not a target -- a debt. Today it is the WHOLE
-    #: population: nothing is durably held.
-    EXPECTED: dict[str, int] = {"standard": 235, "cc": 242, "strict": 243}
+    #: population: nothing is durably held. The count includes the auth-store
+    #: staging directory and the credential-redaction owner switch, each
+    #: protected under all three data-home roots the launcher emits (six names
+    #: per tier); neither has a stand-in-masked ancestor to be held by.
+    EXPECTED: dict[str, int] = {"standard": 241, "cc": 248, "strict": 249}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

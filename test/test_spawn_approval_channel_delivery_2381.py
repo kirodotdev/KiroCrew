@@ -540,27 +540,34 @@ class TestASilentSendFailureFallsThroughAtOnce:
         # refusal the operator never made, and the host gate acts on it.
         assert result is None
 
-    def test_it_registers_no_wait_so_the_window_is_never_spent(self) -> None:
+    def test_it_registers_no_wait_so_the_window_is_never_spent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         key = TelegramApprovalDecider.key(session_key, "spawn:abc")
         self._silent(cli)
-        seen: list[str] = []
+        # The window is claimed at arm time, before the send, so a registry entry
+        # during the send is the claim, not a wait. The wait is the decider being
+        # awaited; count that instead.
+        waits: list[str] = []
+        real_call = TelegramApprovalDecider.__call__
 
-        async def _go() -> bool | None:
-            task = asyncio.ensure_future(
-                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
-            )
-            while not task.done():
-                if key in TelegramApprovalDecider._REGISTRY:
-                    seen.append("wait")
-                await asyncio.sleep(0)
-            return await task
+        async def _counting_call(self: TelegramApprovalDecider, event: Any) -> bool:
+            waits.append(str(getattr(event, "request_id", "")))
+            return await real_call(self, event)
 
-        assert asyncio.run(_go()) is None
-        # No wait was ever registered for the key, so no window was spent on a
-        # prompt that does not exist.
-        assert seen == []
+        monkeypatch.setattr(TelegramApprovalDecider, "__call__", _counting_call)
+
+        result = asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key))
+
+        assert result is None
+        # No wait ran for the key, so no window was spent on a prompt that does
+        # not exist, and the claim taken before the send is fully released.
+        assert waits == []
+        assert key not in TelegramApprovalDecider._REGISTRY
+        assert key not in TelegramApprovalDecider._NONCES
+        assert key not in TelegramApprovalDecider._AWAITED
 
     def test_the_nonce_is_retired_so_a_later_prompt_cannot_be_answered_by_it(self) -> None:
         # Request ids are REUSABLE (an ACP sequence restarts per provider
