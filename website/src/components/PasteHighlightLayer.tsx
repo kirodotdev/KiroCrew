@@ -25,7 +25,9 @@ interface Props {
  * the transparent-background textarea; its text is transparent so only the
  * token chips' backgrounds show, while the real textarea text + caret + native
  * selection stay on top and fully interactive. Vertical scroll is synced by the
- * textarea's onScroll handler (see ChatInput).
+ * textarea's onScroll handler (see ChatInput). The mirror fills its wrapper, so
+ * the textarea must be `display: block` (ChatInput) for the two boxes to be the
+ * same height; otherwise their scroll ranges differ and the chips drift.
  */
 const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHighlightLayer({ value, blocks }, ref) {
   const ranges = findTokenRanges(value, blocks)

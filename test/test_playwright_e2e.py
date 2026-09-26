@@ -53,7 +53,7 @@ _WEBSITE = "website"
 # RAISE this when you add specs. Only LOWER it with a written reason in the
 # commit body: a drop means specs stopped running.
 # The offline browser floor adds ten member memory scenarios to the base floor.
-MIN_EXECUTED_SPECS = 235
+MIN_EXECUTED_SPECS = 238
 
 # Skips are silent passes. A spec should seed its preconditions rather than skip
 # when they are absent, so the intended steady state is zero. Specs excluded by

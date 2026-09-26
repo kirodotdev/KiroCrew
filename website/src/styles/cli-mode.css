@@ -195,8 +195,14 @@
   user-select: none;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
+/* One rule for the textarea and its paste-chip mirror (PasteHighlightLayer):
+   they must share the same text box, or each chip background sits 8px left
+   of its token text. */
+[data-ui="cli"] [style*="--mc-content-width"] :is(textarea[data-composer-input], [data-composer-typo][aria-hidden]) {
   padding-left: 24px !important;
+}
+
+[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves
      --font-body to mono in CLI mode by default. */
