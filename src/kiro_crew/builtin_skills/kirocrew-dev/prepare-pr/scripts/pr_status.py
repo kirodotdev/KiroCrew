@@ -958,48 +958,30 @@ def detect_repo(pr_url=""):
     return repo.strip() if rc == 0 and "/" in repo else ""
 
 
+def fetch_issue_comments(repo, number, keep=None):
+    return _review_contract.fetch_issue_comments(repo, number, run, keep=keep)
+
+
+def is_trusted_bot_comment(c, trusted_authors):
+    return _review_contract.is_trusted_bot_comment(c, trusted_authors)
+
+
+def select_bot_comments(comments, trusted_authors):
+    return [c for c in comments if is_trusted_bot_comment(c, trusted_authors)]
+
+
 def fetch_bot_comments(repo, number, trusted_authors):
     """Trusted marker-source comments on the PR, across pages; None on error.
 
-    Paginated by hand (PRs here routinely carry 50+ bot comments; a single
-    unpaginated read silently truncates). A comment counts only when its
-    author is a Bot AND its login is in ``trusted_authors``: the Bot-type
-    check alone is spoofable -- any third-party app that echoes PR-controlled
-    text would post an attacker-chosen marker and forge freshness. Returns
-    None (uncertain, the caller fails closed) on any API/parse error or when
-    the page cap is hit with more pages left.
+    Paginated (PRs here routinely carry 50+ bot comments; a single
+    unpaginated read silently truncates). Returns None (uncertain, the caller
+    fails closed) on any API/parse error or when the page cap is hit with more
+    pages left.
     """
-    if not repo:
-        return None
-    comments: list = []
-    for page in range(1, _MAX_COMMENT_PAGES + 1):
-        rc, out, _ = run(
-            [
-                "gh",
-                "api",
-                "repos/{}/issues/{}/comments?per_page=100&page={}".format(repo, number, page),
-            ]
-        )
-        if rc != 0 or not out:
-            return None
-        try:
-            batch = json.loads(out)
-        except ValueError:
-            return None
-        if not isinstance(batch, list):
-            return None
-        for c in batch:
-            if not isinstance(c, dict):
-                continue
-            user = c.get("user") or {}
-            if user.get("type") != "Bot":
-                continue
-            if (user.get("login") or "").lower() not in trusted_authors:
-                continue
-            comments.append(c)
-        if len(batch) < 100:
-            return comments
-    return None
+    comments = fetch_issue_comments(
+        repo, number, keep=lambda c: is_trusted_bot_comment(c, trusted_authors)
+    )
+    return None if comments is None else select_bot_comments(comments, trusted_authors)
 
 
 def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=None):
@@ -1590,8 +1572,24 @@ def disposition_gate(argv, environ):
             result["error"] = "--repo, --pr and --head are all required"
         else:
             bindings = resolve_marker_bindings(argv, environ)
-            comments = fetch_disposition_comments(repo, number)
-            bot_comments = fetch_bot_comments(repo, number, resolve_marker_authors(argv, environ))
+            # ONE paginated read serves both selectors: this mode runs on
+            # every full readiness evaluation, and the hourly GITHUB_TOKEN
+            # pool every workflow here shares is what it would otherwise
+            # spend walking the same comment pages twice.
+            # Filtered page by page, so a comment neither selector wants is
+            # never retained.
+            authors = resolve_marker_authors(argv, environ)
+            all_comments = fetch_issue_comments(
+                repo,
+                number,
+                keep=lambda c: (
+                    _review_contract.is_disposition_comment(c) or is_trusted_bot_comment(c, authors)
+                ),
+            )
+            comments = bot_comments = None
+            if all_comments is not None:
+                comments = _review_contract.select_disposition_comments(all_comments)
+                bot_comments = select_bot_comments(all_comments, authors)
             records = writer_disposition_records(repo, comments)
             if comments is None or bot_comments is None or records is None:
                 result["error"] = "disposition or marker comments could not be read"

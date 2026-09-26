@@ -57,6 +57,7 @@ url=""
 for arg in "$@"; do
   case "$arg" in repos/*|*/actions/*) url="$arg" ;; esac
 done
+printf '%s\n' "$url" >> "$FIXTURES/calls"
 if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   count=0
   [ -f "$FIXTURES/flaky_count" ] && count="$(cat "$FIXTURES/flaky_count")"
@@ -76,6 +77,10 @@ if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
 fi
 case "$url" in
   *"/commits/"*"/check-runs"*)             cat "$FIXTURES/check_runs.json"; exit 0 ;;
+  *"/statuses/"*)
+    # A status POST (the screen re-publishing pending). Recorded in `calls`.
+    [ -f "$FIXTURES/status_post_fail" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+    exit 0 ;;
   *"/commits/"*"/status"*)
     # The truncated-fallback's defer guard: the CURRENT "PR Readiness"
     # commit-status state (gh applies --jq itself, so the stub emits the
@@ -140,6 +145,18 @@ def _evaluate_script() -> str:
         if step.get("id") == "verdict":
             return step["run"]
     raise AssertionError("evaluate step not found")
+
+
+def _monitored_lanes() -> str:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return spec["jobs"]["readiness"]["env"]["MONITORED_LANES"]
+
+
+def _step_by_id(step_id: str) -> dict:
+    for step in _steps():
+        if step.get("id") == step_id:
+            return step
+    raise AssertionError("step not found: {}".format(step_id))
 
 
 # The consolidated runs read (`actions/runs?event=pull_request&head_sha=`) is
@@ -261,6 +278,7 @@ class Runner:
             "DEFAULT_BRANCH": "main",
             "TRIGGER_EVENT": "workflow_run",
             "TRIGGER_ACTION": "completed",
+            "MONITORED_LANES": _monitored_lanes(),
         }
         # Materialize the helper exactly as CI does: run the install step.
         # cwd pins the children under this runner's own temp dir so a
@@ -342,6 +360,57 @@ class Runner:
             key, _, value = line.partition("=")
             outputs[key] = value
         return proc, outputs
+
+    def screen(
+        self,
+        *,
+        action: str,
+        conclusion: str = "",
+        wr_event: str = "pull_request",
+        fork: bool = False,
+        existing_status_state: str = "",
+        flaky_substr: str = "",
+        flaky_fails: int = 0,
+        wr_id: int = 0,
+    ):
+        """Run the "Screen the triggering event" step; return (proc, settled)."""
+        env = dict(self.env)
+        env.update(
+            {
+                "WR_ACTION": action,
+                "WR_NAME": "CI",
+                "WR_EVENT": wr_event,
+                "WR_CONCLUSION": conclusion,
+                "WR_ID": str(wr_id),
+                "FORK": "true" if fork else "false",
+            }
+        )
+        if flaky_substr:
+            env["FLAKY_SUBSTR"] = flaky_substr
+            env["FLAKY_FAILS"] = str(flaky_fails)
+        state_file = self.fixtures / "existing_status_state.txt"
+        state_file.unlink(missing_ok=True)
+        if existing_status_state:
+            state_file.write_text(existing_status_state + "\n")
+        proc = subprocess.run(
+            ["bash", "-c", _step_by_id("screen")["run"]],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=self.temp,
+        )
+        settled = ""
+        for line in self.output.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key == "settled":
+                settled = value
+        return proc, settled
+
+    def calls(self) -> list[str]:
+        """Every URL the gh stub served, in order."""
+        log = self.fixtures / "calls"
+        return log.read_text().split() if log.is_file() else []
 
     def backoff(self) -> list[int]:
         """Seconds the retry helper asked to sleep, in order."""
@@ -1686,3 +1755,232 @@ class TestDispositionViolationsBlockTheVerdict:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["description"] == "1 blocking readiness item(s)"
+
+
+class TestTheScreenSettlesEventsThatCannotChangeTheVerdict:
+    """Most workflow_run events cannot change the verdict. The screen settles
+    them in one or two requests instead of a full evaluation (10-20 requests
+    on the hourly pool every workflow here shares), and sends every event that
+    CAN change it -- a red, the last lane landing, a status that could still
+    let a merge through -- on to the full evaluation."""
+
+    @staticmethod
+    def _ci(runner: Runner, *, status: str, conclusion: str) -> None:
+        (runner.fixtures / "ci_runs.json").write_text(
+            _run_json("ci.yml", status=status, conclusion=conclusion)
+        )
+
+    # -- in_progress: the merge guard --------------------------------------
+
+    def test_in_progress_over_a_pending_status_re_publishes_pending(self, runner: Runner):
+        """Two reads and one pending POST, no evaluation. The POST is the
+        write that overwrites a stale success an isolated pull_request_target
+        run may land after the read."""
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(action="in_progress", existing_status_state="pending")
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "true"
+        calls = runner.calls()
+        assert len(calls) == 3, calls
+        assert calls[-1].endswith("/statuses/" + runner.env["SHA"])
+        body = json.loads((runner.temp / "screen-status.json").read_text())
+        assert body["state"] == "pending" and body["context"] == "PR Readiness"
+        assert not body["description"].startswith("[read-failed]")
+
+    def test_a_failed_pending_post_takes_the_full_path(self, runner: Runner):
+        self._ci(runner, status="in_progress", conclusion="")
+        (runner.fixtures / "status_post_fail").touch()
+        proc, settled = runner.screen(action="in_progress", existing_status_state="pending")
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    def test_in_progress_over_a_red_status_keeps_it_in_one_read(self, runner: Runner):
+        proc, settled = runner.screen(action="in_progress", existing_status_state="failure")
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "true"
+        assert len(runner.calls()) == 1
+
+    @pytest.mark.parametrize("existing", ["success", ""])
+    def test_in_progress_over_a_mergeable_status_takes_the_full_path(
+        self, runner: Runner, existing: str
+    ):
+        """The merge guard: a re-run of a green lane must flip readiness off
+        success, and the full evaluation is what publishes that pending and
+        moves the label with it."""
+        proc, settled = runner.screen(action="in_progress", existing_status_state=existing)
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    def test_in_progress_with_a_red_lane_on_the_page_takes_the_full_path(self, runner: Runner):
+        """This run may have replaced that red lane's own evaluation in the
+        concurrency queue; settling would leave the red unpublished."""
+        self._ci(runner, status="completed", conclusion="failure")
+        proc, settled = runner.screen(action="in_progress", existing_status_state="pending")
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    # -- completed: the early exit -----------------------------------------
+
+    def test_a_clean_completion_with_a_lane_still_running_settles(self, runner: Runner):
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed", conclusion="success", existing_status_state="pending"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "true"
+        assert len(runner.calls()) == 2
+        assert "1 monitored workflow(s) still running" in proc.stdout
+
+    def test_the_completion_that_lands_the_last_lane_takes_the_full_path(self, runner: Runner):
+        proc, settled = runner.screen(
+            action="completed", conclusion="success", existing_status_state="pending"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    def test_a_lagging_runs_page_cannot_screen_out_the_last_lane(self, runner: Runner):
+        """The page can still show the triggering run as in progress when its
+        `completed` webhook arrives. The event's own conclusion wins, so the
+        last lane's completion still reaches the full evaluation."""
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed",
+            conclusion="success",
+            existing_status_state="pending",
+            wr_id=RUN_ID,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    def test_the_full_path_re_reads_the_runs_page(self, runner: Runner):
+        """A lane re-run can start between the screen and the verdict (the
+        checkout and disposition gate sit in between), so the verdict never
+        scores lanes from the screen's older page."""
+        self._ci(runner, status="completed", conclusion="success")
+        proc, settled = runner.screen(
+            action="completed", conclusion="success", existing_status_state="pending"
+        )
+        assert settled == "false"
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+
+    @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+    def test_a_red_completion_takes_the_full_path_without_a_read(
+        self, runner: Runner, conclusion: str
+    ):
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed", conclusion=conclusion, existing_status_state="pending"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+        assert runner.calls() == []
+
+    def test_a_red_lane_already_on_the_page_takes_the_full_path(self, runner: Runner):
+        """A clean completion whose page shows ANOTHER lane red: the red may
+        belong to an evaluation this run cancelled."""
+        (runner.fixtures / "green_runs.json").write_text(
+            _run_json("green.yml", status="in_progress", conclusion="")
+        )
+        self._ci(runner, status="completed", conclusion="failure")
+        proc, settled = runner.screen(
+            action="completed", conclusion="success", existing_status_state="pending"
+        )
+        assert settled == "false"
+
+    @pytest.mark.parametrize("existing", ["success", "failure", ""])
+    def test_a_status_that_is_not_pending_takes_the_full_path(
+        self, runner: Runner, existing: str
+    ):
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed", conclusion="success", existing_status_state=existing
+        )
+        assert settled == "false"
+
+    def test_a_fork_completion_is_never_screened(self, runner: Runner):
+        """A fork's AI verdicts are check-runs a clean Stage-2 conclusion says
+        nothing about, so a red can arrive on a "success" completion."""
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed",
+            conclusion="success",
+            wr_event="workflow_run",
+            fork=True,
+            existing_status_state="pending",
+        )
+        assert settled == "false"
+        assert runner.calls() == []
+
+    def test_a_codeql_completion_is_never_screened(self, runner: Runner):
+        """CodeQL's security result is a separate check-run, not the
+        workflow's conclusion."""
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed",
+            conclusion="success",
+            wr_event="dynamic",
+            existing_status_state="pending",
+        )
+        assert settled == "false"
+        assert runner.calls() == []
+
+    def test_a_failed_read_falls_back_to_the_full_path(self, runner: Runner):
+        self._ci(runner, status="in_progress", conclusion="")
+        proc, settled = runner.screen(
+            action="completed",
+            conclusion="success",
+            existing_status_state="pending",
+            flaky_substr=RUNS_READ,
+            flaky_fails=3,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert settled == "false"
+
+    # -- wiring ----------------------------------------------------------------
+
+    def test_the_screen_covers_every_same_repo_workflow_lane(self):
+        """A lane the screen does not know could be the one still running
+        while the screen reads "nothing open" -- or, missing the other way,
+        be screened as open forever."""
+        assert set(_monitored_lanes().split()) == set(_lane_files())
+        assert "SCREEN_LANES=($MONITORED_LANES)" in _step_by_id("screen")["run"]
+        publish = next(s for s in _steps() if s.get("name") == "Publish status and label")
+        assert '--arg lanes "$MONITORED_LANES"' in publish["run"]
+
+    def test_a_fork_in_progress_is_never_screened(self, runner: Runner):
+        """A fork lane re-run is a Stage-2 workflow the publish re-check
+        cannot see, so a fork keeps the full evaluation's pending write."""
+        proc, settled = runner.screen(
+            action="in_progress", fork=True, existing_status_state="pending"
+        )
+        assert settled == "false"
+        assert runner.calls() == []
+
+    def test_every_evaluating_step_skips_a_settled_event(self):
+        steps = _steps()
+        names = [s.get("id") or s.get("name") for s in steps]
+        assert names.index("screen") < names.index("dispositions")
+        gated = [
+            s
+            for s in steps
+            if s.get("id") in ("dispositions", "verdict")
+            or "actions/checkout" in (s.get("uses") or "")
+            or s.get("name") == "Publish status and label"
+        ]
+        assert len(gated) == 4
+        for step in gated:
+            assert "steps.screen.outputs.settled != 'true'" in step["if"], step.get("name")
+
+    def test_an_in_progress_run_still_cancels_a_running_evaluation(self):
+        """The running evaluation's reads predate the re-run; letting it finish
+        would publish a success the queued screen only corrects afterwards."""
+        spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        assert spec["concurrency"]["cancel-in-progress"] is True
+
+    def test_the_remaining_rest_budget_is_logged(self):
+        last = _steps()[-1]
+        assert last["if"] == "always()"
+        assert "gh api rate_limit" in last["run"]

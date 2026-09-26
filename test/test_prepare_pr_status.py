@@ -2575,6 +2575,67 @@ def test_disposition_gate_reports_unreadable_comments_as_not_ok(capsys) -> None:
     assert report["violations"] == []
 
 
+def test_disposition_gate_reads_the_comment_pages_once(capsys) -> None:
+    """The records and the marker comments come from ONE paginated read.
+
+    This mode runs on every full readiness evaluation, and each page is a
+    request on the hourly GITHUB_TOKEN pool every workflow shares. A second
+    walk of the same pages bought nothing: both selectors filter the same
+    list. Two full pages plus a short one pin that pagination still reaches
+    the last page, and that each page is requested exactly once.
+    """
+    module = _load_script()
+    span = module.span_hash("src/x.py", "gpt/FINDING")
+    ruling = {
+        "id": 903,
+        "user": {"type": "User", "login": "alice"},
+        "body": (
+            "<!-- ai-review-disposition target=gpt head=" + _GATE_HEAD + " -->\n"
+            + f"- **rebutted** span={span}\n> reason"
+        ),
+    }
+    filler = [{"id": i, "user": {"type": "User", "login": "bob"}, "body": "hi"} for i in range(100)]
+    pages = {1: filler, 2: filler, 3: [_gate_bot_comment(), ruling]}
+    requested: list[str] = []
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:2] == ["gh", "api"] and "/collaborators/" in args[2]:
+            return 0, json.dumps({"permission": "write"}), ""
+        if args[:2] == ["gh", "api"] and "/issues/42/comments" in args[2]:
+            requested.append(args[2])
+            page = int(args[2].rsplit("page=", 1)[1])
+            return 0, json.dumps(pages[page]), ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+
+    assert module.main(_gate_argv()) == 0
+
+    report = json.loads(capsys.readouterr().out.strip())
+    assert report["ok"] is True, report
+    assert report["records"] == 1
+    assert report["violations"] == []
+    assert [url.rsplit("page=", 1)[1] for url in requested] == ["1", "2", "3"]
+
+
+def test_the_shared_comment_read_keeps_only_what_a_selector_wants() -> None:
+    """Filtering page by page: a comment neither selector wants is dropped as
+    its page is read, so a PR with thousands of ordinary comments does not
+    hold them all in memory."""
+    module = _load_script()
+    ordinary = {"id": 1, "user": {"type": "User", "login": "bob"}, "body": "x" * 1000}
+    marker = _gate_bot_comment()
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        return 0, json.dumps([ordinary, marker]), ""
+
+    module.run = fake_run
+    kept = module.fetch_issue_comments(
+        "example/repo", 42, keep=lambda c: module.is_trusted_bot_comment(c, ("github-actions[bot]",))
+    )
+    assert kept == [marker]
+
+
 def test_disposition_gate_requires_repo_pr_and_head(capsys) -> None:
     module = _load_script()
 
@@ -2589,8 +2650,7 @@ def test_disposition_gate_flattens_newlines_out_of_each_violation(capsys) -> Non
     """The workflow reads one violation per line, so a newline inside one would
     forge an extra blocker line. Flattening is what makes that unrepresentable."""
     module = _load_script()
-    module.fetch_disposition_comments = lambda *_a: []
-    module.fetch_bot_comments = lambda *_a: []
+    module.fetch_issue_comments = lambda *_a, **_k: []
     module.writer_disposition_records = lambda *_a: []
     module.disposition_violations = lambda *_a: ["first\nsecond   third"]
 
