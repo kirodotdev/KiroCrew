@@ -3320,6 +3320,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
             for u in slack_data.get("allowed_users", [])
             if isinstance(u, dict) and u.get("slack_id")
         ],
+        guest_agent=str(slack_data.get("guest_agent") or "").strip(),
         tracking_channels=_validate_tracking_channels(slack_data.get("tracking_channels", [])),
         open_channels=[c for c in slack_data.get("open_channels", []) if isinstance(c, str)],
         command=slack_data.get("command", "kirocrew"),

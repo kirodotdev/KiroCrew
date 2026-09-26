@@ -2611,6 +2611,14 @@ class SlackConfig:
             "List of Slack users allowed to interact. Each entry: {slack_id, name}.",
         ),
     )
+    guest_agent: str = field(
+        default="",
+        metadata=_meta(
+            "Guest Agent",
+            "Crew Member that allow-listed non-owner users run as. Must name a member "
+            "in `agents`; empty refuses every guest turn.",
+        ),
+    )
     tracking_channels: list[dict] = field(
         default_factory=list,
         metadata=_meta(
@@ -4703,6 +4711,13 @@ class ChannelConfig:
         default="",
         metadata=_meta("Agent", "Agent override for this channel (empty = default)."),
     )
+    guest_agent: str = field(
+        default="",
+        metadata=_meta(
+            "Guest Agent",
+            "Guest-member override for this channel (empty = fall back to slack.guest_agent).",
+        ),
+    )
     thread_follow: bool = field(
         default=True,
         metadata=_meta(
@@ -4719,6 +4734,7 @@ class ChannelConfig:
         return cls(
             activation=activation,
             agent=data.get("agent", ""),
+            guest_agent=data.get("guest_agent", ""),
             thread_follow=data.get("thread_follow", True),
         )
 

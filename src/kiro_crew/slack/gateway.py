@@ -345,6 +345,7 @@ from kiro_crew.slack.handler import (
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
 from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
+from kiro_crew.slack.tool_gate import normalize_tool_title
 from kiro_crew.slack.transport import SlackTransport
 from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
@@ -777,9 +778,6 @@ HEARTBEAT_SAFE_TOOLS = frozenset(
 )
 
 
-_HEARTBEAT_STATUS_PREFIXES = ("Running: ",)
-
-
 def _is_heartbeat_safe_tool(event_title: str) -> bool:
     """Return True if *event_title* is safe to auto-approve in a heartbeat task.
 
@@ -790,46 +788,16 @@ def _is_heartbeat_safe_tool(event_title: str) -> bool:
     ``list_env_secrets``, etc.).  Per security-controls deny-by-default:
     reject unless positively confirmed.
 
-    Title normalization (applied before the set lookup):
-
-    1. Strip leading status prefix (e.g. ``Running: ``).
-    2. Strip ACP ``mcp__<server>__<Tool>`` prefix.
-    3. Strip runtime ``@<server>/<Tool>`` prefix — kiro-cli titles arrive as
-       ``Running: @example-mcp/SomeTool`` at the gateway.
-
-    Only the **bare tool name** is tested against the frozenset.
+    Title normalization is shared with the guest gate
+    (``slack.tool_gate.normalize_tool_title``): strip the status prefix, strip an
+    ACP ``mcp__<server>__<Tool>`` or runtime ``@<server>/<Tool>`` prefix, and test
+    only the **bare tool name** against the frozenset.
 
     Returns False on empty / whitespace-only / unrecognised names.
     """
-    if not event_title:
-        return False
-    name = event_title.strip()
+    name, qualified = normalize_tool_title(event_title)
     if not name:
         return False
-    # Strip leading status prefix: "Running: @example-mcp/Tool" → "@example-mcp/Tool"
-    for prefix in _HEARTBEAT_STATUS_PREFIXES:
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-    # Preserve the server-QUALIFIED form (before the prefix is stripped) so the
-    # edition allowlist can match on the full identity and avoid bare-name
-    # collisions — normalized to the "@server/Tool" spelling regardless of which
-    # wire form arrived ("mcp__server__Tool" or "@server/Tool").
-    qualified = ""
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3:
-            qualified = f"@{parts[1]}/{parts[2]}"
-    elif name.startswith("@") and "/" in name:
-        qualified = name
-    # Strip MCP server prefix: "mcp__example-mcp__ToolName" → "ToolName"
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3:
-            name = parts[2]
-    # Strip @server/Tool prefix: "@example-mcp/SomeTool" → "SomeTool"
-    if name.startswith("@") and "/" in name:
-        name = name.rsplit("/", 1)[-1]
     if name in HEARTBEAT_SAFE_TOOLS:
         return True
     # Edition-contributed additions. Deferred context read via the sel.py pattern
@@ -909,22 +877,11 @@ _NO_RESPONSE = "_No response._"
 def _bare_tool_name(title: str) -> str:
     """``Running: @server/Tool`` / ``mcp__server__Tool`` / ``Tool`` -> ``Tool``.
 
-    Same wire forms ``_is_heartbeat_safe_tool`` unwraps; kept separate
-    because that helper answers an allowlist question and this one only
-    needs the name.
+    The same unwrapping the allowlist gates do, via the shared normalizer, for a
+    caller that needs only the name and asks no allowlist question.
     """
-    name = (title or "").strip()
-    for prefix in _HEARTBEAT_STATUS_PREFIXES:
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-    if name.startswith("mcp__"):
-        parts = name.split("__", 2)
-        if len(parts) == 3:
-            name = parts[2]
-    if name.startswith("@") and "/" in name:
-        name = name.rsplit("/", 1)[-1]
-    return name.strip()
+    bare, _ = normalize_tool_title(title)
+    return bare
 
 
 class _GateTally:
@@ -1959,18 +1916,14 @@ class GatewayOrchestrator:
         self._app_token = creds.get(CRED_SLACK_APP_TOKEN, "")
         self._bot_token = creds.get(CRED_SLACK_BOT_TOKEN, "")
         self._owner_id = creds.get(CRED_OWNER_ID, "")
-        # Multi-user access is disabled — only owner is authorized.
-        # Prune stale allowed_users entries from config and warn.
-        stale = {u["slack_id"] for u in cfg.slack.allowed_users} - (
-            {self._owner_id} if self._owner_id else set()
-        )
-        if stale:
-            logger.warning(
-                "Pruning %d stale allowlist entries (multi-user disabled): %s",
-                len(stale),
-                stale,
-            )
+        # The live set is the owner plus every allow-listed guest, so a guest the
+        # owner approved survives a restart. Membership here grants inbound
+        # message admission only: ``is_allowed_user`` answers for the owner alone,
+        # and every owner control keys off that one.
         self._allowed_users: set[str] = {self._owner_id} if self._owner_id else set()
+        self._allowed_users.update(
+            str(u["slack_id"]) for u in cfg.slack.allowed_users if u.get("slack_id")
+        )
         self._tracking_channels: set[str] = {
             c["channel_id"] for c in cfg.slack.tracking_channels if c.get("channel_id")
         }

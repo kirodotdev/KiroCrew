@@ -550,9 +550,16 @@ class TestMiscSlashCommands:
         assert "Imported 3 messages" in body and "slot-3" in body
 
     @pytest.mark.asyncio
-    async def test_allowlist_is_disabled(self, slack, sessions, owner):
+    async def test_allowlist_lists_read_only(self, slack, sessions, owner):
+        """``!allowlist`` reports access and mutates nothing.
+
+        Mutation lives on the Allow / Remove button path, which records the
+        approver in the audit trail.
+        """
         assert await _slash("!allowlist", slack, sessions) == ""
-        assert "Multi-user access is disabled" in _texts(slack)
+        body = _texts(slack)
+        assert "Slack access" in body
+        assert "nominate" in body
 
     @pytest.mark.asyncio
     async def test_title_sets_thread_title(self, slack, sessions, owner):

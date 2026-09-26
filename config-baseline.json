@@ -4669,6 +4669,7 @@
       "enumValues": null,
       "defaultValue": {
         "allowed_users": [],
+        "guest_agent": "",
         "tracking_channels": [],
         "open_channels": [],
         "command": "kirocrew",
@@ -4712,6 +4713,20 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "slack.guest_agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Guest Agent",
+      "help": "Crew Member that allow-listed non-owner users run as. Must name a member in `agents`; empty refuses every guest turn.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "slack.tracking_channels",
@@ -8339,6 +8354,20 @@
       "tags": [],
       "label": "Agent",
       "help": "Agent override for this channel (empty = default).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "slack_channels.*.guest_agent",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Guest Agent",
+      "help": "Guest-member override for this channel (empty = fall back to slack.guest_agent).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

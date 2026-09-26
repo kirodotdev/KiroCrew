@@ -537,10 +537,22 @@ class TestHandleConfig:
 
 class TestHandleAllowlistCmd:
     @pytest.mark.asyncio
-    async def test_multi_user_is_refused(self):
+    async def test_owner_gets_a_read_only_listing(self):
         respond = AsyncMock()
-        await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
-        assert "Multi-user access is disabled" in respond.call_args[0][0]
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
+        body = respond.call_args[0][0]
+        assert "Slack access" in body
+        # "add U2" is read as nothing: the listing is the whole behaviour, so an
+        # argument that looks like a mutation cannot perform one.
+        assert "U2" not in body
+
+    @pytest.mark.asyncio
+    async def test_non_owner_denied(self):
+        respond = AsyncMock()
+        with patch("kiro_crew.slack.events.is_owner", return_value=False):
+            await ev._handle_allowlist_cmd(_make_orch(), "U_GUEST", "", respond)
+        assert "Only the owner" in respond.call_args[0][0]
 
 
 class TestHandleChannelCmd:
@@ -1218,15 +1230,38 @@ class TestHandleSlash:
         assert orch._last_trigger_id == "TRIG"
 
     @pytest.mark.asyncio
-    async def test_user_mention_fallback_refuses_multi_user(self):
+    async def test_user_mention_fallback_sends_allowlist_prompt(self):
+        """``/kirocrew @user`` nominates: it prompts the owner and adds nobody.
+
+        The nomination grants nothing by itself — only the owner's Allow button
+        does — so what this pins is that the prompt reaches the owner.
+        """
         orch = _make_orch()
         posted: list[dict] = []
         payload = {"command": "/kirocrew", "user_id": "U_OWNER", "text": "<@U123|bob>"}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with _capture_respond(posted):
-                await ev._handle_slash(orch, payload)
-                await _drain(orch)
-        assert posted and "Multi-user access is disabled" in posted[0]["text"]
+            with patch("kiro_crew.slack.events.prompt_allowlist", AsyncMock()) as prompt:
+                with _capture_respond(posted):
+                    await ev._handle_slash(orch, payload)
+                    await _drain(orch)
+        assert prompt.await_count == 1
+        assert prompt.await_args[0][2] == "U123"
+        assert posted and "Allowlist prompt sent" in posted[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_user_mention_of_owner_is_a_no_op(self):
+        orch = _make_orch()
+        posted: list[dict] = []
+        # A real Slack id carries no underscore, which the mention regex relies on.
+        payload = {"command": "/kirocrew", "user_id": "U_OWNER", "text": "<@U0OWNER99>"}
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                with patch("kiro_crew.slack.events.prompt_allowlist", AsyncMock()) as prompt:
+                    with _capture_respond(posted):
+                        await ev._handle_slash(orch, payload)
+                        await _drain(orch)
+        assert prompt.await_count == 0
+        assert posted and "owner always has access" in posted[0]["text"]
 
     @pytest.mark.asyncio
     async def test_channel_mention_fallback_sends_track_request(self):

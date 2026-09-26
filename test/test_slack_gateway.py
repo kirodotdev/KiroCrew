@@ -272,9 +272,16 @@ class TestGatewayOrchestratorInit:
             orch = GatewayOrchestrator(cfg)
         assert "C_OPEN" in orch._open_channels
 
-    def test_stale_allowed_users_pruned(self):
+    def test_config_allowed_users_loaded_as_guests(self):
+        """A config allowlist entry reaches the live set, so a guest survives restart.
+
+        Membership in the live set is what the inbound message gate consults, and
+        the config file is the only thing that outlives the process, so a guest
+        the owner approved is reachable again after a restart only if the load
+        happens here.
+        """
         cfg = KiroCrewConfig()
-        cfg.slack.allowed_users = [{"slack_id": "U_STALE"}]
+        cfg.slack.allowed_users = [{"slack_id": "U_GUEST"}]
         with patch.object(
             cfg,
             "load_credentials",
@@ -285,8 +292,22 @@ class TestGatewayOrchestratorInit:
             },
         ):
             orch = GatewayOrchestrator(cfg)
-        assert "U_STALE" not in orch._allowed_users
+        assert "U_GUEST" in orch._allowed_users
         assert "U_OWNER" in orch._allowed_users
+        # Membership grants inbound admission, never owner standing.
+        from kiro_crew.slack.handler import (
+            is_allowed_user,
+            is_guest_user,
+            set_allowed_users,
+            set_owner_id,
+        )
+
+        set_owner_id("U_OWNER")
+        set_allowed_users(orch._allowed_users)
+        assert is_guest_user("U_GUEST") is True
+        assert is_allowed_user("U_GUEST") is False
+        assert is_allowed_user("U_OWNER") is True
+        assert is_guest_user("U_OWNER") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
