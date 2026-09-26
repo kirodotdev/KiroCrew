@@ -3307,7 +3307,7 @@ jobs:
         env:
           HITS_DIR: ${{ runner.temp }}/integration-hits
         run: |
-          python3 scripts/check_integration_route_coverage.py "$HITS_DIR" --missing --min 0.5 \
+          python3 scripts/check_integration_route_coverage.py "$HITS_DIR" --missing --min 0.7 \
             | tee "$HITS_DIR/route-coverage.txt"
       - name: Upload route-coverage report
         if: always()

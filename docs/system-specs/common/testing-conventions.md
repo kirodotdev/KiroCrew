@@ -636,6 +636,14 @@ which is the private target the shared-home write guard exempts. A test that
 edits the agents directory waits for the managed `kirocrew.json` first (the
 spec rebuild runs after the dashboard is serving).
 
+Two operator seams reach the boot without patching anything inside it. A spec
+that a SLOT or a SPAWN must resolve by name is written to `<home>/kiro/agents`
+BEFORE the boot: the loader answers agent names from a snapshot it scans once
+(`_scan_materialized_agents`), so a spec dropped in after the boot is not
+dispatchable until the next registration (the loader documents this as accepted
+staleness). Config a test needs the boot to read (`agent.spawn_min_memory_gb`,
+say) goes in `<home>/config.local.json`, the override file the operator owns.
+
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by
 the bare name `conftest`; a second top-level `conftest` shadows it and 160
