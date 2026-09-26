@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { SIDE_PANEL_HEIGHT_KEY, SIDE_PANEL_WIDTH_KEY, sidePanelDimKey } from '../pages/chat/sidePanelWidth'
 import { gcOrphanedStorage, gcSessionStorage } from './storageGc'
 
 /**
@@ -214,5 +215,51 @@ describe('gcSessionStorage', () => {
     expect(localStorage.getItem('mc-busy-send-mode:foobar')).toBe('steer')
     // The slot-less sentinel belongs to no session.
     expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('steer')
+  })
+})
+
+describe('per-chat side panel size keys', () => {
+  // Keys are built with the real writer, so a writer that drifts from the
+  // prefixes in SESSION_PREFIXES turns these tests red instead of leaking.
+  const widthOf = (slot: string) => sidePanelDimKey(SIDE_PANEL_WIDTH_KEY, slot)
+  const heightOf = (slot: string) => sidePanelDimKey(SIDE_PANEL_HEIGHT_KEY, slot)
+
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('the boot sweep removes a gone chat\'s width and height and keeps a live one\'s', () => {
+    localStorage.setItem(widthOf('chat-1-1'), '520')
+    localStorage.setItem(heightOf('chat-1-1'), '300')
+    localStorage.setItem(widthOf('chat-2-2'), '640')
+    localStorage.setItem(heightOf('chat-2-2'), '410')
+
+    expect(gcOrphanedStorage(new Set(['chat-2-2']))).toBe(2)
+    expect(localStorage.getItem(widthOf('chat-1-1'))).toBeNull()
+    expect(localStorage.getItem(heightOf('chat-1-1'))).toBeNull()
+    expect(localStorage.getItem(widthOf('chat-2-2'))).toBe('640')
+    expect(localStorage.getItem(heightOf('chat-2-2'))).toBe('410')
+  })
+
+  it('deleting a chat removes its sizes without touching a sibling whose id extends it', () => {
+    localStorage.setItem(widthOf('foo'), '520')
+    localStorage.setItem(heightOf('foo'), '300')
+    localStorage.setItem(widthOf('foobar'), '640')
+
+    gcSessionStorage('foo')
+
+    expect(localStorage.getItem(widthOf('foo'))).toBeNull()
+    expect(localStorage.getItem(heightOf('foo'))).toBeNull()
+    expect(localStorage.getItem(widthOf('foobar'))).toBe('640')
+  })
+
+  it('never collects the bare fallback size every chat reads', () => {
+    // An empty slot writes the bare key; it belongs to no chat.
+    localStorage.setItem(widthOf(''), '480')
+    localStorage.setItem(heightOf(''), '260')
+
+    expect(gcOrphanedStorage(new Set())).toBe(0)
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_KEY)).toBe('480')
+    expect(localStorage.getItem(SIDE_PANEL_HEIGHT_KEY)).toBe('260')
   })
 })

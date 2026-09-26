@@ -3096,6 +3096,10 @@ export default function MembersPage() {
           const panelProps = {
             tabsCtl,
             slot: activeSlot,
+            // The member is the chat's identity while its slot is still being
+            // confirmed, so a resize started before the POST answers lands on
+            // the confirmed key, and one that spans a member switch does not.
+            slotOwner: active?.name,
             hiddenViews,
             onActiveTabChange: setShownTabId,
             projectDir,

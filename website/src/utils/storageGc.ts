@@ -29,6 +29,12 @@ const SESSION_PREFIXES = [
   'vc_anchor_',
   'kirocrew:touched-files:',
   'mc-panel-tabs:',
+  // Per-chat side panel width and bottom-dock height. Writer: `sidePanelDimKey`
+  // over `SIDE_PANEL_WIDTH_KEY` / `SIDE_PANEL_HEIGHT_KEY` in
+  // `pages/chat/sidePanelWidth.ts`. The bare base key, read as the fallback for
+  // every chat, carries no ':' and so never matches either prefix.
+  'mc-side-panel-width:',
+  'mc-side-panel-height:',
   'mc-activity-open:',
   'mc-webpreview-url:',
   'mc-webpreview-pending:',

@@ -33,11 +33,13 @@ import { useSidePanelDock } from '../../hooks/useSidePanelDock'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator
 } from '../../components/ui/dropdown-menu'
-import { safeSetItem } from '../../utils/safeStorage'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { SIDE_PANEL_HEIGHT_KEY, SIDE_PANEL_WIDTH_KEY, loadSidePanelDim, ownDim, saveSidePanelDim } from './sidePanelWidth'
+import { SIDE_PANEL_MOTION_MS, sidePanelDimTransition } from './sidePanelMount'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
 import { mcpAppKey } from '../../store/chatSlice'
@@ -262,6 +264,14 @@ export interface SidePanelLeadingTab {
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
   slot: string
+  /** Stable identity of the chat the panel shows, held constant while the host
+   *  is still confirming its `slot` (the Members page passes the member's name,
+   *  since its slot stays '' until the thread POST answers). A resize drag that
+   *  starts on an empty slot is saved under the key confirmed mid-drag ONLY when
+   *  this identity is the same at release as at the start, so the key is that
+   *  chat's own. Unset, or changed mid-drag (a keyboard switch to another chat),
+   *  an empty-start drag is saved to the shared default alone. */
+  slotOwner?: string
   onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean }) => void
   /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
    *  Threaded to the Artifacts tab so its rows open here instead of
@@ -438,7 +448,7 @@ export function sidePanelEffectiveWidth(
 }
 
 export default function SidePanel({
-  tabsCtl, slot, onFileOpen, onArtifactOpen, onAddToContext,
+  tabsCtl, slot, slotOwner, onFileOpen, onArtifactOpen, onAddToContext,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, connected = true, onFileSave, onClose, panelHidden,
@@ -580,25 +590,67 @@ export default function SidePanel({
   const [diffSideBySide, setDiffSideBySide] = useDiffSplit()
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
-  // its own width).
-  const WIDTH_KEY = 'mc-side-panel-width'
+  // its own width), remembered PER CHAT rather than once for the panel (see
+  // sidePanelWidth.ts): the size follows `slot` and never moves on a tab switch
+  // inside the chat. Held as a map keyed by slot so switching chats reads the
+  // other chat's size without a round trip through storage, and a slot never
+  // dragged in this session falls through to what is stored (`loadSidePanelDim`).
   const MIN_W = SIDE_PANEL_MIN_W
-  const [width, setWidth] = useState(() => {
-    const v = parseInt(localStorage.getItem(WIDTH_KEY) || '', 10)
-    return !isNaN(v) && v >= MIN_W ? v : 460
-  })
+  // The slot a resize drag started on, held for the whole gesture and `null`
+  // outside one. The host can re-key the panel mid-drag (the Members page
+  // confirms its thread's slot when the POST answers, which flips `slot` from
+  // '' to the key), and reading the live slot would retarget the remaining
+  // movement and the release to the new chat and discard the adjustment the
+  // user is making. State rather than a ref because the RENDERED size reads it
+  // too: the size on screen and the size being written must be the same chat's,
+  // or a mid-drag re-key shows one chat's width while the pointer moves another's.
+  const [dragSlot, setDragSlot] = useState<string | null>(null)
+  // The chat whose size is shown AND written: the dragged one during a gesture,
+  // the shown one otherwise. One resolver for both, read by the render path
+  // directly and by the drag callbacks through the latest-value ref.
+  const dimSlot = dragSlot ?? slot
+  const dimSlotRef = useRef(dimSlot); dimSlotRef.current = dimSlot
+  const slotRef = useRef(slot); slotRef.current = slot
+  // Where a released drag is saved: the chat it started on, with one exception.
+  // A drag that started on an empty slot goes to the key confirmed mid-gesture
+  // only when the host says it is the SAME chat receiving its key: `slotOwner`
+  // unchanged from the start (the Members page confirming its thread). Saved on
+  // the bare key alone, it would never become that chat's. Without that proof
+  // the new key may be ANOTHER chat (a Ctrl+digit switch while the handle is
+  // held), whose own size must not be overwritten, so the drag stays on ''.
+  const ownerRef = useRef(slotOwner); ownerRef.current = slotOwner
+  const dragOwnerRef = useRef<string | undefined>(undefined)
+  const releaseSlot = () => {
+    const started = dimSlotRef.current
+    if (started) return started
+    const owner = dragOwnerRef.current
+    return owner && owner === ownerRef.current ? slotRef.current : ''
+  }
+  const [widthBySlot, setWidthBySlot] = useState<Record<string, number>>({})
+  const width = useMemo(
+    () => ownDim(widthBySlot, dimSlot) ?? loadSidePanelDim({ base: SIDE_PANEL_WIDTH_KEY, slot: dimSlot, min: MIN_W, fallback: 460 }),
+    [widthBySlot, dimSlot, MIN_W],
+  )
+  const setWidth = useCallback((w: number) => {
+    const target = dimSlotRef.current
+    setWidthBySlot(m => ({ ...m, [target]: w }))
+  }, [])
   const widthRef = useRef(width); widthRef.current = width
   // Dock position (right column vs bottom row). Bottom dock is height-
   // resizable instead of width-resizable, so it carries its own persisted
   // dimension. Kept separate from width so flipping back and forth restores
   // each orientation's last size.
   const [dock, setDock] = useSidePanelDock()
-  const HEIGHT_KEY = 'mc-side-panel-height'
   const MIN_H = 200
-  const [height, setHeight] = useState(() => {
-    const v = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
-    return !isNaN(v) && v >= MIN_H ? v : 360
-  })
+  const [heightBySlot, setHeightBySlot] = useState<Record<string, number>>({})
+  const height = useMemo(
+    () => ownDim(heightBySlot, dimSlot) ?? loadSidePanelDim({ base: SIDE_PANEL_HEIGHT_KEY, slot: dimSlot, min: MIN_H, fallback: 360 }),
+    [heightBySlot, dimSlot, MIN_H],
+  )
+  const setHeight = useCallback((h: number) => {
+    const target = dimSlotRef.current
+    setHeightBySlot(m => ({ ...m, [target]: h }))
+  }, [])
   const heightRef = useRef(height); heightRef.current = height
   // Responsive clamp: the user's chosen width is persisted untouched, but the
   // rendered width yields to the window so the chat keeps its reserved
@@ -618,14 +670,27 @@ export default function SidePanel({
   // Bottom-dock height cap: leave the topbar row + a usable chat minimum
   // visible above the panel. Re-measured on resize.
   const [maxH, setMaxH] = useState(() => Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
+  // A window drag fires `resize` continuously, and easing each clamp step
+  // retargets the tween every frame so the edge trails the window instead of
+  // tracking it. An active window resize therefore suppresses the ease the same
+  // way holding the handle does. It decays rather than opting out permanently,
+  // so a DISCRETE clamp change — a sibling column settling — still eases.
+  const [windowResizing, setWindowResizing] = useState(false)
+  const settleRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
     const recalc = () => {
       setMaxW(window.innerWidth - reserveW)
       setMaxH(Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
     }
+    const onWindowResize = () => {
+      setWindowResizing(true)
+      clearTimeout(settleRef.current)
+      settleRef.current = setTimeout(() => setWindowResizing(false), SIDE_PANEL_MOTION_MS)
+      recalc()
+    }
     recalc()
-    window.addEventListener('resize', recalc)
-    return () => window.removeEventListener('resize', recalc)
+    window.addEventListener('resize', onWindowResize)
+    return () => { window.removeEventListener('resize', onWindowResize); clearTimeout(settleRef.current) }
     // `reserveW` folds in LIVE widths (the rail collapses; the Members roster
     // and the chat sidebar are drag-resizable), so the clamp re-derives when
     // any of them moves.
@@ -638,11 +703,46 @@ export default function SidePanel({
   // sees the chips' screen positions change and spring-animates them toward
   // the new spot each frame — so tabs visibly lag the resize and "catch up"
   // when it stops. During a resize we make the layout transition instant.
-  const [resizing, setResizing] = useState(false)
+  const resizing = dragSlot !== null
+  // Switching to a chat whose remembered size differs moves the panel's free
+  // edge, which the chips' layout projection reads exactly like a drag frame
+  // and springs after. `slotSwitched` covers the render that carries the
+  // switch; `dimAnimating` covers the rest of the eased move, because the edge
+  // travels over SIDE_PANEL_MOTION_MS rather than jumping, and without it the
+  // chips trail the panel for the whole animation and catch up at the end,
+  // which is the same artifact `resizing` exists to suppress.
+  //
+  // Tracks `dimSlot`, the chat whose size is on screen, not the `slot` prop: a
+  // re-key that lands mid-drag changes nothing on screen until the release, and
+  // that release is the move to ease.
+  const reduceMotion = useReducedMotion()
+  const paintedSlotRef = useRef(dimSlot)
+  const slotSwitched = paintedSlotRef.current !== dimSlot
+  const [dimAnimating, setDimAnimating] = useState(false)
+  useEffect(() => {
+    // Equal on mount and on any re-render that did not change chat, so this
+    // never fires an animation the user did not cause. A tab switch inside the
+    // chat leaves `dimSlot` alone and therefore never lands here.
+    if (paintedSlotRef.current === dimSlot) return
+    paintedSlotRef.current = dimSlot
+    setDimAnimating(true)
+    const t = setTimeout(() => setDimAnimating(false), SIDE_PANEL_MOTION_MS)
+    return () => clearTimeout(t)
+  }, [dimSlot])
   const startWRef = useRef(0)
+  // The width the gesture last computed. `widthRef` follows the RENDERED width,
+  // which lags the pointer by a render, so a release that lands before the last
+  // move has painted would store the previous frame's number. This holds what
+  // the pointer produced, whatever has or has not rendered in between.
+  const dragWRef = useRef(0)
   const panelResize = usePointerDrag({
     threshold: 0,
-    onStart: () => { startWRef.current = widthRef.current; setResizing(true) },
+    onStart: () => {
+      setDragSlot(slot)
+      dragOwnerRef.current = slotOwner
+      startWRef.current = widthRef.current
+      dragWRef.current = widthRef.current
+    },
     onMove: ({ dx }) => {
       // Left-edge handle with the right edge pinned: dragging left (dx < 0) widens.
       // The ceiling is the SAME reserve-based clamp the render path and the
@@ -650,28 +750,79 @@ export default function SidePanel({
       // fraction on top of it. A 70% cap sat well under that reserve on wide
       // windows and read as an arbitrary stop.
       const max = window.innerWidth - reserveW
-      setWidth(Math.max(MIN_W, Math.min(startWRef.current - dx, max)))
+      const w = Math.max(MIN_W, Math.min(startWRef.current - dx, max))
+      dragWRef.current = w
+      setWidth(w)
     },
-    onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
+    onEnd: () => {
+      // The chat's own key AND the bare key, so a new chat opens at this size.
+      // The in-memory size is set too: a chat re-keyed onto mid-drag may hold
+      // an older drag's size there, which would otherwise shadow the saved one.
+      const target = releaseSlot()
+      const w = dragWRef.current
+      saveSidePanelDim({ base: SIDE_PANEL_WIDTH_KEY, slot: target, value: w })
+      setWidthBySlot(m => ({ ...m, [target]: w }))
+      setDragSlot(null)
+    },
   })
   // Top-edge resize for the bottom dock: drag up to grow the panel's height.
   // The bottom edge is pinned to the window, so a negative dy (dragging up)
   // widens the panel.
   const startHRef = useRef(0)
+  const dragHRef = useRef(0)
   const panelResizeV = usePointerDrag({
     threshold: 0,
-    onStart: () => { startHRef.current = heightRef.current; setResizing(true) },
+    onStart: () => {
+      setDragSlot(slot)
+      dragOwnerRef.current = slotOwner
+      startHRef.current = heightRef.current
+      dragHRef.current = heightRef.current
+    },
     onMove: ({ dy }) => {
       const max = Math.max(MIN_H, Math.round(window.innerHeight * 0.85))
-      setHeight(Math.max(MIN_H, Math.min(startHRef.current - dy, max)))
+      const h = Math.max(MIN_H, Math.min(startHRef.current - dy, max))
+      dragHRef.current = h
+      setHeight(h)
     },
-    onEnd: () => { setResizing(false); safeSetItem(HEIGHT_KEY, String(heightRef.current)) },
+    onEnd: () => {
+      const target = releaseSlot()
+      const h = dragHRef.current
+      saveSidePanelDim({ base: SIDE_PANEL_HEIGHT_KEY, slot: target, value: h })
+      setHeightBySlot(m => ({ ...m, [target]: h }))
+      setDragSlot(null)
+    },
   })
+
+  // The remembered size is per chat, so switching chats MOVES the panel's free
+  // edge. Ease it on the panel's own open/close curve (`sidePanelDimTransition`)
+  // rather than letting it jump: opening the panel and moving between chats
+  // are the same edge traveling the same distance, and a person reads them as
+  // one gesture. A tab switch inside the chat never moves the edge, so it never
+  // reaches this.
+  //
+  // Gated to the chat switch, via the `slotSwitched` / `dimAnimating` pair
+  // above: `slotSwitched` carries the switch render, `dimAnimating` the rest of
+  // the eased move. Maximize (`expanded`) and the browser tab's fill-width mode
+  // reach the same `effectiveWidth`, and before per-chat sizes they moved the
+  // edge INSTANTLY. Easing those is a behavior change this feature does not
+  // need, so they keep jumping.
+  //
+  // Suppressed while dragging the resize handle (a transition there makes the
+  // edge lag the pointer), under prefers-reduced-motion, which framer does not
+  // apply to a CSS transition on our behalf, and during a live window resize,
+  // which retargets the tween every frame. Same shape as DiagramLightbox's
+  // `pinching || dragging || reduceMotion` guard.
+  const dimTransition = (slotSwitched || dimAnimating) && !resizing && !windowResizing && !reduceMotion
+    ? sidePanelDimTransition(isBottom ? 'height' : 'width')
+    : undefined
 
   return (
     <div
+      data-testid="side-panel-root"
       className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
-      style={isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
+      style={isBottom
+        ? { height: effectiveHeight, maxHeight: '85vh', width: '100%', ...dimTransition }
+        : { width: effectiveWidth, maxWidth: '100vw', ...dimTransition }}
     >
       {isBottom ? (
         /* Top-edge resize handle — drag up/down to size the bottom dock. */
@@ -773,7 +924,7 @@ export default function SidePanel({
               // suppressed on both edges of the selected tab (its pill
               // background already delineates it).
               separator={i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId}
-              instantLayout={resizing}
+              instantLayout={resizing || slotSwitched || dimAnimating}
               onSelect={() => setActive(t.id)}
               onClose={() => handleCloseTab(t.id)}
             />
