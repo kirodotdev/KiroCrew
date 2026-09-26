@@ -126,6 +126,51 @@ describe('crew capability draft editor with mocked HTTP', () => {
     expect(screen.queryByText(other)).not.toBeInTheDocument()
   })
 
+  it('lets a changed agent file be reviewed and saved with no edit first', async () => {
+    view.runtime = { ...view.runtime, status: 'failed', error_code: 'materialization_changed' }
+    const result = mount(); await ready()
+    // Fact first, then the button that is actually on screen; Save is named
+    // only as what comes after the review, never as a control to press now.
+    const notice = screen.getByRole('alert').textContent ?? ''
+    expect(notice.startsWith("crewA's agent file was edited outside this page.")).toBe(true)
+    expect(notice).toContain('Press Review changes to see that outside edit')
+    expect(notice).toContain('After reviewing, Save writes the fix or tells you why it cannot.')
+    expect(result.dirty).toHaveBeenLastCalledWith(false)
+    await review()
+    expect(previewBodies).toEqual([{ revision: 'r1', enroll: false, operations: [], accept_parent: [], accept_members: [] }])
+    fireEvent.click(screen.getByRole('button', { name: 'Save reviewed changes' }))
+    await waitFor(() => expect(result.saved).toHaveBeenCalledOnce())
+    expect(saveBodies).toEqual([{ ...previewBodies[0], preview_token: 'signed-preview' }])
+  })
+
+  it('explains a refused save beside the disabled Review changes button, and Reload clears it', async () => {
+    view.runtime = { ...view.runtime, status: 'failed', error_code: 'materialization_changed' }
+    server.use(http.put(endpoint, () => HttpResponse.json({ error: 'unreviewable_drift', code: 'unreviewable_drift', file: 'crew-abc.json' }, { status: 409 })))
+    const result = mount(); await ready()
+    await review()
+    fireEvent.click(screen.getByRole('button', { name: 'Save reviewed changes' }))
+    // The reason renders in the footer next to the button it disables, names
+    // that button's state by its visible label (the footer reads Review changes
+    // again once the preview is gone, so "Save" is nowhere on screen), and names
+    // the file without claiming a Reset control the pane does not have.
+    const footer = screen.getByTestId('capability-save-footer')
+    const refusal = await within(footer).findByText(/crew-abc\.json was edited outside this page in a setting this page cannot show/)
+    expect(refusal).toHaveTextContent('Review changes stays turned off')
+    expect(refusal.textContent).not.toMatch(/\bSave\b/)
+    expect(within(footer).getByText(/then press Reload from server/)).toBeInTheDocument()
+    expect(within(screen.getByTestId('capability-scroll-region')).queryByText(/cannot show/)).not.toBeInTheDocument()
+    expect(within(footer).getByRole('button', { name: 'Review changes' })).toBeDisabled()
+    expect(screen.queryByText(/The saved version changed/)).not.toBeInTheDocument()
+    expect(result.saved).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Reload from server/ }))
+    await waitFor(() => expect(within(footer).queryByText(/cannot show/)).not.toBeInTheDocument())
+  })
+
+  it('keeps Review disabled with no edit when the saved file is intact', async () => {
+    mount(); await ready()
+    expect(screen.getByRole('button', { name: 'Review changes' })).toBeDisabled()
+  })
+
   it('previews before saving and sends the identical draft with its signed token', async () => {
     const result = mount(); await ready()
     fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))

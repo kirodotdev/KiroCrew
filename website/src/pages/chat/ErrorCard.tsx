@@ -1,10 +1,19 @@
 import { memo } from 'react'
-import { KeyRound, Loader2, RotateCw, Settings, SlidersHorizontal } from 'lucide-react'
+import { KeyRound, Loader2, RotateCw, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
 import type { ChatMessage } from '../../types'
+
+/** Error code the backend stamps (`meta.code`) when a crew member's private
+ *  agent file no longer matches what was last reviewed in Capabilities
+ *  (`agent_capabilities.prepare_member_capabilities`). A retry re-runs the same
+ *  check, so the row links to the member's Capabilities pane instead. */
+const MATERIALIZATION_CHANGED = 'materialization_changed'
+
+export const isCapabilitiesChanged = (m: Pick<ChatMessage, 'meta'>): boolean =>
+  (m.meta as { code?: string } | undefined)?.code === MATERIALIZATION_CHANGED
 
 /** Row kind the backend stamps on a terminal model-entitlement rejection
  *  (`chat_utils.MODEL_UNENTITLED_KIND`). Both carriers are load-bearing for the
@@ -109,6 +118,13 @@ export interface ErrorCardProps {
    * has to act on. Omitted on a surface with no settings route (embed, popout).
    */
   onOpenSignIn?: () => void
+  /**
+   * The fix affordance for a `materialization_changed` row: open this crew
+   * member's Capabilities pane, where the changed agent file is reviewed and
+   * saved. Offered INSTEAD of Continue: a retry repeats the same check.
+   * Omitted on a surface with no crew editor route (embed, popout).
+   */
+  onOpenCapabilities?: () => void
 }
 
 const ACTION_BTN =
@@ -139,12 +155,37 @@ export const ErrorCard = memo(function ErrorCard({
   onOpenDefaultModel,
   onOpenSignIn,
   unentitledElsewhere,
+  onOpenCapabilities,
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
   const content = (onContinue && retryProse(wireContent)) || wireContent
+  if (onOpenCapabilities) {
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-capabilities-changed="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {i18nT('pages.chat.errorCard.capabilities_changed')}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenCapabilities}
+            className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+            data-testid="error-card-open-capabilities"
+          >
+            <ShieldCheck size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.open_capabilities')}
+          </button>
+        </div>
+      </div>
+    )
+  }
   if (onOpenSignIn) {
     // A signed-out agent process: the one action that ends it is signing in
     // again from Settings. The prose (the backend's own wording, which may

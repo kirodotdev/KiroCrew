@@ -131,7 +131,9 @@
     "parentChange_changed": "Il modello padre ha modificato questo",
     "discardDraftTitle": "Annullare la bozza delle Capacità?",
     "discardDraftBody": "Annullare le modifiche alle capacità di {{name}} lascia l’editor aperto. I valori salvati e le credenziali nascoste non cambiano. Nessun altro membro è coinvolto.",
-    "discardDraftConfirm": "Annulla bozza"
+    "discardDraftConfirm": "Annulla bozza",
+    "driftHint": "Il file agente di {{member}} è stato modificato fuori da questa pagina. Premi Rivedi le modifiche per vedere quella modifica esterna insieme alla tua bozza. Dopo la revisione, Salva scrive la correzione o ti dice perché non può.",
+    "unreviewableDrift": "Il file agente {{file}} di {{member}} è stato modificato fuori da questa pagina in un’impostazione che questa pagina non può mostrare, quindi questa pagina non può scrivere la correzione e Rivedi le modifiche resta disattivato. Annulla quella modifica esterna in ~/.kiro/agents/{{file}}, poi premi Ricarica dal server."
   },
   "api": {
     "client": {
@@ -9916,7 +9918,9 @@
         "elsewhere_hint": "Il selettore dei modelli e Impostazioni → Chat sono nella finestra principale della chat. Aprila per scegliere un modello e cambiare quello predefinito.",
         "elsewhere_settings_hint": "Impostazioni → Chat è nella finestra principale della chat. Aprila per cambiare il modello predefinito.",
         "sign_in": "Accedi a Kiro",
-        "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio."
+        "sign_in_hint": "Apri Impostazioni → Panoramica → Accesso a Kiro, accedi di nuovo e reinvia il messaggio.",
+        "capabilities_changed": "Il file agente di questo membro della crew è stato modificato fuori dalla pagina Capabilities, quindi le nuove chat non possono avviarsi. Apri Capabilities, controlla la modifica e salvala, poi avvia una nuova chat.",
+        "open_capabilities": "Apri Capabilities"
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

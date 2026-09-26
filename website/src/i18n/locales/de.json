@@ -130,7 +130,9 @@
     "parentChange_changed": "Die Vorlage hat dies geändert",
     "discardDraftTitle": "Entwurf der Fähigkeiten verwerfen?",
     "discardDraftBody": "Das Verwerfen der Fähigkeiten-Änderungen für {{name}} lässt den Editor offen. Gespeicherte Werte und verborgene Zugangsdaten bleiben unverändert. Kein anderes Mitglied ist betroffen.",
-    "discardDraftConfirm": "Entwurf verwerfen"
+    "discardDraftConfirm": "Entwurf verwerfen",
+    "driftHint": "Die Agent-Datei von {{member}} wurde außerhalb dieser Seite bearbeitet. Drücke „Änderungen prüfen“, um diese äußere Bearbeitung zusammen mit deinem eigenen Entwurf zu sehen. Nach der Prüfung schreibt Speichern die Korrektur oder sagt dir, warum das nicht geht.",
+    "unreviewableDrift": "Die Agent-Datei {{file}} von {{member}} wurde außerhalb dieser Seite in einer Einstellung bearbeitet, die diese Seite nicht anzeigen kann, deshalb kann diese Seite die Korrektur nicht schreiben und „Änderungen prüfen“ bleibt ausgeschaltet. Mache diese äußere Bearbeitung in ~/.kiro/agents/{{file}} rückgängig und drücke dann „Vom Server neu laden“."
   },
   "api": {
     "client": {
@@ -9781,7 +9783,9 @@
         "elsewhere_hint": "Die Modellauswahl und Einstellungen → Chat sind im Haupt-Chatfenster. Dort ein Modell wählen und das Standardmodell ändern.",
         "elsewhere_settings_hint": "Einstellungen → Chat ist im Haupt-Chatfenster. Dort das Standardmodell ändern.",
         "sign_in": "Bei Kiro anmelden",
-        "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal."
+        "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal.",
+        "capabilities_changed": "Die Agent-Datei dieses Crew-Mitglieds wurde außerhalb der Capabilities-Seite geändert, daher können keine neuen Chats starten. Öffne Capabilities, prüfe die Änderung und speichere sie, dann starte einen neuen Chat.",
+        "open_capabilities": "Capabilities öffnen"
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

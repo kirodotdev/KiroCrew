@@ -37,7 +37,7 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard, isAuthRequired, isModelUnentitled } from './ErrorCard'
+import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isModelUnentitled } from './ErrorCard'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
@@ -141,6 +141,9 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
+  /** Fix affordance for a `materialization_changed` row: open the named crew
+   *  member's Capabilities pane. Omitted on a surface with no crew editor. */
+  onOpenCapabilities?: (member: string) => void
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -361,6 +364,10 @@ export function createTranscriptRenderers(
         }
         const unentitled = isModelUnentitled(m)
         const authRequired = isAuthRequired(m)
+        const capabilitiesMember = isCapabilitiesChanged(m) ? String((m.meta as { member?: unknown } | undefined)?.member ?? '') : ''
+        const openCapabilities = isCapabilitiesChanged(m) && o.onOpenCapabilities
+          ? () => o.onOpenCapabilities!(capabilitiesMember)
+          : undefined
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
@@ -370,7 +377,7 @@ export function createTranscriptRenderers(
             // resuming would replay the identical rejection (or the same
             // signed-out wall).
             onContinue={
-              !unentitled && !authRequired && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
+              !unentitled && !authRequired && !isCapabilitiesChanged(m) && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
                 ? o.onContinue
                 : undefined
             }
@@ -379,6 +386,7 @@ export function createTranscriptRenderers(
             onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={unentitled}
+            onOpenCapabilities={openCapabilities}
           />,
         )
       },
