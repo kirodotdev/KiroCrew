@@ -1836,6 +1836,10 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
                 )
 
         text = await transcribe_audio(tmp, cfg.stt)
+        if text is None:
+            return web.json_response(
+                {"error": "transcription failed", "code": _CODE_STT_FAILED}, status=500
+            )
         if text:
             from kiro_crew.security import (  # noqa: F811
                 redact_credentials,
@@ -1844,7 +1848,7 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
 
             text, _ = redact_exfiltration_urls(text)
             text, _ = redact_credentials(text)
-        return web.json_response({"text": text or ""})
+        return web.json_response({"text": text})
     except Exception:
         logger.exception("STT transcribe failed")
         return web.json_response(

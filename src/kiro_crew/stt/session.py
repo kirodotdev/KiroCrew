@@ -607,7 +607,20 @@ async def transcribe_pcm(
             result = await eng.ensure_loaded(model_name, language)
             if not result.ok:
                 return "", result
-            text = await eng.decode(padded, expect=eng.loaded_key, kind=telemetry.KIND_BATCH)
+            expected = eng.loaded_key
+            text = await eng.decode(padded, expect=expected, kind=telemetry.KIND_BATCH)
+            if not text and eng.loaded_key != expected:
+                # The retry was refused as well: a second concurrent swap landed
+                # before this decode took the lock. That ``""`` is a refusal, not
+                # silence, and this recording is audible, so it is reported as a
+                # failed decode. Answering ``("", ok)`` would tell the caller the
+                # recogniser heard nothing and the spoken audio would be dropped.
+                logger.warning("Batch transcript decode refused twice by concurrent model swaps")
+                return "", engine_mod.Availability(
+                    False,
+                    engine_mod.CODE_DECODE_FAILED,
+                    "the recogniser model was replaced during the decode",
+                )
     except engine_mod.DecodeFailed as exc:
         # Reported through the Availability this function already returns, so the batch
         # caller's existing "unavailable" branch names the real reason instead of

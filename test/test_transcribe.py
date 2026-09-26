@@ -496,7 +496,9 @@ class TestTranscribeAudio:
 
         result = await tr._transcribe_aws(str(audio), cfg)
 
-        assert result is None
+        # The fake handler collects no results, so this is a stream that
+        # completed hearing nothing: a success with an empty transcript.
+        assert result == ""
         assert read_threads
         assert read_threads[0] != loop_thread
         assert started["language_code"] == expected_locale
@@ -521,6 +523,75 @@ class TestTranscribeAudio:
 
         recognize.assert_awaited_once_with(audio_path, locale=expected_locale, timeout_secs=10)
         assert cfg.language_code == language
+
+    @pytest.mark.asyncio
+    async def test_apple_no_speech_and_failure_stay_distinct(self, tmp_path, monkeypatch):
+        """``apple_speech.transcribe`` answers ``("", metrics)`` for a clean run
+        that heard nothing and ``(None, {"error": ...})`` for a failure; the
+        provider boundary passes the first through as ``""`` and only the second
+        as None."""
+        from kiro_crew import apple_speech
+
+        cfg = SttConfig(provider="apple", timeout_secs=10)
+        audio_path = str(tmp_path / "voice.wav")
+
+        monkeypatch.setattr(
+            apple_speech, "transcribe", AsyncMock(return_value=("", {"audio_secs": 1.0}))
+        )
+        assert await transcribe._transcribe_apple(audio_path, cfg) == ""
+
+        monkeypatch.setattr(
+            apple_speech, "transcribe", AsyncMock(return_value=(None, {"error": "timed out"}))
+        )
+        assert await transcribe._transcribe_apple(audio_path, cfg) is None
+
+    @pytest.mark.asyncio
+    async def test_aws_no_speech_and_failure_stay_distinct(self, tmp_path, monkeypatch):
+        """A Transcribe stream that completes with no final results is ``""``;
+        a stream that raises is None. The join-and-strip must not fold the first
+        onto the second."""
+        from kiro_crew import transcribe as tr
+
+        audio = tmp_path / "quiet.ogg"
+        audio.write_bytes(b"fake audio")
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        TestTranscribeAwsTempOwnership._grant_consent(tmp_path, monkeypatch, cfg)
+
+        stream = SimpleNamespace(
+            input_stream=SimpleNamespace(send_audio_event=AsyncMock(), end_stream=AsyncMock()),
+            output_stream=object(),
+        )
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def start_stream_transcription(self, **kwargs):
+                return stream
+
+        class SilentHandler:
+            def __init__(self, output_stream, transcript_parts):
+                pass
+
+            async def handle_events(self):
+                pass  # no final results: the stream completed hearing nothing
+
+        class BrokenHandler(SilentHandler):
+            async def handle_events(self):
+                raise RuntimeError("stream reset by peer")
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(tr, "_read_audio_bytes", lambda path: b"fake audio")
+
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (FakeClient, SilentHandler)
+        )
+        assert await tr._transcribe_aws(str(audio), cfg) == ""
+
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (FakeClient, BrokenHandler)
+        )
+        assert await tr._transcribe_aws(str(audio), cfg) is None
 
     @pytest.mark.asyncio
     async def test_local_wav_decode_runs_off_event_loop(self, tmp_path, monkeypatch):
@@ -602,15 +673,42 @@ class TestTranscribeAudio:
         assert await transcribe_audio(str(audio), cfg) is None
 
     @pytest.mark.asyncio
-    async def test_boilerplate_only_transcript_returns_none(self, tmp_path, monkeypatch):
+    async def test_boilerplate_only_transcript_is_an_empty_string_not_none(
+        self, tmp_path, monkeypatch
+    ):
         """The hallucination filter can empty a transcript that was entirely
-        caption boilerplate. Empty means no transcript, so the caller reports a
-        memo it could not hear instead of writing boilerplate into agent notes."""
+        caption boilerplate. That is a SUCCESSFUL decode with nothing to write
+        down, so it must stay ``""``: the transcribe endpoint answers ``""`` with
+        a 200 and None with a 500, and a quiet memo collapsed onto None would
+        report a broken backend for every silent recording."""
         audio = tmp_path / "voice.wav"
         _write_wav(audio, _ramp_int16(1600))
         cfg = SttConfig(enabled=True, provider="local", timeout_secs=10)
         self._recogniser(monkeypatch, transcript="")
-        assert await transcribe_audio(str(audio), cfg) is None
+        result = await transcribe_audio(str(audio), cfg)
+        assert result == ""
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_local_no_speech_and_failure_stay_distinct(self, tmp_path, monkeypatch):
+        """The recogniser reports ``("", ok)`` for silence and ``("", not ok)``
+        for a failed decode; the provider boundary must not fold them together."""
+        audio = tmp_path / "voice.wav"
+        _write_wav(audio, _ramp_int16(1600))
+        cfg = SttConfig(enabled=True, provider="local", timeout_secs=10)
+        monkeypatch.setattr(stt, "availability", lambda: stt.Availability(True))
+
+        async def silent(pcm, **kwargs):
+            return "", stt.Availability(True)
+
+        monkeypatch.setattr(stt, "transcribe_pcm", silent)
+        assert await transcribe._transcribe_local(str(audio), cfg) == ""
+
+        async def failed(pcm, **kwargs):
+            return "", stt.Availability(False, stt.CODE_MODEL_MISSING, "not downloaded")
+
+        monkeypatch.setattr(stt, "transcribe_pcm", failed)
+        assert await transcribe._transcribe_local(str(audio), cfg) is None
 
     @pytest.mark.asyncio
     async def test_transcode_targets_the_recogniser_format(self, tmp_path, monkeypatch):

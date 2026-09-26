@@ -1633,6 +1633,45 @@ class TestSttTranscribe:
         assert text.endswith(" thanks")
 
     @pytest.mark.asyncio
+    async def test_none_backend_result_is_a_generic_500(self, monkeypatch) -> None:
+        """The backend's failure sentinel must not look like a silent recording."""
+        monkeypatch.setattr(
+            "kiro_crew.transcribe.transcribe_audio",
+            AsyncMock(return_value=None),
+        )
+        field = SimpleNamespace(
+            name="audio",
+            filename="recording.webm",
+            read_chunk=AsyncMock(side_effect=[b"x", b""]),
+        )
+
+        resp = await core_mod.api_stt_transcribe(_multipart_req(field))
+
+        assert resp.status == 500
+        assert json.loads(resp.body) == {
+            "error": "transcription failed",
+            "code": "stt_transcription_failed",
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_transcript_remains_a_success(self, monkeypatch) -> None:
+        """A valid recording with no recognised speech remains distinguishable."""
+        monkeypatch.setattr(
+            "kiro_crew.transcribe.transcribe_audio",
+            AsyncMock(return_value=""),
+        )
+        field = SimpleNamespace(
+            name="audio",
+            filename="recording.webm",
+            read_chunk=AsyncMock(side_effect=[b"x", b""]),
+        )
+
+        resp = await core_mod.api_stt_transcribe(_multipart_req(field))
+
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"text": ""}
+
+    @pytest.mark.asyncio
     async def test_backend_failure_is_a_generic_500(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",

@@ -859,6 +859,74 @@ async def test_empty_batch_recognition_is_not_decoded_twice(fake):
 
 
 @pytest.mark.asyncio
+async def test_a_batch_decode_refused_once_is_decoded_on_the_retry(fake):
+    """One concurrent swap is covered by the single re-prepare."""
+    real_decode = fake.decode
+    decodes = 0
+
+    async def _refuse_once(pcm, **kw):
+        nonlocal decodes
+        decodes += 1
+        if decodes == 1:
+            fake.loaded_key = engine_mod.LoadedKey("/stub/swapped.bin", "fr", 4)
+            return ""  # the key check refused
+        return await real_decode(pcm, **kw)
+
+    fake.decode = _refuse_once  # type: ignore[method-assign]
+    text, availability = await session_mod.transcribe_pcm(engine_mod.pcm_from_int16(_int16(1.0)))
+    assert decodes == 2
+    assert availability.ok
+    assert text == "spoken words"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_decodes_to_silence_is_success_not_a_failure(fake):
+    """A retry that decodes with the key unchanged and hears nothing is ``("", ok)``.
+
+    Only a SECOND key change marks the retry's ``""`` as a refusal; an empty
+    transcript under the expected key is the recogniser hearing nothing.
+    """
+    decodes = 0
+
+    async def _refuse_then_silence(pcm, **kw):
+        nonlocal decodes
+        decodes += 1
+        if decodes == 1:
+            fake.loaded_key = engine_mod.LoadedKey("/stub/swapped.bin", "fr", 4)
+        return ""
+
+    fake.decode = _refuse_then_silence  # type: ignore[method-assign]
+    text, availability = await session_mod.transcribe_pcm(engine_mod.pcm_from_int16(_int16(1.0)))
+    assert decodes == 2
+    assert text == ""
+    assert availability.ok
+
+
+@pytest.mark.asyncio
+async def test_a_batch_decode_refused_on_the_retry_too_is_a_failure_not_silence(fake):
+    """Audible audio whose retry is also refused must not read as ``("", ok)``.
+
+    ``("", ok)`` is the success-with-nothing-heard answer, which the transcribe
+    endpoint turns into a 200 with an empty transcript, so the spoken recording
+    would be dropped without any failure being reported.
+    """
+    decodes = 0
+
+    async def _always_refuse(pcm, **kw):
+        nonlocal decodes
+        decodes += 1
+        fake.loaded_key = engine_mod.LoadedKey(f"/stub/swapped-{decodes}.bin", "fr", 4)
+        return ""
+
+    fake.decode = _always_refuse  # type: ignore[method-assign]
+    text, availability = await session_mod.transcribe_pcm(engine_mod.pcm_from_int16(_int16(1.0)))
+    assert decodes == 2, f"expected exactly one retry, got {decodes} decodes"
+    assert text == ""
+    assert not availability.ok
+    assert availability.code == engine_mod.CODE_DECODE_FAILED
+
+
+@pytest.mark.asyncio
 async def test_an_empty_phrase_commit_keeps_the_session_alive(fake):
     fake._text = ""
     session = await _started(silence_ms=900)

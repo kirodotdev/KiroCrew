@@ -735,6 +735,30 @@ class TestTranscribePlumbing:
         assert "no output" in meta["error"]
 
     @pytest.mark.asyncio
+    async def test_empty_text_payload_is_an_empty_transcript_not_a_failure(self):
+        """A helper that exits cleanly with ``"text": ""`` heard silence. That is
+        a transcript of nothing, not a failure: ``""`` with no ``error`` key, so
+        the batch seam (and the endpoint's 200/500 split behind it) can tell a
+        quiet recording from a broken helper."""
+        payload = {"text": "", "locale": "en-US", "audio_secs": 2.0, "transcribe_secs": 0.1}
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(json.dumps(payload).encode(), b""))
+        proc.returncode = 0
+        with (
+            patch.object(
+                apple_speech, "availability", return_value=apple_speech.Availability(True)
+            ),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            _passthrough_sandbox(),
+        ):
+            text, meta = await apple_speech.transcribe("/tmp/x.wav")
+        assert text == ""
+        assert text is not None
+        assert "error" not in meta
+        assert meta["audio_secs"] == 2.0
+
+    @pytest.mark.asyncio
     async def test_successful_payload_returns_text_and_metrics(self):
         payload = {
             "text": "hello there",

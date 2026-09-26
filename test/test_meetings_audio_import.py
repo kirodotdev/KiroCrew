@@ -546,10 +546,13 @@ class TestRefusals:
 
     @pytest.mark.asyncio
     async def test_an_emptied_transcript_is_also_502(self, app, fake_sessions, monkeypatch):
-        """The hallucination filter returns "" for a transcript that was all boilerplate.
+        """``""`` is the transcriber's answer for a recording with no speech in it,
+        and for one the hallucination filter emptied because it was all boilerplate.
 
-        Reporting success with zero lines would put "Thanks for watching!" — or
-        nothing at all — in front of the user as a completed import.
+        Either way there is nothing to import: reporting success with zero lines
+        would put "Thanks for watching!" — or nothing at all — in front of the
+        user as a completed import. So the route answers the same 502 it does for
+        a failure (the client's move is identical) and dispatches no line.
         """
         _patch(monkeypatch, transcript="")
         async with client_for(app) as client:
@@ -558,6 +561,10 @@ class TestRefusals:
                 f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/a.wav"}
             )
             assert resp.status == 502
+            assert (await resp.json())["code"] == "transcription_failed"
+            session = _common.ACTIVE.get("standup")
+            assert session is not None
+            assert all(len(q.queue) == 0 for q in session.agents.values())
 
     @pytest.mark.asyncio
     async def test_an_over_long_recording_is_413_and_nothing_is_dispatched(

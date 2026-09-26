@@ -783,6 +783,8 @@ async def transcribe(
 ) -> tuple[str | None, dict]:
     """Transcribe *audio_path* on device. Returns ``(text_or_None, metrics)``.
 
+    ``text`` is None only when the run FAILED (and ``metrics`` then carries an
+    ``error`` key); a recording the framework heard no speech in is ``""``.
     ``metrics`` always carries what the run reported (``transcribe_secs``,
     ``audio_secs``, resolved ``locale``) or an ``error`` key — callers surface it in
     diagnostics rather than re-deriving timings.
@@ -860,8 +862,11 @@ async def transcribe(
     if proc.returncode != 0 or "error" in payload:
         return None, payload if "error" in payload else {"error": "speech helper failed"}
 
-    text = str(payload.get("text", "")).strip()
-    return (text or None), payload
+    # A helper that exited cleanly with no ``error`` and an empty ``text`` heard
+    # nothing: that is a transcript of silence, not a failure, so it stays ``""``.
+    # None is reserved for the error returns above, every one of which also
+    # carries an ``error`` key in the metrics.
+    return str(payload.get("text", "")).strip(), payload
 
 
 async def inventory() -> dict:

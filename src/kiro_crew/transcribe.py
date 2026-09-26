@@ -1468,12 +1468,21 @@ def _redact_transcript(transcript: str) -> str:
 
 
 async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe an audio file. Returns the text, or None.
+    """Transcribe an audio file. Returns the text, ``""``, or None.
 
     None on every failure, and never an exception: eight channel adapters call
     this and turn None into a visible "transcription failed" note for the user,
     whereas an exception becomes a log line nobody reads and a turn that never
     starts.
+
+    ``""`` is a SUCCESS with no transcript: the provider ran and heard nothing
+    it could write down (silence, or a recording the hallucination filter
+    emptied because it was entirely caption boilerplate). Every provider branch
+    below keeps that distinct from None, because the transcribe endpoint answers
+    ``""`` with a 200 and None with a 500 — collapsing a quiet recording onto
+    the failure sentinel would report every silent memo as a broken backend.
+    The channel adapters test truthiness, so ``""`` and None read the same
+    there; the distinction is for callers that can tell the user which it was.
     """
     if stt_config is None:
         stt_config = await asyncio.to_thread(_load_stt_config)
@@ -1767,8 +1776,10 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             timeout=stt_config.timeout_secs,
         )
 
-        transcript = " ".join(transcript_parts).strip() or None
-        return transcript
+        # A stream that completed with no final results is a recording Transcribe
+        # heard nothing in, not a failure: ``""`` here, None only from the
+        # ``except`` below. See :func:`transcribe_audio` for why the two differ.
+        return " ".join(transcript_parts).strip()
     except Exception:
         logger.exception("AWS Transcribe streaming STT failed")
         return None
@@ -2360,10 +2371,12 @@ async def transcribe_oversized_in_segments(
 ) -> "str | None":
     """Transcribe a recording longer than *cap_secs* by splitting it first.
 
-    Returns the stitched transcript, or None when the recording cannot be split
-    or any segment fails to decode or transcribe — the same None-means-failure
-    contract as :func:`transcribe_audio`, so the caller reports one clean failure
-    rather than a partial import.
+    Returns the stitched transcript, or None when the recording cannot be split,
+    any segment fails to decode or transcribe, or any segment decodes to ``""``
+    (nothing heard). Unlike :func:`transcribe_audio`, which reserves None for a
+    failure and answers ``""`` for silence, this helper folds a silent segment
+    into None too, so the caller reports one clean refusal rather than a partial
+    import.
 
     The split is on the AUDIO, not the transcript: one ffmpeg pass locates the
     pauses (:func:`_detect_silence_ends`), a pure function picks a cut at the
@@ -2435,20 +2448,19 @@ async def transcribe_oversized_in_segments(
             await asyncio.to_thread(_unlink_if_exists, seg_path)
         if not text:
             # A falsy result refuses the WHOLE import. transcribe_audio returns
-            # None for a genuine recogniser
-            # failure -- a per-segment decode error, a timeout, the shared
-            # recogniser singleton being swapped mid-import -- as well as for a
-            # legitimately silent segment, and the two are INDISTINGUISHABLE here
-            # (``return text or None``). _extract_segment returning True only
-            # proves ffmpeg carved the WAV, not that the recogniser succeeded on
-            # it. So skipping a falsy segment would silently drop a real spoken
-            # span and still answer 200 -- the exact silent-partial data loss this
-            # feature exists to prevent, one level down. Refusing the whole import
-            # is the safe answer: distinguishing decoded-empty from
-            # recogniser-failure would require a new failure flag on
-            # transcribe_audio's contract (8 callers), which is out of scope for
-            # this route-level change. A recording with a genuinely silent
-            # cap-sized stretch is refused loudly rather than imported with a gap.
+            # None for a genuine recogniser failure -- a per-segment decode
+            # error, a timeout, the shared recogniser singleton being swapped
+            # mid-import -- and ``""`` for a segment it decoded and heard
+            # nothing in. _extract_segment returning True only proves ffmpeg
+            # carved the WAV, not that the recogniser succeeded on it. Skipping a
+            # None segment would silently drop a real spoken span and still
+            # answer 200 -- the exact silent-partial data loss this feature
+            # exists to prevent, one level down. A ``""`` segment is refused
+            # as well. That includes the LAST segment, which is the remainder
+            # after the final cut and can be short: a recording whose tail
+            # after its last word is silent refuses the whole import. Reading
+            # ``""`` as a silent span to skip is a behaviour decision for the
+            # import route, outside the sentinel contract.
             logger.error(
                 "Segment %d of %s produced no transcript; refusing the whole import",
                 index,
@@ -2721,10 +2733,13 @@ async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type:
         logger.error("Local speech recognition unavailable: %s", result.detail)
         return None
     # ``transcribe_pcm`` has already applied the hallucination filter, which can
-    # empty a transcript that was entirely caption boilerplate. Empty means no
-    # transcript, so the caller reports a memo it could not hear instead of
-    # writing boilerplate into an agent's notes.
-    return text or None
+    # empty a transcript that was entirely caption boilerplate, and answers ``""``
+    # for an inaudible buffer. Both arrive with ``result.ok`` true, so they are
+    # a SUCCESSFUL decode of a recording with nothing to write down; returned as
+    # ``""`` so the caller can tell that from the None every failure above
+    # returns. A channel adapter still reports a memo it could not hear, and
+    # nothing writes boilerplate into an agent's notes.
+    return text
 
 
 async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

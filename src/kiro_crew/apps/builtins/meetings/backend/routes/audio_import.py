@@ -685,9 +685,10 @@ async def handle_import_audio(request: web.Request) -> web.Response:
             # blocking filesystem call and must stay off the event loop.
             rm = asyncio.ensure_future(_remove_snapshot_dir(copy_task, snapshot_dir, snap_fd))
             await asyncio.shield(rm)
-        # None covers three different endings — provider failure, a disabled provider,
-        # and a transcript the hallucination filter emptied — and the client's move is
-        # the same for all of them, so they share one code.
+        # A falsy transcript intentionally maps to one route-level 502: provider or disabled
+        # provider failures return None; successful whole-file silence and a whole-file
+        # transcript emptied by the hallucination filter return ""; and the segmented
+        # over-cap helper returns None when any segment fails or is silent.
         if not transcript:
             audit("meetings.import_audio", f"{meeting_id} path:{canonical}", outcome="failed")
             raise BadRequest(
