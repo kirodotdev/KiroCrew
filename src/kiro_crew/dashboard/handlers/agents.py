@@ -114,6 +114,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_deprecated_model,
     run_config_write,
 )
+from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
 from kiro_crew.dashboard.handlers._shared import (
     MAX_AGENT_SKILLS,
     SkillCatalogSnapshot,
@@ -6245,13 +6246,12 @@ async def api_kirocrew_agent_avatar_get(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    etag = f'"{hashlib.sha256(data).hexdigest()[:32]}"'
-    if request.headers.get("If-None-Match") == etag:
-        return web.Response(status=304, headers={"ETag": etag})
-    return web.Response(
-        body=data,
-        content_type=_AVATAR_CONTENT_TYPES[path.suffix.lstrip(".")],
-        headers={"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate"},
+    return conditional_response(
+        request,
+        data,
+        _AVATAR_CONTENT_TYPES[path.suffix.lstrip(".")],
+        etag=strong_content_etag(data),
+        cache_control="private, max-age=0, must-revalidate",
     )
 
 

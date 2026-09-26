@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.dashboard.conditional_get import conditional_response, is_not_modified
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
@@ -2964,15 +2965,14 @@ async def handle_app_art_file(request: web.Request) -> web.Response:
     #
     # Set on the response rather than in the middleware because the middleware uses
     # `setdefault` precisely so a handler can tighten its own answer.
-    headers = {
-        "Cache-Control": "no-cache",
-        "ETag": validator,
-        "Content-Security-Policy": "default-src 'none'; sandbox",
-        "X-Content-Type-Options": "nosniff",
-    }
-    if request.headers.get("If-None-Match") == validator:
-        return web.Response(status=304, headers=headers)
-    return web.Response(body=data, headers={**headers, "Content-Type": content_type})
+    return conditional_response(
+        request,
+        data,
+        content_type,
+        etag=validator,
+        cache_control="no-cache",
+        extra_headers={"Content-Security-Policy": "default-src 'none'; sandbox"},
+    )
 
 
 async def handle_app_config(request: web.Request) -> web.Response:
@@ -3353,28 +3353,17 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Content-Type-Options": "nosniff",
             }
-            # aiohttp's parsed accessors, not raw header strings: If-None-Match may
-            # carry a list, a weak `W/"..."` form, or `*`, and If-Modified-Since
-            # needs HTTP-date parsing that forces UTC (a raw `parsedate_to_datetime`
+            # The shared compare reads aiohttp's parsed accessors, not raw header
+            # strings: If-None-Match may carry a list, a weak `W/"..."` form, or
+            # `*` (RFC 9110 §13.1.2 weak comparison), and If-Modified-Since is
+            # evaluated only when no If-None-Match was sent (§13.1.3), with the
+            # HTTP-date parsing that forces UTC (a raw `parsedate_to_datetime`
             # hands back a NAIVE datetime for `-0000`/asctime forms, which
-            # `.timestamp()` then reads as server-LOCAL time — a stale 304 for up to
-            # a whole UTC offset after an app update). Mirrors what `FileResponse`
-            # did.
-            if_none_match = request.if_none_match
-            if if_none_match:
-                # RFC 7232 §3.2: If-None-Match uses the WEAK comparison, so a weak
-                # form of the current tag matches too.
-                if (len(if_none_match) == 1 and if_none_match[0].value == "*") or any(
-                    t.value == etag_value for t in if_none_match
-                ):
-                    return web.Response(status=304, headers=headers)
-            else:
-                # RFC 7232 §3.3: If-Modified-Since is evaluated only when no
-                # If-None-Match was sent. Both sides are second-granular (HTTP
-                # dates carry no sub-second part, so `st_mtime` is truncated).
-                since = request.if_modified_since
-                if since is not None and int(st.st_mtime) <= since.timestamp():
-                    return web.Response(status=304, headers=headers)
+            # `.timestamp()` then reads as server-LOCAL time — a stale 304 for
+            # up to a whole UTC offset after an app update). Mirrors what
+            # `FileResponse` did.
+            if is_not_modified(request, headers["ETag"], last_modified=st.st_mtime):
+                return web.Response(status=304, headers=headers)
             # Resolved HERE rather than at import: the operator's deadline is read
             # per request so an edit applies without a gateway restart. Off the
             # event loop because a config-cache miss reads and validates

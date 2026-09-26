@@ -34,6 +34,7 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.platform.governance_profiles as gov_mod
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.conditional_get import bare_etag_value, weak_content_etag
 from kiro_crew.dashboard.handlers import themes as th
 
 # _validate_theme_data only *requires* --bg/--text/--accent per mode.
@@ -1341,7 +1342,7 @@ class TestApiThemeAsset:
         _make_pack(themes_dir / "lcars")
         _write_text(themes_dir / "lcars" / "styles" / "overrides.css", "a{}")
         first = await th.api_theme_asset(_asset_request("lcars", "styles/overrides.css"))
-        tag = th._theme_asset_etag(b"a{}")
+        tag = bare_etag_value(weak_content_etag(b"a{}"))
         assert first.headers["ETag"] == f'W/"{tag}"'
         again = await th.api_theme_asset(
             _asset_request(
@@ -1423,7 +1424,7 @@ class TestApiThemeOverlay:
         assert resp.charset == "utf-8"
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
         assert resp.headers["Content-Security-Policy"] == th._THEME_OVERLAY_CSP
-        assert resp.headers["ETag"] == 'W/"' + th._theme_asset_etag(b"<div>scan</div>") + '"'
+        assert resp.headers["ETag"] == weak_content_etag(b"<div>scan</div>")
         assert resp.headers["Cache-Control"] == th._THEME_ASSET_CACHE_CONTROL
 
     @pytest.mark.asyncio
@@ -1503,7 +1504,7 @@ class TestApiThemeTopbar:
         assert resp.charset == "utf-8"
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
         assert resp.headers["Content-Security-Policy"] == th._THEME_OVERLAY_CSP
-        assert resp.headers["ETag"] == 'W/"' + th._theme_asset_etag(b"<div>bar</div>") + '"'
+        assert resp.headers["ETag"] == weak_content_etag(b"<div>bar</div>")
         assert resp.headers["Cache-Control"] == th._THEME_ASSET_CACHE_CONTROL
 
     @pytest.mark.asyncio

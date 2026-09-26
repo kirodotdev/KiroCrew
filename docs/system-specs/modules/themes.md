@@ -134,10 +134,12 @@ predate this subsystem and remain the color-theme surface.)
 
 ### Asset, overlay and topbar responses revalidate, never expire
 
-All three serving routes answer through one helper (`_theme_asset_response`).
+All three serving routes answer through one helper (`_theme_asset_response`),
+which itself calls the dashboard-wide `kiro_crew.dashboard.conditional_get`
+(the same compare the appearance-media, app-art and crew-avatar routes use).
 A `200` carries `ETag: W/"<hex>"` — the 8-byte blake2b digest of the body bytes
 just read — and `Cache-Control: private, max-age=0, must-revalidate`. A request
-whose `If-None-Match` matches (weak comparison via aiohttp's parsed
+whose `If-None-Match` matches (RFC 9110 weak comparison via aiohttp's parsed
 `request.if_none_match`, so a list, the strong form of the same value and `*`
 all match) answers `304` with no body. The `304` repeats the `200`'s `ETag`,
 `Cache-Control`, `X-Content-Type-Options: nosniff` and
