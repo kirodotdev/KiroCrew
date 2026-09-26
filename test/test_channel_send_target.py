@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -61,10 +62,90 @@ async def _body(resp) -> dict:
     return json.loads(resp.body.decode("utf-8"))
 
 
+#: Captured before the autouse fixture replaces the module attribute, so a test
+#: that needs the REAL gate can put it back.
+_REAL_VET = mod._vet_channel_send
+
+
 @pytest.fixture(autouse=True)
 def _permit(monkeypatch: pytest.MonkeyPatch):
     """Governance allows by default; a test that cares overrides it."""
     monkeypatch.setattr(mod, "_vet_channel_send", lambda *_a, **_kw: "")
+
+
+def _deny_only(scope_to_deny: str):
+    """Permit every governance scope except *scope_to_deny*.
+
+    Denying every scope makes a gate test vacuous: it cannot distinguish the gate
+    under test from any other refusal, and passes even if that gate is absent.
+    """
+    from kiro_crew.platform.governance import Decision
+
+    def _permits(scope, item, **kwargs):
+        if scope == scope_to_deny:
+            return Decision(
+                permitted=False, reason=f"{scope_to_deny} denied", rule="r-deny", layer="policy"
+            )
+        return Decision(permitted=True, reason="permitted", rule="r-allow", layer="policy")
+
+    return patch("kiro_crew.platform.governance_profiles.governance_permits", side_effect=_permits)
+
+
+class TestOneIdentityAcrossLegs:
+    """An app-scoped denial must not be escapable by re-spelling the destination.
+
+    This route picks its leg from the request BODY. ``capabilities.messaging`` asks
+    whether an app may originate a message at all, and ``channels`` asks where it
+    may send -- so a leg that asks only the second delivers for an app that the
+    sibling leg refuses, and the caller chooses which gate applies by choosing how
+    to address the destination.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_app_denied_messaging_is_refused_on_a_permitted_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport = _Transport()
+        monkeypatch.setattr(mod, "_vet_channel_send", _REAL_VET)
+        with _deny_only("capabilities.messaging"):
+            resp = await mod._send_to_channel_target(
+                _state(webex=transport), "webex", "user:a@b.com", "hi", request_app="notes"
+            )
+        assert resp.status == 403, (
+            "the channel was permitted and the APP was denied messaging, so this leg "
+            f"delivered what the channel_type leg refuses; got {resp.status}"
+        )
+        assert transport.sent == [], "content egressed under a denied messaging capability"
+
+    @pytest.mark.asyncio
+    async def test_both_scopes_resolve_the_callers_own_app(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The app must reach BOTH vets, or one of them resolves a different principal."""
+        from kiro_crew.platform.governance import Decision
+
+        asked: list[tuple[str, str]] = []
+        monkeypatch.setattr(mod, "_vet_channel_send", _REAL_VET)
+
+        def _permits(scope, item, **kwargs):
+            asked.append((scope, kwargs.get("app", "")))
+            return Decision(permitted=True, reason="ok", rule="r-allow", layer="policy")
+
+        with patch(
+            "kiro_crew.platform.governance_profiles.governance_permits", side_effect=_permits
+        ):
+            resp = await mod._send_to_channel_target(
+                _state(webex=_Transport()), "webex", "user:a@b.com", "hi", request_app="notes"
+            )
+        assert resp.status == 200, f"a permitted send was refused; got {resp.status}"
+        assert (
+            "capabilities.messaging",
+            "notes",
+        ) in asked, f"the messaging capability was not asked under the caller's app; asked {asked}"
+        assert (
+            "channels",
+            "notes",
+        ) in asked, f"the channels scope resolved a different principal; asked {asked}"
 
 
 class TestDeliveryHonesty:
@@ -305,7 +386,9 @@ class TestGovernanceIdentity:
     ) -> None:
         seen: list[str] = []
         monkeypatch.setattr(
-            mod, "_vet_channel_send", lambda channel, session_key: seen.append(session_key) or ""
+            mod,
+            "_vet_channel_send",
+            lambda channel, session_key, app="": seen.append(session_key) or "",
         )
         await mod._send_to_channel_target(
             _state(webex=_Transport()), "webex", "user:a@b.com", "hi", caller_session="cron:job1"
@@ -322,7 +405,9 @@ class TestGovernanceIdentity:
         # fail-OPEN channel vet, was a governance bypass.
         seen: list[str] = []
         monkeypatch.setattr(
-            mod, "_vet_channel_send", lambda channel, session_key: seen.append(session_key) or ""
+            mod,
+            "_vet_channel_send",
+            lambda channel, session_key, app="": seen.append(session_key) or "",
         )
         await mod._send_to_channel_target(
             _state(webex=_Transport()),
@@ -339,7 +424,9 @@ class TestGovernanceIdentity:
     ) -> None:
         seen: list[str] = []
         monkeypatch.setattr(
-            mod, "_vet_channel_send", lambda channel, session_key: seen.append(session_key) or ""
+            mod,
+            "_vet_channel_send",
+            lambda channel, session_key, app="": seen.append(session_key) or "",
         )
         await mod._send_to_channel_target(_state(webex=_Transport()), "webex", "user:a@b.com", "hi")
         # Never the destination-derived ``webex:send_message`` that resolved the

@@ -4133,7 +4133,10 @@ def _authorize_recipient(
     resolver's both-outcome audit and admits a recipient once per link. The
     per-send ladder legs keep denial-only, deliberately: they run per delivered
     unit (a mirror backfill re-enters the ladder for every message), so an
-    allowed record there would write an audit row per mirrored message.
+    allowed record there would write an audit row per mirrored message. The
+    per-part channel re-decision opts IN: it guards the chunks of ONE message, so
+    the row count is bounded by that message, and a grant at an egress boundary
+    that leaves no authorization event is the larger gap.
 
     The SEL write itself is guarded: an audit-log failure must not turn a
     decided outcome into a crashed send path, and the miss is logged.
@@ -4168,6 +4171,7 @@ def _resolve_channel_target(
     *,
     principal: str | None = None,
     check_recipient: bool = True,
+    app: str = "",
 ) -> Any:
     """Resolve ``(link, transport)`` through the cross-surface send ladder.
 
@@ -4216,6 +4220,7 @@ def _resolve_channel_target(
             link.channel_type,
             session_key=session_key,
             tool_name="chat.channel_mirror",
+            app=app,
             # fail_closed=True: this is an EGRESS chokepoint on a network
             # surface, so a degraded governance evaluation must DENY rather than
             # degrade-to-permit. vet_and_audit forwards this to

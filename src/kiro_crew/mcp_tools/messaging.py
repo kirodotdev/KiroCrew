@@ -610,7 +610,7 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     else:
         resp = mcp_core._post("/api/send-message", payload)
     if not resp.get("ok"):
-        if resp.get("code") == "channel_delivery_failed":
+        if resp.get("code") in ("channel_delivery_failed", "channel_not_permitted"):
             # "Error:" prefix: call_tool_with_logging classifies only
             # "Error:"-prefixed returns as failures, and a channel send that
             # reached nobody must land in the audit trail as one — "Failed:"

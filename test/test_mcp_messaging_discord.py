@@ -411,7 +411,7 @@ async def test_a_body_caller_session_is_ignored_without_internal_auth() -> None:
     """
     seen: list[str] = []
 
-    async def _capture(state, channel_type, target_id, text, *, caller_session=""):
+    async def _capture(state, channel_type, target_id, text, *, caller_session="", request_app=""):
         seen.append(caller_session)
         return web.json_response({"ok": True, "delivered_to": channel_type, "parts": 1})
 
@@ -452,13 +452,20 @@ async def test_long_message_is_chunked_at_the_transports_own_ceiling(audit) -> N
 
 @pytest.mark.asyncio
 async def test_governance_denial_blocks_delivery_and_is_audited(audit) -> None:
-    """The send passes the same fail-closed ``channels`` egress gate a message does."""
+    """The send passes the same fail-closed ``channels`` egress gate a message does.
+
+    The double denies ONLY the ``channels`` scope. Denying every scope let this pass
+    on whichever gate happened to run first, so it could not show that the channels
+    gate is reached at all.
+    """
     transport = _discord_transport()
     denied = Decision(
         permitted=False, reason="channels denies discord", rule="rule1-deny", layer="policy"
     )
+    allowed = Decision(permitted=True, reason="permitted", rule="rule1-allow", layer="policy")
     with patch(
-        "kiro_crew.platform.governance_profiles.governance_permits", return_value=denied
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        side_effect=lambda scope, item, **kw: denied if scope == "channels" else allowed,
     ) as permits:
         async with TestClient(TestServer(_app(_state(transport)))) as client:
             resp = await client.post(
@@ -479,6 +486,39 @@ async def test_governance_denial_blocks_delivery_and_is_audited(audit) -> None:
     assert decisions, "a governance denial must land in the SEL trail"
     assert decisions[0]["outcome"] == "denied"
     assert decisions[0]["scope"] == "channels"
+
+
+@pytest.mark.asyncio
+async def test_an_app_denied_messaging_cannot_reach_the_owner_dm() -> None:
+    """A denied app must not reach this channel by naming it as the ``session``.
+
+    ``channels`` PERMITS discord here and only ``capabilities.messaging`` denies, so
+    this is the escape the sibling ``channel_type`` leg already refuses: the same
+    app, the same destination, a different spelling in the body. Without the vet on
+    this leg the send is delivered and answers 200.
+    """
+    transport = _discord_transport()
+    denied = Decision(
+        permitted=False, reason="app denies messaging", rule="rule1-deny", layer="policy"
+    )
+    allowed = Decision(permitted=True, reason="permitted", rule="rule1-allow", layer="policy")
+    with patch(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        side_effect=(
+            lambda scope, item, **kw: denied if scope == "capabilities.messaging" else allowed
+        ),
+    ):
+        async with TestClient(TestServer(_app(_state(transport)))) as client:
+            resp = await client.post(
+                "/api/send-message", json={"text": "secret", "session": "discord"}
+            )
+            assert resp.status == 403, (
+                "an app denied outbound messaging reached the owner DM by naming the "
+                f"channel as the session; got {resp.status}"
+            )
+            assert (await resp.json())["code"] == "channel_not_permitted"
+    transport.client.create_dm_channel.assert_not_awaited()
+    transport.client.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -647,7 +687,7 @@ async def test_a_non_cron_channel_session_vets_on_the_headers_attested_identity(
     """
     seen: list[str] = []
 
-    async def _capture(state, channel_type, text, *, caller_session=""):
+    async def _capture(state, channel_type, text, *, caller_session="", request_app=""):
         seen.append(caller_session)
         return True, "", ""
 
