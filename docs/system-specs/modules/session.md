@@ -561,7 +561,18 @@ against sweep completeness, and are torn down at `close_all`.
      arrives at one with no auto-continue). Give-up with the counter at zero is
      reachable non-productive only on nested depth>0 turns, where the card
      reports only the empty turn (the gate-off zero-counter path is productive
-     by construction and takes the productive wording).
+     by construction and takes the productive wording). A NON-productive
+     give-up card additionally names the harness when the live provider answers
+     `silent_turn_failure_backend` (the H14 property, from
+     `ACP_BACKENDS_SILENT_TURN_FAILURE` membership — pi today): that harness
+     reports a FAILED turn exactly as it reports an empty one, so "send your
+     message again" is the one instruction that cannot work, and the card says
+     the turn may be a provider or credential error and points at the harness's
+     own log. Words only — the ladder, its budget and its rungs are untouched,
+     because Crew genuinely cannot tell the two outcomes apart: the wire carries
+     no difference, usage is absent on a good turn of that harness too, and its
+     session file is read by nothing here (agent-host-contract §2). An undeclared
+     provider, or a slot with no live provider, keeps the card unchanged.
 
   **A PRODUCTIVE turn never reaches rung 1.** "Empty" at this branch means only
   that the FINAL assistant segment is empty, which is not the same as "the turn

@@ -16689,6 +16689,43 @@ async def _run_chat(
                     _empty_msg = EMPTY_TURN_NOTICE_AFTER_RECOVERY
                 else:
                     _empty_msg = EMPTY_TURN_NOTICE
+                # A harness whose FAILED turn is indistinguishable from an empty one
+                # makes both non-productive cards above actively misleading: "send
+                # your message again" is the one instruction that cannot help when
+                # the provider call failed deterministically (an unresolvable
+                # region, an unusable credential) and the adapter answered
+                # ``end_turn`` with no content anyway. Crew still cannot tell the two
+                # apart -- the wire carries no difference, usage is absent on a good
+                # turn too, and this harness's own session file is deliberately never
+                # read (agent-host-contract §2) -- so the honest move is to name the
+                # ambiguity and point at the log that does carry the reason, rather
+                # than to guess a cause or to silently drop the retry advice that is
+                # still right for a genuinely transient empty turn.
+                #
+                # Appended only on the give-up rung and only for a NON-productive
+                # turn: a productive one ran real work, so its card is about a
+                # missing closing reply rather than about a possible failure, and the
+                # rungs above are automatic recovery no operator is reading yet.
+                # Asked of the LIVE provider (peeked, never created) through the
+                # H14 property, so a harness that never declared the property is
+                # unchanged and a provider-less slot adds nothing.
+                _silent_failure_backend = getattr(
+                    state.sessions.get_provider(session_key),
+                    "silent_turn_failure_backend",
+                    None,
+                )
+                if (
+                    not _empty_activity.productive
+                    and isinstance(_silent_failure_backend, str)
+                    and _silent_failure_backend
+                ):
+                    _empty_msg += (
+                        f" Note: the {_silent_failure_backend} backend reports a "
+                        "FAILED turn the same way it reports an empty one, so this "
+                        "may be a provider or credential error rather than a silent "
+                        "model — check the harness's own session log before "
+                        "retrying."
+                    )
                 slot.append("notice", _empty_msg, "msg msg-info")
             # ONE warning per empty verdict, emitted AFTER the rung is chosen so
             # the log line carries the decision rather than only the symptom. The

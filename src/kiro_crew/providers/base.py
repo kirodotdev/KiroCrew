@@ -498,6 +498,28 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def silent_turn_failure_backend(self) -> str | None:
+        """Backend id when a FAILED turn reaches Crew looking exactly like an
+        empty one, ``None`` when a failure arrives as something a consumer can act
+        on.
+
+        Read by the empty-response ladder's give-up card, which otherwise tells the
+        operator to send the message again -- advice that cannot work when the turn
+        failed deterministically (a missing region, an unusable credential) and the
+        harness reported ``end_turn`` with no content anyway. The card only changes
+        its WORDS; the ladder, its budget and its rungs are untouched, because Crew
+        still cannot tell the two outcomes apart.
+
+        Default ``None`` -- a provider that has not positively named itself keeps
+        the wording every turn has always had. Declared here with a safe default
+        rather than probed off the instance (harness-parity H14); the ACP
+        implementations answer from ``ACP_BACKENDS_SILENT_TURN_FAILURE``
+        membership. Consumers must act only on a non-empty ``str``, so a mocked
+        provider's attribute never rewrites a card.
+        """
+        return None
+
+    @property
     def compaction_self_managed(self) -> bool:
         """Whether the harness itself bounds this session's context.
 

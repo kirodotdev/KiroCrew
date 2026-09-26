@@ -164,6 +164,9 @@ with no row here.
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
+   * - ``ACP_BACKENDS_SILENT_TURN_FAILURE``
+     - driver-internal (whether a FAILED turn is indistinguishable on the wire
+       from an empty one, read by the empty-response ladder's give-up card)
    * - ``ACP_BACKENDS_SIDE_READONLY``
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
@@ -1992,6 +1995,32 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # than asks, so no call reaches the host gate and no SEL row is written. A side turn
 # on it runs ``REJECT_ALL``.
 ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose FAILED turn arrives indistinguishable from an empty one.
+#
+# Membership is a statement about the WIRE, not about reliability: pi-acp 0.0.33
+# answers ``session/prompt`` with ``stopReason: end_turn`` and no content when the
+# turn's provider call FAILED, writes nothing to stderr, and records the reason
+# (measured: ``Region is missing``, ``Could not load credentials from any
+# providers``) only in pi's own session file -- which ``session_map.py``
+# deliberately never reads, and which membership here does not start reading. So
+# ``classify_empty_turn`` can only answer ``provider_empty``, the empty-response
+# ladder spends its whole budget re-asking a question that will fail identically,
+# and the give-up card tells the operator to send the message again. The one thing
+# Crew can honestly do is SAY so, which is what the card reads this set for.
+#
+# Deliberately NOT derived from anything: it cannot be inferred from usage (pi
+# forwards no ``usage_update``, so ``EmptyTurnActivity.billed`` is False on a good
+# turn too) nor from a stop reason (identical on both outcomes), which is precisely
+# why the fact has to be declared. A harness leaves this set when its adapter maps
+# a failed turn onto an ACP error or a visible message -- the fix belongs upstream,
+# and membership is the honest interim.
+#
+# Every other harness is absent because its failures are OBSERVED to arrive as
+# something a consumer can act on: an ACP error, a ``failed`` tool call, or a
+# refusal with a reason. Absence is the default and costs nothing -- the card keeps
+# the wording it has always had.
+ACP_BACKENDS_SILENT_TURN_FAILURE = frozenset({ACP_BACKEND_PI})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

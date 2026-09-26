@@ -368,43 +368,52 @@ def test_named_credential_leaves_are_masked(leaf) -> None:
     assert os.path.join(home, *leaf.split("/")) in masked
 
 
-def test_aws_stays_masked_with_only_config_reexposed() -> None:
+_BEDROCK_EXPOSE_BACKENDS = (ACP_BACKEND_CODEX, ACP_BACKEND_PI)
+
+
+@pytest.mark.parametrize("backend", _BEDROCK_EXPOSE_BACKENDS)
+def test_aws_stays_masked_with_only_config_reexposed(backend) -> None:
     """The cc tier's Bedrock posture, on every platform.
 
-    A codex configured for Bedrock resolves its credentials through
-    ``~/.aws/config`` (``credential_process``). Masking the directory made every
-    session fail at start with ``failed to load AWS credentials``, surfaced as
-    ``Authentication required``. The fix re-exposes exactly that file, the way
-    ``_CC_EXPOSE_FILES`` does for Claude Code, and keeps ``~/.aws/credentials``
-    and ``~/.aws/sso/cache`` hidden. Revert-verified: dropping the expose leaf
-    fails the second assertion; excluding ``.aws`` from the mask fails the first.
+    An enforced harness configured for Bedrock resolves BOTH its region and its
+    credentials through ``~/.aws/config`` (the profile's ``region`` key and its
+    ``credential_process``). Masking the directory made codex fail at start with
+    ``failed to load AWS credentials``, surfaced as ``Authentication required``,
+    and made every pi TURN fail with ``Region is missing`` -- reported to the
+    operator as an ordinary empty turn, because pi-acp answers ``end_turn``
+    anyway. The fix re-exposes exactly that file, the way ``_CC_EXPOSE_FILES``
+    does for Claude Code, and keeps ``~/.aws/credentials`` and
+    ``~/.aws/sso/cache`` hidden.
+
+    Parametrized over both entries rather than written once for codex: what makes
+    the entry defensible is the NARROWING, not which harness asked, so a second
+    entry must satisfy the same property. Revert-verified per backend -- dropping
+    an expose leaf fails the second assertion, excluding ``.aws`` from that
+    harness's mask fails the first.
     """
-    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
     home = os.path.expanduser("~")
     assert os.path.join(home, ".aws") in masked, (
         "the whole-directory hide is what keeps ~/.aws/credentials and the SSO "
         "cache away from the self-approving child"
     )
-    hidden = gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
-    assert gate.adapter_expose_files(ACP_BACKEND_CODEX, hidden) == (
-        os.path.join(home, ".aws", "config"),
-    )
+    hidden = gate.adapter_hidden_credential_dirs(backend)
+    assert gate.adapter_expose_files(backend, hidden) == (os.path.join(home, ".aws", "config"),)
     assert (
         ".aws" in sensitive_home_dirs()
     ), "the agent's own file tools must still be fenced from ~/.aws"
 
 
-def test_every_exposed_leaf_sits_under_a_masked_dir() -> None:
+@pytest.mark.parametrize("backend", _BEDROCK_EXPOSE_BACKENDS)
+def test_every_exposed_leaf_sits_under_a_masked_dir(backend) -> None:
     """A re-exposure that is not inside the mask is a grant, not a narrowing.
 
     The Seatbelt builder ignores such a file (nothing to carve it out of), so
     the auth path would silently fail on macOS; the Linux launcher would copy a
     file over its own live source. Pin containment at the table.
     """
-    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
-    for exposed in gate.adapter_expose_files(
-        ACP_BACKEND_CODEX, gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
-    ):
+    masked = set(gate.adapter_hidden_credential_dirs(backend))
+    for exposed in gate.adapter_expose_files(backend, gate.adapter_hidden_credential_dirs(backend)):
         assert any(exposed.startswith(m + os.sep) for m in masked), exposed
 
 

@@ -2316,3 +2316,72 @@ class TestThePushNeverNeedsARefusal:
         assert "EFFORT_LEVELS[: start + 1]" in body
         assert "_is_config_value_rejection(exc, effort_option)" in body
         assert "effort_config_option_value(self._client.backend, level)" in body
+
+
+# ── A failed turn that looks empty is DECLARED, not inferred ──────────────────
+
+
+class TestTheSilentTurnFailureDeclaration:
+    """pi reports a failed turn exactly as it reports an empty one.
+
+    Measured on pi-acp 0.0.33 against pi 0.85.1 with ``~/.aws`` unreachable: the
+    Bedrock call fails, pi records ``stopReason: "error"`` with
+    ``errorMessage: "Region is missing"`` in its OWN session file, writes nothing to
+    stderr, and ``session/prompt`` still answers ``{"stopReason": "end_turn"}`` with
+    no content. Crew therefore classifies ``provider_empty`` and spends the whole
+    empty-response ladder re-asking a question that fails identically -- the field
+    report this class exists for.
+
+    Declared rather than derived on purpose, and these tests pin the two halves of
+    that: the fact cannot be read off usage (pi forwards no ``usage_update``, so a
+    GOOD pi turn is unbilled too) and it cannot be read off a stop reason (both
+    outcomes are ``end_turn``). Membership only changes the give-up card's WORDS;
+    nothing here starts reading pi's session file, which
+    ``agent-host-contract`` §2 records as read by nothing.
+    """
+
+    def test_pi_declares_it_and_every_other_known_backend_does_not(self) -> None:
+        from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, ACP_BACKENDS_SILENT_TURN_FAILURE
+        from kiro_crew.providers.acp import AcpProvider
+
+        assert ACP_BACKENDS_SILENT_TURN_FAILURE == frozenset({ACP_BACKEND_PI})
+        for backend in sorted(ACP_BACKENDS_KNOWN):
+            provider = AcpProvider(acp_backend=backend)
+            expected = backend if backend == ACP_BACKEND_PI else None
+            assert provider.silent_turn_failure_backend == expected, backend
+
+    def test_the_default_is_silence_so_an_undeclared_provider_is_unchanged(self) -> None:
+        """H14: the property is declared on the ABC with a safe default.
+
+        A provider that never spoke answers ``None``, so the card keeps the wording
+        every turn has always had -- the added branch cannot change a harness nobody
+        classified.
+        """
+        from kiro_crew.providers.base import LLMProvider
+
+        assert LLMProvider.silent_turn_failure_backend.fget(object()) is None
+
+    def test_a_test_double_cannot_rewrite_a_transcript_card(self) -> None:
+        """A non-``str`` backend answers ``None``, matching ``provider_label``'s
+        MagicMock caution: the consumer acts only on a non-empty string, so a
+        ``MagicMock`` client cannot make an unrelated test's card grow a warning."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = AcpProvider(acp_backend=ACP_BACKEND_PI)
+        provider._client = MagicMock()
+        assert provider.silent_turn_failure_backend is None
+
+    def test_the_bare_shared_subagent_shape_answers_the_same(self) -> None:
+        """The wrapper is not the only shape handed out; both must agree."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        provider = AcpSessionProvider.__new__(AcpSessionProvider)
+        provider._runtime = MagicMock()
+        provider._runtime.acp_backend = ACP_BACKEND_PI
+        assert provider.silent_turn_failure_backend == ACP_BACKEND_PI
+        provider._runtime.acp_backend = ACP_BACKEND_OPENCODE
+        assert provider.silent_turn_failure_backend is None

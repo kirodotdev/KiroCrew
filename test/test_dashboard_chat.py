@@ -19858,6 +19858,59 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
+    async def test_a_silent_failure_harness_is_named_on_the_give_up_card(
+        self, tmp_path: Path
+    ) -> None:
+        """A harness whose FAILED turn looks empty must not be told to retry blind.
+
+        The field case: a Bedrock-configured pi whose credential store the sandbox
+        masks fails every turn with ``Region is missing``, and pi-acp reports it as
+        ``end_turn`` with no content -- so the card said "just send your message
+        again", which reproduced the failure exactly. Crew cannot tell the two
+        outcomes apart (no usage, same stop reason, and pi's own session file is
+        deliberately never read), so the card names the ambiguity instead of guessing.
+
+        Asserted at depth>0 because that is the single-card path: the ladder, its
+        budget and its rungs are unchanged by this branch.
+        """
+        from types import SimpleNamespace
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_empty_stream(client)
+        state.sessions.get_provider = MagicMock(
+            return_value=SimpleNamespace(silent_turn_failure_backend="pi")
+        )
+
+        await _run_chat(state, slot, "test message", _prompt_depth=1)
+
+        card = next(m for m in slot.messages if m.get("role") == "notice")["content"]
+        assert "returned nothing this turn" in card
+        assert "the pi backend reports a FAILED turn" in card
+        assert "credential error" in card
+
+    @pytest.mark.asyncio
+    async def test_a_harness_that_declares_nothing_keeps_the_old_card(self, tmp_path: Path) -> None:
+        """The fail-silent direction, which is what keeps every other harness honest.
+
+        An undeclared provider answers ``None`` through the ABC default (H14), and a
+        provider-less slot answers nothing at all -- both must leave the card byte
+        for byte as it was, or this becomes a warning on every empty turn everywhere.
+        """
+        from types import SimpleNamespace
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_empty_stream(client)
+        state.sessions.get_provider = MagicMock(
+            return_value=SimpleNamespace(silent_turn_failure_backend=None)
+        )
+
+        await _run_chat(state, slot, "test message", _prompt_depth=1)
+
+        card = next(m for m in slot.messages if m.get("role") == "notice")["content"]
+        assert "returned nothing this turn" in card
+        assert "FAILED turn" not in card
+
+    @pytest.mark.asyncio
     async def test_second_empty_response_auto_continues(self, tmp_path: Path) -> None:
         """Second consecutive empty response → ONE synthetic continue nudge is
         queued (same live session) with a transcript-visible notice. Re-sending
