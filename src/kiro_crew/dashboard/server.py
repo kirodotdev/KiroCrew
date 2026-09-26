@@ -196,6 +196,7 @@ from kiro_crew.safety_override import (
     take_dropped_grant,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.argv_floor import warm_own_host_names
 from kiro_crew.sel import sel, sel_is_warm, warm_sel_singleton
 from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader, set_pending_consumed_hook, set_pending_staged_hook
@@ -4378,6 +4379,42 @@ def _register_stt_hooks(app: web.Application) -> None:
     app.on_cleanup.append(_stt_shutdown)
 
 
+def _register_own_host_warm(app: web.Application) -> None:
+    """Start reading this machine's own addresses at boot, without waiting on it.
+
+    The ssh self-target floor denies every IP literal until the address table
+    is read.  Left to the first ssh check, that check is what starts the read
+    and it sees the unpublished flag in the same instant, so the first IP-literal
+    ssh of every process is refused.  This hook starts the read in a worker
+    thread and returns at once: nothing is awaited in front of the listener
+    (``no-new-work-on-gateway-boot-path``).  The netlink dump is a kernel-local
+    read of about a millisecond, so it has published long before an agent's
+    first command; until it does, the floor stays fail-closed.
+    """
+
+    async def _own_host_warm(_app: web.Application) -> None:
+        task = asyncio.ensure_future(asyncio.to_thread(warm_own_host_names))
+        _OWN_HOST_WARM_TASKS.add(task)
+        task.add_done_callback(_own_host_warm_done)
+
+    app.on_startup.append(_own_host_warm)
+
+
+# Strong references to in-flight warm tasks, so the loop cannot collect one
+# before it finishes.
+_OWN_HOST_WARM_TASKS: "set[asyncio.Future[None]]" = set()
+
+
+def _own_host_warm_done(task: "asyncio.Future[None]") -> None:
+    """Drop the finished warm task and log a failure instead of raising it."""
+    _OWN_HOST_WARM_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("own-address read failed at startup", exc_info=exc)
+
+
 def _register_config_watch(
     app: web.Application, state: DashboardState, initial: KiroCrewConfig | None
 ) -> None:
@@ -5654,6 +5691,8 @@ async def start_dashboard(
         # Releases the resident speech model (148MB default, 1.6GB largest) when idle
         # and at shutdown. Registered here, before runner.setup freezes the signal lists.
         _register_stt_hooks(app)
+        # Own-address read for the ssh self-target floor, started at boot.
+        _register_own_host_warm(app)
         # Live config: one poller for every writer (dashboard, CLI, $EDITOR), started
         # on_startup because it needs the running loop; primed with this boot's config.
         _register_config_watch(app, state, _cfg)
@@ -6640,6 +6679,8 @@ async def start_api_server(
     # Releases the resident speech model (148MB default, 1.6GB largest) when idle
     # and at shutdown. Registered here, before runner.setup freezes the signal lists.
     _register_stt_hooks(app)
+    # Own-address read for the ssh self-target floor, started at boot.
+    _register_own_host_warm(app)
     # Same live-config watcher as start_dashboard: a headless gateway must pick
     # up a CLI or $EDITOR write identically.
     _register_config_watch(app, state, _cfg)

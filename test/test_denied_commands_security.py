@@ -7,6 +7,7 @@ catalog, the pure ``compute_effective_denied`` resolver, the dual-tier
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
@@ -8376,6 +8377,8 @@ class TestSandboxEscapeSshSelf:
         assert "PENDING" in note
         assert "FORWARDED port" in note
         assert "per-rule toggle in Settings" in note
+        # An IP literal refused in the unread-address-table window is pending too.
+        assert "local-address verification is PENDING" in note
 
     @pytest.mark.parametrize(
         "cmd",
@@ -9098,6 +9101,180 @@ class TestSandboxEscapeSshSelf:
         resolved, _complete = _argv_floor._resolve_own_host_names()
         assert "203.0.113.66" in resolved
         assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
+
+    def _open_window(self, monkeypatch, *, netlink, fqdn=lambda: ""):
+        """A fresh process: nothing published, the worker free to start now."""
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
+        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", netlink)
+        monkeypatch.setattr(_argv_floor.socket, "getfqdn", fqdn)
+        monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
+
+    @staticmethod
+    def _join_resolver():
+        for t in threading.enumerate():
+            if t.name == "kirocrew-own-host-resolve":
+                t.join(5)
+
+    def test_startup_warm_publishes_before_the_first_ip_literal(self, monkeypatch):
+        # Without a boot-time read, the first IP-literal ssh of a gateway
+        # process is what starts the worker and it reads the unpublished flag
+        # in the same instant, so it is refused as "this machine".  The warm
+        # starts the worker at boot, so the table is published before then.
+        self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"})
+        try:
+            _argv_floor.warm_own_host_names()
+            self._join_resolver()
+            assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
+            assert _denied_by("ssh 198.51.100.9 id") is None
+            assert _denied_by("ssh 203.0.113.66 id") == self._RULE
+        finally:
+            self._join_resolver()
+
+    def test_slow_dns_does_not_hold_the_netlink_publish(self, monkeypatch):
+        # The netlink dump runs BEFORE DNS: a host whose name is not in DNS
+        # must not keep every IP literal refused for the length of the lookups,
+        # and the warm returns without waiting for either.
+        release = threading.Event()
+
+        def _slow_fqdn():
+            release.wait(5)
+            return ""
+
+        self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"}, fqdn=_slow_fqdn)
+        try:
+            _argv_floor.warm_own_host_names()
+            deadline = time.monotonic() + 5
+            while not _argv_floor._NETLINK_ADDRS_PUBLISHED:
+                assert time.monotonic() < deadline, "netlink never published"
+                time.sleep(0.01)
+            assert _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is True  # DNS still blocked
+            assert "203.0.113.66" in _argv_floor._OWN_HOST_NAMES_CACHE
+            assert _denied_by("ssh 198.51.100.9 id") is None
+        finally:
+            release.set()
+            self._join_resolver()
+
+    @staticmethod
+    def _hook(monkeypatch, warm):
+        from kiro_crew.dashboard import server as _server
+
+        monkeypatch.setattr(_server, "warm_own_host_names", warm)
+
+        class _App:
+            def __init__(self):
+                self.on_startup: "list" = []
+
+        app = _App()
+        _server._register_own_host_warm(app)
+        assert len(app.on_startup) == 1
+        return _server, app
+
+    def test_gateway_startup_starts_the_own_host_read_without_awaiting_it(self, monkeypatch):
+        # The startup hook schedules the read in a worker thread and returns at
+        # once: nothing is awaited in front of the listener
+        # (no-new-work-on-gateway-boot-path).  The read still runs, off the loop.
+        release = threading.Event()
+        done = threading.Event()
+
+        def _warm():
+            release.wait(5)
+            done.set()
+
+        _server, app = self._hook(monkeypatch, _warm)
+
+        async def _run():
+            start = time.monotonic()
+            await app.on_startup[0](app)
+            elapsed = time.monotonic() - start
+            started_before_release = not done.is_set()
+            release.set()
+            # Let the scheduled worker finish while the loop is still alive.
+            for _ in range(500):
+                if done.is_set() and not _server._OWN_HOST_WARM_TASKS:
+                    break
+                await asyncio.sleep(0.01)
+            return elapsed, started_before_release
+
+        elapsed, started_before_release = asyncio.run(_run())
+        assert elapsed < 0.5, "the startup hook waited on the own-address read"
+        assert started_before_release
+        assert done.is_set(), "the scheduled own-address read never ran"
+        assert not _server._OWN_HOST_WARM_TASKS, "the finished task was not released"
+
+    def test_gateway_startup_logs_a_failed_own_host_read(self, monkeypatch, caplog):
+        def _boom():
+            raise RuntimeError("netlink unavailable")
+
+        _server, app = self._hook(monkeypatch, _boom)
+
+        async def _run():
+            await app.on_startup[0](app)
+            for _ in range(500):
+                if not _server._OWN_HOST_WARM_TASKS:
+                    break
+                await asyncio.sleep(0.01)
+
+        with caplog.at_level("WARNING", logger=_server.logger.name):
+            asyncio.run(_run())
+        assert "own-address read failed at startup" in caplog.text
+
+    def test_publish_merges_into_the_cache_before_opening_the_window(self, monkeypatch):
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"10.1.1.1"}))
+        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
+        seen: "list[bool]" = []
+        real_lock = _argv_floor._OWN_HOST_RESOLVE_LOCK
+
+        class _Spy:
+            def __enter__(self):
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                # Still inside the merge: the window must not be open yet.
+                seen.append(_argv_floor._NETLINK_ADDRS_PUBLISHED)
+                return real_lock.__exit__(*exc)
+
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_LOCK", _Spy())
+        _argv_floor._publish_netlink_addresses({"203.0.113.66"})
+        assert seen == [False]
+        assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
+        assert {"10.1.1.1", "203.0.113.66"} <= _argv_floor._OWN_HOST_NAMES_CACHE
+
+    def test_dns_worker_merges_the_cache_under_the_lock(self, monkeypatch):
+        # The netlink publisher and the DNS worker both read-modify-write the
+        # own-name cache; the worker's merge must hold the lock, or a publish
+        # landing between its read and its write is lost after the window
+        # has opened.
+        held: "list[bool]" = []
+        real_lock = _argv_floor._OWN_HOST_RESOLVE_LOCK
+        state = {"inside": False}
+
+        class _Spy:
+            def __enter__(self):
+                real_lock.__enter__()
+                state["inside"] = True
+
+            def __exit__(self, *exc):
+                state["inside"] = False
+                return real_lock.__exit__(*exc)
+
+        class _Cache(frozenset):
+            def __or__(self, other):
+                held.append(state["inside"])
+                return frozenset(self) | frozenset(other)
+
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_LOCK", _Spy())
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", _Cache({"10.1.1.1"}))
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", True)
+        monkeypatch.setattr(
+            _argv_floor, "_resolve_own_host_names", lambda: (frozenset({"10.2.2.2"}), False)
+        )
+        _argv_floor._resolve_own_host_names_into_cache()
+        assert held == [True]
+        assert {"10.1.1.1", "10.2.2.2"} <= _argv_floor._OWN_HOST_NAMES_CACHE
 
     def test_netlink_sweep_is_inert_off_linux(self):
         if sys.platform.startswith("linux"):  # pragma: no cover - real enumeration

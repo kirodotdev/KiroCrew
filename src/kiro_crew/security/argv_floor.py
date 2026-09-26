@@ -1822,6 +1822,34 @@ _NETLINK_ADDRS_PUBLISHED: bool = not (
 )
 
 
+def warm_own_host_names() -> None:
+    """Start the own-address enrichment worker now instead of at the first ssh.
+
+    Without it the first IP-literal ssh check of a process is what starts the
+    worker, and that check sees the still-unpublished flag in the same instant,
+    so it is always refused.  The worker reads the netlink table before any DNS
+    lookup and publishes it at once.  This only runs the synchronous seed and
+    schedules the worker; the gateway startup hook calls it through
+    ``asyncio.to_thread`` so the seed stays off the event loop.
+    """
+    _own_host_names()
+
+
+def _publish_netlink_addresses(addrs: "set[str]") -> None:
+    """Merge the netlink table into the own-name cache, THEN open the window.
+
+    The order is load-bearing: flipping ``_NETLINK_ADDRS_PUBLISHED`` before
+    the addresses are in the cache would let a concurrent check see the
+    window closed while an own secondary IP is still missing from the set,
+    and admit it.
+    """
+    global _OWN_HOST_NAMES_CACHE, _NETLINK_ADDRS_PUBLISHED
+    with _OWN_HOST_RESOLVE_LOCK:
+        base = _OWN_HOST_NAMES_CACHE if _OWN_HOST_NAMES_CACHE is not None else _own_host_seed()
+        _OWN_HOST_NAMES_CACHE = base | frozenset(a for a in addrs if a)
+    _NETLINK_ADDRS_PUBLISHED = True
+
+
 def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     """Resolve this machine's own hostname/FQDN/addresses (lowered).
 
@@ -1835,6 +1863,22 @@ def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     """
     names: set[str] = set(_own_host_seed())
     complete = True
+    # The netlink RTM_GETADDR dump lists EVERY assigned address (secondary
+    # IPv4s the SIOCGIFADDR sweep cannot see).  Its recv blocks, so it lives
+    # here in the worker.  Unlike the sweeps below it is LOAD-BEARING: the
+    # IP-literal window stays closed until it publishes, so an empty pass on
+    # a netlink-capable host keeps ``complete`` False and the backoff retry
+    # alive rather than caching a table-less process for its lifetime.
+    #
+    # It runs FIRST and publishes at once: it is a kernel-local read, while
+    # the DNS lookups below can take many seconds on a host whose name is not
+    # in DNS, and every IP-literal ssh is refused until this publishes.
+    nl = _linux_netlink_addresses()
+    if nl:
+        names |= nl
+        _publish_netlink_addresses(nl)
+    elif sys.platform.startswith("linux") and hasattr(socket, "AF_NETLINK"):
+        complete = False
     try:
         fqdn = socket.getfqdn().strip().lower()
         if fqdn and fqdn != "localhost":
@@ -1860,19 +1904,6 @@ def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     # enrichment, and a host with no IPv6 route is not a partial pass -- so this
     # never touches ``complete`` (and the helper is best-effort, never raising).
     names |= _own_interface_addresses()
-    # The netlink RTM_GETADDR dump lists EVERY assigned address (secondary
-    # IPv4s the SIOCGIFADDR sweep cannot see).  Its recv blocks, so it lives
-    # here in the worker.  Unlike the sweeps above it is LOAD-BEARING: the
-    # IP-literal window stays closed until it publishes, so an empty pass on
-    # a netlink-capable host keeps ``complete`` False and the backoff retry
-    # alive rather than caching a table-less process for its lifetime.
-    global _NETLINK_ADDRS_PUBLISHED
-    nl = _linux_netlink_addresses()
-    if nl:
-        names |= nl
-        _NETLINK_ADDRS_PUBLISHED = True
-    elif sys.platform.startswith("linux") and hasattr(socket, "AF_NETLINK"):
-        complete = False
     return frozenset(n for n in names if n), complete
 
 
@@ -1893,8 +1924,12 @@ def _resolve_own_host_names_into_cache() -> None:
     try:
         resolved, complete = _resolve_own_host_names()
         if resolved:
-            existing = _OWN_HOST_NAMES_CACHE or frozenset()
-            _OWN_HOST_NAMES_CACHE = existing | resolved
+            # Under the lock: ``_publish_netlink_addresses`` merges into the
+            # same cache mid-pass, and an unlocked read-modify-write here
+            # could drop its addresses after the window already opened.
+            with _OWN_HOST_RESOLVE_LOCK:
+                existing = _OWN_HOST_NAMES_CACHE or frozenset()
+                _OWN_HOST_NAMES_CACHE = existing | resolved
         if complete:
             _OWN_HOST_RESOLVE_DONE = True
             _OWN_HOST_RESOLVE_STAMP = time.monotonic()
