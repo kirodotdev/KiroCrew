@@ -15,6 +15,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import pinned_fs
+from kiro_crew.agent_discovery import _unc_refused
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -475,13 +476,38 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     return web.json_response(folders)
 
 
+def _log_unc_denied(spelling: str) -> str:
+    """SEL-log an untrusted-UNC refusal of *spelling* and return its error message."""
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.folder_project_dir",
+        outcome="denied",
+        resources=spelling,
+        error="untrusted UNC share",
+    )
+    return "project_dir refers to an untrusted UNC share"
+
+
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
     if not raw:
         return "", None
+    # A UNC spelling (``\\host\share``) names a remote HOST: on Windows, resolving
+    # or opening one is an outbound SMB/NTLM probe the path's author controls. This
+    # validator realpaths the same user-typed folder project-dir field that the
+    # roster read path resolves, so it needs the same gate its sibling
+    # ``_resolve_roster_project_path`` (handlers/agents.py) applies -- shared here
+    # as ``agent_discovery._unc_refused``. Gate the RAW spelling BEFORE ``realpath``
+    # (the realpath itself is the probe), and again on the RESOLVED value (so a
+    # local link into a share is refused before the isdir open). Only the shares
+    # ``unc_probe_allowed`` names pass; off Windows this is always ``False``.
+    if _unc_refused(raw):
+        return "", _log_unc_denied(raw)
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
     resolved = os.path.realpath(os.path.expanduser(raw))
+    if _unc_refused(resolved):
+        return "", _log_unc_denied(resolved)
     if is_sensitive_path(resolved):
         sel().log_api_access(
             caller="dashboard",

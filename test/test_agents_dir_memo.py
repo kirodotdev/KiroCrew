@@ -257,6 +257,8 @@ def test_the_catalog_signature_stays_on_where_the_revision_refuses(
 
     The symlinked entry is a fake ``DirEntry`` over a real file's ``stat``, so
     no symlink is created (unelevated Windows cannot create one)."""
+    from types import SimpleNamespace
+
     target = tmp_path / "real.json"
     _write_spec(target, {"name": "real"})
     real_entry = MagicMock()
@@ -265,8 +267,14 @@ def test_the_catalog_signature_stays_on_where_the_revision_refuses(
     real_entry.stat.side_effect = lambda **kwargs: target.stat()
     link_entry = MagicMock()
     link_entry.name = f"{AGENT}.json"
+    link_entry.path = str(tmp_path / link_entry.name)
     link_entry.is_symlink.return_value = True
     link_entry.stat.side_effect = lambda **kwargs: target.stat()
+    os_double = SimpleNamespace(**vars(os))
+    os_double.readlink = lambda path: (
+        str(target) if os.fspath(path) == link_entry.path else os.readlink(path)
+    )
+    monkeypatch.setattr(agent_discovery, "os", os_double)
     intercept = _serve_fake_entries(monkeypatch, tmp_path, [real_entry, link_entry])
 
     intercept["active"] = True
@@ -275,8 +283,48 @@ def test_the_catalog_signature_stays_on_where_the_revision_refuses(
         signature = agent_discovery._dir_signature(tmp_path)
     finally:
         intercept["active"] = False
-    assert sorted(name for name, _ in signature) == sorted([f"{AGENT}.json", "real.json"])
+    signature_names = sorted(name for name, _ in signature)
+    assert signature_names == sorted([f"{AGENT}.json", f"{AGENT}.json\0target", "real.json"])
     assert all(mtime > 0 for _, mtime in signature)
+
+
+def test_mocked_windows_linked_target_ancestor_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mocked-platform test: a local-looking symlink target whose ancestor is a
+    Windows junction must not reach the followed stat that can authenticate to
+    the junction's remote SMB target.
+    """
+    from types import SimpleNamespace
+
+    entry = MagicMock()
+    entry.name = f"{AGENT}.json"
+    entry.path = str(tmp_path / entry.name)
+    entry.is_symlink.return_value = True
+    entry.stat.return_value.st_mtime_ns = 17
+    monkeypatch.setattr(agent_discovery, "_WINDOWS", True)
+    linked_ancestor = str(tmp_path / "junction")
+    relative_target = os.path.join("junction", "target.json")
+    real_readlink = os.readlink
+    os_double = SimpleNamespace(**vars(os))
+    os_double.readlink = lambda path: (
+        relative_target
+        if os.fspath(path) == entry.path
+        else "//attacker/share" if os.fspath(path) == linked_ancestor else real_readlink(path)
+    )
+    monkeypatch.setattr(agent_discovery, "os", os_double)
+    screened: list[str] = []
+    monkeypatch.setattr(
+        agent_discovery,
+        "iter_linked_ancestors",
+        lambda path: iter([screened.append(os.fspath(path)) or linked_ancestor]),
+    )
+
+    signature = agent_discovery._entries_signature([entry])
+
+    assert screened == [str(tmp_path / "junction" / "target.json")]
+    assert signature == ((f"{AGENT}.json", 17),)
+    entry.stat.assert_called_once_with(follow_symlinks=False)
 
 
 # --- AgentsDirMemo -------------------------------------------------------------

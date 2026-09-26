@@ -1477,3 +1477,55 @@ class TestCreateValidatesOffTheLoop:
         assert folder["project_dir"] == str(target.resolve())
         assert ran_on, "the create path never validated the directory"
         assert all(t != loop_thread for t in ran_on)
+
+
+class TestValidateProjectDirUncGate:
+    r"""A UNC-shaped project_dir (``\\host\share``) names a remote host, so on
+    Windows ``realpath``-ing it is itself the outbound SMB/NTLM probe. The guard
+    on ``_validate_project_dir`` must therefore run BEFORE ``realpath`` — the same
+    ordering its sibling ``_resolve_roster_project_path`` enforces on the roster
+    read path. This pins the ORDER, not just the verdict: ``os.path.realpath`` is
+    patched to raise if it is ever reached with a UNC spelling, so a refactor that
+    resolves first and gates after fails here."""
+
+    def test_unc_project_dir_is_refused_before_realpath(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_folders as cf
+
+        # ``_unc_refused`` only fires on Windows; simulate it on the Linux box the
+        # gate floor runs on. ``is_unc_shape``/``unc_probe_allowed`` are pure
+        # lexical checks, so forcing this constant is enough to exercise the gate.
+        monkeypatch.setattr("kiro_crew.agent_discovery._WINDOWS", True)
+
+        real_realpath = os.path.realpath
+
+        def guard(path: Any, *args: Any, **kwargs: Any) -> str:
+            from kiro_crew.hooks import is_unc_shape
+
+            if is_unc_shape(str(path)):
+                raise AssertionError("realpath reached a UNC spelling before the guard")
+            return real_realpath(path, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, "realpath", guard)
+
+        resolved, err = cf._validate_project_dir(r"\\evil\share\repo")
+
+        assert resolved == ""
+        assert err is not None and "UNC" in err
+
+    def test_non_unc_absolute_dir_still_realpaths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The gate must not swallow ordinary local paths: with the Windows flag
+        # set, a normal absolute dir still resolves and validates.
+        from kiro_crew.dashboard import chat_folders as cf
+
+        monkeypatch.setattr("kiro_crew.agent_discovery._WINDOWS", True)
+        target = tmp_path / "repo"
+        target.mkdir()
+
+        resolved, err = cf._validate_project_dir(str(target))
+
+        assert err is None
+        assert resolved == str(target.resolve())
