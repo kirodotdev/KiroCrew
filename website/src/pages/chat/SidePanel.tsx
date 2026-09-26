@@ -22,7 +22,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
+import { PINNED_VIEWS, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors, useInstalledApps, panelTabDescriptor, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
 import AppHost from '../../components/AppHost'
 import { appIcon } from '../../apps/appIcons'
@@ -528,7 +528,11 @@ export default function SidePanel({
     if (kind === 'artifact') return hiddenViews.has('artifacts')
     return hiddenViews.has(kind)
   }, [hiddenViews])
-  const visibleTabs = useMemo(() => (hiddenViews ? tabs.filter(t => !isWithheld(t.kind)) : tabs), [tabs, hiddenViews, isWithheld])
+  // Restored terminal chips wait for the liveness ruling too, as the dock's do.
+  const terminalsPending = usePanelTerminalsPending()
+  const visibleTabs = useMemo(() => (hiddenViews || terminalsPending
+    ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
+    : tabs), [tabs, hiddenViews, isWithheld, terminalsPending])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId
@@ -1369,7 +1373,9 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   // An app-contributed tab (contributes.panelTabs) never reaches here: like the MCP
   // `app` kind, its body renders from the cross-slot `allAppTabs` list so a chat
   // switch cannot remount its `AppHost`. The tab loop above returns null for both.
-  if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
+  const terminalsPending = usePanelTerminalsPending()
+  // A restored shell may be gone: connecting before the ruling would spawn a new one.
+  if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape

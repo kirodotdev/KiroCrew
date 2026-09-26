@@ -121,6 +121,7 @@ import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { confirmRestoredTabs, reconcileRestoredTabs, toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from './utils/fenceShell'
+import { confirmRestoredPanelTerminals, reconcileRestoredPanelTerminals } from './hooks/usePanelTabs'
 import { withDeadline } from './lib/withDeadline'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
@@ -1733,7 +1734,9 @@ export default function App() {
   // that, so the query's later refetches change nothing.
   useEffect(() => {
     if (terminalConfig === undefined && !terminalProbeFailed) return
-    const suspects = reconcileRestoredTabs(terminalProbeFailed ? null : terminalConfig)
+    const first = terminalProbeFailed ? null : terminalConfig
+    // The side-panel strip's restored terminals take the same two looks.
+    const suspects = [...reconcileRestoredTabs(first), ...reconcileRestoredPanelTerminals(first)]
     if (suspects.length === 0) return
     void (async () => {
       await new Promise(resolve => setTimeout(resolve, RUN_IN_TERMINAL_OPENING_GRACE_MS))
@@ -1744,6 +1747,7 @@ export default function App() {
         if (r.ok) second = await r.json()
       } catch { /* null: the confirm look could not rule, so every suspect stays */ }
       confirmRestoredTabs(second)
+      confirmRestoredPanelTerminals(second)
     })()
   }, [terminalConfig, terminalProbeFailed])
   // True while the terminal panel lives in its own popped-out window: the

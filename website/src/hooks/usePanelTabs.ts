@@ -3,6 +3,7 @@ import type { Artifact } from '../types'
 import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
+import { createTerminalHydrateRuling } from '../utils/terminalHydrateRuling'
 import {
   isPanelTabKind,
   panelTabDescriptor,
@@ -271,8 +272,8 @@ const EMPTY_BUCKET: Bucket = { tabs: [], activeId: null }
  * route element), AND page reloads. Component-local useState would not survive
  * that, so the per-slot buckets live here at module scope (read via
  * useSyncExternalStore) and are mirrored to localStorage. On reload the strip
- * is rehydrated; terminal tabs reconnect to the still-live PTY (backend orphan
- * window) and document tabs re-fetch their content lazily (see below). */
+ * is rehydrated; terminal tabs wait for the backend's liveness ruling and
+ * document tabs re-fetch their content lazily (see below). */
 
 const KEY_PREFIX = 'mc-panel-tabs:'          // one key per slot: mc-panel-tabs:<slot>
 const PERSIST_DEBOUNCE_MS = 300
@@ -413,6 +414,33 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket): void {
   store = { ...store, [key]: nextBucket }
   for (const cb of listeners) cb()
   schedulePersist(key)
+}
+
+/* Hydrate-time ruling on restored terminal tabs: the dock store's two-look
+ * protocol (see useBottomTerminal), keyed by `sessionId` across every slot. */
+const terminalSessionIds = (): string[] => Object.values(store).flatMap(
+  b => b.tabs.flatMap(t => (t?.kind === 'terminal' && t.sessionId ? [t.sessionId] : [])))
+function dropTerminalTabs(ids: ReadonlySet<string>): void {
+  for (const key of Object.keys(store)) {
+    mutateSlot(key, b => {
+      const gone = (t: PanelTab) => t?.kind === 'terminal' && !!t.sessionId && ids.has(t.sessionId)
+      if (!b.tabs.some(gone)) return b
+      const tabs = b.tabs.filter(t => !gone(t))
+      // Refocus only if the focused tab was dropped; a host leading-tab focus stays.
+      const lostFocus = b.tabs.some(t => t.id === b.activeId && gone(t))
+      return { tabs, activeId: lostFocus ? (tabs[0]?.id ?? null) : b.activeId }
+    })
+  }
+}
+const newTerminalRuling = (restored: ReadonlySet<string>) => createTerminalHydrateRuling(
+  restored, terminalSessionIds, dropTerminalTabs, () => { for (const cb of listeners) cb() })
+let terminalRuling = newTerminalRuling(new Set(terminalSessionIds()))
+export function reconcileRestoredPanelTerminals(payload: unknown): string[] { return terminalRuling.reconcile(payload) }
+export function confirmRestoredPanelTerminals(payload: unknown): string[] { return terminalRuling.confirm(payload) }
+const getTerminalsPendingSnapshot = (): boolean => terminalRuling.isPending()
+/** True until the restored terminal tabs are ruled on; mount no CliPanel meanwhile. */
+export function usePanelTerminalsPending(): boolean {
+  return useSyncExternalStore(subscribe, getTerminalsPendingSnapshot, getTerminalsPendingSnapshot)
 }
 
 /** Add tab if its id is absent, otherwise merge patch into the existing tab;
@@ -624,6 +652,7 @@ function flushPersist(): void {
  *  renderHook calls in a suite. */
 export function __resetPanelTabs(): void {
   store = {}
+  terminalRuling = newTerminalRuling(new Set())
   inlineDrafts.clear()
   autoOpenedApps.clear()
   clearTimeout(persistTimer)

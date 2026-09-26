@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
+import { createTerminalHydrateRuling } from '../utils/terminalHydrateRuling'
 
 /* ── App-wide bottom terminal panel ───────────────────────────────────────
  * A single docked terminal panel shared by the ENTIRE app (every route), as
@@ -221,40 +222,6 @@ function emit() { for (const cb of listeners) cb() }
  * therefore only names suspects; `confirmRestoredTabs`, fed an uncached second
  * answer after an opening grace, drops the ones still missing. Absent twice,
  * that far apart, is gone. */
-let restoredIds: ReadonlySet<string> = new Set(state.tabs.map(t => t.id))
-/** Restored tabs the first answer omitted or reported dead, awaiting the
- *  confirm probe. Empty outside the confirming phase. */
-let hydrateSuspects: ReadonlySet<string> = new Set()
-type HydratePhase = 'pending' | 'confirming' | 'settled'
-let hydratePhase: HydratePhase = restoredIds.size > 0 ? 'pending' : 'settled'
-
-/** Session ids the backend reports as live, or null when the payload does not
- *  rule on liveness: a transport failure, a shape this client does not
- *  recognize, or the feature-disabled answer (which returns an empty list
- *  without consulting the registry, so its absence means nothing). */
-function liveSessionIds(payload: unknown): Set<string> | null {
-  if (!payload || typeof payload !== 'object') return null
-  const p = payload as { enabled?: unknown; sessions?: unknown }
-  if (p.enabled === false || !Array.isArray(p.sessions)) return null
-  const live = new Set<string>()
-  for (const entry of p.sessions) {
-    if (!entry || typeof entry !== 'object') return null
-    const { session_id, alive } = entry as { session_id?: unknown; alive?: unknown }
-    // One malformed entry voids the whole answer: dropping a tab is
-    // irreversible, so it only happens on a payload read in full.
-    if (typeof session_id !== 'string' || typeof alive !== 'boolean') return null
-    if (alive) live.add(session_id)
-  }
-  return live
-}
-
-/** Leave the hydrate protocol with every remaining tab verified. */
-function settleHydrate(): void {
-  hydratePhase = 'settled'
-  hydrateSuspects = new Set()
-  emit()
-}
-
 /** Drop `ids` from the store, refocusing and hiding the panel as `removeTab`
  *  would. Persisting the trimmed list is what keeps the other window — and
  *  the next reload — from restoring the same tabs again. */
@@ -263,6 +230,10 @@ function dropTabs(ids: ReadonlySet<string>): void {
   const activeId = tabs.some(t => t.id === state.activeId) ? state.activeId : (tabs[0]?.id ?? null)
   set({ ...state, tabs, activeId, open: tabs.length > 0 ? state.open : false })
 }
+
+const newRuling = (restored: ReadonlySet<string>) =>
+  createTerminalHydrateRuling(restored, () => state.tabs.map(t => t.id), dropTabs, emit)
+let ruling = newRuling(new Set(state.tabs.map(t => t.id)))
 
 /** First look: weigh the restored tab set against the backend's session list
  *  (the JSON body of `GET /api/terminal/sessions`, or null when the probe
@@ -273,33 +244,13 @@ function dropTabs(ids: ReadonlySet<string>): void {
  *  settles at once: removing a possibly-live shell and its scrollback cannot be
  *  undone, while a kept dead tab is user-closable and its PTY entry is the
  *  reaper's to clear. Runs once per document: later calls return []. */
-export function reconcileRestoredTabs(payload: unknown): string[] {
-  if (hydratePhase !== 'pending') return []
-  const live = liveSessionIds(payload)
-  const suspects = live === null
-    ? []
-    : state.tabs.filter(t => restoredIds.has(t.id) && !live.has(t.id)).map(t => t.id)
-  if (suspects.length === 0) { settleHydrate(); return [] }
-  hydratePhase = 'confirming'
-  hydrateSuspects = new Set(suspects)
-  return suspects
-}
+export function reconcileRestoredTabs(payload: unknown): string[] { return ruling.reconcile(payload) }
 
 /** Second look, from an UNCACHED probe taken after the opening grace: drop the
  *  suspects this answer still omits or reports dead, keep the ones it now lists
  *  live (a shell that was opening in another window), and settle. A payload
  *  that does not rule keeps every suspect. Returns the dropped ids. */
-export function confirmRestoredTabs(payload: unknown): string[] {
-  if (hydratePhase !== 'confirming') return []
-  const live = liveSessionIds(payload)
-  const dropped = live === null
-    ? []
-    : state.tabs.filter(t => hydrateSuspects.has(t.id) && !live.has(t.id)).map(t => t.id)
-  // Drop while still gated, then settle: the hosts first see the kept set.
-  if (dropped.length > 0) dropTabs(new Set(dropped))
-  settleHydrate()
-  return dropped
-}
+export function confirmRestoredTabs(payload: unknown): string[] { return ruling.confirm(payload) }
 
 /* Cross-window sync: the terminal-popout window and the main dashboard share
  * this persisted store (one tab list, whichever window currently hosts the
@@ -528,8 +479,8 @@ export function useTerminalPosition(): TerminalPosition {
 
 /** Whether the restored tab set still awaits its ruling (either look). Hosts
  *  mount no terminal view while true — see the reconciliation note above. */
-function getHydratePendingSnapshot(): boolean { return hydratePhase !== 'settled' }
-export function isTerminalHydratePending(): boolean { return hydratePhase !== 'settled' }
+function getHydratePendingSnapshot(): boolean { return ruling.isPending() }
+export function isTerminalHydratePending(): boolean { return ruling.isPending() }
 export function useTerminalHydratePending(): boolean {
   return useSyncExternalStore(subscribe, getHydratePendingSnapshot, getHydratePendingSnapshot)
 }
@@ -538,9 +489,7 @@ export function useTerminalHydratePending(): boolean {
 export function __resetBottomTerminal(): void {
   volatileNames.clear()
   state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
-  restoredIds = new Set()
-  hydrateSuspects = new Set()
-  hydratePhase = 'settled'
+  ruling = newRuling(new Set())
   emit()
   setTerminalCloseFailed(false)
   if (typeof localStorage !== 'undefined') {
