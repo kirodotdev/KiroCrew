@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 
@@ -311,10 +312,18 @@ def _head_before(text: str, limit: int) -> str:
 def _trim_file(path: Path, max_records: int) -> None:
     """Keep only the newest *max_records* lines of the JSONL at *path*.
 
-    Writes through a temp then ``os.replace``, so a reader — which takes no lock
-    — sees either the whole old file or the whole new one, never a half-written
-    one. A no-op at or below the cap, so an append under the limit pays one read
-    and no rewrite.
+    Writes through a temp then an atomic replace, so a reader — which takes no
+    lock — sees either the whole old file or the whole new one, never a
+    half-written one. A no-op at or below the cap, so an append under the limit
+    pays one read and no rewrite.
+
+    The replace goes through :func:`replace_with_retry` because a lock-free
+    reader holding the destination open makes ``os.replace`` raise a Windows
+    sharing violation (``PermissionError``/``EACCES``); left to propagate that
+    would reach ``_degrade`` and disable history for a transient reader overlap.
+    The helper retries the Windows window and is a plain ``os.replace`` on
+    POSIX; it runs in the ``asyncio.to_thread`` worker with no loop of its own,
+    so the retry engages.
 
     The caller MUST hold the store lock: this reads the file and republishes it
     whole, so an unlocked interleaving with an append drops the record that
@@ -329,7 +338,7 @@ def _trim_file(path: Path, max_records: int) -> None:
     wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(wfd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines[-max_records:]) + "\n")
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
 
 
 @dataclass
@@ -578,7 +587,13 @@ class CronHistoryStore:
             # loads its whole file, so an unbounded index also makes each dashboard
             # request cost more as the process ages. The trim runs under the lock
             # this method already holds, so it adds no second critical section.
-            _trim_file(job_path, self._max_records_per_job)
+            #
+            # Guard the per-job trim against the index path: a job whose id is
+            # ``_index`` resolves ``job_path`` onto ``_index.jsonl``, and trimming
+            # that at the smaller per-job cap would silently truncate the global
+            # index. ``_rotate_all_sync`` carries the same skip.
+            if job_path != self._index_path:
+                _trim_file(job_path, self._max_records_per_job)
             _trim_file(self._index_path, self._max_index_records)
         finally:
             self._unlock(fd)
@@ -761,7 +776,7 @@ class CronHistoryStore:
                     wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                     with os.fdopen(wfd, "w", encoding="utf-8") as f:
                         f.write(content)
-                    os.replace(tmp, self._index_path)
+                    replace_with_retry(tmp, self._index_path)
             return removed
         finally:
             self._unlock(fd)

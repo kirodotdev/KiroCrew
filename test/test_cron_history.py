@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import cron_history as cron_history_mod
 from kiro_crew.cron_history import _SUMMARY_CAP, CronHistoryStore, CronRunRecord
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -866,13 +867,23 @@ async def test_append_bounds_the_global_index(
 async def test_append_under_the_cap_keeps_every_record(
     small_store: CronHistoryStore,
 ) -> None:
-    """Negative control: the trim must not fire below the cap."""
-    for i in range(4):
-        await small_store.append(_record(run_id=f"r{i}"))
+    """Negative control: the trim must not fire AT or below the cap.
+
+    Asserting the retained rows alone would stay green if the no-rewrite guard
+    were loosened, so this also spies ``replace_with_retry`` and requires that
+    no append writes through the cap rewrite it. Appending exactly
+    ``cron_max_records_per_job`` (5) records sits the file ON the cap, the
+    boundary a ``<=`` -> ``<`` mutation would rewrite; a smaller count would let
+    that mutation stay green.
+    """
+    with patch.object(cron_history_mod, "replace_with_retry") as replace_spy:
+        for i in range(5):
+            await small_store.append(_record(run_id=f"r{i}"))
+        replace_spy.assert_not_called()
 
     records, total = await small_store.get_job_history("job1", limit=50)
-    assert total == 4
-    assert [r["run_id"] for r in records] == ["r3", "r2", "r1", "r0"]
+    assert total == 5
+    assert [r["run_id"] for r in records] == ["r4", "r3", "r2", "r1", "r0"]
 
 
 @pytest.mark.asyncio
@@ -888,3 +899,57 @@ async def test_append_trim_preserves_the_full_trace_of_kept_records(
     assert detail is not None
     assert detail["trace"] == "trace-8"
     assert await small_store.get_run_detail("job1", "r0") is None
+
+
+@pytest.mark.asyncio
+async def test_append_for_a_job_named_index_does_not_truncate_the_global_index(
+    small_store: CronHistoryStore, tmp_path: Path
+) -> None:
+    """A job whose id is ``_index`` must not trim the shared index at the
+    smaller per-job cap.
+
+    ``_job_path('_index')`` resolves onto ``_index.jsonl``, so an unguarded
+    per-job trim would truncate the global index (cap 8 here) to the per-job
+    cap (5), silently dropping cross-job history. An imported or hand-edited
+    ``crons.json`` is the only way such an id reaches the store, but the store
+    must not corrupt the index when it does.
+    """
+    for i in range(12):
+        await small_store.append(_record(job_id="_index", run_id=f"r{i}"))
+
+    index_path = tmp_path / "cron-history" / "_index.jsonl"
+    index_lines = index_path.read_text(encoding="utf-8").strip().splitlines()
+    # Bounded by the INDEX cap (8), not the per-job cap (5).
+    assert len(index_lines) == 8
+
+
+# ── append-time trim is safe against a lock-free reader (Windows) ─────────
+
+
+@pytest.mark.asyncio
+async def test_append_trim_replaces_through_the_retrying_helper(
+    small_store: CronHistoryStore,
+) -> None:
+    """The append-time trim must replace through ``replace_with_retry``.
+
+    A lock-free dashboard read can hold the destination open, which on Windows
+    makes a bare ``os.replace`` raise a sharing violation (EACCES); that would
+    reach ``_degrade`` and disable history for a transient reader overlap. The
+    trim therefore routes its replace through the helper that retries the
+    Windows window.
+    """
+    replaced: list[str] = []
+    real = cron_history_mod.replace_with_retry
+
+    def _spy(src, dst):
+        replaced.append(os.path.basename(str(dst)))
+        return real(src, dst)
+
+    with patch.object(cron_history_mod, "replace_with_retry", _spy):
+        for i in range(12):  # crosses the per-job (5) and index (8) caps
+            await small_store.append(_record(run_id=f"r{i}"))
+
+    # Both files were trimmed, and every trim went through the retrying helper,
+    # so neither replace can raise a bare Windows sharing violation.
+    assert "job1.jsonl" in replaced
+    assert "_index.jsonl" in replaced
