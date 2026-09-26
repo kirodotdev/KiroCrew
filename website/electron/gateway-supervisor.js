@@ -1158,7 +1158,7 @@ function createGatewaySupervisor({
           path.join(kirocrewDir, "cache", "pycache"),
           app.isPackaged,
         ),
-      }),
+      }, { bundled, platform: processObj.platform }),
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";

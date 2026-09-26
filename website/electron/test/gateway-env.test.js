@@ -103,8 +103,42 @@ test("the one desktop gateway spawn uses the hardened environment builder", () =
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\),/,
+    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\},\s*\{ bundled, platform: processObj\.platform \}\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
       "through buildGatewayEnvironment",
   );
 });
+
+for (const platform of ["win32", "darwin", "linux"]) {
+  test(`${platform} bundled gateway removes inherited Python import overrides`, () => {
+    const inherited = {
+      PATH: "system-bin",
+      PYTHONPATH: "checkout",
+      PYTHONHOME: "other-python",
+      PYTHONNOUSERSITE: "",
+      PythonPath: "mixed-checkout",
+      pythonhome: "mixed-python",
+      PythonNoUserSite: "",
+    };
+    const before = { ...inherited };
+    const env = buildGatewayEnvironment(inherited, { bundled: true, platform });
+    assert.equal(env.PYTHONPATH, undefined);
+    assert.equal(env.PYTHONHOME, undefined);
+    assert.equal(env.PYTHONNOUSERSITE, inherited.PYTHONNOUSERSITE);
+    assert.equal(env.PythonNoUserSite, inherited.PythonNoUserSite);
+    assert.equal(
+      buildGatewayEnvironment({}, { bundled: true, platform }).PYTHONNOUSERSITE,
+      undefined,
+      "bundled isolation must not disable user-site imports in Python descendants",
+    );
+    for (const key of ["PythonPath", "pythonhome"]) {
+      assert.equal(env[key], platform === "win32" ? undefined : inherited[key]);
+    }
+    assert.equal(env.PATH, inherited.PATH);
+    assert.deepStrictEqual(inherited, before);
+    const development = buildGatewayEnvironment(inherited, { bundled: false, platform });
+    for (const key of Object.keys(inherited)) {
+      assert.equal(development[key], inherited[key]);
+    }
+  });
+}
