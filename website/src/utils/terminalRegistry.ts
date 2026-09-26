@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { i18nT } from '../i18n/t'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 
@@ -122,6 +123,23 @@ export function getTerminalWs(sessionId: string): WebSocket | null {
  * it already is. Returns an unsubscribe fn (no-op once it fires). Used by
  * "Run in terminal" to keep command batches behind shell initialization.
  */
+/** Listeners for a shell that exited on its own. This module owns sockets, not
+ *  tabs, so tab owners subscribe and decide what closing means. */
+/** What the server decided the tab does on this exit: `close` removes it;
+ *  otherwise it stays, showing the exit. Carried by the `exit` frame from the
+ *  `dashboard.terminal.close_on_exit` setting (default off). */
+export interface TerminalExit { status: number | null; close: boolean }
+
+const exitListeners = new Set<(sessionId: string, exit: TerminalExit) => void>()
+
+/** Subscribe to shell exits. Returns an unsubscribe function. */
+export function onTerminalExit(
+  cb: (sessionId: string, exit: TerminalExit) => void,
+): () => void {
+  exitListeners.add(cb)
+  return () => { exitListeners.delete(cb) }
+}
+
 export function onTerminalReady(sessionId: string, cb: () => void): () => void {
   if (getTerminalWs(sessionId)) { cb(); return () => {} }
   let set = readyListeners.get(sessionId)
@@ -185,9 +203,12 @@ export function sendRawToTerminalSession(sessionId: string, data: string): boole
 const MAX_RETRIES = 10
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 30_000
+// Paired with the terminal handler: the shell is gone, so do not redial.
+const TERMINAL_WS_CLOSE_SHELL_EXITED = 4001
 
-/** Coarse connection state a session's terminal view can render. */
-export type TerminalConnStatus = 'connected' | 'reconnecting' | 'disconnected'
+/** Coarse connection state a session's terminal view can render. `exited` is
+ *  a kept tab whose shell ended: its output stays, nothing redials. */
+export type TerminalConnStatus = 'connected' | 'reconnecting' | 'disconnected' | 'exited'
 
 interface Conn {
   term: Terminal
@@ -266,9 +287,10 @@ function notifyStatus(sessionId: string) {
 
 function setConnStatus(sessionId: string, c: Conn, status: TerminalConnStatus) {
   // A resolved outcome ends any user-initiated attempt: 'connected' means the
-  // redial succeeded, 'disconnected' means the chain gave up — both return the
-  // banner to its non-manual presentation.
-  const clearManual = (status === 'connected' || status === 'disconnected') && c.manualRetry
+  // redial succeeded, 'disconnected' means the chain gave up, 'exited' means
+  // the server answered with the shell's exit — each returns the banner to
+  // its non-manual presentation.
+  const clearManual = status !== 'reconnecting' && c.manualRetry
   if (clearManual) c.manualRetry = false
   if (c.status === status) {
     // Status unchanged but the manual flag flipped off: still publish so the
@@ -448,6 +470,11 @@ function connect(sessionId: string, c: Conn) {
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data)
+        if (m && m.type === 'exit') {
+          const status = typeof m.status === 'number' ? m.status : null
+          handleShellExit(sessionId, c, { status, close: m.close === true })
+          return
+        }
         if (m && m.type === 'ready') {
           // Record the shell BEFORE registering: registerTerminalWs drains the
           // ready listeners synchronously, and Run-in-terminal's listener reads
@@ -465,9 +492,16 @@ function connect(sessionId: string, c: Conn) {
     }
   }
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     unregisterTerminalWs(sessionId)
     if (c.disposed) return
+    if (ev.code === TERMINAL_WS_CLOSE_SHELL_EXITED) {
+      // The exit frame can be lost to backpressure; the coded close cannot.
+      // Without the frame neither the status nor the server's close decision
+      // survived, so the tab is kept: the safe side of an unknown.
+      handleShellExit(sessionId, c, { status: null, close: false })
+      return
+    }
     if (c.displaced) {
       // The server handed this PTY to a newer window and closed us on purpose.
       // Park instead of redialing: a redial would displace that window right
@@ -492,6 +526,51 @@ function connect(sessionId: string, c: Conn) {
   }
 
   ws.onerror = () => ws.close()
+}
+
+// xterm needs CR+LF for a new line; a bare LF only moves down a row.
+const CRLF = '\r\n'
+
+/** The line written into a kept pane when its shell exits. */
+export function shellExitLine(status: number | null): string {
+  const text = status === null
+    ? i18nT('components.cliPanel.exit_line_unknown')
+    : i18nT('components.cliPanel.exit_line_code', { code: status })
+  return CRLF + text + CRLF
+}
+
+/** Dispose and publish one shell exit, whichever protocol signal arrives first. */
+function handleShellExit(sessionId: string, c: Conn, exit: TerminalExit): void {
+  // Frame and coded close both land here; only the first one acts.
+  if (c.disposed) return
+  c.disposed = true
+  clearTimeout(c.reconnectTimer)
+  c.reconnectTimer = undefined
+  if (!exit.close) {
+    // The tab stays: its output remains readable and the exit is stated in
+    // the pane. Only the dead socket is released; the entry stays in `conns`
+    // as a disposed tombstone, so a later remount finds it and
+    // ensureTerminalConnection stays a no-op. A fresh dial there would reset
+    // the retained output and be answered with this same exit. The tombstone
+    // leaves with the tab, through disposeTerminalConnection.
+    c.term.write(shellExitLine(exit.status))
+    if (c.ws) { c.ws.onclose = null; c.ws.close(); c.ws = null }
+    unregisterTerminalWs(sessionId)
+    setConnStatus(sessionId, c, 'exited')
+    notifyExit(sessionId, exit)
+    return
+  }
+  notifyExit(sessionId, exit)
+  // Release the dead connection even when no host had a tab for it, but not a
+  // replacement a listener installed under the same id.
+  if (conns.get(sessionId) === c) disposeTerminalConnection(sessionId)
+}
+
+function notifyExit(sessionId: string, exit: TerminalExit): void {
+  // Snapshot: a listener may unsubscribe itself while we iterate.
+  for (const cb of [...exitListeners]) {
+    try { cb(sessionId, exit) } catch { /* one bad listener must not strand the others */ }
+  }
 }
 
 /**

@@ -534,6 +534,39 @@ export function purgeDocumentBodiesForRedactionChange(qc: { resetQueries: (f: { 
   evictDocumentBodies()
 }
 
+/** Does ANY slot's strip hold a terminal tab bound to this PTY session?
+ *  Matched on kind + sessionId, so a tab adopted back from the bottom panel is
+ *  still found. */
+export function hasPanelTerminalTab(sessionId: string): boolean {
+  if (!sessionId) return false
+  return Object.values(store).some(
+    b => b.tabs.some(t => t.kind === 'terminal' && t.sessionId === sessionId),
+  )
+}
+
+/** Close the terminal tab bound to `sessionId` in EVERY slot's strip. An exit
+ *  carries no slot, and the tab may belong to a chat that is not active. The
+ *  strip is never collapsed: the side panel also holds the pinned views. */
+export function closePanelTerminalTabs(sessionId: string): void {
+  if (!sessionId) return
+  for (const key of Object.keys(store)) {
+    mutateSlot(key, b => {
+      const doomed = b.tabs.filter(t => t.kind === 'terminal' && t.sessionId === sessionId)
+      if (doomed.length === 0) return b
+      const at = b.tabs.indexOf(doomed[0])
+      const next = b.tabs.filter(t => !doomed.includes(t))
+      // Move focus only when it was on the dead tab; then take the left
+      // neighbour, as closeTab does. A focus on a host-owned leading tab names
+      // no bucket tab and must be kept. An emptied strip stores `null`.
+      const droppedFocus = b.activeId !== null && doomed.some(t => t.id === b.activeId)
+      const activeId = !droppedFocus
+        ? b.activeId
+        : next.length === 0 ? null : (next[at - 1] ?? next[at] ?? next[next.length - 1]).id
+      return { tabs: next, activeId }
+    })
+  }
+}
+
 /** Strip heavy bodies (file/diff/artifact content) before persisting — those
  *  can be MBs and blow the localStorage quota. Terminal + view tabs and all
  *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so

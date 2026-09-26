@@ -134,6 +134,8 @@ import { confirmRestoredTabs, reconcileRestoredTabs, toggleBottomTerminal, useBo
 import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from './utils/fenceShell'
 import { withDeadline } from './lib/withDeadline'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
+// Side effect: closes a terminal tab when its shell exits (main window and popout).
+import './utils/terminalExitClose'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppPage from './pages/AppPage'

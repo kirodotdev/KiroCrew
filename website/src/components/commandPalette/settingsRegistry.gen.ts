@@ -1706,6 +1706,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.close-the-tab-when-the-shell-exits",
+    "label": "Close the tab when the shell exits",
+    "labelKey": "pages.settings.displayPanel.terminal_close_on_exit",
+    "description": "Off: an exited shell's tab stays open, showing its output and exit code, and does not reopen a shell. On: the tab closes as the shell exits, and a non-zero exit is reported in the notification feed.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.close_on_exit"
+  },
+  {
     "id": "display.command-completion",
     "label": "Command completion",
     "labelKey": "pages.settings.displayPanel.terminal_completion",

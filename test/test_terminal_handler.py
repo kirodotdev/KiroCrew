@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
+import logging
 import os
 import pathlib
 import shlex
@@ -2557,6 +2559,188 @@ class TestApiTerminalWs:
         assert registry == {"racing": None}
 
     @pytest.mark.asyncio
+    async def test_delete_preserves_reservation_against_concurrent_open(self):
+        """DELETE leaves an in-flight reservation owned by the open handler."""
+        session_id = "reserved-delete-race"
+        registry: dict = {session_id: None}
+        delete_req = _make_request(registry=registry, session_id=session_id)
+
+        open_req = _make_request(registry=registry, session_id=session_id)
+
+        deleted = await terminal.api_terminal_delete(delete_req)
+
+        assert deleted.status == 404
+        assert session_id in registry
+        assert registry[session_id] is None
+
+        with patch.object(terminal, "_sel") as mock_sel, patch.object(
+            terminal, "_get_config", return_value={"enabled": True}
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            opened = await terminal.api_terminal_ws(open_req)
+
+        assert isinstance(opened, web.Response)
+        assert opened.status == 409
+        assert registry == {session_id: None}
+
+    @pytest.mark.asyncio
+    async def test_failed_reconnect_to_exited_child_gets_terminal_close_code(self):
+        session_id = "exited-while-replacing"
+        existing = _make_session(session_id=session_id, alive=True)
+        registry = {session_id: existing}
+        req = _make_request(registry=registry, session_id=session_id)
+        req.query = {}
+        ws = AsyncMock()
+        ws.closed = False
+
+        with (
+            patch.object(
+                terminal,
+                "_resolve_shell_with_fence_shells",
+                return_value=("/bin/sh", None, {}),
+            ),
+            patch.object(terminal, "_get_config", return_value={"enabled": True}),
+            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(
+                terminal, "_replace_terminal_ws", AsyncMock(return_value=False)
+            ) as replace,
+            patch.object(terminal, "_sess_alive", side_effect=(True, False)),
+            patch.object(
+                terminal, "_close_terminal_ws_bounded", AsyncMock()
+            ) as close,
+            patch.object(terminal, "_sel") as mock_sel,
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            response = await terminal.api_terminal_ws(req)
+
+        assert response is ws
+        replace.assert_awaited_once()
+        close.assert_awaited_once_with(
+            ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_teardown_reserves_session_against_concurrent_open(self):
+        """A stale session stays reserved across its asynchronous teardown."""
+        session_id = "stale-race"
+        dead_sess = _make_session(session_id=session_id, alive=False)
+        registry = {session_id: dead_sess}
+        first_req = _make_request(registry=registry, session_id=session_id)
+        second_req = _make_request(registry=registry, session_id=session_id)
+        first_req.query = {}
+        second_req.query = {}
+        teardown_started = asyncio.Event()
+        release_teardown = asyncio.Event()
+
+        async def slow_teardown(sess):
+            assert sess is dead_sess
+            teardown_started.set()
+            await release_teardown.wait()
+
+        cfg = {"enabled": True, "max_sessions": 1}
+        spawn = AsyncMock(side_effect=RuntimeError("stop after spawn"))
+        with patch.object(terminal, "_kill_session", side_effect=slow_teardown) as kill, \
+             patch.object(terminal, "_sel") as mock_sel, \
+             patch.object(terminal, "_get_config", return_value=cfg), \
+             patch.object(web.WebSocketResponse, "prepare", AsyncMock()), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close:
+            mock_sel.return_value.log_api_access = MagicMock()
+            first_open = asyncio.create_task(terminal.api_terminal_ws(first_req))
+            await asyncio.wait_for(teardown_started.wait(), timeout=1)
+            assert registry == {session_id: None}
+
+            # The exited-shell reader observes another cleanup owner and returns
+            # without removing the reservation or starting another teardown.
+            await terminal._handle_pty_reader_end(registry, dead_sess)
+            assert registry == {session_id: None}
+            assert kill.call_count == 1
+
+            second = await terminal.api_terminal_ws(second_req)
+            assert isinstance(second, web.Response)
+            assert second.status == 409
+            spawn.assert_not_awaited()
+
+            release_teardown.set()
+            await first_open
+            # A dead-but-registered session is an exit, not a slot to refill:
+            # the dial is answered with 4001, and nothing is spawned over the
+            # dead tab.
+            spawn.assert_not_awaited()
+            assert close.await_args.kwargs["close_code"] == terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+
+        assert session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_openpty_failure_releases_reservation(
+        self, monkeypatch, tmp_path,
+    ):
+        """A failed open gives its reservation back, so a retry can open.
+
+        Pinned on a fresh open because that is the path that reaches openpty:
+        a dial to a dead session is answered as an exit and never spawns.
+        """
+        session_id = "openpty-failure"
+        registry: dict = {}
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        first_req = _make_request(registry=registry, session_id=session_id)
+        second_req = _make_request(registry=registry, session_id=session_id)
+        first_ws = AsyncMock()
+        first_ws.closed = False
+        second_ws = AsyncMock()
+        second_ws.closed = False
+        pty_error = OSError(errno.EMFILE, "too many open files")
+
+        with (
+            patch.object(terminal.platform_compat, "IS_POSIX", True),
+            patch.object(terminal.platform_compat, "IS_WINDOWS", False),
+            patch.object(
+                terminal, "_kill_session", new_callable=AsyncMock
+            ) as kill,
+            patch.object(terminal._pty, "openpty", side_effect=pty_error),
+            patch.object(
+                terminal,
+                "_resolve_shell_with_fence_shells",
+                return_value=("/bin/sh", None, {}),
+            ),
+            patch.object(
+                terminal, "_get_config", return_value={"enabled": True}
+            ),
+            patch.object(
+                terminal.web,
+                "WebSocketResponse",
+                side_effect=(first_ws, second_ws),
+            ),
+            patch.object(terminal, "_sel") as mock_sel,
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            first = await terminal.api_terminal_ws(first_req)
+
+            assert first is first_ws
+            kill.assert_not_awaited()
+            assert session_id not in registry
+            first_ws.send_str.assert_awaited_once()
+            sent = json.loads(first_ws.send_str.call_args.args[0])
+            assert sent["type"] == "error"
+            # The client is told only that the terminal could not be opened.
+            # An errno or path from openpty() is diagnostic detail it has no
+            # use for, so it stays in the audit resources asserted below.
+            assert sent["message"] == "Could not open a terminal"
+            assert "too many open files" not in sent["message"]
+            first_ws.close.assert_awaited_once()
+            access_log = mock_sel.return_value.log_api_access
+            assert access_log.call_args.kwargs["outcome"] == "error"
+            assert "pty_open_failed=" in access_log.call_args.kwargs["resources"]
+            assert "too many open files" in access_log.call_args.kwargs["resources"]
+
+            second = await terminal.api_terminal_ws(second_req)
+
+            assert second is second_ws
+            assert terminal._pty.openpty.call_count == 2
+            assert session_id not in registry
+
+    @pytest.mark.asyncio
     async def test_cleans_dead_session_before_reconnect(self):
         dead_sess = _make_session(session_id="abc123", alive=False)
         registry = {"abc123": dead_sess}
@@ -2865,6 +3049,23 @@ class TestStreamIsForwardedUnscanned:
         )
         assert "await" not in region, f"await in the reservation region:\n{region}"
 
+    def test_stale_cleanup_claims_the_entry_before_awaiting_teardown(self):
+        """Source guard: the stale cleanup reserves the entry before awaiting
+        teardown, so the reader's identity check leaves it to this path and
+        concurrent opens stay behind the reservation."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        start = src.index("    existing = registry.get(session_id)")
+        region = src[start:src.index("    # Reserve slot synchronously", start)]
+        assert "registry[session_id] = None" in region
+        assert region.index("registry[session_id] = None") < region.index(
+            "await _kill_session(existing)"
+        ), f"teardown is awaited before the entry is reserved:\n{region}"
+        assert "registry.pop(session_id, None)" in region
+        assert region.index("await _kill_session(existing)") < region.index(
+            "registry.pop(session_id, None)"
+        ), f"exception cleanup does not follow teardown:\n{region}"
+        assert "del registry[session_id]" not in src
+
     def test_no_send_through_the_session_field_after_an_await(self):
         """Source guard. ``sess.ws`` is set to None by the WS handler on
         disconnect, so dereferencing it after a suspension point raises
@@ -2910,6 +3111,30 @@ class TestReapOrphanedTerminals:
         ):
             await terminal.reap_orphaned_terminals(app)
         mock_kill.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_preserves_reservation_installed_during_prior_teardown(self):
+        """The sweep leaves a reservation that replaces a selected session."""
+        first = _make_session(session_id="first", alive=False)
+        second = _make_session(session_id="second", alive=False)
+        registry = {"first": first, "second": second}
+        state = MagicMock()
+        state._terminal_sessions = registry
+        app = {"state": state}
+
+        async def reserve_second(sess):
+            assert sess is first
+            registry["second"] = None
+
+        with patch.object(terminal, "_kill_session", side_effect=reserve_second) as kill, patch(
+            "asyncio.sleep", side_effect=[None, asyncio.CancelledError]
+        ):
+            await terminal.reap_orphaned_terminals(app)
+
+        assert "first" not in registry
+        assert registry["second"] is None
+        kill.assert_awaited_once_with(first)
+        assert all(call.args != (second,) for call in kill.await_args_list)
 
     @pytest.mark.asyncio
     async def test_skips_active_session(self):
@@ -3444,7 +3669,10 @@ class TestTerminalWsIntegration:
                 await terminal._kill_session(spawned)
 
         assert ready_seen, "isolated Bash never emitted its readiness marker"
-        assert registry["profile-isolation"].shell == str(isolation["shell"])
+        # Asserted on the captured session: an exited shell is reaped out of
+        # the registry as its `exit` frame is sent.
+        assert spawned is not None, "no session was registered for the socket"
+        assert spawned.shell == str(isolation["shell"])
         assert isolation["marker"] not in bytes(output)
         assert not isolation["sentinel"].exists()
         # A PROMPT_COMMAND set by the ambient login profile (e.g. a developer's
@@ -5168,7 +5396,10 @@ class TestPollTerminalTitles:
 
         async def publish_during_probe():
             await real_sleep(0.05)
-            assert await terminal._replace_terminal_ws(sess, new_ws) is True
+            assert (
+                await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
+                is True
+            )
             published.set()
 
         publisher = asyncio.create_task(publish_during_probe())
@@ -5561,7 +5792,7 @@ class TestWriteSerialization:
         winpty = MagicMock()
         sess.winpty = winpty
 
-        await terminal._replace_terminal_ws(sess, new_ws)
+        await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
         wrote = await terminal._write_terminal_input(sess, old_ws, b"echo stale\r")
         resized = await terminal._resize_terminal(sess, old_ws, 160, 50)
 
@@ -5584,7 +5815,7 @@ class TestWriteSerialization:
         sess.last_cwd = "/old/cwd"
         sess.frames_dirty = False
 
-        replaced = await terminal._replace_terminal_ws(sess, new_ws)
+        replaced = await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
 
         assert replaced is False
         assert sess.ws is old_ws
@@ -5605,7 +5836,7 @@ class TestWriteSerialization:
         sess.last_cwd = "/old/cwd"
         sess.frames_dirty = False
 
-        replaced = await terminal._replace_terminal_ws(sess, new_ws)
+        replaced = await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
 
         assert replaced is False
         assert sess.ws is old_ws
@@ -5613,6 +5844,38 @@ class TestWriteSerialization:
         assert sess.last_title == "old title"
         assert sess.last_cwd == "/old/cwd"
         assert sess.frames_dirty is False
+
+    @pytest.mark.asyncio
+    async def test_queued_replacement_cannot_publish_after_registry_removal(self):
+        old_ws = MagicMock()
+        new_ws = MagicMock()
+        new_ws.send_bytes = AsyncMock()
+        new_ws.send_str = AsyncMock()
+        sess = _make_session(ws=old_ws)
+        sess.shell_ready = True
+        registry = {sess.session_id: sess}
+
+        await sess.replace_lock.acquire()
+        replacement = asyncio.create_task(
+            terminal._replace_terminal_ws(
+                sess,
+                new_ws,
+                can_publish=lambda: (
+                    registry.get(sess.session_id) is sess
+                    and terminal._sess_alive(sess)
+                ),
+            )
+        )
+        await asyncio.sleep(0)
+        assert not replacement.done()
+
+        registry.pop(sess.session_id)
+        sess.replace_lock.release()
+
+        assert await replacement is False
+        assert sess.ws is old_ws
+        new_ws.send_bytes.assert_not_awaited()
+        new_ws.send_str.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_replacement_catches_output_produced_during_replay(self):
@@ -5636,7 +5899,9 @@ class TestWriteSerialization:
         sess.scrollback.extend(b"before")
         sess.output_bytes = len(sess.scrollback)
 
-        replacement = asyncio.create_task(terminal._replace_terminal_ws(sess, new_ws))
+        replacement = asyncio.create_task(
+            terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
+        )
         await replay_started.wait()
         await terminal._record_and_forward_terminal_output(sess, b"during")
         allow_replay.set()
@@ -5672,7 +5937,7 @@ class TestWriteSerialization:
         )
         await send_started.wait()
 
-        assert await terminal._replace_terminal_ws(sess, new_ws) is True
+        assert await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True) is True
         await asyncio.wait_for(output, timeout=1)
         await asyncio.wait_for(
             terminal._record_and_forward_terminal_output(sess, b"after"),
@@ -5705,7 +5970,7 @@ class TestWriteSerialization:
         monkeypatch.setattr(terminal, "_TERMINAL_WS_CLEANUP_TIMEOUT_S", 0.01)
 
         assert await asyncio.wait_for(
-            terminal._replace_terminal_ws(sess, new_ws), timeout=1
+            terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True), timeout=1
         )
         assert sess.ws is new_ws
         old_ws.close.assert_awaited_once()
@@ -5754,9 +6019,13 @@ class TestWriteSerialization:
         sess.output_bytes = len(sess.scrollback)
         monkeypatch.setattr(terminal, "_TAKEOVER_REPLAY_SEND_TIMEOUT_S", 0.01)
 
-        stalled = asyncio.create_task(terminal._replace_terminal_ws(sess, stalled_ws))
+        stalled = asyncio.create_task(
+            terminal._replace_terminal_ws(sess, stalled_ws, can_publish=lambda: True)
+        )
         await replay_started.wait()
-        healthy = asyncio.create_task(terminal._replace_terminal_ws(sess, healthy_ws))
+        healthy = asyncio.create_task(
+            terminal._replace_terminal_ws(sess, healthy_ws, can_publish=lambda: True)
+        )
 
         assert await stalled is False
         assert await asyncio.wait_for(healthy, timeout=1) is True
@@ -5817,7 +6086,7 @@ class TestWriteSerialization:
         await terminal._record_and_forward_terminal_output(sess, b"during")
         old_ws.send_bytes.assert_awaited_once_with(b"during")
         replace_task = asyncio.create_task(
-            terminal._replace_terminal_ws(sess, new_ws)
+            terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
         )
         assert await asyncio.wait_for(replace_task, timeout=1) is True
         assert sess.ws is new_ws
@@ -5857,7 +6126,9 @@ class TestWriteSerialization:
         new_ws.send_str = AsyncMock()
         sess = _make_session(ws=old_ws)
 
-        replace_task = asyncio.create_task(terminal._replace_terminal_ws(sess, new_ws))
+        replace_task = asyncio.create_task(
+            terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True)
+        )
         await asyncio.wait_for(close_started.wait(), timeout=1)
         assert sess.ws is new_ws
         assert sess.last_ws_disconnect is None
@@ -5889,7 +6160,9 @@ class TestWriteSerialization:
         newest_ws.closed = False
         sess = _make_session(ws=old_ws)
 
-        replace_task = asyncio.create_task(terminal._replace_terminal_ws(sess, mid_ws))
+        replace_task = asyncio.create_task(
+            terminal._replace_terminal_ws(sess, mid_ws, can_publish=lambda: True)
+        )
         await asyncio.wait_for(close_started.wait(), timeout=1)
         assert sess.ws is mid_ws
         sess.ws = newest_ws  # a later publication landed meanwhile
@@ -5929,7 +6202,13 @@ class TestWriteSerialization:
 
         new_ws.send_bytes = AsyncMock(side_effect=send_and_stream)
 
-        assert await asyncio.wait_for(terminal._replace_terminal_ws(sess, new_ws), timeout=2) is True
+        assert (
+            await asyncio.wait_for(
+                terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True),
+                timeout=2,
+            )
+            is True
+        )
 
         assert sess.ws is new_ws
         assert sess.last_ws_disconnect is None
@@ -5956,7 +6235,13 @@ class TestWriteSerialization:
 
         new_ws.send_bytes = AsyncMock(side_effect=overrun_then_record)
 
-        assert await asyncio.wait_for(terminal._replace_terminal_ws(sess, new_ws), timeout=2) is True
+        assert (
+            await asyncio.wait_for(
+                terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True),
+                timeout=2,
+            )
+            is True
+        )
         assert sess.ws is new_ws
         assert new_ws.send_bytes.await_args_list[-1].args[0] == b"latest"
 
@@ -5980,7 +6265,13 @@ class TestWriteSerialization:
 
         new_ws.send_bytes = AsyncMock(side_effect=overrun)
 
-        assert await asyncio.wait_for(terminal._replace_terminal_ws(sess, new_ws), timeout=2) is False
+        assert (
+            await asyncio.wait_for(
+                terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True),
+                timeout=2,
+            )
+            is False
+        )
         assert sess.ws is old_ws
         old_ws.close.assert_not_awaited()
 
@@ -6006,7 +6297,7 @@ class TestWriteSerialization:
         new_ws.send_str = AsyncMock()
         sess = _make_session(ws=old_ws)
 
-        assert await terminal._replace_terminal_ws(sess, new_ws) is True
+        assert await terminal._replace_terminal_ws(sess, new_ws, can_publish=lambda: True) is True
 
         assert events == [
             "send:" + json.dumps(
@@ -6276,3 +6567,1402 @@ class TestPtyChildEnvStripsPythonStartupVars:
         assert "PYTHONPATH" not in env
         assert "PYTHONHOME" not in env
         assert env["KIROCREW_TERMINAL"] == "1"
+
+
+# ── Shell exit: _child_exit_status / _handle_pty_reader_end ──
+
+
+class TestChildExitStatus:
+    """Exit status resolution on both backends. ``None`` means the status did not
+    resolve within the reap bound."""
+
+    @pytest.mark.asyncio
+    async def test_returns_recorded_status_without_waiting(self):
+        sess = _make_session(alive=False)
+        sess.proc.returncode = 3
+        assert await terminal._child_exit_status(sess) == 3
+        sess.proc.wait.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_the_child_watcher_then_reports(self):
+        sess = _make_session()  # returncode None -> must await proc.wait()
+
+        async def _settle():
+            sess.proc.returncode = 0
+
+        sess.proc.wait = AsyncMock(side_effect=_settle)
+        assert await terminal._child_exit_status(sess) == 0
+        sess.proc.wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unknown_when_the_status_never_arrives(self):
+        sess = _make_session()
+        sess.proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        assert await terminal._child_exit_status(sess) is None
+
+    @pytest.mark.asyncio
+    async def test_the_posix_branch_honors_the_shared_reap_bound(self, monkeypatch):
+        """The POSIX branch honours the shared ``_CHILD_REAP_TIMEOUT_S``: a slow
+        ``wait()`` runs into the patched bound rather than a hardcoded one."""
+        monkeypatch.setattr(terminal, "_CHILD_REAP_TIMEOUT_S", 0.02)
+        sess = _make_session()
+
+        async def _never_settles():
+            await asyncio.sleep(5)
+
+        sess.proc.wait = AsyncMock(side_effect=_never_settles)
+        started = time.monotonic()
+        assert await terminal._child_exit_status(sess) is None
+        elapsed = time.monotonic() - started
+        # The point of the bound: it gives up, rather than waiting the child out.
+        assert elapsed < 1.0, (
+            f"the POSIX reap waited {elapsed:.2f}s against a patched "
+            "_CHILD_REAP_TIMEOUT_S of 0.02s, so it is not reading that constant"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", [0, 1, 130])
+    async def test_reports_the_conpty_status(self, code):
+        """The ConPTY backend answers, and its answer wins over the POSIX
+        fields: a clean Windows exit must read as 0, not as unknown, or every
+        terminal close publishes an abnormal-exit note."""
+        sess = _make_session(alive=False)
+        sess.proc.returncode = 99  # must be ignored: winpty owns this session
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = code
+        assert await terminal._child_exit_status(sess) == code
+
+    @pytest.mark.asyncio
+    async def test_waits_for_the_conpty_child_then_reports(self):
+        """No child watcher to await on Windows, so liveness is polled: a child
+        still winding down must be waited for, not reported unknown."""
+        sess = _make_session()
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.side_effect = [True, True, False]
+        sess.winpty.exitstatus.return_value = 7
+        assert await terminal._child_exit_status(sess) == 7
+        assert sess.winpty.isalive.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_unknown_when_the_conpty_child_outlives_the_bound(self, monkeypatch):
+        """A child that never dies does not park the reader and has no code.
+
+        The ``elapsed`` assertion is load-bearing: an immortal child answers
+        ``None`` whatever the bound, so only the timing proves the ConPTY branch
+        honours ``_CHILD_REAP_TIMEOUT_S``.
+        """
+        monkeypatch.setattr(terminal, "_CHILD_REAP_TIMEOUT_S", 0.02)
+        monkeypatch.setattr(terminal, "_CONPTY_STATUS_POLL_S", 0.001)
+        sess = _make_session()
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = True
+        started = time.monotonic()
+        assert await terminal._child_exit_status(sess) is None
+        elapsed = time.monotonic() - started
+        sess.winpty.exitstatus.assert_not_called()
+        assert elapsed < 1.0, (
+            f"the ConPTY reap polled for {elapsed:.2f}s against a patched "
+            "_CHILD_REAP_TIMEOUT_S of 0.02s, so it is not reading that constant"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_when_conpty_reports_no_status(self):
+        """pywinpty can answer ``None`` — a binding without the property, or a
+        status not yet populated. Unknown is reported as unknown."""
+        sess = _make_session(alive=False)
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = None
+        assert await terminal._child_exit_status(sess) is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_without_a_child(self):
+        sess = _make_session()
+        sess.proc = None
+        assert await terminal._child_exit_status(sess) is None
+
+
+@pytest.fixture
+def close_on_exit(monkeypatch):
+    """Run with ``dashboard.terminal.close_on_exit`` ON. The classes below pin
+    the closing disposition; the default is off (the tab stays)."""
+    monkeypatch.setattr(terminal, "_close_on_exit", lambda: True)
+    yield
+
+
+@pytest.mark.usefixtures("close_on_exit")
+class TestHandlePtyReaderEnd:
+    """The reader loop ends for two reasons that must not be conflated: the
+    shell exiting (announce + reap) and a deliberate teardown that closed the
+    controller fd underneath it (do nothing -- its own path already accounted for
+    the session)."""
+
+    @pytest.mark.asyncio
+    async def test_announces_closes_and_reaps_an_exited_shell_in_order(self):
+        ws = MagicMock()
+        sess = _make_session(alive=False, ws=ws)
+        sess.proc.returncode = 0
+        registry = {sess.session_id: sess}
+        events: list[str] = []
+        with patch.object(
+            terminal,
+            "_send_owner_control_frame",
+            AsyncMock(side_effect=lambda *_args: events.append("send") or True),
+        ) as send, patch.object(
+            terminal,
+            "_close_terminal_ws_bounded",
+            AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("close")),
+        ) as close, patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(registry, sess)
+        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": 0, "close": True})
+        close.assert_awaited_once_with(
+            ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        assert events == ["send", "close"]
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_failed_exit_frame_still_closes_with_shell_exit_code(self):
+        """The close independently tells a backpressured client not to redial."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock()
+        sess = _make_session(alive=False, ws=ws)
+        sess.proc.returncode = 0
+        registry = {sess.session_id: sess}
+
+        with (
+            patch.object(
+                terminal,
+                "_send_owner_control_frame",
+                AsyncMock(return_value=False),
+            ) as send,
+            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
+        ):
+            await terminal._handle_pty_reader_end(registry, sess)
+
+        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": 0, "close": True})
+        ws.close.assert_awaited_once_with(
+            code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_takeover_while_waiting_for_status_disposes_current_owner(self):
+        old_ws = MagicMock()
+        new_ws = MagicMock()
+        sess = _make_session(alive=False, ws=old_ws)
+        registry = {sess.session_id: sess}
+        status_started = asyncio.Event()
+        release_status = asyncio.Event()
+        bus = MagicMock()
+        registry_states: list[tuple[bool, object | None]] = []
+
+        async def delayed_status(_sess):
+            assert _sess is sess
+            status_started.set()
+            await release_status.wait()
+            return 1
+
+        def record_registry(*_args, **_kwargs):
+            registry_states.append(
+                (sess.session_id in registry, registry.get(sess.session_id))
+            )
+
+        with (
+            patch.object(terminal, "_child_exit_status", side_effect=delayed_status),
+            patch.object(
+                terminal,
+                "_send_owner_control_frame",
+                AsyncMock(side_effect=lambda *_args: record_registry() or True),
+            ) as send,
+            patch.object(
+                terminal,
+                "_close_terminal_ws_bounded",
+                AsyncMock(side_effect=record_registry),
+            ) as close,
+            patch.object(
+                terminal, "_kill_session", AsyncMock(side_effect=record_registry)
+            ) as kill,
+        ):
+            handling = asyncio.create_task(
+                terminal._handle_pty_reader_end(registry, sess, bus=bus)
+            )
+            await asyncio.wait_for(status_started.wait(), timeout=1)
+            sess.ws = new_ws
+            release_status.set()
+            await handling
+
+        send.assert_awaited_once_with(
+            sess, new_ws, {"type": "exit", "status": 1, "close": True}
+        )
+        close.assert_awaited_once_with(
+            new_ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        bus.push.assert_called_once()
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+        assert (True, None) not in registry_states
+
+    @pytest.mark.asyncio
+    async def test_replacement_queued_during_exit_send_cannot_publish(self):
+        old_ws = MagicMock()
+        new_ws = MagicMock()
+        new_ws.send_bytes = AsyncMock()
+        new_ws.send_str = AsyncMock()
+        sess = _make_session(alive=False, ws=old_ws)
+        registry = {sess.session_id: sess}
+        send_started = asyncio.Event()
+        release_send = asyncio.Event()
+        bus = MagicMock()
+
+        async def delayed_send(_sess, ws, _frame):
+            assert _sess is sess and ws is old_ws
+            send_started.set()
+            await release_send.wait()
+            return True
+
+        with (
+            patch.object(terminal, "_child_exit_status", AsyncMock(return_value=2)),
+            patch.object(
+                terminal, "_send_owner_control_frame", AsyncMock(side_effect=delayed_send)
+            ) as send,
+            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
+            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
+        ):
+            handling = asyncio.create_task(
+                terminal._handle_pty_reader_end(registry, sess, bus=bus)
+            )
+            await asyncio.wait_for(send_started.wait(), timeout=1)
+            replacement = asyncio.create_task(
+                terminal._replace_terminal_ws(
+                    sess,
+                    new_ws,
+                    can_publish=lambda: (
+                        registry.get(sess.session_id) is sess
+                        and terminal._sess_alive(sess)
+                    ),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not replacement.done()
+            release_send.set()
+            await handling
+
+        assert await replacement is False
+        send.assert_awaited_once_with(
+            sess, old_ws, {"type": "exit", "status": 2, "close": True}
+        )
+        close.assert_awaited_once_with(
+            old_ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        new_ws.send_bytes.assert_not_awaited()
+        new_ws.send_str.assert_not_awaited()
+        bus.push.assert_called_once()
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_replacement_queued_during_coded_close_cannot_publish(self):
+        old_ws = MagicMock()
+        new_ws = MagicMock()
+        new_ws.send_bytes = AsyncMock()
+        new_ws.send_str = AsyncMock()
+        sess = _make_session(alive=False, ws=old_ws)
+        registry = {sess.session_id: sess}
+        close_started = asyncio.Event()
+        release_close = asyncio.Event()
+        bus = MagicMock()
+
+        async def delayed_close(ws, **_kwargs):
+            assert ws is old_ws
+            close_started.set()
+            await release_close.wait()
+
+        with (
+            patch.object(terminal, "_child_exit_status", AsyncMock(return_value=3)),
+            patch.object(
+                terminal, "_send_owner_control_frame", AsyncMock(return_value=True)
+            ) as send,
+            patch.object(
+                terminal, "_close_terminal_ws_bounded", AsyncMock(side_effect=delayed_close)
+            ) as close,
+            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
+        ):
+            handling = asyncio.create_task(
+                terminal._handle_pty_reader_end(registry, sess, bus=bus)
+            )
+            await asyncio.wait_for(close_started.wait(), timeout=1)
+            replacement = asyncio.create_task(
+                terminal._replace_terminal_ws(
+                    sess,
+                    new_ws,
+                    can_publish=lambda: (
+                        registry.get(sess.session_id) is sess
+                        and terminal._sess_alive(sess)
+                    ),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not replacement.done()
+            release_close.set()
+            await handling
+
+        assert await replacement is False
+        send.assert_awaited_once_with(
+            sess, old_ws, {"type": "exit", "status": 3, "close": True}
+        )
+        close.assert_awaited_once_with(
+            old_ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        new_ws.send_bytes.assert_not_awaited()
+        new_ws.send_str.assert_not_awaited()
+        bus.push.assert_called_once()
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_replacement_session_during_send_is_untouched(self):
+        old_ws = MagicMock()
+        replacement_ws = MagicMock()
+        sess = _make_session(alive=False, ws=old_ws)
+        replacement = _make_session(alive=True, ws=replacement_ws)
+        replacement.session_id = sess.session_id
+        registry = {sess.session_id: sess}
+        send_started = asyncio.Event()
+        release_send = asyncio.Event()
+        bus = MagicMock()
+
+        async def replace_mid_send(_sess, ws, _frame):
+            assert _sess is sess and ws is old_ws
+            send_started.set()
+            await release_send.wait()
+            return True
+
+        with (
+            patch.object(terminal, "_child_exit_status", AsyncMock(return_value=4)),
+            patch.object(
+                terminal,
+                "_send_owner_control_frame",
+                AsyncMock(side_effect=replace_mid_send),
+            ) as send,
+            patch.object(
+                terminal, "_close_terminal_ws_bounded", AsyncMock()
+            ) as close,
+            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
+        ):
+            handling = asyncio.create_task(
+                terminal._handle_pty_reader_end(registry, sess, bus=bus)
+            )
+            await asyncio.wait_for(send_started.wait(), timeout=1)
+            registry[sess.session_id] = replacement
+            release_send.set()
+            await handling
+
+        send.assert_awaited_once_with(sess, old_ws, {"type": "exit", "status": 4, "close": True})
+        close.assert_not_awaited()
+        kill.assert_not_awaited()
+        bus.push.assert_called_once()
+        assert registry == {sess.session_id: replacement}
+        assert replacement.ws is replacement_ws
+
+    @pytest.mark.asyncio
+    async def test_unchanged_owner_after_status_wait_still_exits_and_reaps(self):
+        ws = MagicMock()
+        sess = _make_session(alive=False, ws=ws)
+        registry = {sess.session_id: sess}
+        status_started = asyncio.Event()
+        release_status = asyncio.Event()
+
+        async def delayed_status(_sess):
+            assert _sess is sess
+            status_started.set()
+            await release_status.wait()
+            return 0
+
+        with (
+            patch.object(terminal, "_child_exit_status", side_effect=delayed_status),
+            patch.object(
+                terminal,
+                "_send_owner_control_frame",
+                AsyncMock(return_value=True),
+            ) as send,
+            patch.object(
+                terminal, "_close_terminal_ws_bounded", AsyncMock()
+            ) as close,
+            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
+        ):
+            handling = asyncio.create_task(
+                terminal._handle_pty_reader_end(registry, sess)
+            )
+            await asyncio.wait_for(status_started.wait(), timeout=1)
+            release_status.set()
+            await handling
+
+        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": 0, "close": True})
+        close.assert_awaited_once_with(
+            ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        )
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_reports_unknown_status_as_null(self):
+        ws = MagicMock()
+        sess = _make_session(alive=False, ws=ws)
+        sess.proc.returncode = None
+        sess.proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        # The backend answered, and its answer is "I do not know" — distinct
+        # from a code of 0, and the frame must carry null rather than invent one.
+        sess.winpty.exitstatus.return_value = None
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)) as send, \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess)
+        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": None, "close": True})
+
+    @pytest.mark.asyncio
+    async def test_silent_when_the_session_was_deliberately_torn_down(self):
+        """DELETE and the orphan reaper pop the entry BEFORE closing the fd, so
+        the resulting OSError must not be reported to the client as an exit."""
+        sess = _make_session(alive=False, ws=MagicMock())
+        registry: dict = {}  # already popped by the teardown path
+        with patch.object(
+            terminal, "_send_owner_control_frame", AsyncMock()
+        ) as send, patch.object(
+            terminal, "_close_terminal_ws_bounded", AsyncMock()
+        ) as close, patch.object(
+            terminal, "_kill_session", AsyncMock()
+        ) as kill:
+            await terminal._handle_pty_reader_end(registry, sess)
+        send.assert_not_awaited()
+        close.assert_not_awaited()
+        kill.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leaves_a_live_child_alone(self):
+        """A closed fd we did not initiate, with the child still running:
+        reaping here would kill a live shell."""
+        sess = _make_session(alive=True, ws=MagicMock())
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send, \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(registry, sess)
+        send.assert_not_awaited()
+        kill.assert_not_awaited()
+        assert registry[sess.session_id] is sess
+
+    @pytest.mark.asyncio
+    async def test_reaps_without_an_owner_socket(self):
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 0
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send, \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(registry, sess)
+        send.assert_not_awaited()
+        kill.assert_awaited_once_with(sess)
+
+    @pytest.mark.asyncio
+    async def test_drops_the_reader_reference_before_teardown(self):
+        """This runs INSIDE sess.reader_task; leaving the reference set would
+        make _kill_session cancel the task mid-teardown and leak the fd."""
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 0
+        sess.reader_task = MagicMock()
+        registry = {sess.session_id: sess}
+        seen: list = []
+        with patch.object(terminal, "_kill_session", AsyncMock(
+            side_effect=lambda s: seen.append(s.reader_task)
+        )):
+            await terminal._handle_pty_reader_end(registry, sess)
+        assert seen == [None]
+
+
+class TestExitedSessionRecord:
+    """The exited-session record: it lets a dial tell "exited" from "never
+    existed" (the registry holds live sessions only), and it stays outside the
+    registry."""
+
+    @pytest.mark.asyncio
+    async def test_a_self_exit_is_recorded_with_its_status(self):
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 3
+        registry = {sess.session_id: sess}
+        exited: dict = {}
+        with patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, exited=exited)
+        assert sess.session_id not in registry  # still reaped
+        assert exited[sess.session_id][1] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_clean_self_exit_is_recorded_too(self):
+        """The status decides whether the bell rings, never whether the record is
+        written: a reconnect to a cleanly-exited shell must close the tab just as
+        a reconnect to a crashed one does."""
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 0
+        registry = {sess.session_id: sess}
+        exited: dict = {}
+        with patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, exited=exited)
+        assert exited[sess.session_id][1] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_written_before_the_registry_entry_is_dropped(self):
+        """Ordering, not bookkeeping. A reconnect queued on replace_lock reads the
+        record only after this path releases it, so it must never be able to
+        observe the entry gone AND the record absent -- that gap is precisely the
+        interleaving that spawns a shell over a dead tab."""
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 1
+        registry = {sess.session_id: sess}
+        order: list[str] = []
+
+        class _Watched(dict):
+            def __setitem__(self, key, value):
+                order.append("recorded")
+                super().__setitem__(key, value)
+
+        class _WatchedRegistry(dict):
+            def pop(self, key, *a):
+                order.append("popped")
+                return super().pop(key, *a)
+
+        with patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(
+                _WatchedRegistry(registry), sess, exited=_Watched()
+            )
+        assert order == ["recorded", "popped"]
+
+    def test_the_record_expires_with_the_reconnect_grace_window(self):
+        """Past _ORPHAN_TIMEOUT_S the PTY would have been reaped anyway, so a
+        dial is a new session and must get one rather than a closed tab."""
+        exited: dict = {}
+        terminal._record_exited(exited, "old-sess", 0, close=False, now=1000.0)
+        live = terminal._recorded_exit(
+            exited, "old-sess", now=1000.0 + terminal._EXITED_TTL_S - 1
+        )
+        assert live is not None and live.status == 0
+        assert terminal._recorded_exit(
+            exited, "old-sess", now=1000.0 + terminal._EXITED_TTL_S + 1
+        ) is None
+        assert exited == {}  # the expiry also releases the slot
+
+    def test_reading_a_record_does_not_consume_it(self):
+        """A peek, not a pop: two stale windows can hold the same id, and the
+        second one's dial must be answered the same way as the first."""
+        exited: dict = {}
+        terminal._record_exited(exited, "shared-sess", 2, close=False, now=500.0)
+        first = terminal._recorded_exit(exited, "shared-sess", now=501.0)
+        second = terminal._recorded_exit(exited, "shared-sess", now=502.0)
+        assert first is not None and first.status == 2
+        assert second is not None and second.status == 2
+
+    def test_the_record_map_is_bounded_and_drops_the_oldest_first(self):
+        exited: dict = {}
+        for i in range(terminal._EXITED_MAX + 10):
+            terminal._record_exited(exited, f"sess-{i}", 0, close=False, now=1000.0 + i)
+        assert len(exited) == terminal._EXITED_MAX
+        assert "sess-0" not in exited
+        assert f"sess-{terminal._EXITED_MAX + 9}" in exited
+
+    def test_a_record_dropped_by_the_cap_is_counted_and_logged(self, monkeypatch, caplog):
+        """A dial to a dropped id opens a fresh shell, so the drop is said out
+        loud rather than reading like an id that never exited."""
+        monkeypatch.setattr(terminal, "_exited_evicted", 0)
+        exited: dict = {}
+        for i in range(terminal._EXITED_MAX):
+            terminal._record_exited(exited, f"sess-{i}", 0, close=False, now=1000.0 + i)
+        assert terminal._exited_evicted == 0
+        with caplog.at_level(logging.WARNING, logger=terminal.logger.name):
+            terminal._record_exited(
+                exited, "one-too-many", 0, close=False, now=1000.0 + terminal._EXITED_MAX
+            )
+        assert terminal._exited_evicted == 1
+        assert any("over the" in r.getMessage() and "cap" in r.getMessage() for r in caplog.records)
+
+    def test_expiry_is_not_fooled_by_a_wall_clock_step(self, monkeypatch):
+        """Records are stamped and read on the monotonic clock, so a forward
+        NTP/RTC step past the window cannot expire a live record."""
+        exited: dict = {}
+        terminal._record_exited(exited, "live-sess", 5, close=False)
+        real_time = time.time
+        monkeypatch.setattr(terminal.time, "time", lambda: real_time() + 10 * terminal._EXITED_TTL_S)
+        still_live = terminal._recorded_exit(exited, "live-sess")
+        assert still_live is not None and still_live.status == 5
+
+    def test_rerecording_an_id_keeps_insertion_order_as_age_order(self):
+        """The cap drops the FIRST key, so a re-record has to move to the back or
+        the bound would evict the newest record instead of the oldest."""
+        exited: dict = {}
+        terminal._record_exited(exited, "a", 0, close=False, now=1000.0)
+        terminal._record_exited(exited, "b", 0, close=False, now=1001.0)
+        terminal._record_exited(exited, "a", 1, close=False, now=1002.0)
+        assert list(exited) == ["b", "a"]
+        assert exited["a"][1] == 1
+
+    def test_a_kept_tab_retains_its_output_and_a_closing_one_does_not(self):
+        """The replay exists to fill a KEPT tab's pane. With close set the client
+        disposes of the tab on the frame, so holding those bytes would spend the
+        store's budget on output nothing can render."""
+        exited: dict = {}
+        terminal._record_exited(
+            exited, "kept", 1, close=False, scrollback=b"output", now=1000.0
+        )
+        terminal._record_exited(
+            exited, "closing", 1, close=True, scrollback=b"output", now=1001.0
+        )
+        assert exited["kept"].scrollback == b"output"
+        assert exited["closing"].scrollback == b""
+
+    def test_the_retained_output_is_capped_at_the_live_ring_size(self):
+        exited: dict = {}
+        oversized = b"x" * (terminal._EXITED_SCROLLBACK_MAX + 4096)
+        terminal._record_exited(
+            exited, "big", 0, close=False, scrollback=oversized, now=1000.0
+        )
+        held = exited["big"].scrollback
+        assert len(held) == terminal._EXITED_SCROLLBACK_MAX
+        assert held == oversized[-terminal._EXITED_SCROLLBACK_MAX:]  # the TAIL is kept
+
+    def test_the_budget_sheds_the_oldest_output_but_keeps_the_record(
+        self, monkeypatch, caplog
+    ):
+        """_EXITED_MAX alone would admit 64 full rings. Over the byte budget the
+        oldest records give up their replay, not their existence: the exit fact
+        is what stops a dial getting a fresh shell, and it costs a few bytes."""
+        monkeypatch.setattr(terminal, "_exited_scrollback_shed", 0)
+        exited: dict = {}
+        chunk = b"y" * terminal._EXITED_SCROLLBACK_MAX
+        over = terminal._EXITED_SCROLLBACK_BUDGET // terminal._EXITED_SCROLLBACK_MAX + 2
+        with caplog.at_level(logging.WARNING, logger=terminal.logger.name):
+            for i in range(over):
+                terminal._record_exited(
+                    exited, f"sess-{i}", 0, close=False, scrollback=chunk, now=1000.0 + i
+                )
+        held = sum(len(rec.scrollback) for rec in exited.values())
+        assert held <= terminal._EXITED_SCROLLBACK_BUDGET
+        assert terminal._exited_scrollback_shed >= 1
+        assert any("budget" in r.getMessage() for r in caplog.records)
+        # Every record still answers its dial, including the shed ones.
+        assert len(exited) == over
+        assert exited["sess-0"].scrollback == b""
+        assert exited["sess-0"].status == 0
+        assert exited[f"sess-{over - 1}"].scrollback == chunk  # the newest keeps its output
+
+
+@pytest.mark.usefixtures("close_on_exit")
+class TestDialToAnExitedSession:
+    """The dial path itself: a reconnect to a recorded id is told, and never
+    given a fresh shell."""
+
+    @pytest.mark.asyncio
+    async def test_a_dial_receives_the_exit_then_a_terminal_close(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {
+            # close=True: the record carries the decision taken at exit time,
+            # so the dial reports that rather than re-reading the setting.
+            "gone-sess": terminal._ExitedRecord(time.monotonic(), 7, True, b"")
+        }
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/gone-sess") as ws:
+                msg = await ws.receive(timeout=5)
+                assert msg.type == web.WSMsgType.TEXT
+                assert json.loads(msg.data) == {"type": "exit", "status": 7, "close": True}
+                closing = await ws.receive(timeout=5)
+                assert closing.type in (
+                    web.WSMsgType.CLOSE,
+                    web.WSMsgType.CLOSING,
+                    web.WSMsgType.CLOSED,
+                )
+        # No shell was spawned and no slot was taken.
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_a_dial_to_an_unknown_id_is_unaffected(self):
+        """The record must not swallow an ordinary first dial -- that would make
+        every new terminal close instead of opening. Proven by blocking the PTY
+        spawn and asserting it was REACHED, rather than by forking a real shell.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {
+            "some-other-sess": terminal._ExitedRecord(time.monotonic(), 0, False, b"")
+        }
+        reached: list = []
+
+        def _refuse_openpty():
+            reached.append(True)
+            raise OSError("spawn branch reached, which is the correct one")
+
+        with patch.object(terminal._pty, "openpty", _refuse_openpty):
+            async with TestClient(TestServer(app)) as client:
+                try:
+                    async with client.ws_connect("/api/ws/terminal/fresh-sess") as ws:
+                        await ws.receive(timeout=5)
+                except Exception:
+                    pass
+        assert reached, "an unrecorded id must fall through to the spawn branch"
+
+
+@pytest.mark.usefixtures("close_on_exit")
+class TestRegisteredDeadSessions:
+    """A shell that is dead while its entry is still registered is an exit, on
+    every path that can find it: a reconnect dial and the orphan sweep, not only
+    the reader's own end. Answering a dial there with a fresh shell would let the
+    client's dial-time reset erase the dead shell's scrollback behind a tab that
+    should close."""
+
+    @staticmethod
+    def _bus(notes: list):
+        from kiro_crew.notifications.bus import NotificationBus
+
+        return NotificationBus(sink=notes.append)
+
+    @pytest.mark.asyncio
+    async def test_a_dial_to_a_registered_dead_session_is_answered_as_an_exit(self):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        dead = _make_session(session_id="dead-sess", alive=False)
+        dead.proc.returncode = 3
+        registry: dict = {"dead-sess": dead}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {}
+        reached: list = []
+
+        def _openpty_must_not_run():
+            reached.append(True)
+            raise OSError("a dead session must not be respawned")
+
+        with patch.object(terminal, "_kill_session", AsyncMock()) as kill, \
+             patch.object(terminal._pty, "openpty", _openpty_must_not_run):
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/dead-sess") as ws:
+                    msg = await ws.receive(timeout=5)
+                    assert msg.type == web.WSMsgType.TEXT
+                    assert json.loads(msg.data) == {"type": "exit", "status": 3, "close": True}
+                    closing = await ws.receive(timeout=5)
+                    assert closing.type in (
+                        web.WSMsgType.CLOSE,
+                        web.WSMsgType.CLOSING,
+                        web.WSMsgType.CLOSED,
+                    )
+        assert not reached, "the stale branch spawned a shell over a dead tab"
+        kill.assert_awaited_once_with(dead)
+        assert registry == {}
+        # Recorded, so a second stale window holding the id is answered too.
+        assert app["state"]._terminal_exited["dead-sess"][1] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_dial_tells_the_window_still_attached_to_the_dead_shell(self):
+        """The dial answers the NEW socket, but the tab that has to close belongs
+        to the window that was attached when the shell died. The kill closes fds
+        and never touches ``sess.ws``, so without the frame and the 4001 that tab
+        keeps a live prompt over a dead shell until the user types into it -- and
+        with the setting on it silently fails to close. Both must reach the old
+        owner BEFORE the kill."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        dead = _make_session(session_id="dead-sess", alive=False, ws=MagicMock())
+        dead.proc.returncode = 5
+        registry: dict = {"dead-sess": dead}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {}
+        order: list = []
+
+        async def _frame(sess, ws, payload):
+            order.append(("frame", sess.session_id, payload))
+            return True
+
+        async def _close(ws, *, close_code=None, **kw):
+            order.append(("close", close_code, ws is dead.ws))
+
+        async def _kill(sess):
+            order.append(("kill", sess.session_id))
+
+        with patch.object(terminal, "_send_owner_control_frame", _frame), \
+             patch.object(terminal, "_close_terminal_ws_bounded", _close), \
+             patch.object(terminal, "_kill_session", _kill):
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/dead-sess") as ws:
+                    msg = await ws.receive(timeout=5)
+                    assert json.loads(msg.data)["status"] == 5
+
+        kinds = [step[0] for step in order]
+        assert kinds.count("frame") == 1, order
+        # The old owner is told its shell exited, with the real status...
+        assert order[kinds.index("frame")] == (
+            "frame", "dead-sess", {"type": "exit", "status": 5, "close": True}
+        )
+        # ...and its socket is closed 4001, both before the PTY is reaped.
+        old_owner_close = next(
+            i for i, step in enumerate(order) if step[0] == "close" and step[2]
+        )
+        assert old_owner_close < kinds.index("kill"), order
+        assert kinds.index("frame") < old_owner_close, order
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_a_dial_does_not_kill_when_another_path_owns_the_teardown(self):
+        """``_tell_owner_exited_and_pop`` returns False when the entry is no
+        longer this session's -- the reader's end or the sweep got there first
+        and owns the kill. A second kill would race that teardown."""
+        dead = _make_session(session_id="dead-sess", alive=False, ws=MagicMock())
+        dead.proc.returncode = 2
+        registry: dict = {"dead-sess": dead}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {}
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch.object(terminal, "_tell_owner_exited_and_pop", AsyncMock(return_value=False)), \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            async with TestClient(TestServer(app)) as client:
+                # No record either, since the tell owns writing it: the dial
+                # falls through, and a registry holding no usable entry means
+                # the ordinary open path takes over rather than a double kill.
+                with patch.object(terminal._pty, "openpty", side_effect=OSError("stop here")):
+                    async with client.ws_connect("/api/ws/terminal/dead-sess") as ws:
+                        await ws.receive(timeout=5)
+        kill.assert_not_awaited()
+
+    def test_the_note_is_published_once_however_many_paths_find_the_exit(self):
+        notes: list = []
+        bus = self._bus(notes)
+        exited: dict = {}
+        sess = _make_session(alive=False)
+        terminal._announce_exit(sess, 9, bus=bus, exited=exited, close=True)
+        terminal._announce_exit(sess, 9, bus=bus, exited=exited, close=True)
+        assert len(notes) == 1
+        assert exited[sess.session_id][1] == 9
+
+    @pytest.mark.asyncio
+    async def test_the_reader_does_not_repeat_a_note_another_path_published(self):
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 9
+        sess.exit_announced = True  # the dial or the sweep got there first
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert notes == []
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_answers_a_dead_session_as_an_exit(self):
+        notes: list = []
+        sess = _make_session(session_id="s1", alive=False)
+        sess.proc.returncode = 4
+        state = MagicMock()
+        state._terminal_sessions = {"s1": sess}
+        state._terminal_exited = {}
+        state.notification_bus = self._bus(notes)
+        with patch.object(terminal, "_kill_session", new_callable=AsyncMock), patch(
+            "asyncio.sleep", side_effect=[None, asyncio.CancelledError]
+        ):
+            await terminal.reap_orphaned_terminals({"state": state})
+        assert state._terminal_exited["s1"][1] == 4
+        assert len(notes) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_tells_an_attached_window_about_the_exit(self):
+        """A descendant holding the PTY keeps the reader parked, so the sweep is
+        what finds the shell dead. The attached socket gets the same exit frame
+        and 4001 close the reader's end sends, before the entry is popped."""
+        ws = MagicMock()
+        sess = _make_session(session_id="s1", alive=False, ws=ws)
+        sess.proc.returncode = 3
+        state = MagicMock()
+        state._terminal_sessions = {"s1": sess}
+        state._terminal_exited = {}
+        state.notification_bus = None
+        events: list[str] = []
+        with patch.object(
+            terminal,
+            "_send_owner_control_frame",
+            AsyncMock(side_effect=lambda *_a: events.append("send") or True),
+        ) as send, patch.object(
+            terminal,
+            "_close_terminal_ws_bounded",
+            AsyncMock(side_effect=lambda *_a, **_k: events.append("close")),
+        ) as close, patch.object(
+            terminal, "_kill_session", AsyncMock(side_effect=lambda _s: events.append("kill"))
+        ), patch.object(terminal, "_close_on_exit", return_value=False), patch(
+            "asyncio.sleep", side_effect=[None, asyncio.CancelledError]
+        ):
+            await terminal.reap_orphaned_terminals({"state": state})
+        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": 3, "close": False})
+        close.assert_awaited_once_with(ws, close_code=terminal._TERMINAL_WS_CLOSE_SHELL_EXITED)
+        assert events == ["send", "close", "kill"]
+        assert "s1" not in state._terminal_sessions
+        assert state._terminal_exited["s1"][1] == 3
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_records_a_dead_session_even_when_long_disconnected(self):
+        """Dead AND idle is still an exit: the death arm is checked first."""
+        sess = _make_session(session_id="s1", alive=False)
+        sess.proc.returncode = 0
+        sess.last_ws_disconnect = time.monotonic() - 2000
+        state = MagicMock()
+        state._terminal_sessions = {"s1": sess}
+        state._terminal_exited = {}
+        with patch.object(terminal, "_kill_session", new_callable=AsyncMock), patch(
+            "asyncio.sleep", side_effect=[None, asyncio.CancelledError]
+        ):
+            await terminal.reap_orphaned_terminals({"state": state})
+        assert state._terminal_exited["s1"][1] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_idle_sweep_of_a_live_shell_is_not_an_exit(self):
+        """Killing a live, long-disconnected shell is a teardown: it records
+        nothing and publishes nothing, so no dial is told its shell exited."""
+        notes: list = []
+        sess = _make_session(session_id="s1", alive=True)
+        sess.last_ws_disconnect = time.monotonic() - 2000
+        state = MagicMock()
+        state._terminal_sessions = {"s1": sess}
+        state._terminal_exited = {}
+        state.notification_bus = self._bus(notes)
+        with patch.object(terminal, "_kill_session", new_callable=AsyncMock) as kill, patch(
+            "asyncio.sleep", side_effect=[None, asyncio.CancelledError]
+        ):
+            await terminal.reap_orphaned_terminals({"state": state})
+        kill.assert_awaited_once_with(sess)
+        assert state._terminal_exited == {}
+        assert notes == []
+
+
+class TestCloseOnExitDefaultOff:
+    """``dashboard.terminal.close_on_exit`` is off unless config says ``true``.
+    With it off an exit is still announced and reaped, the frame says
+    ``close: false`` so the tab stays, and no bell note is published: the
+    shell's output and exit line are still on screen."""
+
+    def test_the_setting_is_off_unless_literally_true(self, monkeypatch):
+        from types import SimpleNamespace
+
+        def _snap(terminal_cfg):
+            return SimpleNamespace(dashboard=SimpleNamespace(terminal=terminal_cfg))
+
+        for cfg in ({}, {"close_on_exit": False}, {"close_on_exit": "true"}, {"close_on_exit": 1}, "bad"):
+            monkeypatch.setattr(terminal.live, "snapshot", lambda c=cfg: _snap(c))
+            assert terminal._close_on_exit() is False
+        monkeypatch.setattr(terminal.live, "snapshot", lambda: _snap({"close_on_exit": True}))
+        assert terminal._close_on_exit() is True
+
+    def test_the_read_comes_from_the_live_snapshot_not_disk(self, monkeypatch):
+        """The exit paths run on the event loop, so the setting is read from the
+        watcher's snapshot; an unarmed watcher fails closed to the default."""
+        monkeypatch.setattr(terminal.live, "snapshot", lambda: None)
+        monkeypatch.setattr(
+            terminal, "_get_config", lambda request=None: pytest.fail("read config.json from disk")
+        )
+        assert terminal._close_on_exit() is False
+
+    @pytest.mark.asyncio
+    async def test_an_exit_with_the_setting_off_keeps_the_tab_and_stays_silent(self):
+        from kiro_crew.notifications.bus import NotificationBus
+
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 3
+        registry = {sess.session_id: sess}
+        exited: dict = {}
+        with patch.object(terminal, "_close_on_exit", return_value=False), \
+             patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)) as send, \
+             patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close, \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(
+                registry, sess, bus=NotificationBus(sink=notes.append), exited=exited
+            )
+        send.assert_awaited_once_with(sess, sess.ws, {"type": "exit", "status": 3, "close": False})
+        close.assert_awaited_once()  # the socket still closes: no redial into a fresh shell
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+        assert exited[sess.session_id][1] == 3  # a later dial is still told
+        assert notes == []
+
+    @pytest.mark.asyncio
+    async def test_the_reap_copies_the_ring_into_the_record(self):
+        """The kill that follows the pop discards the session's ring, so the
+        record has to take the copy here or a detached window's reconnect has
+        nothing left to replay. This is the capture half; the dial half is
+        covered in TestDialToAnExitedSession."""
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 1
+        sess.scrollback.extend(b"make: *** [all] Error 2\r\n")
+        registry = {sess.session_id: sess}
+        exited: dict = {}
+        with patch.object(terminal, "_close_on_exit", return_value=False), \
+             patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(
+                registry, sess, bus=None, exited=exited
+            )
+        assert exited[sess.session_id].scrollback == b"make: *** [all] Error 2\r\n"
+        assert exited[sess.session_id].close is False
+
+    @pytest.mark.asyncio
+    async def test_a_dial_to_a_recorded_exit_is_told_not_to_close(self):
+        """A stale window's redial still learns the shell exited (and is never
+        given a fresh shell), and is told the tab stays."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {
+            "kept-sess": terminal._ExitedRecord(time.monotonic(), 2, False, b"")
+        }
+        with patch.object(terminal, "_close_on_exit", return_value=False):
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/kept-sess") as ws:
+                    msg = await ws.receive(timeout=5)
+                    assert json.loads(msg.data) == {"type": "exit", "status": 2, "close": False}
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_a_detached_dial_is_replayed_the_output_before_the_exit(self):
+        """The reap destroys the session's ring, so without the record's copy a
+        window that was detached when the shell exited reconnects to a pane
+        holding nothing but the exit line. Output arrives BEFORE the frame so
+        the pane reads in the order it happened."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {
+            "detached-sess": terminal._ExitedRecord(
+                time.monotonic(), 1, False, b"build failed: 3 errors\r\n"
+            )
+        }
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/detached-sess") as ws:
+                replay = await ws.receive(timeout=5)
+                assert replay.type == web.WSMsgType.BINARY
+                assert replay.data == b"build failed: 3 errors\r\n"
+                frame = await ws.receive(timeout=5)
+                assert json.loads(frame.data) == {
+                    "type": "exit", "status": 1, "close": False
+                }
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_the_dial_applies_the_close_decision_taken_at_exit_time(self):
+        """A setting toggled between the exit and the reconnect must not make
+        this window disagree with the one that watched the shell die, so the
+        dial reads the record and never the live config."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+        app["state"]._terminal_exited = {
+            "toggled-sess": terminal._ExitedRecord(time.monotonic(), 4, True, b"")
+        }
+        # The setting now reads the OPPOSITE of what was in force at exit.
+        with patch.object(terminal, "_close_on_exit", return_value=False) as live_read:
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect("/api/ws/terminal/toggled-sess") as ws:
+                    msg = await ws.receive(timeout=5)
+                    assert json.loads(msg.data)["close"] is True
+        live_read.assert_not_called()
+
+
+@pytest.mark.usefixtures("close_on_exit")
+class TestAbnormalExitNotification:
+    """An abnormal exit is published to the bell feed from the reap path, the
+    one place that knows the real exit status and the shell that produced it.
+    A clean exit stays silent, and a bus that refuses the payload never stops
+    the reap."""
+
+    @staticmethod
+    def _bus(notes: list):
+        from kiro_crew.notifications.bus import NotificationBus
+
+        return NotificationBus(sink=notes.append)
+
+    def test_system_terminal_is_a_registered_default_channel(self):
+        from kiro_crew.notifications.bus import SYSTEM_CHANNELS
+
+        assert SYSTEM_CHANNELS["system.terminal"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_non_zero_exit_publishes_one_note_naming_shell_and_code(self):
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 137
+        sess.shell = "/bin/zsh"
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1
+        note = notes[0]
+        assert note["channel"] == "system.terminal"
+        assert note["kind"] == "terminal"
+        assert note["source"] == "system"
+        assert note["priority"] == "default"
+        assert "137" in note["title"]
+        assert "/bin/zsh" in note["body"] and "137" in note["body"]
+        assert "exited" in note["title"] and "exited" in note["body"]
+        assert "terminated" not in note["body"]
+        assert note["group_key"] == "terminal-exit"
+        assert note["status"] == 137 and note["shell"] == "/bin/zsh"
+        assert "url" not in note
+
+    @pytest.mark.asyncio
+    async def test_clean_exit_publishes_nothing(self):
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 0
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert notes == []
+
+    @pytest.mark.asyncio
+    async def test_a_clean_conpty_exit_publishes_nothing(self):
+        """The Windows regression this guards: while ConPTY was read as
+        statusless, every exit resolved to ``None``, ``None != 0`` held, and a
+        routine ``exit`` rang the bell feed. A note that fires on every close
+        tells a Windows user nothing about whether their shell crashed."""
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc = None  # ConPTY sessions carry no asyncio child process
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = 0
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert notes == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_conpty_exit_still_publishes(self):
+        """The other half: resolving the code must not silence Windows, or the
+        feature would be traded away rather than fixed."""
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc = None
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = 1
+        sess.shell = "powershell.exe"
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1
+        assert notes[0]["status"] == 1 and "powershell.exe" in notes[0]["body"]
+        assert "unknown" not in notes[0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_note_says_shell_like_the_setting_and_the_pane_line(self):
+        """Three surfaces describe one event -- the setting, the pane's exit
+        line and this note -- and a reader can only connect them if they share
+        a noun. "process" in any of them is the drift this pins shut."""
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 3
+        sess.shell = "/bin/bash"
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1
+        title, body = notes[0]["title"], notes[0]["body"]
+        assert "shell" in title.lower() and "shell" in body.lower()
+        assert "process" not in title.lower()
+        assert "process" not in body.lower()
+
+    @pytest.mark.asyncio
+    async def test_unknown_status_says_so_instead_of_inventing_a_code(self):
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = None
+        sess.proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = None
+        sess.shell = ""
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1
+        assert "unknown" in notes[0]["body"]
+        # No shell path reported: the sentence drops the name rather than
+        # doubling the noun or leaving an empty gap.
+        assert "The shell exited" in notes[0]["body"]
+        assert "shell shell" not in notes[0]["body"]
+        assert notes[0]["status"] is None
+
+    @pytest.mark.asyncio
+    async def test_publishes_even_when_no_socket_is_attached(self):
+        """A background shell that dies with its tab already gone still leaves
+        a record: the feed is the only place the user can learn about it."""
+        notes: list = []
+        sess = _make_session(alive=False, ws=None)
+        sess.proc.returncode = 1
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_kill_session", AsyncMock()):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1 and "1" in notes[0]["title"]
+
+    @pytest.mark.asyncio
+    async def test_a_refusing_bus_never_stops_the_reap(self):
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 2
+        registry = {sess.session_id: sess}
+        bus = MagicMock()
+        bus.push.side_effect = RuntimeError("bus down")
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(registry, sess, bus=bus)
+        bus.push.assert_called_once()
+        kill.assert_awaited_once_with(sess)
+        assert sess.session_id not in registry
+
+    @pytest.mark.asyncio
+    async def test_without_a_bus_the_reap_is_unchanged(self):
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc.returncode = 3
+        registry = {sess.session_id: sess}
+        with patch.object(terminal, "_send_owner_control_frame", AsyncMock(return_value=True)), \
+             patch.object(terminal, "_kill_session", AsyncMock()) as kill:
+            await terminal._handle_pty_reader_end(registry, sess)
+        kill.assert_awaited_once_with(sess)
+
+
+class TestShellExitIntegration:
+    """End-to-end through the shipped PTY read loop with a real native shell,
+    proving the wiring the unit tests above bypass."""
+
+    @pytest.mark.asyncio
+    async def test_a_real_shell_exiting_announces_and_reaps_the_session(
+        self, monkeypatch, tmp_path
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        empty_startup = home / "empty-startup"
+        empty_startup.write_text("")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("HISTFILE", str(home / ".shell_history"))
+
+        if terminal.platform_compat.IS_WINDOWS:
+            # Not reached in CI: this file is on windows-collect-ignore.txt, so
+            # test_conpty_exit_status.py carries the ConPTY claim. Kept in case
+            # that entry goes. Fixed-path PowerShell, -NoProfile.
+            system_root = os.environ["SystemRoot"]
+            shell = os.path.join(
+                system_root,
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe",
+            )
+            monkeypatch.setenv("USERPROFILE", str(home))
+            monkeypatch.setenv("HOMEDRIVE", home.drive)
+            monkeypatch.setenv("HOMEPATH", str(home)[len(home.drive):])
+            from kiro_crew import conpty
+
+            real_windows_pty = conpty.WindowsPty
+
+            def no_profile_windows_pty(argv, **kwargs):
+                assert argv == [shell, "-NoLogo"]
+                return real_windows_pty([*argv, "-NoProfile"], **kwargs)
+
+            monkeypatch.setattr(conpty, "WindowsPty", no_profile_windows_pty)
+            command = b"exit 0\r\n"
+            expected_status = 0
+        else:
+            # /bin/sh is the required POSIX shell interface on every supported
+            # POSIX runner. Pin every common startup/history carrier to the
+            # isolated home so the test cannot execute or modify operator files.
+            shell = "/bin/sh"
+            monkeypatch.setenv("SHELL", shell)
+            monkeypatch.setenv("ENV", str(empty_startup))
+            monkeypatch.setenv("BASH_ENV", str(empty_startup))
+            monkeypatch.setenv("INPUTRC", str(empty_startup))
+            monkeypatch.setenv("ZDOTDIR", str(home))
+            command = b"exit 0\n"
+            expected_status = 0
+
+        # _resolve_shell validates even configured absolute paths. Keep that
+        # production call in place but make its answer exact and independent of
+        # PATH: only the platform-native path selected above is accepted.
+        monkeypatch.setattr(
+            terminal.shutil,
+            "which",
+            lambda candidate: shell
+            if os.path.normcase(candidate) == os.path.normcase(shell)
+            else None,
+        )
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "dashboard": {"terminal": {"enabled": True, "shell": shell}}
+        }))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        exit_frame = None
+        close_code = None
+        sent = False
+        try:
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect(
+                    "/api/ws/terminal/exit-sess", params={"cwd": str(home)}
+                ) as ws:
+                    # Wait for the prompt bytes, not the ready frame, which
+                    # /bin/sh can get before its startup finishes.
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + 30
+                    while loop.time() < deadline:
+                        msg = await ws.receive(timeout=deadline - loop.time())
+                        if msg.type == web.WSMsgType.BINARY and not sent:
+                            await ws.send_bytes(command)
+                            sent = True
+                            continue
+                        if msg.type == web.WSMsgType.TEXT:
+                            payload = json.loads(msg.data)
+                            if payload.get("type") == "exit":
+                                exit_frame = payload
+                        elif msg.type in (
+                            web.WSMsgType.CLOSE,
+                            web.WSMsgType.CLOSING,
+                            web.WSMsgType.CLOSED,
+                            web.WSMsgType.ERROR,
+                        ):
+                            close_code = ws.close_code
+                            break
+        finally:
+            leftover = registry.get("exit-sess")
+            if leftover is not None:
+                await terminal._kill_session(leftover)
+
+        assert sent, "the native shell never reached its startup barrier"
+        assert exit_frame is not None, "the shell exited but no exit frame reached the client"
+        assert exit_frame["status"] == expected_status
+        assert close_code == terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        # Reaped as the frame is sent, rather than left to the _ORPHAN_TIMEOUT_S sweep.
+        assert "exit-sess" not in registry

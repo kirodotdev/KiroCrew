@@ -2519,6 +2519,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # stays config-file-only: it also kills the PTY, which is not a display
     # preference.
     "dashboard.terminal.completion.enabled": {"type": "bool"},
+    # Whether an exited shell closes its tab (Settings → Display → Terminal).
+    # Off by default, which keeps main's disposition: the tab stays, showing
+    # the exit. Read per exit by the reap path and carried in the exit frame,
+    # so a toggle applies to the next exit with no restart.
+    "dashboard.terminal.close_on_exit": {"type": "bool"},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.

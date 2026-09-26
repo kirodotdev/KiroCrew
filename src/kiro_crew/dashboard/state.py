@@ -5239,6 +5239,11 @@ class DashboardState:
         self._refine_text: str = ""
         self._refine_error: str = ""
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
+        # session id -> _ExitedRecord for shells that exited on their own; kept
+        # outside _terminal_sessions (see _EXITED_TTL_S in handlers/terminal.py).
+        # Typed loosely here because importing the record would make this module
+        # depend on a request handler.
+        self._terminal_exited: dict[str, Any] = {}
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
