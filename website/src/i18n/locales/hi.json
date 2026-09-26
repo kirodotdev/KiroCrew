@@ -8575,11 +8575,16 @@
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",
       "row_empty": "खाली फ़ोल्डर",
       "row_hidden_only": "इसमें केवल छिपे हुए आइटम हैं (डॉटफ़ाइल, कैश)",
+      "row_linked": "दूसरे फ़ोल्डर का लिंक: सामग्री सूचीबद्ध नहीं है",
       "row_truncated": "फ़ाइलें नहीं दिखाई गईं: 10,000 फ़ाइलों की सीमा पूरी हो गई",
       "row_unreadable_marker": "पढ़ा नहीं जा सका — ऊपर दी गई सूचना देखो",
+      "row_unreadable_marker_dismissed": "पढ़ा नहीं जा सका — सूचना खारिज की गई",
       "root_unreadable": "कार्यक्षेत्र फ़ोल्डर पढ़ने की अनुमति नहीं है",
       "root_hidden_only": "इस कार्यक्षेत्र में केवल छिपे हुए आइटम हैं (डॉटफ़ाइल, कैश)",
-      "unreadable_folders": "फ़ोल्डर पढ़े नहीं जा सके: {{paths}}"
+      "unreadable_folders": "फ़ोल्डर पढ़े नहीं जा सके: {{paths}}",
+      "dismiss_unreadable": "खारिज करो: जब तक न पढ़े जा सकने वाले फ़ोल्डर न बदलें, इस सूचना को छिपाओ",
+      "unreadable_dismissed": "सूचना खारिज की गई",
+      "undo_dismiss_unreadable": "पूर्ववत करो"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

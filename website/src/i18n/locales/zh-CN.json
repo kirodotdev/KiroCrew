@@ -8456,11 +8456,16 @@
       "status_failed": "无法读取仓库状态。",
       "row_empty": "空文件夹",
       "row_hidden_only": "仅包含隐藏项（点文件、缓存）",
+      "row_linked": "指向另一个文件夹的链接：未列出内容",
       "row_truncated": "未显示文件：已达到 10,000 个文件的数量上限",
       "row_unreadable_marker": "无法读取 — 请参阅上方通知",
+      "row_unreadable_marker_dismissed": "无法读取 — 通知已忽略",
       "root_unreadable": "没有读取工作区文件夹的权限",
       "root_hidden_only": "此工作区仅包含隐藏项（点文件、缓存）",
-      "unreadable_folders": "无法读取的文件夹：{{paths}}"
+      "unreadable_folders": "无法读取的文件夹：{{paths}}",
+      "dismiss_unreadable": "忽略：在不可读的文件夹发生变化之前隐藏此通知",
+      "unreadable_dismissed": "通知已忽略",
+      "undo_dismiss_unreadable": "撤销"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

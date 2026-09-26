@@ -8694,11 +8694,16 @@
       "status_failed": "Impossibile leggere lo stato del repository.",
       "row_empty": "Cartella vuota",
       "row_hidden_only": "Contiene solo elementi nascosti (dotfile, cache)",
+      "row_linked": "Collegamento a un’altra cartella: contenuto non elencato",
       "row_truncated": "File non mostrati: limite di 10.000 file raggiunto",
       "row_unreadable_marker": "Non leggibile — vedi l’avviso sopra",
+      "row_unreadable_marker_dismissed": "Non leggibile — avviso ignorato",
       "root_unreadable": "Nessuna autorizzazione per leggere la cartella dell’area di lavoro",
       "root_hidden_only": "Questa area di lavoro contiene solo elementi nascosti (dotfile, cache)",
-      "unreadable_folders": "Cartelle non leggibili: {{paths}}"
+      "unreadable_folders": "Cartelle non leggibili: {{paths}}",
+      "dismiss_unreadable": "Ignora: nascondi questo avviso finché le cartelle non leggibili non cambiano",
+      "unreadable_dismissed": "Avviso ignorato",
+      "undo_dismiss_unreadable": "Annulla"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

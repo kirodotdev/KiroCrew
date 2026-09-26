@@ -8694,11 +8694,16 @@
       "status_failed": "No se pudo leer el estado del repositorio.",
       "row_empty": "Carpeta vacía",
       "row_hidden_only": "Solo contiene elementos ocultos (dotfiles, cachés)",
+      "row_linked": "Enlace a otra carpeta: contenido no listado",
       "row_truncated": "Archivos no mostrados: límite de 10.000 archivos alcanzado",
       "row_unreadable_marker": "No se puede leer — consulta el aviso de arriba",
+      "row_unreadable_marker_dismissed": "No se puede leer — aviso descartado",
       "root_unreadable": "Sin permiso para leer la carpeta del espacio de trabajo",
       "root_hidden_only": "Este espacio de trabajo solo contiene elementos ocultos (dotfiles, cachés)",
-      "unreadable_folders": "Carpetas no legibles: {{paths}}"
+      "unreadable_folders": "Carpetas no legibles: {{paths}}",
+      "dismiss_unreadable": "Descartar: ocultar este aviso hasta que cambien las carpetas no legibles",
+      "unreadable_dismissed": "Aviso descartado",
+      "undo_dismiss_unreadable": "Deshacer"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

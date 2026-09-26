@@ -8575,11 +8575,16 @@
       "status_failed": "রিপোজিটরির অবস্থা পড়া যায়নি।",
       "row_empty": "খালি ফোল্ডার",
       "row_hidden_only": "শুধুমাত্র লুকানো আইটেম রয়েছে (ডটফাইল, ক্যাশ)",
+      "row_linked": "অন্য ফোল্ডারের লিংক: বিষয়বস্তু তালিকাভুক্ত নয়",
       "row_truncated": "ফাইল দেখানো হয়নি: 10,000 ফাইলের সীমা পূর্ণ হয়েছে",
       "row_unreadable_marker": "পড়া যায়নি — উপরের বিজ্ঞপ্তি দেখো",
+      "row_unreadable_marker_dismissed": "পড়া যায়নি — নোটিশ খারিজ করা হয়েছে",
       "root_unreadable": "ওয়ার্কস্পেস ফোল্ডার পড়ার অনুমতি নেই",
       "root_hidden_only": "এই ওয়ার্কস্পেসে শুধুমাত্র লুকানো আইটেম রয়েছে (ডটফাইল, ক্যাশ)",
-      "unreadable_folders": "ফোল্ডার পড়া যায়নি: {{paths}}"
+      "unreadable_folders": "ফোল্ডার পড়া যায়নি: {{paths}}",
+      "dismiss_unreadable": "খারিজ করো: পড়া না যাওয়া ফোল্ডারগুলো না বদলানো পর্যন্ত এই নোটিশ লুকিয়ে রাখো",
+      "unreadable_dismissed": "নোটিশ খারিজ করা হয়েছে",
+      "undo_dismiss_unreadable": "আনডু"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

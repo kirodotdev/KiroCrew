@@ -9,7 +9,7 @@
  * Like the diff/code surfaces, the heavy `@pierre/trees` runtime loads behind
  * a lazy boundary (see `./tree.tsx`) so the eager bundle stays clean.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { GitStatus, GitStatusEntry } from '@pierre/trees'
@@ -20,9 +20,11 @@ import type {
   ContextMenuOpenContext as FileTreeContextMenuOpenContext,
 } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { AtSign, Download, FileDiff, FolderDot, FolderLock, FolderOpen } from 'lucide-react'
+import { AtSign, Download, FileDiff, FolderDot, FolderLock, FolderOpen, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
+import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
+import useHeldWindow from '../hooks/useHeldWindow'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { i18nT } from '../i18n/t'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel, type ContributedFileMenuItem, type ReportFileMenuError } from '../apps/fileMenuContributions'
@@ -38,6 +40,7 @@ import { errMessage } from '../utils/thunkError'
 import { PIERRE_TREE_STATE_ROW_CSS } from './config'
 import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
 import { planTreeStateRows, stateRowsMatchingFilter, STATE_ROW_DECORATION, type TreeStateRowLabels } from './treeStateRows'
+import { recallDismissedUnreadable, rememberDismissedUnreadable } from './treeUnreadableDismissals'
 import { TreeSkeleton } from './tree'
 
 /** The kind vocabulary the composer's `@`-mention plumbing speaks: a file is
@@ -48,6 +51,11 @@ type TreeEntryKind = 'file' | 'dir'
 /** What the state-row readers see while a mode has no state rows (changed
  *  mode, or the listing not yet answered). */
 const NO_STATE_ROWS: ReadonlySet<string> = new Set()
+
+/** How long the "Notice dismissed — Undo" line stays where the dismissed
+ *  not-readable notice stood: the session-move undo bar's horizon, so the
+ *  product has one undo window. */
+const UNREADABLE_UNDO_MS = MOVE_UNDO_MS
 
 /** A path for DISPLAY in a narrow notice: a zero-width space after every `/`
  *  gives the line breaker a point at each segment boundary, so a path that does
@@ -421,6 +429,120 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const unreadableFoldersRef = useRef<Set<string>>(new Set())
   unreadableFoldersRef.current = new Set(unreadableFolders)
   const unreadableFoldersKey = unreadableFolders.join('\n')
+  // Folders whose not-readable notice the user has DISMISSED for this project
+  // (`./treeUnreadableDismissals`). A folder that stays unreadable by design
+  // would otherwise keep the notice red on every visit; while every folder the
+  // payload names is remembered as dismissed the notice is not rendered, and a
+  // folder the set does not hold brings it back with the whole list. Recalled
+  // per project dir, so switching projects never carries one project's
+  // dismissal to another.
+  const [dismissedUnreadable, setDismissedUnreadable] = useState<readonly string[]>(() =>
+    recallDismissedUnreadable(projectDir),
+  )
+  const dismissedProjectRef = useRef(projectDir)
+  if (dismissedProjectRef.current !== projectDir) {
+    dismissedProjectRef.current = projectDir
+    setDismissedUnreadable(recallDismissedUnreadable(projectDir))
+  }
+  const unreadableDismissed = useMemo(() => {
+    if (unreadableFolders.length === 0) return false
+    const dismissed = new Set(dismissedUnreadable)
+    return unreadableFolders.every(folder => dismissed.has(folder))
+  }, [unreadableFolders, dismissedUnreadable])
+  const unreadableDismissedRef = useRef(unreadableDismissed)
+  unreadableDismissedRef.current = unreadableDismissed
+  // Dismissing leaves a way back where the notice stood: a one-line "Notice
+  // dismissed — Undo" status for the product's one undo window
+  // (`UNREADABLE_UNDO_MS`), held open while the pointer is over that spot or
+  // focus is inside it (`useHeldWindow`, the clock every undo offer runs on).
+  // The ✕ sits beside "Ask the agent" at the same weight, so a mis-click, or a
+  // click by a reader who did not take in the tooltip, would otherwise record a
+  // per-project dismissal that survives reloads with no manual way back (UX
+  // round on `738908fb54`). Undo restores the notice and CLEARS the remembered
+  // set. The offer is transient by construction: React state, so a remount
+  // shows the remembered dismissal and no offer; keyed per dismissal, so
+  // dismissing again starts a full window; and retired the moment the notice
+  // returns on its own (a folder outside the set appeared), so a stale offer
+  // cannot come back once the payload settles again. The hold flags are reset
+  // whenever the spot unmounts -- a pointer parked on the ✕ or on Undo gets no
+  // leave event when the element under it goes -- so a later offer never
+  // inherits a hold nothing is holding.
+  const [undoOffer, setUndoOffer] = useState<number | null>(null)
+  const [undoHovered, setUndoHovered] = useState(false)
+  const [undoFocused, setUndoFocused] = useState(false)
+  const undoStatusId = useId()
+  const undoSpotRef = useRef<HTMLDivElement>(null)
+  useHeldWindow(undoOffer, UNREADABLE_UNDO_MS, undoHovered || undoFocused, () => setUndoOffer(null))
+  useEffect(() => {
+    if (!unreadableDismissed) setUndoOffer(null)
+  }, [unreadableDismissed])
+  const showUnreadableSpot = mode === 'all' && unreadableFolders.length > 0 && (!unreadableDismissed || undoOffer != null)
+  useEffect(() => {
+    if (showUnreadableSpot) return
+    setUndoHovered(false)
+    setUndoFocused(false)
+  }, [showUnreadableSpot])
+  // The two actions swap the spot's whole content: the ✕ for the Undo line,
+  // Undo for the notice. The control that was activated had focus (Enter on
+  // it; a click, in the browsers that focus a pressed button), so the spot's
+  // focus capture had set the hold -- and then the element unmounts, and a
+  // REMOVED element fires no focusout, so nothing would ever clear it: the
+  // offer would stay held for the life of the mount, the Undo line above the
+  // tree for as long, and every later offer born held (GPT and Opus lanes on
+  // `44dceb4514`). The hold is therefore cleared at the swap itself, below, and
+  // re-set only by a focus that actually lands. The pointer hold is left
+  // alone: the spot it tracks is the div that persists across the swap, so
+  // its enter/leave stays truthful. And the focus the swap destroyed is
+  // handed to the counterpart -- Undo after the ✕, the ✕ after Undo -- as the
+  // Auto-title Undo does by construction (there the pressed button's DOM node
+  // is reused for the offer): a keyboard user who dismissed is ON the way
+  // back, not at <body> with the window running while they tab back to it
+  // (UX lane), and pressing Undo lands them on the control that reverses it.
+  // Only when the activated control HAD focus: a click in a browser that does
+  // not focus buttons moves no focus, and this moves none either.
+  const handFocusRef = useRef(false)
+  const dismissUnreadable = useCallback(() => {
+    handFocusRef.current = undoSpotRef.current?.contains(document.activeElement) ?? false
+    rememberDismissedUnreadable(projectDir, unreadableFolders)
+    setDismissedUnreadable(unreadableFolders)
+    setUndoOffer(offer => (offer ?? 0) + 1)
+  }, [projectDir, unreadableFolders])
+  const undoDismissUnreadable = useCallback(() => {
+    handFocusRef.current = undoSpotRef.current?.contains(document.activeElement) ?? false
+    rememberDismissedUnreadable(projectDir, [])
+    setDismissedUnreadable([])
+    setUndoOffer(null)
+  }, [projectDir])
+  useEffect(() => {
+    // Every child of the spot was just replaced (or this is the mount): the
+    // element the focus hold described is gone. Clear first; the hand-off
+    // below re-sets it through the spot's own focus capture if it lands.
+    setUndoFocused(false)
+    if (!handFocusRef.current) return
+    handFocusRef.current = false
+    const spot = undoSpotRef.current
+    if (!spot) return
+    // Dismissed: Undo is the line's one control. Shown: the ✕ is the notice's
+    // one control named by `aria-label` (Ask the agent carries a title).
+    const counterpart = unreadableDismissed
+      ? spot.querySelector<HTMLElement>('button')
+      : spot.querySelector<HTMLElement>('button[aria-label]')
+    counterpart?.focus()
+  }, [unreadableDismissed])
+  // A dismissal covers the folder's CURRENT failure, not the folder forever:
+  // once a remembered folder drops out of the payload (it reads again), it is
+  // forgotten, so the same folder failing anew alerts again instead of
+  // inheriting its old dismissal. Pruned against a landed payload only -- a
+  // mount that has not heard from the server yet knows nothing about the
+  // folders and must not forget them, or a reload would re-alert every visit.
+  useEffect(() => {
+    if (tree == null) return
+    const current = unreadableFoldersRef.current
+    const kept = dismissedUnreadable.filter(folder => current.has(folder))
+    if (kept.length === dismissedUnreadable.length) return
+    rememberDismissedUnreadable(projectDir, kept)
+    setDismissedUnreadable(kept)
+  }, [tree, projectDir, dismissedUnreadable])
 
   // The state row under a childless folder (see `./treeStateRows`). A language
   // switch re-renders this component without remounting it (LanguageProvider
@@ -430,14 +552,16 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // feeds `resetPaths`. The stylesheet does not depend on them (`./config`).
   const rowEmpty = i18nT('components.workspaceTree.row_empty')
   const rowHiddenOnly = i18nT('components.workspaceTree.row_hidden_only')
+  const rowLinked = i18nT('components.workspaceTree.row_linked')
   const rowTruncated = i18nT('components.workspaceTree.row_truncated')
   const stateRowLabels = useMemo<TreeStateRowLabels>(
     () => ({
       empty: rowEmpty,
       'hidden-only': rowHiddenOnly,
+      linked: rowLinked,
       truncated: rowTruncated,
     }),
-    [rowEmpty, rowHiddenOnly, rowTruncated],
+    [rowEmpty, rowHiddenOnly, rowLinked, rowTruncated],
   )
   // Which model paths are state rows, for the selection and context-menu
   // guards, and which folders carry one, for the truncation badge. Refs because
@@ -479,11 +603,15 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
       // names. This marker is that signal and nothing more: a lock glyph whose
       // accessible label points AT the notice ("see the notice above") rather
       // than stating the failure, fed by the same list the notice renders, so it
-      // can never name a folder the notice does not. The label is Pierre's
-      // decoration `title`: the tooltip, and the accessible name of the
-      // decoration span (the glyph itself is `aria-hidden`).
+      // can never name a folder the notice does not. Once the user has dismissed
+      // the notice the label says so instead, so it never sends the reader to a
+      // notice that is not there. The label is Pierre's decoration `title`: the
+      // tooltip, and the accessible name of the decoration span (the glyph
+      // itself is `aria-hidden`).
       if (unreadableFoldersRef.current.has(path)) {
-        const label = i18nT('components.workspaceTree.row_unreadable_marker')
+        const label = i18nT(unreadableDismissedRef.current
+          ? 'components.workspaceTree.row_unreadable_marker_dismissed'
+          : 'components.workspaceTree.row_unreadable_marker')
         return { icon: { name: 'file-tree-icon-lock' }, title: label }
       }
       if (!truncatedDirectoriesRef.current.has(path)) return null
@@ -575,11 +703,12 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const ready = mode === 'changed' ? status != null : tree != null
 
   // The row-decoration callback reads refs because Pierre creates the model
-  // once. Re-render its view when only the truncation or unreadable set changes
-  // and the path set therefore does not reset the model.
+  // once. Re-render its view when only the truncation or unreadable set, or
+  // the dismissed state the unreadable marker's label follows, changes and the
+  // path set therefore does not reset the model.
   useEffect(() => {
     model.setComposition(model.getComposition())
-  }, [model, truncatedDirectoriesKey, unreadableFoldersKey])
+  }, [model, truncatedDirectoriesKey, unreadableFoldersKey, unreadableDismissed])
 
   // Feed data into the model imperatively (the model is created once; path
   // resets and git-status patches are the supported update API). Layout
@@ -963,18 +1092,62 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           (permissions) -- and this notice is the one place it is reported: a
           row inside Pierre's shadow root can hold no button, so the folder's
           row carries only the lock marker whose label points here
-          (`renderRowDecoration`). askAgent on: the listing holds no draft. Not
-          dismissible: it follows the payload and goes when the folders read
-          again -- and the row markers, fed by the same list, go with it. */}
-      {mode === 'all' && unreadableFolders.length > 0 && (
-        <div className="px-2 pt-1.5">
-          <ErrorNotice
-            variant="inline"
-            className="whitespace-normal"
-            message={i18nT('components.workspaceTree.unreadable_folders', { paths: unreadableFolders.join(', ') })}
-            askAgent
-            testId="workspace-tree-unreadable-notice"
-          />
+          (`renderRowDecoration`). askAgent on: the listing holds no draft. It
+          follows the payload and goes when the folders read again -- and the
+          row markers, fed by the same list, go with it. A folder that stays
+          unreadable by design would keep it red on every visit, so the notice
+          can be DISMISSED: the control remembers the folders it names for this
+          project (`./treeUnreadableDismissals`) and the notice is not rendered
+          while every folder the payload names is remembered -- the markers
+          then say the notice was dismissed -- until a folder outside that set
+          appears, or a remembered one reads again and later fails anew. The
+          notice itself is always the alert in the danger tone: an error is
+          never toned down, only shown or, at the user's word, not shown --
+          and for the undo window after that word, the spot it stood on holds
+          a one-line "Notice dismissed — Undo" status (`undoOffer`): the
+          user's action named, never the error's text, and the way back. */}
+      {showUnreadableSpot && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the handlers hold the Undo window open and perform no action a role could announce; the pointer pair is the hover hold, the focus pair its keyboard parity (any focus inside the spot holds the same clock), as on the session-move undo bar and the Auto-title Undo
+        <div
+          ref={undoSpotRef}
+          className="px-2 pt-1.5"
+          onMouseEnter={() => setUndoHovered(true)}
+          onMouseLeave={() => setUndoHovered(false)}
+          onFocusCapture={() => setUndoFocused(true)}
+          onBlurCapture={() => setUndoFocused(false)}
+        >
+          {unreadableDismissed ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2 px-1 text-[11px] text-muted"
+              data-testid="workspace-tree-unreadable-dismissed"
+            >
+              <span id={undoStatusId}>{i18nT('components.workspaceTree.unreadable_dismissed')}</span>
+              {/* Face reads "Undo" and nothing else; the status text beside it is
+                  its description, so a reader landing on the button alone still
+                  hears what it undoes. */}
+              <button
+                type="button"
+                aria-describedby={undoStatusId}
+                onClick={undoDismissUnreadable}
+                className="flex items-center gap-1 cursor-pointer bg-transparent border-none p-0 text-[11px] leading-none text-accent hover:underline focus-ring"
+              >
+                <Undo2 size={12} aria-hidden />
+                {i18nT('components.workspaceTree.undo_dismiss_unreadable')}
+              </button>
+            </div>
+          ) : (
+            <ErrorNotice
+              variant="inline"
+              className="whitespace-normal"
+              message={i18nT('components.workspaceTree.unreadable_folders', { paths: unreadableFolders.join(', ') })}
+              askAgent
+              onDismiss={dismissUnreadable}
+              dismissLabel={i18nT('components.workspaceTree.dismiss_unreadable')}
+              testId="workspace-tree-unreadable-notice"
+            />
+          )}
         </div>
       )}
       {mode === 'all' && tree?.truncated && (

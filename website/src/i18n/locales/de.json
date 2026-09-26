@@ -8575,11 +8575,16 @@
       "status_failed": "Der Repository-Status konnte nicht gelesen werden.",
       "row_empty": "Leerer Ordner",
       "row_hidden_only": "Enthält nur versteckte Elemente (Dotfiles, Caches)",
+      "row_linked": "Link auf einen anderen Ordner: Inhalt nicht aufgelistet",
       "row_truncated": "Dateien nicht angezeigt: Dateilimit von 10.000 erreicht",
       "row_unreadable_marker": "Nicht lesbar — siehe Hinweis oben",
+      "row_unreadable_marker_dismissed": "Nicht lesbar — Hinweis geschlossen",
       "root_unreadable": "Keine Berechtigung zum Lesen des Arbeitsbereichsordners",
       "root_hidden_only": "Dieser Arbeitsbereich enthält nur versteckte Elemente (Dotfiles, Caches)",
-      "unreadable_folders": "Ordner nicht lesbar: {{paths}}"
+      "unreadable_folders": "Ordner nicht lesbar: {{paths}}",
+      "dismiss_unreadable": "Schließen: diesen Hinweis ausblenden, bis sich die nicht lesbaren Ordner ändern",
+      "unreadable_dismissed": "Hinweis geschlossen",
+      "undo_dismiss_unreadable": "Rückgängig"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

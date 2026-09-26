@@ -8456,11 +8456,16 @@
       "status_failed": "リポジトリの状態を読み取れませんでした。",
       "row_empty": "空のフォルダー",
       "row_hidden_only": "非表示の項目のみが含まれています（ドットファイル、キャッシュ）",
+      "row_linked": "別のフォルダーへのリンク：内容は一覧に表示されません",
       "row_truncated": "ファイルは表示されていません：ファイル数の上限 10,000 に達しました",
       "row_unreadable_marker": "読み取れません — 上の通知を参照",
+      "row_unreadable_marker_dismissed": "読み取れません — 通知は閉じられました",
       "root_unreadable": "ワークスペースのフォルダーを読み取る権限がありません",
       "root_hidden_only": "このワークスペースには非表示の項目のみが含まれています（ドットファイル、キャッシュ）",
-      "unreadable_folders": "読み取れないフォルダー：{{paths}}"
+      "unreadable_folders": "読み取れないフォルダー：{{paths}}",
+      "dismiss_unreadable": "閉じる：読み取れないフォルダーが変わるまでこの通知を非表示にします",
+      "unreadable_dismissed": "通知を閉じました",
+      "undo_dismiss_unreadable": "取り消し"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

@@ -1,10 +1,12 @@
 /**
  * Screenshot harness for the workspace tree's STATE ROW under a childless
  * folder (#13054): "Empty folder", "Contains only hidden items (dotfiles,
- * caches)", "Files not shown: file limit of 10,000 reached" -- for the truncation badge that yields
+ * caches)", "Link to another folder: contents not listed", "Files not shown:
+ * file limit of 10,000 reached" -- for the truncation badge that yields
  * to its own state row while the folder is expanded, for the folder the server
- * could not read (no state row and no marker on its row: a "Folders not
- * readable" alert with the agent hand-off above the tree), for the two root
+ * could not read (no state row beneath it, a lock marker on its row, and a
+ * "Folders not readable" alert with the agent hand-off above the tree that the
+ * user can dismiss), for the two root
  * states that replace the empty-workspace notice when the server could not
  * read the project root itself or the root holds only hidden items, and for
  * the listing-failure notice that replaces the endless shimmer when the first
@@ -35,7 +37,10 @@
  *                                  with the agent hand-off sits above the tree
  *                                  and `vault/locked`'s row carries the lock
  *                                  marker ("Not readable — see the notice
- *                                  above") that points at it
+ *                                  above") that points at it; the alert's ✕ is
+ *                                  named and tooltipped "Dismiss: hide this
+ *                                  notice until another folder becomes
+ *                                  unreadable"
  *   <prefix>-11-bg-collapsed       `_bg` and `big` collapsed again (their rows
  *                                  must go; `big`'s "files not shown" badge is
  *                                  back on the closed folder; `vault/locked`
@@ -49,6 +54,20 @@
  *                                  (asserted, not framed); clearing the filter
  *                                  feeds every row back and restores the
  *                                  pre-filter expansion (asserted, not framed)
+ *   <prefix>-13-notice-dismissed   the "Folders not readable" alert's ✕ clicked:
+ *                                  the notice is gone -- no copy of its text in
+ *                                  any register (a folder that stays unreadable
+ *                                  by design is no longer red on every visit,
+ *                                  and an error is never toned down, only shown
+ *                                  or not) -- and where it stood a one-line
+ *                                  "Notice dismissed — Undo" status offers the
+ *                                  way back for the undo window; `vault/locked`
+ *                                  keeps its lock marker, now labelled "Not
+ *                                  readable — notice dismissed". Then Undo is
+ *                                  clicked: the alert, its hand-off and its ✕
+ *                                  are back, the marker points at the notice
+ *                                  again, and the remembered set is empty
+ *                                  (asserted, not framed -- it is frame 10)
  *   <prefix>-20-listing-failed     the tree request answers 503: the HOST's
  *                                  own notice + Refresh (not changed by this
  *                                  PR; captured to show the failure path is
@@ -108,11 +127,15 @@ const TREE = {
   // marker character (an agent or a clone can write one): it must stay a
   // normal row -- icon, pointer, no state-row styling.
   paths: ['HEARTBEAT.md', 'notes/todo.md', 'src/app.py', 'src/util.py', 'trailing-marker\u200b'],
-  directories: ['_bg', 'big', 'empty', 'notes', 'src', 'vault', 'vault/locked'],
+  // `deploy/current` is a symlink to a directory: a visible entry the server
+  // lists as a row of its own but never walks into, so nothing beneath it is
+  // listed and the folder holding it is NOT hidden-only.
+  directories: ['_bg', 'big', 'deploy', 'deploy/current', 'empty', 'notes', 'src', 'vault', 'vault/locked'],
   truncated: true,
   truncatedDirectories: ['big'],
   hiddenOnlyDirectories: ['_bg'],
   unreadableDirectories: ['vault/locked'],
+  linkedDirectories: ['deploy/current'],
 }
 // The server could not read the project root itself: the walk yielded nothing
 // and `.` names the root in `unreadableDirectories`. A pre-fix dist sees only
@@ -146,6 +169,9 @@ const STATE_LABELS = {
   '_bg/': 'Contains only hidden items (dotfiles, caches)',
   'empty/': 'Empty folder',
   'big/': 'Files not shown: file limit of 10,000 reached',
+  // `deploy/` holds only the link, so Pierre's `flattenEmptyDirectories` paints
+  // the pair as one row whose path is the terminal directory.
+  'deploy/current/': 'Link to another folder: contents not listed',
 }
 // The truncation badge on the folder row. Post-fix it says "files not shown"
 // and yields while the folder is expanded (its state row says the same thing);
@@ -156,6 +182,18 @@ const TRUNCATED_BADGE = EXPECT_STATE_ROWS ? 'files not shown' : 'files hidden'
 // read: it points at the notice above the tree, which is where the failure is
 // reported, and states no failure of its own.
 const UNREADABLE_MARKER = 'Not readable — see the notice above'
+// ...and its label once the user has dismissed that notice, so it never sends
+// the reader to a notice that is not there.
+const UNREADABLE_MARKER_DISMISSED = 'Not readable — notice dismissed'
+// The accessible name AND tooltip of the notice's dismiss control
+// (`dismiss_unreadable`): the promise a remembered dismissal makes.
+const DISMISS_LABEL = 'Dismiss: hide this notice until the unreadable folders change'
+// The one-line status that stands where the dismissed notice stood for the
+// undo window (`unreadable_dismissed`), and the face of its Undo
+// (`undo_dismiss_unreadable`), which restores the notice and clears the
+// remembered set.
+const DISMISSED_STATUS = 'Notice dismissed'
+const UNDO_LABEL = 'Undo'
 // Every state row's name ends in this zero-width space -- the marker the
 // tree's stylesheet selects (`src/pierre/treeStateRows.ts`), so a row that
 // carries it is proven to be the styled synthetic row and not a real file.
@@ -308,14 +346,14 @@ async function main() {
     record(file, evidence)
   }
 
-  // ── Frame 10: five folders expanded ───────────────────────────────────────
+  // ── Frame 10: six folders expanded ────────────────────────────────────────
   await load()
   await panel().waitFor({ state: 'visible', timeout: 20000 })
   await waitRows(r => r.some(x => x.path === '_bg/'), 'the tree to paint _bg')
   // `vault/` holds only `locked/`, so Pierre's `flattenEmptyDirectories` paints
   // the pair as ONE row whose path is the terminal directory: there is no
   // `vault/` row to expand, and none to call empty.
-  for (const p of ['_bg/', 'empty/', 'big/', 'vault/locked/', 'src/']) await expand(p)
+  for (const p of ['_bg/', 'empty/', 'big/', 'deploy/current/', 'vault/locked/', 'src/']) await expand(p)
   await page.waitForTimeout(600)
   let r = await rows()
   const evidence10 = []
@@ -335,7 +373,7 @@ async function main() {
     }
   }
   // No real row -- file or folder -- carries the hook or its styling. "Real"
-  // is decided by the PLAN (the fixture's four state rows), never by the name
+  // is decided by the PLAN (the fixture's four state rows (empty, hidden-only, truncated, linked)), never by the name
   // suffix: `trailing-marker\u200b` is a real file whose name ends in the marker.
   const plannedPaths = new Set(Object.entries(STATE_LABELS).map(([dir, label]) => dir + label + STATE_ROW_MARKER))
   const realRows = r.filter(x => !plannedPaths.has(x.path))
@@ -393,22 +431,27 @@ async function main() {
   }
   // The folder the server could not read is also named ABOVE the tree, where a
   // notice can carry the agent hand-off (the row beneath it cannot).
-  const unreadableNotice = await page.evaluate(() => {
+  const unreadableNotice = await page.evaluate((dismiss) => {
     const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
     const el = panelEl?.querySelector('[data-testid="workspace-tree-unreadable-notice"]')
+    const control = [...(el?.querySelectorAll('button') ?? [])].find(b => b.getAttribute('aria-label') === dismiss)
     return {
       present: !!el,
       alert: el?.getAttribute('role') === 'alert',
       text: (el?.textContent ?? '').replace(/\s+/g, ' ').trim(),
       handoff: [...(el?.querySelectorAll('button') ?? [])].some(b => b.textContent?.trim() === 'Ask the agent'),
+      danger: !!el && getComputedStyle(el).color !== '' && el.className.includes('text-danger') && !el.hasAttribute('data-tone'),
+      dismiss: !!control,
+      // The same promise for hover: the icon-only ✕ carries its name as `title`.
+      dismissTooltip: control?.getAttribute('title') ?? '',
     }
-  })
+  }, DISMISS_LABEL)
   console.log('DIAG unreadable-notice', JSON.stringify(unreadableNotice))
   if (EXPECT_STATE_ROWS) {
-    if (!unreadableNotice.present || !unreadableNotice.alert || !unreadableNotice.text.includes('Folders not readable: vault/locked') || !unreadableNotice.handoff) {
-      throw new Error(`frame 10: expected the "Folders not readable: vault/locked" alert above the tree with "Ask the agent", got ${JSON.stringify(unreadableNotice)}`)
+    if (!unreadableNotice.present || !unreadableNotice.alert || !unreadableNotice.text.includes('Folders not readable: vault/locked') || !unreadableNotice.handoff || !unreadableNotice.danger || !unreadableNotice.dismiss || unreadableNotice.dismissTooltip !== DISMISS_LABEL) {
+      throw new Error(`frame 10: expected the "Folders not readable: vault/locked" alert above the tree with "Ask the agent" and the dismiss control (named and tooltipped "${DISMISS_LABEL}"), got ${JSON.stringify(unreadableNotice)}`)
     }
-    evidence10.push('"Folders not readable: vault/locked" alert above the tree with the "Ask the agent" hand-off')
+    evidence10.push(`"Folders not readable: vault/locked" alert (danger tone, role="alert") above the tree with the "Ask the agent" hand-off and the ✕ dismiss control whose aria-label and title both read "${DISMISS_LABEL}"`)
   } else if (unreadableNotice.present) {
     throw new Error(`frame 10 (pre-fix dist): no not-readable notice expected, got ${JSON.stringify(unreadableNotice)}`)
   }
@@ -527,6 +570,84 @@ async function main() {
   }
   console.log(`      asserted filter cleared → empty/ shows "${STATE_LABELS['empty/']}" again; _bg/ and big/ closed as before the filter`)
 
+  // ── Frame 13: the not-readable notice dismissed ───────────────────────────
+  // A folder that stays unreadable by design would keep the red alert on every
+  // Files visit. The ✕ does what it promises: the notice goes -- no copy of
+  // its text in any register (an error is never toned down, only shown or, at
+  // the user's word, not shown) -- and the lock marker on the folder's row, fed
+  // by the payload, stays with a label that now says the notice was dismissed.
+  // Where the notice stood, a one-line "Notice dismissed — Undo" status offers
+  // the way back for the undo window: the ✕ sits beside "Ask the agent" at the
+  // same weight, and a mis-click would otherwise record a per-project
+  // dismissal that survives reloads. Undo restores the alert and clears the
+  // remembered set (asserted after the frame).
+  if (EXPECT_STATE_ROWS) {
+    await page.locator(`[data-testid="workspace-tree-unreadable-notice"] button[aria-label="${DISMISS_LABEL}"]`).click()
+    const readDismissed = (undoLabel) => {
+      const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
+      const line = panelEl?.querySelector('[data-testid="workspace-tree-unreadable-dismissed"]')
+      const undo = [...(line?.querySelectorAll('button') ?? [])].find(b => b.textContent?.trim() === undoLabel)
+      const describedBy = undo?.getAttribute('aria-describedby')
+      return {
+        notice: !!panelEl?.querySelector('[data-testid="workspace-tree-unreadable-notice"]'),
+        alerts: panelEl?.querySelectorAll('[role="alert"]').length ?? -1,
+        statuses: [...(panelEl?.querySelectorAll('[role="status"]') ?? [])].map(el => (el.textContent ?? '').trim()),
+        handoff: [...(panelEl?.querySelectorAll('button') ?? [])].some(b => b.textContent?.trim() === 'Ask the agent'),
+        line: line ? { role: line.getAttribute('role'), text: (line.textContent ?? '').trim(), color: getComputedStyle(line).color } : null,
+        undo: !!undo,
+        undoDescription: describedBy ? (document.getElementById(describedBy)?.textContent ?? '').trim() : '',
+      }
+    }
+    const dismissed = await page.evaluate(readDismissed, UNDO_LABEL)
+    console.log('DIAG unreadable-notice-dismissed', JSON.stringify(dismissed))
+    if (dismissed.notice || dismissed.alerts !== 0 || dismissed.statuses.some(t => /not readable|vault\/locked/i.test(t)) || dismissed.handoff) {
+      throw new Error(`frame 13: expected the dismissed notice gone -- no alert, no copy of its text in a status, no hand-off -- got ${JSON.stringify(dismissed)}`)
+    }
+    if (!dismissed.line || dismissed.line.role !== 'status' || !dismissed.line.text.startsWith(DISMISSED_STATUS) || !dismissed.undo || dismissed.undoDescription !== DISMISSED_STATUS) {
+      throw new Error(`frame 13: expected a one-line role="status" "${DISMISSED_STATUS}" with an "${UNDO_LABEL}" button described by it where the notice stood, got ${JSON.stringify(dismissed)}`)
+    }
+    r = await rows()
+    const lockedDismissed = r.find(x => x.path === 'vault/locked/')
+    if (!lockedDismissed || !lockedDismissed.lockIcon || lockedDismissed.markerLabel !== UNREADABLE_MARKER_DISMISSED) {
+      throw new Error(`frame 13: vault/locked/ must keep its lock marker with the dismissed label after the dismissal, got ${JSON.stringify(lockedDismissed)}`)
+    }
+    if (r.some(x => x.path !== 'vault/locked/' && x.lockIcon)) {
+      throw new Error(`frame 13: only vault/locked/ may carry the lock marker, got ${JSON.stringify(r.filter(x => x.lockIcon).map(x => x.path))}`)
+    }
+    await shot('13-notice-dismissed', [
+      'dismiss control clicked → the "Folders not readable" notice is gone: no [role="alert"] in the panel, no copy of its text in any status, no "Ask the agent"',
+      `where it stood, the one-line role="status" "${DISMISSED_STATUS}" (muted, computed colour ${dismissed.line.color}) with the "${UNDO_LABEL}" button, described by that status text`,
+      `vault/locked/ still carries the lock marker, now labelled "${UNREADABLE_MARKER_DISMISSED}"; no other row carries one`,
+    ])
+    // Undo: the alert is back with its hand-off and its ✕, the marker points at
+    // it again, and the remembered set for the project is EMPTY, not hidden.
+    await page.locator(`[data-testid="workspace-tree-unreadable-dismissed"] button`, { hasText: UNDO_LABEL }).click()
+    const undone = await page.evaluate((dismiss) => {
+      const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
+      const el = panelEl?.querySelector('[data-testid="workspace-tree-unreadable-notice"]')
+      return {
+        alert: el?.getAttribute('role') === 'alert',
+        text: (el?.textContent ?? '').trim(),
+        handoff: [...(el?.querySelectorAll('button') ?? [])].some(b => b.textContent?.trim() === 'Ask the agent'),
+        dismiss: [...(el?.querySelectorAll('button') ?? [])].some(b => b.getAttribute('aria-label') === dismiss),
+        line: !!panelEl?.querySelector('[data-testid="workspace-tree-unreadable-dismissed"]'),
+        statuses: panelEl?.querySelectorAll('[role="status"]').length ?? -1,
+        remembered: JSON.parse(localStorage.getItem('mc-files-tree-unreadable-dismissed') ?? '{}'),
+      }
+    }, DISMISS_LABEL)
+    console.log('DIAG unreadable-notice-undone', JSON.stringify(undone))
+    const rememberedSets = Object.values(undone.remembered)
+    if (!undone.alert || !undone.text.includes('Folders not readable: vault/locked') || !undone.handoff || !undone.dismiss || undone.line || undone.statuses !== 0 || rememberedSets.length !== 1 || rememberedSets[0].length !== 0) {
+      throw new Error(`frame 13 (after Undo): expected the alert back with "Ask the agent" and the ✕, no Undo line, and an EMPTY remembered set for the project, got ${JSON.stringify(undone)}`)
+    }
+    r = await rows()
+    const lockedUndone = r.find(x => x.path === 'vault/locked/')
+    if (!lockedUndone || !lockedUndone.lockIcon || lockedUndone.markerLabel !== UNREADABLE_MARKER) {
+      throw new Error(`frame 13 (after Undo): vault/locked/ must point at the notice again, got ${JSON.stringify(lockedUndone)}`)
+    }
+    console.log(`      asserted Undo → the "Folders not readable: vault/locked" alert is back with "Ask the agent" and the ✕; vault/locked/ labelled "${UNREADABLE_MARKER}" again; remembered set for the project cleared to []`)
+  }
+
   // ── Frame 20: the listing request fails ───────────────────────────────────
   // NOT changed by this PR -- captured to settle the "can the fetch fail
   // silently?" question in the issue: every host gates the tree on
@@ -590,7 +711,12 @@ async function main() {
           if (rect.width === 0) continue
           if (lastTop !== null && Math.abs(rect.top - lastTop) > 2) {
             lines += 1
-            if (!s.slice(0, i).replace(/\u200b+$/, '').endsWith('/')) return false
+            // A break must sit at a boundary: after a `/` (the hint the notice
+            // inserts) or after a `-` inside a hyphenated segment (a break
+            // opportunity the browser honours on its own -- this checkout's own
+            // name has three). Anything else is the mid-word wrap the hint
+            // exists to prevent; name where it happened, so a failure says so.
+            if (!/[/-]$/.test(s.slice(0, i).replace(/\u200b+$/, ''))) return `broke at "${s.slice(Math.max(0, i - 12), i)}|${s.slice(i, i + 12)}"`
           }
           lastTop = rect.top
         }
@@ -614,7 +740,7 @@ async function main() {
     throw new Error(`frame 30: expected a settled state with no tree mounted, got ${JSON.stringify(rootState)}`)
   }
   if (EXPECT_STATE_ROWS) {
-    if (!rootState.named || !rootState.pathSpan || !rootState.pathBreaksOnlyAtSlash || !rootState.handoffAfterPath || !rootState.marked || !rootState.alert || !rootState.refresh || !rootState.handoff || rootState.bareLabel || rootState.empty) {
+    if (!rootState.named || !rootState.pathSpan || typeof rootState.pathBreaksOnlyAtSlash !== 'number' || !rootState.handoffAfterPath || !rootState.marked || !rootState.alert || !rootState.refresh || !rootState.handoff || rootState.bareLabel || rootState.empty) {
       throw new Error(`frame 30: expected the "No permission to read the workspace folder" alert with the path in its own span, the hand-off after it, Refresh, no bare label and no empty-workspace notice, got ${JSON.stringify(rootState)}`)
     }
     await shot('30-root-unreadable', [`"No permission to read the workspace folder" + the path ${PROJECT} in its own span (data-testid workspace-tree-root-unreadable, role=alert) in the tree's place, the "Ask the agent" hand-off AFTER sentence and path, every line break in the path after a slash (${rootState.pathBreaksOnlyAtSlash} line(s)), a Refresh button; no "Folder not readable" bare label, no "No files in this workspace yet", no tree mounted (text: ${rootState.text})`])
