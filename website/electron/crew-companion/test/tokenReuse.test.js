@@ -112,9 +112,9 @@ test("a later tick reuses the token instead of minting again", async () => {
   const mod = loadCompanion({ status: [200, 200, 200] });
   mod.initCrewCompanion({
     backendUrl: "http://127.0.0.1:5476",
-    fetchLocalToken: async () => {
+    mintLocalToken: async () => {
       mints.n += 1;
-      return `tok-${mints.n}`;
+      return { token: `tok-${mints.n}`, origin: "" };
     },
     glog: () => {},
   });
@@ -134,9 +134,9 @@ test("a refused token is re-minted exactly once", async () => {
   const mod = loadCompanion({ status: [401, 200] });
   mod.initCrewCompanion({
     backendUrl: "http://127.0.0.1:5476",
-    fetchLocalToken: async () => {
+    mintLocalToken: async () => {
       mints.n += 1;
-      return `tok-${mints.n}`;
+      return { token: `tok-${mints.n}`, origin: "" };
     },
     glog: () => {},
   });

@@ -402,7 +402,7 @@ windows = createWindowLifecycle({
   port: PORT,
   glog,
   readInternalSecret,
-  fetchLocalToken: (...args) => gateway.fetchLocalToken(...args),
+  mintLocalToken: (...args) => gateway.mintLocalToken(...args),
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
   isQuitting: () => isQuitting,
   requestQuit,
@@ -495,10 +495,18 @@ async function offerRelocationIfUnupdatable() {
 async function fetchMochiGatewayAuth(backendUrl = BACKEND_URL) {
   // Keep the dashboard established credential order: local secret, explicit
   // SSH host, then a token borrowed from the already-authenticated session.
-  const localValue = await gateway.fetchLocalToken(backendUrl);
+  // A locally minted token carries the origin it was minted against, and
+  // withGatewayAuth() addresses the request there: `localhost` names both
+  // loopback families, so re-deriving the destination from `backendUrl` can
+  // hand this credential to a co-resident holding the other one. An SSH-fetched
+  // token is a bearer on the same terms -- the tunnel's local end is bound
+  // 127.0.0.1 by this app -- so it carries the same literal origin.
+  const localValue = await gateway.mintLocalToken(backendUrl);
   if (localValue) return { value: localValue, viaCookie: false };
   const { token: remoteValue } = await gateway.fetchRemoteToken(new URL(backendUrl).port);
-  if (remoteValue) return { value: remoteValue, viaCookie: false };
+  if (remoteValue) {
+    return { value: remoteValue, viaCookie: false };
+  }
   const borrowed = await borrowSessionToken({
     electronSession: session.defaultSession,
     backendUrl,
@@ -581,7 +589,7 @@ app.whenReady().then(async () => {
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
-      fetchLocalToken: (...args) => gateway.fetchLocalToken(...args),
+      mintLocalToken: (...args) => gateway.mintLocalToken(...args),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
     });

@@ -190,9 +190,12 @@ each launch to get a fresh JWT — no manual paste required.
 ### Token flow (per tab)
 
 ```
-1. Read `$KIROCREW_HOME/.local_secret` when a valid override is set; otherwise read
-   `~/.kiro/crew/.local_secret`, then call `/api/token/local` on the tab's port.
-   Only the authoritative home is read; there is no legacy-directory fallback.
+1. Read `<data home>/run/gateway-<port>-<bind address>.secret` for the tab's port,
+   trying the bind addresses whose listener answers the dialed v4 loopback
+   (`127.0.0.1`, then `0.0.0.0`), then call `/api/token/local` on that port.
+   The credential is keyed by the listener, so an entry belonging to a gateway on
+   another address or another port is never read. No entry means refuse, not
+   fall back: the home-wide `.local_secret` is not consulted here.
 2. If remote host configured for this port:
    SSH: export PATH=<remotePath> KIROCREW_PORT=<port>; <bin> token
 3. Fallback: show manual token prompt

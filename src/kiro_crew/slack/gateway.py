@@ -13761,13 +13761,31 @@ class GatewayOrchestrator:
         thread re-clears its own late write. The clear lives in the same
         thread as the write (not an event-loop callback) because
         ``os._exit`` can beat any callback still queued on the loop.
+
+        The clear here is ``clear_late_marker_write``, not ``clear_marker``,
+        and the difference is what makes this thread safe to run at an
+        arbitrary time. The shutdown-side clear holds the listener while it
+        runs, so a location still identifies its owner; this thread may run
+        after the listener is free and a replacement gateway has bound the
+        port, where it does not. ``clear_late_marker_write`` therefore deletes
+        no credential at all, so a replacement gateway's clients keep
+        authenticating whatever this thread does, and it declines the marker
+        files outright when the pid record names another process. Its own
+        docstring states what that second scope does not reach: a late write
+        of this generation rewrites the pid record, so marker files a landed
+        late write produced are always removable.
         """
         try:
             run_marker.write_marker(port)
         finally:
             if self._marker_clear_pending.is_set():
                 try:
-                    run_marker.clear_marker(port)
+                    if not run_marker.clear_late_marker_write(port):
+                        logger.debug(
+                            "Late run-marker self-clear declined for port %s: "
+                            "the pid record names another gateway",
+                            port,
+                        )
                 except Exception:
                     logger.debug("Late run-marker self-clear skipped", exc_info=True)
 
@@ -14432,6 +14450,12 @@ class GatewayOrchestrator:
         # os._exit could beat. TimeoutError and a failed write are both
         # caught HERE (not by the outer except) so they still fall through
         # to the clear.
+        # The clear itself is filesystem work -- unlinking the marker, the pid and
+        # start sidecars, and every credential sidecar the listeners published --
+        # so it is offloaded rather than run on the loop. It is AWAITED, not
+        # queued, because the ordering above is the point: the clear has to land
+        # before _shutdown() frees the listener. An awaited thread also cannot be
+        # beaten by os._exit the way a loop callback can.
         try:
             from kiro_crew.instances import run_marker
 
@@ -14454,7 +14478,7 @@ class GatewayOrchestrator:
                             "Run-marker write failed; clearing anyway",
                             exc_info=True,
                         )
-                run_marker.clear_marker(self._dashboard_port)
+                await asyncio.to_thread(run_marker.clear_marker, self._dashboard_port)
         except Exception:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
