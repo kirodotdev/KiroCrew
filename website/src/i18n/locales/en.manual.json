@@ -3128,6 +3128,9 @@
       "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
       "prompt_lead": "This error just came up in the {{productName}} dashboard. Diagnose the root cause and fix it."
     },
+    "errorBoundary": {
+      "lazy_page_load_failed": "This page couldn't load. Check the connection to the gateway, then try again."
+    },
     "errorNotice": {
       "dismiss": "Dismiss"
     },

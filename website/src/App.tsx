@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type ComponentType, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -52,7 +52,7 @@ import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
 import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, PanelLeft, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
-import { Toggle } from './components/ui'
+import { Btn, Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import MeetCrewmatesFlow, { MeetCrewmatesEligibilityNotice } from './components/MeetCrewmatesFlow'
 import { useMeetCrewmatesGate } from './hooks/useMeetCrewmatesGate'
@@ -97,34 +97,23 @@ import AskAgentButton from './components/AskAgentButton'
 import AppIcon from './components/AppIcon'
 import Clickable from './components/Clickable'
 import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
-import NotificationsPage from './pages/NotificationsPage'
 const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
 import NotificationBanner from './components/notifications/NotificationBanner'
 import LogsPage from './pages/LogsPage'
-import HooksPage from './pages/HooksPage'
-import WebhooksPage from './pages/WebhooksPage'
-import CapabilitiesPage from './pages/CapabilitiesPage'
 // Lazy: /members is a standalone surface not needed at startup, and the main
 // chunk sits at its size budget — the import() boundary keeps the page (and
 // its drawer/roster tree) out of the initial bundle.
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
-import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
-import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
-import ArtifactDeployPage from './pages/ArtifactDeployPage'
-import SettingsPage from './pages/SettingsPage'
 import { InAppUpdateFlow } from './pages/settings/AboutPanel'
-import EmbedSettingsPage from './pages/EmbedSettingsPage'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
 import InstancesViewport from './components/InstancesViewport'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
-import DeveloperPage from './pages/DeveloperPage'
-import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription, type UpdateState } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
@@ -136,9 +125,6 @@ import { withDeadline } from './lib/withDeadline'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
-import AppPage from './pages/AppPage'
-import AppDetailPage from './pages/AppDetailPage'
-import MigrationPage from './pages/MigrationPage'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
@@ -207,6 +193,80 @@ const UpdatePill = lazy(() => import('./components/UpdatePill'))
 // chunk -- each rides its own on-demand chunk fetched on first navigation.
 const DiscoverPage = lazy(() => import('./pages/apps/DiscoverPage'))
 const LibraryPage = lazy(() => import('./pages/apps/LibraryPage'))
+/**
+ * A route page loaded on first navigation, rendering nothing until its chunk
+ * arrives. The Suspense boundary lives inside the returned component, so the
+ * `<Route>` entries that mount these pages read the same as for an eager page.
+ *
+ * The chunk fetch can reject (gateway unreachable, stale chunk after a rebuild
+ * once main.tsx's `vite:preloadError` reload guard has bailed). React surfaces
+ * a rejected lazy import as a render throw, and an eager page could never
+ * fail that way -- so the page carries its own route-scoped ErrorBoundary:
+ * the route area shows the recoverable error card while the shell (rail,
+ * top bar, other routes) stays mounted instead of the throw reaching the
+ * root `app-shell` boundary in main.tsx and replacing the whole dashboard.
+ */
+function lazyPage(load: () => Promise<{ default: ComponentType }>): ComponentType {
+  // Shared by every mount, so a page whose chunk already loaded renders on the
+  // next visit without suspending again. Replaced only by a retry.
+  let shared = lazy(load)
+  function LazyPage() {
+    const [{ Page, attempt }, setLoadState] = useState(() => ({ Page: shared, attempt: 0 }))
+    // React.lazy caches a rejected loader. A new wrapper per attempt makes the
+    // retry perform another import instead of rendering the cached rejection.
+    return (
+      <ErrorBoundary
+        key={attempt}
+        scope="lazy-route"
+        fallback={(error) => (
+          <div className="flex h-full items-center justify-center p-8">
+            <ErrorNotice
+              title={i18nT('components.errorBoundary.lazy_page_load_failed')}
+              message={error.message}
+              askAgent
+              footer={(
+                <div className="flex items-center gap-2">
+                  <Btn onClick={() => {
+                    shared = lazy(load)
+                    setLoadState(current => ({ Page: shared, attempt: current.attempt + 1 }))
+                  }}>
+                    {i18nT('components.errorBoundary.try_again')}
+                  </Btn>
+                  <Btn onClick={() => window.location.reload()}>
+                    {i18nT('components.errorBoundary.reload_page')}
+                  </Btn>
+                </div>
+              )}
+            />
+          </div>
+        )}
+      >
+        <Suspense fallback={null}><Page /></Suspense>
+      </ErrorBoundary>
+    )
+  }
+  return LazyPage
+}
+
+// Every page below is reached only through its own route, so each rides an
+// on-demand chunk instead of the app-core chunk the chat route has to parse on
+// first load. Pages another eager module imports statically stay eager above
+// (LogsPage via the chat ActivityViewer, ArtifactDetailPage via the artifact
+// popout frame): a lazy boundary there would not move their code.
+const NotificationsPage = lazyPage(() => import('./pages/NotificationsPage'))
+const WebhooksPage = lazyPage(() => import('./pages/WebhooksPage'))
+const CapabilitiesPage = lazyPage(() => import('./pages/CapabilitiesPage'))
+const ArtifactsPage = lazyPage(() => import('./pages/ArtifactsPage'))
+const RemoteArtifactDetailPage = lazyPage(() => import('./pages/RemoteArtifactDetailPage'))
+const ArtifactDeployPage = lazyPage(() => import('./pages/ArtifactDeployPage'))
+const SettingsPage = lazyPage(() => import('./pages/SettingsPage'))
+const EmbedSettingsPage = lazyPage(() => import('./pages/EmbedSettingsPage'))
+const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
+const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
+const AppPage = lazyPage(() => import('./pages/AppPage'))
+const AppDetailPage = lazyPage(() => import('./pages/AppDetailPage'))
+const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
+const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 

@@ -6297,6 +6297,7 @@
       "sessions": "会话"
     },
     "errorBoundary": {
+      "lazy_page_load_failed": "无法加载此页面。请检查与网关的连接，然后重试。",
       "reload_page": "重新加载页面",
       "something_went_wrong": "出现问题",
       "try_again": "重试"

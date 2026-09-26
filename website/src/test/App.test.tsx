@@ -12,6 +12,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { ApiError } from '../api/client'
 import { safeSetItem } from '../utils/safeStorage'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from '../prompts/featureRequest'
+import { consumeChatHandoff } from '../utils/errorReport'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
@@ -58,6 +59,17 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid=
 vi.mock('../pages/CapabilitiesPage', () => ({ default: () => <div data-testid="capabilities-page">CapabilitiesPage</div> }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => <div data-testid="notifications-page">NotificationsPage</div> }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="schedule-page">SchedulePage</div> }))
+// A lazy route whose first chunk fetch rejects, then succeeds when retried.
+// The factory count models the browser re-attempting the dynamic import after
+// a transient gateway or stale-chunk failure.
+const hooksPageMock = vi.hoisted(() => ({ attempts: 0 }))
+vi.mock('../pages/HooksPage', () => {
+  hooksPageMock.attempts += 1
+  if (hooksPageMock.attempts === 1) {
+    throw new Error('Failed to fetch dynamically imported module: HooksPage')
+  }
+  return { default: () => <div data-testid="hooks-page">HooksPage</div> }
+})
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }, { name: 'reviewer' }, { name: 'oracle' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
@@ -420,9 +432,10 @@ describe('App routing', () => {
     expect(shell!.className).toContain('supports-[height:100dvh]:h-dvh')
   })
 
-  it('redirects /agents to the Agent Capabilities panel', () => {
+  // CapabilitiesPage is a lazy route chunk, so it lands after a Suspense tick.
+  it('redirects /agents to the Agent Capabilities panel', async () => {
     renderWithProviders(<App />, { route: '/agents' })
-    expect(screen.getByTestId('capabilities-page')).toBeInTheDocument()
+    expect(await screen.findByTestId('capabilities-page')).toBeInTheDocument()
   })
 
   // /projects now resolves through BuiltinAppRoute -> BUILTIN_COMPONENT_REGISTRY
@@ -441,6 +454,53 @@ describe('App routing', () => {
   it('renders logs page at /logs', () => {
     renderWithProviders(<App />, { route: '/logs' })
     expect(screen.getByTestId('logs-page')).toBeInTheDocument()
+  })
+
+  // Route-only pages load through React.lazy; each must still mount behind its
+  // Suspense boundary once its chunk resolves.
+  it.each([
+    ['/notifications', 'notifications-page'],
+    ['/schedule', 'schedule-page'],
+    ['/capabilities', 'capabilities-page'],
+  ])('renders the lazy route page at %s', async (route, testId) => {
+    renderWithProviders(<App />, { route })
+    expect(await screen.findByTestId(testId)).toBeInTheDocument()
+  })
+
+  // A rejected lazy import must stay inside its route area, preserve its
+  // diagnostic for agent hand-off, and recover when the user retries the fetch.
+  it('recovers a lazy route after its first chunk load fails', async () => {
+    // React and ErrorBoundary both report the caught throw on console.error;
+    // it is the expected outcome here, not noise to fail on.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      sessionStorage.clear()
+      const view = renderWithProviders(<App />, { route: '/hooks' })
+      const notice = await screen.findByRole('alert')
+      const caughtDiagnostic = '[vitest] There was an error when mocking a module.'
+      expect(notice).toHaveTextContent("This page couldn't load. Check the connection to the gateway, then try again.")
+      expect(notice).toHaveTextContent(caughtDiagnostic)
+      expect(screen.getByRole('button', { name: 'Try Again' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument()
+      // The nav rail is still rendered around the failed route.
+      expect(screen.getByText('Sessions')).toBeInTheDocument()
+      expect(screen.getByText('Settings')).toBeInTheDocument()
+
+      fireEvent.click(within(notice).getByRole('button', { name: 'Ask the agent' }))
+      expect(consumeChatHandoff()).toContain(`- Message: ${caughtDiagnostic}`)
+
+      // The hand-off navigates to chat. Remounting the failed route models the
+      // user returning before retrying; the rejected React.lazy wrapper remains.
+      view.unmount()
+      renderWithProviders(<App />, { route: '/hooks' })
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Try Again' }))
+
+      expect(await screen.findByTestId('hooks-page')).toBeInTheDocument()
+      expect(hooksPageMock.attempts).toBe(2)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it('redirects unknown routes to /chat', () => {

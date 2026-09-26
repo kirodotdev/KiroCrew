@@ -6297,6 +6297,7 @@
       "sessions": "세션"
     },
     "errorBoundary": {
+      "lazy_page_load_failed": "이 페이지를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
       "reload_page": "페이지 새로 고침",
       "something_went_wrong": "문제가 발생했습니다",
       "try_again": "다시 시도"
