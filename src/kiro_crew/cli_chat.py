@@ -29,6 +29,7 @@ from kiro_crew.hooks import (
     mcp_identity_ref,
     target_paths,
 )
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -1013,7 +1014,9 @@ async def _answer_permission(
             except Exception:
                 logger.warning("Could not prepare the CLI audit-denial notice", exc_info=True)
             return
-        await provider.approve_tool(event.request_id)
+        approval_sent = await provider.approve_tool(event.request_id)
+        if approval_sent is False:
+            await _audit_off_loop(gate, event, OUTCOME_REJECTED_TRANSPORT_FLOOR)
     else:
         # Deliberately NOT critical, and the asymmetry is the point: this call is
         # already being refused, so a lost record cannot authorize anything. Making

@@ -349,7 +349,7 @@ harness can get wrong:
 | Member | Contract |
 |---|---|
 | `start` / `shutdown` / `stream` | The turn lifecycle every consumer depends on. |
-| `approve_tool` / `reject_tool` | Tool-approval responses; a provider that cannot answer must still refuse, never hang. |
+| `approve_tool` / `reject_tool` | Tool-approval responses; `approve_tool` returns whether an allow answer was sent, and a provider that cannot answer must still refuse, never hang. |
 | `context_usage_pct`, `context_usage_unknown`, `context_window_tokens`, `context_used_tokens` | The context meter. `context_usage_unknown` is what distinguishes "0%" from "not measured". |
 | `session_id`, `cleanup_session`, `cwd` | Session identity and cleanup routing; a wrong `cwd` persists the wrong workspace on resume. |
 | `served_model`, `available_models` | The model actually served, which can differ from the id Crew stored. |

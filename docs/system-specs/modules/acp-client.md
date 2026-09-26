@@ -487,6 +487,28 @@ false and consumers that need trusted arguments fail closed.
 
 The host always sends one-shot approvals (`always=False`, the default). Kiro Crew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so Kiro Crew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip Kiro Crew hooks for this exact tool" feature; no caller passes it today.
 
+### Approval floor in `approve_tool` (`permission_floor.py`)
+
+Both transports' `approve_tool` methods (`AcpClient`, `AcpSessionHandle`) run the
+tool gate's security tiers before sending an `allow`: `_build_permission_event`
+records each event by request id in `_permission_gate_events`, and `approve_tool`
+pops it and calls `permission_floor.refusal_for(event)` off the loop. A SECURITY
+deny (the denied-command floor, the sensitive-path read and write checks, the
+unverifiable-shell refusal) or an id with no recorded event is answered with
+`reject_tool` and a `rejected_transport_floor` SEL row; a gate that cannot be
+built or consulted refuses (fail closed). Both methods return `True` only after
+they send an allow answer and `False` when this floor sends a rejection instead.
+The non-judging transport auto-approve path writes a `transport_auto_approve` SEL row with the `auto_approved` outcome after an allow answer.
+Every production caller consumes that result before it records approved state or
+activity. This transport consultation is uncounted (`hooks.uncounted_gate`)
+because the consumer's identity-bearing consultation owns the gate decision.
+Governance (identity-scoped policy) stays with the caller identity: approval
+consumers call `HookManager.on_tool_call` or `refusal_for(event,
+session_key=..., agent=..., security_only=False)` before their approval tiers.
+This includes the `AcpClient` internal auto-approve path, the evaluation runner,
+and the code-review pool. Provider adapters only forward an approval from a
+consumer that has completed that consultation.
+
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
 permission for the same call therefore retains the fact that a non-shell MCP tool

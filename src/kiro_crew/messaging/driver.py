@@ -72,6 +72,7 @@ from kiro_crew.monitoring.completion import (
     disposition_for_stop_reason,
     is_monitor_completion_evidence,
 )
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.tool_call_title import derive_tool_call_title
@@ -805,11 +806,15 @@ class TurnDriver:
                         # check's filesystem work.
                         _ng_refusal = await name_grant.refusal_for_event(event)
                         if _ng_refusal is None:
-                            await self.provider.approve_tool(event.request_id)
+                            approval_sent = await self.provider.approve_tool(event.request_id)
                             sel().log_api_access(
                                 caller="turn_driver",
                                 operation="tool_permission",
-                                outcome="auto_approved",
+                                outcome=(
+                                    "auto_approved"
+                                    if approval_sent is not False
+                                    else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                                ),
                                 source="messaging",
                                 resources=(
                                     f"request_id={event.request_id} "
@@ -859,11 +864,15 @@ class TurnDriver:
                 elif self.auto_approve_session is not None and self.auto_approve_session():
                     _auto_reason = "session_trust"
                 if _auto_reason:
-                    await self.provider.approve_tool(event.request_id)
+                    approval_sent = await self.provider.approve_tool(event.request_id)
                     sel().log_api_access(
                         caller="turn_driver",
                         operation="tool_permission",
-                        outcome="auto_approved",
+                        outcome=(
+                            "auto_approved"
+                            if approval_sent is not False
+                            else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                        ),
                         source="messaging",
                         resources=(
                             f"request_id={event.request_id} "
@@ -901,8 +910,14 @@ class TurnDriver:
                     )
                 approved = await self._approve(event)
                 if approved:
-                    await self.provider.approve_tool(event.request_id)
+                    approval_sent = await self.provider.approve_tool(event.request_id)
+                    permission_outcome = (
+                        "approved"
+                        if approval_sent is not False
+                        else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                    )
                 else:
+                    permission_outcome = "denied"
                     # Steer FIRST, reject SECOND: while the permission request
                     # is unanswered the turn is provably in flight, so a
                     # host-caused denial (an expired prompt) can be explained
@@ -912,7 +927,7 @@ class TurnDriver:
                 sel().log_api_access(
                     caller="turn_driver",
                     operation="tool_permission",
-                    outcome="approved" if approved else "denied",
+                    outcome=permission_outcome,
                     source="messaging",
                     resources=f"request_id={event.request_id} mode={self.approval_mode}",
                 )

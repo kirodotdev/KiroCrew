@@ -34,6 +34,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -2876,9 +2877,15 @@ async def _resolve_permission(
             # silent auto-approve of a shadowed name on an unwatched turn.
             _ng_refusal = await name_grant.refusal_for_event(event)
             if _ng_refusal is None:
-                await provider.approve_tool(event.request_id)
-                _log("auto_approved", metadata={"reason": "hook_auto_approve"})
-                return True
+                approval_sent = await provider.approve_tool(event.request_id)
+                if approval_sent is not False:
+                    _log("auto_approved", metadata={"reason": "hook_auto_approve"})
+                else:
+                    _log(
+                        OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                        metadata={"mechanism": "always_deny_transport"},
+                    )
+                return approval_sent is not False
             if name_grant.should_log_decline(session_key, _ng_refusal):
                 logger.warning(
                     "declining a hook auto-approve: %s; the request falls through "
@@ -2924,9 +2931,12 @@ async def _resolve_permission(
             return False
 
     # Default: auto-approve
-    await provider.approve_tool(event.request_id)
-    _log("auto_approved")
-    return True
+    approval_sent = await provider.approve_tool(event.request_id)
+    if approval_sent is not False:
+        _log("auto_approved")
+    else:
+        _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+    return approval_sent is not False
 
 
 # ── JSON Parsing ──

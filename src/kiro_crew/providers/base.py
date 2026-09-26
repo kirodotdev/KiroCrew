@@ -133,8 +133,11 @@ class LLMProvider(ABC):
         yield LLMEvent(kind=EVENT_COMPLETE)  # pragma: no cover
 
     @abstractmethod
-    async def approve_tool(self, request_id: str | int, *, always: bool = False) -> None:
-        """Approve a pending tool permission request.
+    async def approve_tool(self, request_id: str | int, *, always: bool = False) -> bool:
+        """Approve a pending tool permission request and report whether it was sent.
+
+        Return ``True`` after sending an allow answer. Return ``False`` when the
+        transport rejected the request instead.
 
         ``always=True`` signals the user picked the "always allow" option
         (e.g. trust mode). Providers that distinguish between one-shot and

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
@@ -1126,6 +1126,32 @@ async def _stream_task(
                     )
                     await client.reject_tool(event.request_id)
                     continue
+                # The PreToolUse gate outranks every approval tier below: YOLO,
+                # channel trust, a command grant and the human card all sit
+                # behind it, as session trust does on every other surface.
+                # Asked with this agent's session and name so its governance
+                # profile applies; any deny refuses. This is the channel's own
+                # (counted) gate decision; the transport's approve_tool runs the
+                # identity-free security floor again, uncounted.
+                _gate_reason = await asyncio.to_thread(
+                    permission_floor.refusal_for,
+                    event,
+                    session_key=agent.session_key,
+                    agent=agent.agent_name,
+                    security_only=False,
+                )
+                if _gate_reason is not None:
+                    sel().log_tool_invocation(
+                        session_key=agent.session_key,
+                        agent=agent.agent_name,
+                        source="channel",
+                        # Permission events populate ``title``; ``text`` is empty.
+                        tool_name=event.text or event.title,
+                        outcome="rejected_hook_deny",
+                        metadata={"reason": _gate_reason},
+                    )
+                    await client.reject_tool(event.request_id)
+                    continue
                 # YOLO mode (global) or channel trust — auto-approve
                 if (is_yolo and is_yolo()) or channel.trusted:
                     sel().log_tool_invocation(
@@ -1139,7 +1165,15 @@ async def _stream_task(
                             else "auto_approved_channel_trust"
                         ),
                     )
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=agent.session_key,
+                            agent=agent.agent_name,
+                            source="channel",
+                            tool_name=event.text or event.title or "",
+                            outcome=permission_floor.OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                        )
                     continue
                 # Per-command trust grants (trust_command / trust_base) — agent-
                 # scoped patterns granted via the approve endpoint. Security:
@@ -1182,7 +1216,15 @@ async def _stream_task(
                                 outcome="auto_approved_trusted_pattern",
                                 metadata={"pattern": matched},
                             )
-                            await client.approve_tool(event.request_id)
+                            approval_sent = await client.approve_tool(event.request_id)
+                            if approval_sent is False:
+                                sel().log_tool_invocation(
+                                    session_key=agent.session_key,
+                                    agent=agent.agent_name,
+                                    source="channel",
+                                    tool_name=event.text or event.title or "",
+                                    outcome=permission_floor.OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                )
                             continue
                         name_grant.log_decline(
                             source="channel",
@@ -1309,11 +1351,20 @@ async def _stream_task(
                     await asyncio.to_thread(name_grant.pin_human_approval, _cmd)
                 if decision == "trust":
                     channel.trusted = True
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
                 elif decision == "approved":
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
                 else:
+                    approval_sent = True
                     await client.reject_tool(event.request_id)
+                if approval_sent is False:
+                    sel().log_tool_invocation(
+                        session_key=agent.session_key,
+                        agent=agent.agent_name,
+                        source="channel",
+                        tool_name=event.text or event.title or "",
+                        outcome=permission_floor.OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                    )
 
             elif event.kind == EVENT_COMPLETE:
                 break

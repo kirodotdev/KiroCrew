@@ -38,7 +38,7 @@ import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 # The app root holds ``sage_lib/``; put it on sys.path so ``from sage_lib import store``
 # resolves on import (mirrors the sys.path setup in sibling ``review_driver.py``).
@@ -56,8 +56,21 @@ try:
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TOOL_STALL,
     )
+    from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, refusal_for
 except ImportError:  # pragma: no cover - standalone / test fallback
     AcpRuntime = None  # type: ignore[assignment,misc]
+    OUTCOME_REJECTED_TRANSPORT_FLOOR = "rejected_transport_floor"
+
+    def refusal_for(
+        event: Any,
+        *,
+        session_key: str = "",
+        agent: str = "",
+        app: str = "",
+        security_only: bool = True,
+    ) -> str | None:
+        return "Blocked: the tool security gate could not be consulted"
+
     EVENT_TEXT_CHUNK = "text_chunk"  # type: ignore[assignment]
     EVENT_TOOL_CALL = "tool_call"  # type: ignore[assignment]
     EVENT_PERMISSION_REQUEST = "permission_request"  # type: ignore[assignment]
@@ -633,14 +646,33 @@ class ReviewPool:
                             # requires every permission decision to emit an SEL event, and
                             # the EVENT_TOOL_CALL audit carries no decision/request id.
                             req_id = getattr(ev, "request_id", "")
+                            reason = await asyncio.to_thread(
+                                refusal_for,
+                                ev,
+                                session_key=getattr(handle, "session_id", "") or "",
+                                agent=self._agent,
+                                app="code-review-sage",
+                                security_only=False,
+                            )
+                            if reason is not None:
+                                await handle.reject_tool(req_id)
+                                await self._audit_tool(
+                                    handle,
+                                    ev,
+                                    request_id=req_id,
+                                    outcome="rejected_hook_deny",
+                                )
+                                continue
                             try:
-                                await handle.approve_tool(req_id)
+                                approval_sent = await handle.approve_tool(req_id)
                             except Exception:
                                 logger.debug("tool approve failed", exc_info=True)
                             else:
                                 await self._audit_tool(
                                     handle, ev, request_id=req_id,
-                                    outcome="auto_approved")
+                                    outcome=("auto_approved"
+                                             if approval_sent is not False
+                                             else OUTCOME_REJECTED_TRANSPORT_FLOOR))
                         elif kind == EVENT_COMPLETE:
                             stop_reason = getattr(ev, "stop_reason", "") or ""
                             break

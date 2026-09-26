@@ -34,6 +34,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -668,15 +669,20 @@ async def execute_task(
                         )
                         continue
 
-                    await client.approve_tool(event.request_id)
-                    run.last_task_time = _time.time()
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is not False:
+                        run.last_task_time = _time.time()
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=agent or "kirocrew",
                         source="taskrunner",
                         tool_name=event.title,
                         tool_kind=event.tool_kind,
-                        outcome="approved",
+                        outcome=(
+                            "approved"
+                            if approval_sent is not False
+                            else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                        ),
                         request_id=event.request_id,
                         metadata={
                             "task": task.index,

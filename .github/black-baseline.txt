@@ -208,7 +208,6 @@ src/kiro_crew/eval/bench/ingest.py
 src/kiro_crew/eval/bench/retrieval.py
 src/kiro_crew/eval/bench/run.py
 src/kiro_crew/eval/bench/scorers.py
-src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py

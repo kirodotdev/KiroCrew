@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.sel import sel
@@ -356,14 +357,18 @@ async def decompose(
                         metadata={"phase": "decomposition"},
                     )
                     continue
-                await client.approve_tool(event.request_id)
+                approval_sent = await client.approve_tool(event.request_id)
                 sel().log_tool_invocation(
                     session_key=session_key,
                     agent=agent or "kirocrew",
                     source="taskrunner",
                     tool_name=event.title,
                     tool_kind=event.tool_kind,
-                    outcome="auto_approved",
+                    outcome=(
+                        "auto_approved"
+                        if approval_sent is not False
+                        else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                    ),
                     request_id=event.request_id,
                     metadata={"phase": "decomposition"},
                 )

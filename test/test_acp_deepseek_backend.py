@@ -1393,6 +1393,7 @@ def _deepseek_tripwire_client(monkeypatch):
     client._pi_gate_denied_ids = set()
     client._pi_gate_request_tool = {}
     client._permission_options = {}
+    client._permission_gate_events = {}
     client._session_id = "s1"
     client._session_key = "k1"
     killed: list = []
@@ -1406,6 +1407,20 @@ def _deepseek_tripwire_client(monkeypatch):
     monkeypatch.setattr(client, "_kill_process", _kill)
     monkeypatch.setattr(client, "_send_response", _send)
     return client, killed
+
+
+def _asked(client, frame) -> None:
+    """The frame was asked about: the tripwire noted it and the client recorded its event.
+
+    ``approve_tool`` approves only a request the client built an event for, so a
+    test that approves seeds the event the builder would have recorded.
+    """
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+    client._note_pi_gate_asked(frame)
+    client._permission_gate_events[frame.id] = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST, request_id=frame.id, title="notes.txt"
+    )
 
 
 def _deepseek_permission_frame(tool_call_id: str, request_id: int):
@@ -1456,7 +1471,7 @@ def test_a_re_asked_call_is_judged_on_its_fresh_verdict_not_the_stale_deny(monke
     assert "call_0" in client._pi_gate_denied_ids
 
     second = _deepseek_permission_frame("call_0", 2)
-    client._note_pi_gate_asked(second)
+    _asked(client, second)
     assert "call_0" not in client._pi_gate_denied_ids, "a fresh ask is a fresh verdict"
     asyncio.run(client.approve_tool(second.id))
 
@@ -1490,7 +1505,7 @@ def test_a_completed_call_consumes_its_ask_so_a_reused_id_must_be_asked_again(mo
 
     client, killed = _deepseek_tripwire_client(monkeypatch)
     asked = _deepseek_permission_frame("call_0", 1)
-    client._note_pi_gate_asked(asked)
+    _asked(client, asked)
     asyncio.run(client.approve_tool(asked.id))
     asyncio.run(client._tripwire_pi_gate(_deepseek_completed("call_0")))
     assert killed == [], "the asked-and-approved call completes without a kill"
@@ -1506,7 +1521,7 @@ def test_a_completed_call_consumes_its_ask_so_a_reused_id_must_be_asked_again(mo
     fresh, fresh_killed = _deepseek_tripwire_client(monkeypatch)
     for request_id in (1, 2):
         frame = _deepseek_permission_frame("call_0", request_id)
-        fresh._note_pi_gate_asked(frame)
+        _asked(fresh, frame)
         asyncio.run(fresh.approve_tool(frame.id))
         asyncio.run(fresh._tripwire_pi_gate(_deepseek_completed("call_0")))
     assert fresh_killed == []

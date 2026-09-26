@@ -23,6 +23,7 @@ import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace
 from pathlib import Path
@@ -207,6 +208,24 @@ class HookResult:
         return HookResult(action=HOOK_INJECT_CONTEXT, text=text)
 
 
+#: Set by :func:`uncounted_gate`; read by ``ToolHookResult._count``.
+_GATE_UNCOUNTED: ContextVar[bool] = ContextVar("kirocrew_gate_uncounted", default=False)
+
+
+@contextmanager
+def uncounted_gate():
+    """Consult the gate without emitting the approval-decision counter.
+
+    For a second consultation of a request whose first one was already counted
+    (the ACP transport's permission floor). The verdict is unaffected.
+    """
+    token = _GATE_UNCOUNTED.set(True)
+    try:
+        yield
+    finally:
+        _GATE_UNCOUNTED.reset(token)
+
+
 @dataclass
 class ToolHookResult:
     action: str  # TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY
@@ -270,7 +289,13 @@ class ToolHookResult:
         ``action`` is one of three module constants and ``security_deny`` a bool,
         so the series is bounded by construction -- no reason string, tool name or
         command reaches the recorder.
+
+        A consultation made inside :func:`uncounted_gate` is not counted: the
+        transport floor re-asks the gate for a request its consumer already
+        counted, and counting both would report one request as two decisions.
         """
+        if _GATE_UNCOUNTED.get():
+            return
         try:
             from kiro_crew.metrics.events import APPROVAL_DECISIONS, emit_counter
 

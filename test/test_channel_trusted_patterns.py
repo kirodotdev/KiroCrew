@@ -166,6 +166,9 @@ async def test_identity_check_reaches_raw_shell_input(monkeypatch):
     the grant matched the command ``extract_bash_command`` recovered — the
     identity check must evaluate THAT command, not vouch for nothing. A
     refused verdict on the raw-input shape must fall through to the card."""
+    # The PreToolUse gate refuses an unrecoverable shell command before this
+    # tier; this pins the tier itself, so the gate is stood aside.
+    monkeypatch.setattr("kiro_crew.permission_floor.refusal_for", lambda event, **kwargs: None)
     sel_mock = MagicMock()
     monkeypatch.setattr("kiro_crew.sel.sel", lambda: sel_mock)
     checked: list[str] = []
@@ -258,8 +261,8 @@ async def test_non_matching_command_still_prompts():
     agent = _make_agent(bases={"ls"})
     ch = _make_channel(agent)
     event = _perm_event(
-        title="Running: rm -rf /tmp/x",
-        tool_input=json.dumps({"command": "rm -rf /tmp/x"}),
+        title="Running: touch /tmp/x",
+        tool_input=json.dumps({"command": "touch /tmp/x"}),
         is_shell=True,
     )
     client = _make_client([event, _done()])
@@ -276,10 +279,10 @@ async def test_pattern_matches_tool_input_not_llm_title():
     """The LLM-authored title must not be able to spoof a trusted command."""
     agent = _make_agent(bases={"ls"})
     ch = _make_channel(agent)
-    # Title claims a trusted "ls", but the real command is rm.
+    # Title claims a trusted "ls", but the real command is touch.
     event = _perm_event(
         title="Running: ls /tmp",
-        tool_input=json.dumps({"command": "rm -rf /"}),
+        tool_input=json.dumps({"command": "touch /tmp/spoofed"}),
         is_shell=True,
     )
     client = _make_client([event, _done()])
@@ -403,9 +406,12 @@ async def test_failed_approval_post_releases_future_and_command_authority():
 
 
 @pytest.mark.asyncio
-async def test_approval_message_name_falls_back_to_title():
+async def test_approval_message_name_falls_back_to_title(monkeypatch):
     """ACP permission events populate only ``title`` (``text`` is empty); the
     posted approval card must still carry the tool name for display."""
+    # An unrecoverable shell command is refused by the PreToolUse gate before
+    # any card; this pins the card's naming, so the gate is stood aside.
+    monkeypatch.setattr("kiro_crew.permission_floor.refusal_for", lambda event, **kwargs: None)
     agent = _make_agent(set())
     ch = _make_channel(agent)
     event = _perm_event(title="Running: ls /tmp", tool_input="{}", is_shell=True)
