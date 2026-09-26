@@ -100,11 +100,17 @@ const SIDEBAR_SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatSidebar.tsx
 const HIDDEN_FOLDER = 'folder-hidden'
 const SHOWN_FOLDER = 'folder-shown'
 const NESTED_FOLDER = 'folder-nested'
+/** A folder carrying its OWN hide-when-empty attribute, with archived sessions that
+ *  could later revive it. The tree and flat lanes drop it for that attribute alone; a
+ *  board column draws its block regardless, which is why the announced count has to
+ *  know which lane is on screen. */
+const HIDE_WHEN_EMPTY_FOLDER = 'folder-hwe'
 
 const FOLDERS: ChatFolder[] = [
   { id: HIDDEN_FOLDER, name: 'hidden folder', collapsed: false, order: 0 },
   { id: SHOWN_FOLDER, name: 'shown folder', collapsed: false, order: 1 },
   { id: NESTED_FOLDER, name: 'nested folder', collapsed: false, order: 2, parent_id: SHOWN_FOLDER },
+  { id: HIDE_WHEN_EMPTY_FOLDER, name: 'quiet folder', collapsed: false, order: 3, hidden: true, history_count: 2 },
 ] as unknown as ChatFolder[]
 
 /** A conductor inside the hidden folder with a child outside it — the shape that leaves a
@@ -158,6 +164,10 @@ function hideFolders(...ids: string[]) {
 
 /** The board lane's notice, or null. */
 const notice = (c: HTMLElement) => c.querySelector('[data-testid="board-hidden-folders"]')
+/** A folder's block header inside the board's one column, or null when the column
+ *  does not draw that folder at all. */
+const header = (c: HTMLElement, id: string) =>
+  c.querySelector(`[data-testid="col-col-idle-folder-${id}"]`)
 /** The notice's COUNT text alone.
  *
  *  The row also carries the action word, and `textContent` concatenates siblings with
@@ -318,6 +328,43 @@ describe('one derived count, reported the same way everywhere', () => {
     const { container } = renderSidebar(true)
     expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('1')
     expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
+  })
+
+  it('announces a hide-when-empty folder the person also unchecked, because a board draws its block anyway', () => {
+    // A board column's folder list filters on `isFolderFilteredOut` ALONE, so it draws
+    // this folder's block whatever the folder's own hide-when-empty attribute says.
+    // Unchecking it therefore does take the block away, and the announcement has to
+    // follow: a count narrowed by `isFolderHidden` reads zero here, which leaves the
+    // header gone with nothing on screen to account for it.
+    hideFolders(HIDE_WHEN_EMPTY_FOLDER)
+    const { container } = renderSidebar(true)
+    expect(header(container, HIDE_WHEN_EMPTY_FOLDER), 'the uncheck did not remove the block').toBeNull()
+    expect(notice(container), 'the board hid a block and said nothing').not.toBeNull()
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
+    expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('1')
+    const funnel = container.querySelector('[data-folder-hide-active]')
+    expect(funnel?.getAttribute('data-folder-hide-active')).toBe('1')
+    expect(funnel?.getAttribute('title')).toMatch(/1 hidden folder\b/)
+  })
+
+  it('CONTROL: the board draws that folder when it is NOT unchecked', () => {
+    // Without this the pin above proves nothing: a folder the board never renders is
+    // not being withheld by the uncheck, and announcing it would be the over-report.
+    const { container } = renderSidebar(true)
+    expect(header(container, HIDE_WHEN_EMPTY_FOLDER)).not.toBeNull()
+    expect(notice(container)).toBeNull()
+  })
+
+  it('stays silent about it in a lane that drops it for its own attribute', () => {
+    // The other direction, and why the count is lane-scoped rather than simply widened.
+    // The tree lane narrows by `isFolderHidden` itself, so this folder is absent there
+    // whether or not it is unchecked -- the uncheck takes nothing a reader would have
+    // seen, and announcing it would claim a withholding that did not happen.
+    hideFolders(HIDE_WHEN_EMPTY_FOLDER)
+    localStorage.setItem('mc-sidebar-lane', 'tree')
+    const { container } = renderSidebar(false)
+    expect(container.querySelector('[data-folder-hide-active]')).toBeNull()
+    expect(container.querySelector('[data-testid="hidden-reveal-root"]')).toBeNull()
   })
 
   it('says nothing is withheld while a search suspends the hide', () => {

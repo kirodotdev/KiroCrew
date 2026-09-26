@@ -78,7 +78,7 @@ import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBran
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
 import { DndActiveProbe, DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
-import { bySidebarOrder, collectFolderSubtreeIds, folderNameText } from '../utils/folderTree'
+import { bySidebarOrder, collectFolderSubtreeIds, coveredByHiddenAncestor, folderNameText } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
@@ -5751,16 +5751,7 @@ function ChatSidebar({
     if (!folderFilterActive) return m
     for (const f of folders) {
       if (isFolderHidden(f) || !filterHiddenFolders.has(f.id)) continue
-      // An ancestor already hidden ⇒ this folder's container is not rendered.
-      let cur = f.parent_id ? folders.find(p => p.id === f.parent_id) : undefined
-      const seen = new Set<string>([f.id])
-      let coveredByAncestor = false
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id)
-        if (filterHiddenFolders.has(cur.id)) { coveredByAncestor = true; break }
-        cur = cur.parent_id ? folders.find(p => p.id === cur!.parent_id) : undefined
-      }
-      if (coveredByAncestor) continue
+      if (coveredByHiddenAncestor(f, folders, filterHiddenFolders)) continue
       const key = f.parent_id || 'root'
       const list = m.get(key)
       if (list) list.push(f); else m.set(key, [f])
@@ -5776,18 +5767,42 @@ function ChatSidebar({
     [hiddenByContainer],
   )
 
-  /** How many folders the person's hide is actually withholding, announced everywhere.
+  /** Folders the person's uncheck is withholding from THE LANE ON SCREEN, announced.
    *
    *  ONE number, because it is reported in three places at once — the funnel, the
    *  filter menu's own Folders heading, and the board lane's notice — and two of
-   *  those sit on screen together. `filterHiddenFolders.size` is the raw checkbox
-   *  set and is the wrong number for any of them: it counts a folder whose hidden
-   *  ANCESTOR already took the whole block away, counts one the folder's own
-   *  hide-when-empty attribute removes regardless, and keeps counting while a search
-   *  suspends the hide entirely. Each of those announces rows as withheld that are
-   *  either absent for another reason or not absent at all.
+   *  those sit on screen together.
+   *
+   *  `filterHiddenFolders.size` is the raw checkbox set and is the wrong number for
+   *  any of them: it counts a folder whose hidden ANCESTOR already took the whole
+   *  block away, and keeps counting while a search suspends the hide entirely. Both
+   *  announce rows as withheld that are either absent for another reason or not
+   *  absent at all.
+   *
+   *  `allHiddenFolders` is the wrong number too, and in the opposite direction, for a
+   *  BOARD: it drops a folder its own hide-when-empty attribute would remove, and a
+   *  board column draws a folder block whatever that attribute says
+   *  (`relevantFolders` filters on `isFolderFilteredOut` alone). So on a board the
+   *  uncheck does take that block away, and dropping it announces nothing while the
+   *  header disappears — the exact traceless hide this row exists to end. The other
+   *  lanes narrow by `isFolderHidden` themselves, so there the uncheck takes nothing
+   *  a reader would otherwise have seen, and counting it would over-report.
+   *
+   *  Hence one predicate and two scopes, not two unrelated counts.
    */
-  const hiddenFolderCount = allHiddenFolders.length
+  const announcedHiddenFolders = useMemo(() => {
+    if (!folderFilterActive) return [] as ChatFolder[]
+    const out: ChatFolder[] = []
+    for (const f of folders) {
+      if (!filterHiddenFolders.has(f.id)) continue
+      if (!boardLaneActive && isFolderHidden(f)) continue
+      if (coveredByHiddenAncestor(f, folders, filterHiddenFolders)) continue
+      out.push(f)
+    }
+    return out.sort(bySidebarOrder)
+  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden, boardLaneActive])
+
+  const hiddenFolderCount = announcedHiddenFolders.length
 
   // Flat-view slot list: filteredSlots minus sessions in hidden folders —
   // EXCEPT while searching, where every match must stay reachable so a hidden
