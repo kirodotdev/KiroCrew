@@ -12,8 +12,13 @@ import type { FitAddon } from '@xterm/addon-fit'
  * gated on this map -- see `getTerminalInputWs`.
  */
 const registry = new Map<string, WebSocket>()
-/** Per-session one-shot shell-ready listeners. */
-const readyListeners = new Map<string, Set<() => void>>()
+
+/** Per-session one-shot shell-ready or failed-open listeners. */
+interface ReadyListener {
+  onReady: () => void
+  onInvalidCwd?: () => void
+}
+const readyListeners = new Map<string, Set<ReadyListener>>()
 
 let _enabled = false
 const enabledListeners = new Set<() => void>()
@@ -104,7 +109,7 @@ export function registerTerminalWs(sessionId: string, ws: WebSocket) {
   const ls = readyListeners.get(sessionId)
   if (ls) {
     readyListeners.delete(sessionId)
-    for (const cb of ls) cb()
+    for (const listener of ls) listener.onReady()
   }
 }
 
@@ -118,27 +123,41 @@ export function getTerminalWs(sessionId: string): WebSocket | null {
 }
 
 /**
- * Run `cb` once the given session's shell is ready for input — immediately if
- * it already is. Returns an unsubscribe fn (no-op once it fires). Used by
- * "Run in terminal" to keep command batches behind shell initialization.
+ * Settle once the shell is ready or its open fails — immediately if either
+ * outcome is already known. Failure consumes the ready listener even without
+ * an onInvalidCwd callback, so a later manual retry cannot run an old command.
+ * Returns an unsubscribe fn (no-op once it fires).
  */
-export function onTerminalReady(sessionId: string, cb: () => void): () => void {
-  if (getTerminalWs(sessionId)) { cb(); return () => {} }
+export function onTerminalReady(
+  sessionId: string,
+  onReady: () => void,
+  onInvalidCwd?: () => void,
+): () => void {
+  if (conns.get(sessionId)?.invalidCwd) { onInvalidCwd?.(); return () => {} }
+  if (getTerminalWs(sessionId)) { onReady(); return () => {} }
   let set = readyListeners.get(sessionId)
   if (!set) { set = new Set(); readyListeners.set(sessionId, set) }
-  set.add(cb)
-  return () => { set?.delete(cb) }
+  const listener = { onReady, onInvalidCwd }
+  set.add(listener)
+  return () => { set?.delete(listener) }
 }
 
 /**
  * Send a line of code to a specific terminal session. Returns false if that
- * session has no open socket.
+ * session has no open shell-ready socket. Commands confirmed verbatim can
+ * preserve trailing whitespace and an existing line terminator: trimming an
+ * escaped space changes shell syntax; an extra newline can answer a prompt.
  */
-export function sendToTerminalSession(sessionId: string, code: string): boolean {
+export function sendToTerminalSession(
+  sessionId: string, code: string, options?: { preserveTrailingWhitespace?: boolean },
+): boolean {
   const ws = getTerminalWs(sessionId)
   if (!ws) return false
   try {
-    ws.send(new TextEncoder().encode(code.trimEnd() + '\n'))
+    const input = options?.preserveTrailingWhitespace
+      ? code + (/[\r\n]$/.test(code) ? '' : '\n')
+      : code.trimEnd() + '\n'
+    ws.send(new TextEncoder().encode(input))
     return true
   } catch {
     return false
@@ -198,6 +217,8 @@ interface Conn {
   retries: number
   reconnectTimer?: ReturnType<typeof setTimeout>
   status: TerminalConnStatus
+  /** A rejected open parks until the user explicitly retries. */
+  invalidCwd: boolean
   /**
    * Set when the user clicked "Reconnect" and cleared the moment the socket
    * next resolves (connected) or the redial chain gives up (disconnected). It
@@ -349,6 +370,20 @@ export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | u
   )
 }
 
+/** Whether the requested cwd was rejected, published with the connection status. */
+export function useTerminalInvalidCwd(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.invalidCwd ?? false,
+    () => false,
+  )
+}
+
 /**
  * Re-arm and immediately redial a session's connection: clears the retry
  * ceiling and any pending backoff timer, then dials at once. Used by the
@@ -362,12 +397,12 @@ export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | u
 export function retryTerminalConnection(sessionId: string, manual = true): void {
   const c = conns.get(sessionId)
   if (!c || c.disposed) return
-  // A displaced session was closed on purpose by the server; only the user
-  // takes it back. Automatic revives (online / tab foreground) must not, or a
-  // background tab regaining focus would silently displace the active window.
-  if (c.displaced) {
+  // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
+  // revives must neither displace another window nor retry an unchanged path.
+  if (c.displaced || c.invalidCwd) {
     if (!manual) return
     c.displaced = false
+    c.invalidCwd = false
     notifyStatus(sessionId)
   }
   if (manual) setManualRetry(sessionId, c)
@@ -408,7 +443,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed) return
+  if (c.disposed || c.invalidCwd) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -448,7 +483,7 @@ function connect(sessionId: string, c: Conn) {
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data)
-        if (m && m.type === 'ready') {
+        if (m && m.type === 'ready' && !c.invalidCwd) {
           // Record the shell BEFORE registering: registerTerminalWs drains the
           // ready listeners synchronously, and Run-in-terminal's listener reads
           // the shell to decide how to hand over the snippet.
@@ -461,6 +496,16 @@ function connect(sessionId: string, c: Conn) {
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
         if (m && m.type === 'error' && m.code === 'displaced') c.displaced = true
+        if (m && m.type === 'error' && m.code === 'terminal_invalid_cwd') {
+          c.invalidCwd = true
+          clearTimeout(c.reconnectTimer)
+          c.reconnectTimer = undefined
+          unregisterTerminalWs(sessionId)
+          setConnStatus(sessionId, c, 'disconnected')
+          const listeners = readyListeners.get(sessionId)
+          readyListeners.delete(sessionId)
+          if (listeners) for (const listener of listeners) listener.onInvalidCwd?.()
+        }
       } catch { /* ignore non-JSON control frames */ }
     }
   }
@@ -468,10 +513,8 @@ function connect(sessionId: string, c: Conn) {
   ws.onclose = () => {
     unregisterTerminalWs(sessionId)
     if (c.disposed) return
-    if (c.displaced) {
-      // The server handed this PTY to a newer window and closed us on purpose.
-      // Park instead of redialing: a redial would displace that window right
-      // back. The banner's Reconnect button is the way to take the terminal.
+    if (c.displaced || c.invalidCwd) {
+      // A deliberate handoff or rejected cwd needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')
@@ -503,7 +546,7 @@ export function ensureTerminalConnection(
   sessionId: string, term: Terminal, fit: FitAddon, cwd?: string | null,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

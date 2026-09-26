@@ -130,6 +130,7 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
+import { TerminalHostContext } from './hooks/useTerminalCommand'
 import { confirmRestoredTabs, reconcileRestoredTabs, toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from './utils/fenceShell'
 import { withDeadline } from './lib/withDeadline'
@@ -3561,6 +3562,7 @@ export default function App() {
        which hides the bottom row (the chat composer) on phones.
        w-full, not w-screen: 100vw resolves independently of layout, so it can
        disagree with the `(max-width: 767px)` query this shell branches on. */
+    <TerminalHostContext.Provider value={terminalPoppedOut ? 'detached' : 'docked'}>
     <div className="h-screen supports-[height:100dvh]:h-dvh w-full flex flex-col overflow-hidden bg-bg">
       {/* Embedded remote panes receive their switcher model from the parent via
           this bridge (option B) — no-op in the top-level dashboard. */}
@@ -5006,6 +5008,7 @@ export default function App() {
         ))}
       </div>{/* /pane stack */}
     </div>
+    </TerminalHostContext.Provider>
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}

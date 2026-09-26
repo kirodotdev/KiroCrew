@@ -3732,7 +3732,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           code, lang, getTerminalShell(sessionId), getTerminalFenceShells(sessionId),
         )
         emit(sendToTerminalSession(sessionId, text))
-      })
+      }, () => emit(false))
       // Give the PTY time to connect. A missing `ready` frame is not enough to
       // prove the dispatch died because a shell profile can replace the
       // readiness hook while the child process stays live. At the deadline,
@@ -7854,6 +7854,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // signal that arms the prefill hint's expiry.
               onChange={v => { clearFollowUpOwnership(); setInput(v); setPrefillEdited(true) }}
               onSend={() => send()}
+              terminalCommands={activeSlot && !currentSlot ? 'pending' : currentSlot?.executor === 'remote' ? 'remote' : 'local'}
               canSteer={composerBusy}
               onSteer={steer}
               // AND a turn actually running. `composerBusy` is also true when only

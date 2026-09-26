@@ -14,10 +14,12 @@ import { i18nT } from '../i18n/t'
  * confirmation.
  */
 export default function RunInTerminalConfirm(
-  { open, command, warnReason, onConfirm, onCancel }: {
+  { open, command, workspaceLabel, warnReason, onConfirm, onCancel }: {
     open: boolean
     /** The exact string that will be sent to the terminal (prompt chars already stripped). */
     command: string
+    /** Captured destination for a composer command; code-block callers omit it. */
+    workspaceLabel?: string
     /** Non-empty when the command tripped a sensitive-command pattern. */
     warnReason?: string
     onConfirm: () => void
@@ -26,16 +28,15 @@ export default function RunInTerminalConfirm(
 ) {
   const lines = command.split('\n')
   const sensitive = !!warnReason
-  const confirmRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
 
-  // Focus the safe choice for a flagged command, the primary action otherwise —
-  // so a stray Enter can never confirm a sensitive command.
+  // A held or repeated composer Enter must cancel, never approve a command.
+  // Running requires moving focus to the explicit confirmation action.
   useEffect(() => {
     if (!open) return
-    const t = setTimeout(() => (sensitive ? cancelRef : confirmRef).current?.focus(), 0)
+    const t = setTimeout(() => cancelRef.current?.focus(), 0)
     return () => clearTimeout(t)
-  }, [open, sensitive])
+  }, [open])
 
   return (
     <Modal
@@ -58,7 +59,6 @@ export default function RunInTerminalConfirm(
             {i18nT('components.runInTerminalConfirm.cancel')}
           </button>
           <button
-            ref={confirmRef}
             className={`px-3 py-1.5 rounded-md text-[13px] font-medium border-none cursor-pointer ${
               sensitive
                 ? 'bg-warn text-warn-fg hover:bg-warn/90'
@@ -78,6 +78,7 @@ export default function RunInTerminalConfirm(
           ? i18nT('components.runInTerminalConfirm.body_multi', { lines: lines.length })
           : i18nT('components.runInTerminalConfirm.body_single')}
       </p>
+      {workspaceLabel && <p className="text-[12px] text-muted mb-2.5 whitespace-pre-wrap [overflow-wrap:anywhere]">{workspaceLabel}</p>}
 
       {sensitive && (
         <div className="flex items-start gap-2 mb-2.5 px-2.5 py-2 rounded-md bg-warn/10 border border-warn/30">

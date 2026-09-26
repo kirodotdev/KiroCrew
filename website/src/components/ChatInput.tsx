@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, BrainCircuit, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, BrainCircuit, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal, Terminal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -40,6 +40,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { Btn, Slider } from './ui'
 import ErrorNotice from './ErrorNotice'
+import RunInTerminalConfirm from './RunInTerminalConfirm'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease, COMPOSER_EXPAND_EVENT } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode, type BusySendMode } from './BusySendButton'
@@ -64,6 +65,7 @@ import {
   pruneBlocks,
   nextSeq,
   findTokenRanges,
+  expandAll as expandPasteTokens,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -141,6 +143,7 @@ import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
 import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, replaceTokenAtCaret } from './composerTokens'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
+import { terminalCommand, useTerminalCommand } from '../hooks/useTerminalCommand'
 
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
@@ -427,6 +430,8 @@ interface ChatInputProps {
   value: string
   onChange: (v: string) => void
   onSend: () => void
+  /** Keep identified sessions pending until their local/remote metadata is available. */
+  terminalCommands?: 'local' | 'remote' | 'pending'
   /** Rendered inside the composer's own width wrapper, directly above the
    * bordered input box. Children here share the EXACT box geometry of the
    * composer (same padding container, same resolved max-width), so band
@@ -952,6 +957,7 @@ function ChatInput({
   value,
   onChange,
   onSend,
+  terminalCommands,
   canSteer,
   onSteer,
   jevAutoAvailable = false,
@@ -1086,6 +1092,22 @@ function ChatInput({
   // each streamed frame. useAppStore returns the Provider-injected store, the
   // same pattern ChatPane uses for its at-send reads.
   const chatStore = useAppStore()
+  const terminal = useTerminalCommand({
+    value, slotId, project, target: terminalCommands,
+    hasAttachments: pendingFiles.length > 0 || pendingDirs.length > 0 || pendingSessions.length > 0 || !!knowledgeChip,
+    expand: text => expandPasteTokens(text, pasteBlocks),
+    clear: () => { onChange(''); onPasteBlocksChange?.([]) },
+  })
+  const { run: runTerminalCommand } = terminal
+  const terminalRefusal = terminal.blocked || terminal.failure
+  const terminalValidation = terminalRefusal === 'unavailable' ? i18nT('components.chatInput.terminal_unavailable')
+    : terminalRefusal === 'host' ? i18nT('components.chatInput.terminal_main_window')
+      : terminalRefusal === 'remote' ? i18nT('components.chatInput.terminal_remote')
+        : terminalRefusal === 'attachments' ? (pendingDirs.length > 0
+          ? i18nT('components.chatInput.terminal_folder_attachments', { folderRef: '@path' })
+          : i18nT('components.chatInput.terminal_attachments'))
+          : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
+            : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
   const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
@@ -1693,6 +1715,13 @@ function ChatInput({
     // sends the complete text. Covers both Enter (handleKeyDown) and the Send
     // button, since both route through here.
     if (voiceTranscribing) return
+    if (terminal.active) {
+      if (connected) {
+        composerVoice?.controls?.disarmForSend()
+        runTerminalCommand()
+      }
+      return
+    }
     const flip = alternate === true && busyChoiceAvailable && !steerOnly
     const steerNow = flip ? !steerActive : steerActive
     // A flipped send never asks: the chord is the sender answering the question
@@ -1700,7 +1729,7 @@ function ChatInput({
     // ignore the only explicit instruction on the send.
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend])
+  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, terminal.active, runTerminalCommand, connected, composerVoice])
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
@@ -1717,7 +1746,9 @@ function ChatInput({
   const hasAutomation = !!onAutomationClick
   useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
-  const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
+  const resolvedPlaceholder = placeholder || i18nT(terminal.canAdvertise
+    ? 'components.chatInput.message_placeholder_terminal'
+    : 'components.chatInput.message_placeholder', { bot: botName })
   // An icon swap alone announces nothing, so the empty-state placeholder carries
   // the explanation — and it names typing as the other way out, so the morph
   // never feels like a trap.
@@ -1758,6 +1789,14 @@ function ChatInput({
   const [fileQuery, setFileQuery] = useState('')
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
+  useEffect(() => {
+    if (!terminal.active) return
+    // Parent-driven draft changes bypass both editors' change handlers.
+    setSlashMenuOpen(false)
+    setFilePickerOpen(false); setFileQuery('')
+    setSkillPickerOpen(false); setSkillQuery('')
+    setPathPickerOpen(false); setPathQuery('')
+  }, [terminal.active])
   // Project skill awaiting consent, together with the exact chat/project/request
   // that initiated it. A grant can outlive this dialog, so completion must not
   // write into a different draft or supersede a newer consent request.
@@ -1774,6 +1813,7 @@ function ChatInput({
   //  sigil at a word boundary, opens the matching picker, then refocuses the box.
   const openTrigger = (sigil: '/' | '@' | '$') => {
     setPlusOpen(false)
+    if (terminal.active) return
     let nextValue = '/'
     if (sigil === '/') {
       onChange(nextValue)
@@ -2183,39 +2223,29 @@ function ChatInput({
   // Mirror the paste blocks so the undo-recording effect (keyed on
   // [value, autoFocusKey], not pasteBlocks) always snapshots the freshest set.
 
+  const updateTriggerPickers = useCallback((nextValue: string, caret: number) => {
+    // Classify the incoming value: terminal.active still describes the previous
+    // render when an edit first enters or leaves command mode.
+    const chatInput = !terminalCommands || terminalCommand(nextValue) === null
+    const before = nextValue.slice(0, caret)
+    setSlashMenuOpen(chatInput && typedCommandMenus && nextValue.startsWith('/'))
+    const fileQueryAtCaret = chatInput && onFileSelect ? matchFileToken(before) : null
+    setFilePickerOpen(fileQueryAtCaret !== null)
+    setFileQuery(fileQueryAtCaret ?? '')
+    const skillQueryAtCaret = chatInput && typedCommandMenus && fileQueryAtCaret === null ? matchSkillToken(before) : null
+    setSkillPickerOpen(skillQueryAtCaret !== null)
+    setSkillQuery(skillQueryAtCaret ?? '')
+    const pathQueryAtCaret = chatInput ? pathTokenAt(before) : null
+    setPathPickerOpen(pathQueryAtCaret !== null)
+    setPathQuery(pathQueryAtCaret ?? '')
+  }, [onFileSelect, pathTokenAt, terminalCommands, typedCommandMenus])
   const handleLexicalChange = useCallback((nextValue: string) => {
     valueFromUserRef.current = true
     onChange(nextValue)
     const selection = lexicalControlRef.current?.getSelection()
-    const caret = selection?.start ?? nextValue.length
-    const before = nextValue.slice(0, caret)
-    setSlashMenuOpen(typedCommandMenus && nextValue.startsWith('/'))
-    const fileQueryAtCaret = onFileSelect ? matchFileToken(before) : null
-    if (fileQueryAtCaret !== null) {
-      setFilePickerOpen(true)
-      setFileQuery(fileQueryAtCaret)
-    } else {
-      setFilePickerOpen(false)
-      setFileQuery('')
-    }
-    const skillQueryAtCaret = fileQueryAtCaret === null ? matchSkillToken(before) : null
-    if (typedCommandMenus && skillQueryAtCaret !== null) {
-      setSkillPickerOpen(true)
-      setSkillQuery(skillQueryAtCaret)
-    } else {
-      setSkillPickerOpen(false)
-      setSkillQuery('')
-    }
-    const pathQueryAtCaret = pathTokenAt(before)
-    if (pathQueryAtCaret !== null) {
-      setPathPickerOpen(true)
-      setPathQuery(pathQueryAtCaret)
-    } else {
-      setPathPickerOpen(false)
-      setPathQuery('')
-    }
+    updateTriggerPickers(nextValue, selection?.start ?? nextValue.length)
     if (selection && voiceCaretRef) voiceCaretRef.current = selection
-  }, [onChange, onFileSelect, pathTokenAt, typedCommandMenus, voiceCaretRef])
+  }, [onChange, updateTriggerPickers, voiceCaretRef])
   const pasteBlocksRef = useRef(pasteBlocks)
   pasteBlocksRef.current = pasteBlocks
   // --- Prompt undo/redo history (per slot) ---
@@ -2255,13 +2285,13 @@ function ChatInput({
   // alone says nothing about why the optimizer did not run).
   const [optimizeError, setOptimizeError] = useState('')
   const slashMenuOpenRef = useRef(false)
-  slashMenuOpenRef.current = slashMenuOpen
+  slashMenuOpenRef.current = slashMenuOpen && !terminal.active
   const filePickerOpenRef = useRef(false)
-  filePickerOpenRef.current = filePickerOpen
+  filePickerOpenRef.current = filePickerOpen && !terminal.active
   const skillPickerOpenRef = useRef(false)
-  skillPickerOpenRef.current = skillPickerOpen
+  skillPickerOpenRef.current = skillPickerOpen && !terminal.active
   const pathPickerOpenRef = useRef(false)
-  pathPickerOpenRef.current = pathPickerOpen
+  pathPickerOpenRef.current = pathPickerOpen && !terminal.active
 
   // Auto-focus textarea when the active session changes (autoFocusKey).
   // Track the previous key in a ref so the effect only acts on real key
@@ -2705,7 +2735,7 @@ function ChatInput({
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!txt || optimizePendingRef.current) return
+    if (!txt || optimizePendingRef.current || terminal.active) return
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -2732,7 +2762,7 @@ function ChatInput({
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, pasteBlocks, slotId, chatStore])
+  }, [runOptimize, pasteBlocks, slotId, chatStore, terminal.active])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
@@ -2954,7 +2984,7 @@ function ChatInput({
     // the disabled-state on the Optimize button (line ~1734).
     if (promptOptimizer && e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
-      if (connected) optimizePrompt()
+      if (connected && !terminal.active) optimizePrompt()
       return
     }
     // Mode: enter-ctrl-newline — Ctrl/Cmd+Enter inserts newline, Enter sends
@@ -3056,7 +3086,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer, terminal.active])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -3712,6 +3742,24 @@ function ChatInput({
 
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
+      <RunInTerminalConfirm
+        open={!!terminal.confirmation}
+        command={terminal.confirmation?.code ?? ''}
+        workspaceLabel={terminal.confirmation?.project || i18nT('components.chatInput.terminal_default_directory')}
+        warnReason={terminal.confirmation?.warnReason}
+        onConfirm={terminal.confirm}
+        onCancel={terminal.cancelConfirmation}
+      />
+      {/* No hand-off: the command draft must survive a failed terminal startup. */}
+      <ErrorNotice message={terminal.failure === 'limit' ? i18nT('components.chatInput.terminal_limit')
+        : terminal.failure === 'failed' ? i18nT('components.chatInput.terminal_failed') : undefined}
+        onDismiss={terminal.dismissFailure} />
+      {terminal.active && (
+        <div className="text-sm text-muted flex items-center gap-1.5" role="status">
+          <Terminal className="lucide-inline" />
+          {terminalValidation || i18nT('components.chatInput.terminal_hint', { workspace: project || i18nT('components.chatInput.terminal_default_directory') })}
+        </div>
+      )}
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
@@ -4039,13 +4087,13 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+      {typedCommandMenus && !terminal.active && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
           query={fileQuery}
           anchorRef={composerAnchorRef}
-          open={filePickerOpen}
+          open={filePickerOpen && !terminal.active}
           project={project}
           sendOnEnter={sendOnEnter}
           onFileOpen={onFileOpen}
@@ -4069,7 +4117,7 @@ function ChatInput({
         pathMode
         query={pathQuery}
         anchorRef={composerAnchorRef}
-        open={pathPickerOpen}
+        open={pathPickerOpen && !terminal.active}
         project={project}
         sendOnEnter={sendOnEnter}
         onSelect={({ relativePath, kind }) => {
@@ -4088,7 +4136,7 @@ function ChatInput({
       {typedCommandMenus && <SkillPickerMenu
         query={skillQuery}
         anchorRef={composerAnchorRef}
-        open={skillPickerOpen}
+        open={skillPickerOpen && !terminal.active}
         sendOnEnter={sendOnEnter}
         slotKey={skillSlotKey}
         project={project}
@@ -4191,7 +4239,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
+        className={`@container/composer ${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
 
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -4335,23 +4383,14 @@ function ChatInput({
           onDrop={e => { e.preventDefault(); onDrop?.(e); e.stopPropagation() }}
           onChange={e => {
             valueFromUserRef.current = true // real DOM edit, not a parent-driven draft restore
-            const val = e.target.value; onChange(val); setSlashMenuOpen(typedCommandMenus && val.startsWith('/'))
+            const val = e.target.value
+            onChange(val)
             // Anchor @/$ detection to the token being edited AT THE CARET, not the
             // end of the whole input. `before` ends at the caret, so a match means
             // "the token ends where my cursor is" — which makes both pickers fire
             // mid-sentence and when trailing text/newlines follow the token.
             // Matchers live in composerTokens.ts (unit-tested there).
-            const before = val.slice(0, e.target.selectionStart ?? val.length)
-            const fileQ = onFileSelect ? matchFileToken(before) : null
-            if (fileQ !== null) { setFilePickerOpen(true); setFileQuery(fileQ) }
-            else { setFilePickerOpen(false); setFileQuery('') }
-            // $ and @ are mutually exclusive (a token starts with one sigil); @ wins.
-            const skillQ = fileQ === null ? matchSkillToken(before) : null
-            if (typedCommandMenus && skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
-            else { setSkillPickerOpen(false); setSkillQuery('') }
-            const pathQ = pathTokenAt(before)
-            if (pathQ !== null) { setPathPickerOpen(true); setPathQuery(pathQ) }
-            else { setPathPickerOpen(false); setPathQuery('') }
+            updateTriggerPickers(val, e.target.selectionStart ?? val.length)
             recordCaret()
           }}
           onKeyDown={handleKeyDown}
@@ -4417,7 +4456,7 @@ function ChatInput({
         )}
 
         {/* Bottom icon row */}
-        <div className="flex items-center justify-between px-2.5 pb-2 pt-0.5">
+        <div className={`flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           <div className="flex items-center gap-0.5 min-w-0">
             {onUploadFiles && (
               <div className="relative shrink-0" ref={plusWrapRef}>
@@ -4513,7 +4552,7 @@ function ChatInput({
                     </div>
                     {/* In-input trigger shortcuts: clicking inserts the sigil
                      *  and opens the matching picker (same as typing /, @, $). */}
-                    <div className="mt-2 pt-2 border-t border-border flex flex-col gap-0.5">
+                    {!terminal.active && <div className="mt-2 pt-2 border-t border-border flex flex-col gap-0.5">
                       {typedCommandMenus && <button
                         type="button"
                         onClick={() => openTrigger('/')}
@@ -4552,7 +4591,7 @@ function ChatInput({
                           <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.apply_a_ready_made_set_of_instructions')}</div>
                         </div>
                       </button>}
-                    </div>
+                    </div>}
                   </div>,
                   document.body
                 )}
@@ -4709,7 +4748,7 @@ function ChatInput({
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full flex-wrap justify-end [&>button]:shrink-0' : ''}`}>
             {onVoiceToggle && (
               <button
                 type="button"
@@ -4758,14 +4797,27 @@ function ChatInput({
                 {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : !micIsModeSwitch && micHeldElsewhere ? <MicOff size={18} /> : voiceHoldMode ? <><Keyboard size={18} /><span className="leading-none">{i18nT('components.chatInput.type_label')}</span></> : <Mic size={18} />}
               </button>
             )}
-            {/* The busy branch is reachable with EITHER a stop affordance or a
-                steer path: a host without onStop (the side panel — stopping the
-                main turn from there would be misdirected) still needs the
-                split steer/queue button while a turn runs. */}
-            {(isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (canSteer && onSteer)) ? (
+            {terminal.active && (
+              <Btn
+                primary
+                onClick={fireComposer}
+                disabled={!!terminal.blocked || terminal.pending || disabled || optimizing || voiceTranscribing || !connected}
+                aria-label={i18nT('components.chatInput.terminal_review')}
+                title={i18nT('components.chatInput.terminal_review')}
+              >
+                {terminal.pending ? <Loader2 className="lucide-inline animate-spin" /> : <Terminal className="lucide-inline" />}
+                {i18nT('components.chatInput.terminal_run_review')}
+              </Btn>
+            )}
+            {/* Terminal drafts keep the agent's stop controls alongside Run.
+                Ordinary chat also reaches this branch through a steer callback,
+                including on hosts that cannot stop the agent. Below 400px of
+                composer width, show a short action label. Keep the delayed-reset
+                context visible at every width. */}
+            {(isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (!terminal.active && canSteer && onSteer)) ? (
               stopState === 'killing' ? (
                 killingEscaped ? (
-                  <div className="flex items-center gap-1.5">
+                  <div className={`flex items-center gap-1.5${terminal.active ? ' min-w-0 [&>button]:shrink-0' : ''}`}>
                     <button
                       className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-all"
                       onClick={onStop}
@@ -4773,9 +4825,10 @@ function ChatInput({
                       aria-label={i18nT('components.chatInput.force_reset_session_taking_longer_than_expected')}
                       data-testid="stop-button-escape-hatch"
                     >
-                      <Square size={18} fill="currentColor" />
+                      <RotateCw size={18} />
                     </button>
-                    <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-escape-hint">{i18nT('components.chatInput.taking_longer_than_expected')}</span>
+                    {terminal.active && <span aria-hidden="true" className="text-[12px] text-muted min-w-0 [overflow-wrap:anywhere] @min-[400px]/composer:hidden">{i18nT('components.chatInput.terminal_force_reset')}</span>}
+                    <span className={`text-[12px] text-muted${terminal.active ? ' min-w-0 whitespace-normal [overflow-wrap:anywhere]' : ' whitespace-nowrap'}`} data-testid="stop-escape-hint">{i18nT('components.chatInput.taking_longer_than_expected')}</span>
                   </div>
                 ) : (
                   <button className="w-8 h-8 rounded-lg bg-danger text-danger-fg border-none flex items-center justify-center cursor-not-allowed transition-all" disabled title={i18nT('components.chatInput.killing')} aria-label={i18nT('components.chatInput.killing_session')} data-testid="stop-button-killing">
@@ -4783,7 +4836,7 @@ function ChatInput({
                   </button>
                 )
               ) : stopState === 'soft_pending' ? (
-                <div className="flex items-center gap-1.5">
+                <div className={`flex items-center gap-1.5${terminal.active ? ' min-w-0 [&>button]:shrink-0' : ''}`}>
                   {/* Pulse floor 0.8 with a faint danger fill: at 0.6 on a
                       transparent background the light-theme button bottomed
                       out near white-on-white mid-pulse, and this is the only
@@ -4799,7 +4852,8 @@ function ChatInput({
                   >
                     <Square size={18} fill="currentColor" />
                   </motion.button>
-                  <span className="text-xs text-muted whitespace-nowrap" data-testid="stop-force-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
+                  {terminal.active && <span aria-hidden="true" className="text-[12px] text-muted min-w-0 [overflow-wrap:anywhere] @min-[400px]/composer:hidden">{i18nT('components.chatInput.terminal_force_stop')}</span>}
+                  <span className={`text-[12px] text-muted whitespace-nowrap${terminal.active ? ' sr-only @min-[400px]/composer:not-sr-only @min-[400px]/composer:whitespace-normal' : ''}`} data-testid="stop-force-hint">{i18nT('components.chatInput.click_again_to_force_stop')}</span>
                 </div>
               ) : isQueued ? (
                 <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title={i18nT('components.chatInput.stopping')} aria-label={i18nT('components.chatInput.stopping_2')}>
@@ -4815,7 +4869,7 @@ function ChatInput({
               // unreachable before session refs existed, since an empty composer
               // mid-turn rendered the stop button instead. A bare ref therefore
               // waits for the turn to end and rides the idle send button.
-              composerHasDraft ? (
+              composerHasDraft && !terminal.active ? (
                 canSteer && onSteer ? (
                   steerOnly ? (
                     // No queue concept on this surface: the busy send is the
@@ -4874,8 +4928,8 @@ function ChatInput({
                   autoAvailable={jevAutoAvailable}
                 />
               )
-            ) : (<>
-              {promptOptimizer && <button
+            ) : !terminal.active && (<>
+              {promptOptimizer && !terminal.active && <button
                 className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
                 onClick={(e) => { e.stopPropagation(); e.preventDefault(); optimizePrompt() }}
                 // A single mutation backs this instance, so only one optimize can

@@ -1614,14 +1614,14 @@ class TestSshTunnelMultiplexing:
     _HOST = "kc-test-multiplex-host"
 
     #: A user config that enables multiplexing for the instance host.
-    _ADVERSARIAL_CONFIG = """\
-Host {host}
-  HostName 127.0.0.1
-  User probeuser
-  ControlMaster auto  # wokeignore:rule=master
-  ControlPath {sock}
-  ControlPersist 10m
-"""
+    _ADVERSARIAL_CONFIG = (
+        "Host {host}\n"
+        "  HostName 127.0.0.1\n"
+        "  User probeuser\n"
+        "  ControlMaster auto\n"  # wokeignore:rule=master
+        "  ControlPath {sock}\n"
+        "  ControlPersist 10m\n"
+    )
 
     def test_tunnel_argv_pins_multiplexing_off(self):
         from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv

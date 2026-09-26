@@ -75,7 +75,7 @@ import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { parseDirTokens, prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { displayModel } from '../lib/model'
 
@@ -194,6 +194,7 @@ export default function ChatPane({
   const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
+  const pendingDirs = useMemo(() => parseDirTokens(input).map(t => t.rel), [input])
   // Collapsed paste blocks behind the `[ Paste #N · M lines ]` tokens in
   // `input` — the sidecar ChatInput needs before it collapses a large paste
   // into a chip at all (it stays raw text for a host that passes no
@@ -1882,6 +1883,7 @@ export default function ChatPane({
           pasteBlocks={pasteBlocks}
           onPasteBlocksChange={setPasteBlocks}
           onSend={doSend}
+          terminalCommands={!paneSlot ? 'pending' : paneSlot.executor === 'remote' ? 'remote' : 'local'}
           isRunning={busy}
           onStop={onStop}
           isQueued={streamState === 'stopping' || !!paneSlot?.stopping}
@@ -1990,7 +1992,12 @@ export default function ChatPane({
           onUploadFiles={uploadFiles}
           onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}
+          pendingDirs={pendingDirs}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
+          onRemoveDir={rel => {
+            const esc = `@${rel}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))
+          }}
           uploading={uploadMutation.isPending}
           onDrop={dropTargetProps.onDrop}
           onDragOver={dropTargetProps.onDragOver}

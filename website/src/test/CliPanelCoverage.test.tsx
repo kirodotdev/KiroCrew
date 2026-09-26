@@ -94,14 +94,17 @@ const registry = vi.hoisted(() => ({
   connStatus: { value: undefined as 'connected' | 'reconnecting' | 'disconnected' | undefined },
   manualRetry: { value: false },
   displaced: { value: false },
+  invalidCwd: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
+  useTerminalInvalidCwd: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
+registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -262,6 +265,7 @@ beforeEach(() => {
   registry.connStatus.value = undefined
   registry.manualRetry.value = false
   registry.displaced.value = false
+  registry.invalidCwd.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   touch.value = false
@@ -425,6 +429,32 @@ describe('CliPanel disconnected banner', () => {
     const { sessionId } = mount()
     fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
     expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.invalidCwd.value = true
+    const cwd = '/work/another-workspace/long-directory-name-without-spaces/removed-project'
+    const { sessionId, rerender } = mount({ cwd })
+    const message = i18nT('components.cliPanel.invalid_cwd_message', { cwd })
+    expect(message).not.toBe('components.cliPanel.invalid_cwd_message')
+    expect(message).toContain(cwd)
+    expect(screen.getByTestId('cli-panel-disconnected')).toHaveTextContent(message)
+    expect(screen.getByTestId('cli-panel-disconnected')).toHaveAttribute('role', 'alert')
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+
+    registry.invalidCwd.value = false
+    registry.connStatus.value = 'reconnecting'
+    registry.manualRetry.value = true
+    rerender(<CliPanel sessionId={sessionId} cwd={cwd} visible />)
+    expect(screen.queryByText(message)).toBeNull()
+    expect(screen.getByText(RECONNECTING_LABEL)).toBeInTheDocument()
+    registry.connStatus.value = 'connected'
+    registry.manualRetry.value = false
+    rerender(<CliPanel sessionId={sessionId} cwd={cwd} visible />)
+    expect(screen.queryByTestId('cli-panel-disconnected')).toBeNull()
   })
 
   it('shows the Reconnecting… banner with a disabled button during a MANUAL retry', () => {

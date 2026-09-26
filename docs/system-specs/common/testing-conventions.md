@@ -109,6 +109,16 @@ Duration-accounting tests use injected clocks and report durations for exact
 arithmetic; subprocess integration tests verify reporting and cleanup without a
 wall-clock ceiling tied to runner speed.
 
+The repository disables only the unused `platformdirs` pytest plugin with
+`-p no:platformdirs`. Pytest loads third-party `pytest11` entry points before
+collection, so an unimportable optional plugin can otherwise abort a run
+without executing any tests. Child pytest invocations that replace `addopts`
+or run outside this repository configuration carry the same explicit block,
+including prepare-pr's `prove.py` and the plugin regression's nested child.
+Keep the reporter and all used pytest plugins enabled. Startup regressions
+own their temporary package metadata and never alter installed packages;
+Python child output uses explicit UTF-8 encoding and decoding.
+
 Cancellation-during-persistence tests must wait for a worker-entered handshake
 before cancelling, not infer entry from a short sleep. Keep the worker's wait
 bounded, release it in `finally`, and await the cancelled task's write drain;
@@ -279,6 +289,11 @@ flags. The BSD `stat -f %Lp` fixture reads real permission bits with Python's
 `os.stat` and `stat.S_IMODE`, rather than delegating to GNU `stat -c %a`.
 Reject unsupported arguments and verify actual modes; never substitute a fixed
 successful response for the permission check. Quote paths and bound subprocesses.
+
+Keep lint suppressions in Python comments, outside text written to fixture files.
+Use adjacent string literals when a generated line needs a suppression: an
+inline comment inside an SSH config can be rejected by older OpenSSH clients
+before the test reaches its assertions.
 
 ### Links: use the conftest helpers, do not skip on Windows
 
