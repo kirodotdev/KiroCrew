@@ -248,7 +248,7 @@ describe('ChatSidebar — Switch All Sessions roster failure', () => {
     fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
     expect(switchBtn()).not.toBeDisabled()
     fireEvent.click(switchBtn())
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('sonnet-4.7', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('sonnet-4.7', true, undefined))
   })
 
   it('keeps the notice out of the Cancel/Switch row and above the listbox', async () => {

@@ -705,6 +705,69 @@ class TestPoolEffortPostClaim:
             for r in caplog.records
         )
 
+    @pytest.mark.asyncio
+    async def test_reused_live_session_never_reapplies_effort_override(self):
+        """A level recorded on a slot while its session is live waits for the
+        session's NEXT START. get_or_create's existing-session branch hands the
+        live provider back without reading ``reasoning_effort_override``; only
+        the pool post-claim path (and the provider factory on a cold start)
+        apply it. This is the premise the slot handlers build on: a mid-turn
+        effort pick records the level, and no later turn pushes it to the
+        process that is already running."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 2
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        pooled = MagicMock(spec=AcpProvider)
+        pooled.client = MagicMock()
+        pooled.client._model = "claude-sonnet-4.6"
+        pooled.client.rekey = MagicMock()
+        pooled.change_effort = AsyncMock(return_value=True)
+        pooled.is_process_alive = MagicMock(return_value=True)
+        pooled.cwd = ""
+
+        factory = MagicMock(return_value=pooled)
+        mgr = SessionManager(cfg, factory)
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+
+        # First turn: the claim applies the level the caller asked for.
+        provider, is_new, _resumed = await mgr.get_or_create(
+            "slot-4",
+            agent=None,
+            reasoning_effort_override="high",
+        )
+        assert provider is pooled
+        pooled.change_effort.assert_awaited_once_with("high")
+        mgr.release("slot-4")
+
+        # Second turn on the same live session, with a different recorded level.
+        again, is_new_again, _resumed_again = await mgr.get_or_create(
+            "slot-4",
+            agent=None,
+            reasoning_effort_override="low",
+        )
+        assert again is pooled
+        assert is_new_again is False
+        # The reused session was handed back untouched: no second claim, no
+        # cold start for this key (the factory may still run for the pool's own
+        # background replenish), and the only effort push is still the first
+        # claim's.
+        mgr._drain_and_claim.assert_awaited_once()
+        assert not any(
+            call.kwargs.get("session_key") == "slot-4" for call in factory.call_args_list
+        )
+        pooled.change_effort.assert_awaited_once_with("high")
+        pooled.clear_effort.assert_not_called()
+
 
 class TestFactoryDefaultEffortFallback:
     """``agent.reasoning_effort`` is the global default for sessions that carry

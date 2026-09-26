@@ -42,7 +42,7 @@ function learnWindow(name: string, window: number): void {
 /** Narrow view of GET /api/config/kirocrew — only the fields the composer needs
  *  to resolve what a new session will actually run on. */
 interface KirocrewAgentConfig {
-  agent?: { model?: string; reasoning_effort?: string }
+  agent?: { model?: string }
 }
 
 // Persist the last SUCCESSFUL live /api/models list so a transient backend
@@ -252,18 +252,6 @@ export class AcpAdapter implements ProviderAdapter {
       const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
       const m = c?.agent?.model || ''
       return m === 'auto' ? '' : m
-    } catch {
-      return ''
-    }
-  }
-
-  /** KiroCrew's configured default reasoning effort (Settings → Chat). '' means
-   *  no default, i.e. the model picks its own. A per-slot override outranks it,
-   *  matching ConfigLoader._acp()'s `reasoning_effort_override or default`. */
-  async resolveDefaultEffort(): Promise<string> {
-    try {
-      const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
-      return c?.agent?.reasoning_effort || ''
     } catch {
       return ''
     }

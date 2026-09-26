@@ -39,6 +39,7 @@ from typing import (
     Any,
     AsyncGenerator,
     AsyncIterator,
+    Awaitable,
     Callable,
     Collection,
     Mapping,
@@ -167,6 +168,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
     TERMINAL_TOOL_STATUSES,
@@ -202,6 +204,7 @@ from kiro_crew.agent_sdk.backends import (
     NODE_ADAPTER_ENTRY_SEGMENTS,
     launch_for,
 )
+from kiro_crew.agent_sdk.session_busy import SessionTurnBusy
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -3103,6 +3106,10 @@ class AcpTimeoutError(AcpError):
         super().__init__(message)
 
 
+class TurnLockBusy(AcpError, SessionTurnBusy):
+    """The active turn kept sole stdout ownership past a caller's deadline."""
+
+
 class AcpPermissionNeeded(AcpError):  # noqa: N818
     """Tool approval required."""
 
@@ -5664,6 +5671,14 @@ class AcpClient:
         # entry clear()s this before sending, so a real turn still reads active.
         self._turn_done: asyncio.Event = asyncio.Event()
         self._turn_done.set()
+        # Prompt loops that have entered but do not own the stdout lock yet are
+        # turns from the user's point of view, even though they have written no
+        # native request. Keep that state separate from _turn_done: a task
+        # cancelled before lock ownership must leave the current owner's event
+        # untouched. The change event lets wait_turn_done observe both states
+        # without spinning while _turn_done is still set.
+        self._admitted_prompt_count = 0
+        self._turn_state_changed = asyncio.Event()
         # Serializes whole read turns on this client's single stdout StreamReader.
         # An asyncio StreamReader permits exactly ONE waiting reader; the shared
         # `_bg` session is streamed by ~8 callers and the per-session Semaphore(1)
@@ -5680,11 +5695,11 @@ class AcpClient:
         # to force deterministic release on its hot path; the other consumers
         # rely on the next-tick finalization.
         #
-        # Coverage caveat: this lock only covers reads inside _prompt_loop.
-        # _read_message also has callers OUTSIDE the loop (_wait_for_response
-        # during init, wait_for_compaction). Those run in distinct lifecycle
-        # phases that do not overlap a streaming _bg turn, so they are not
-        # serialized here; if that ever changes, the readuntil race could recur.
+        # Side-channel effort requests take this same lock around BOTH their
+        # write and response read, so a prompt loop cannot consume their reply
+        # and they cannot park a second coroutine on stdout. Other
+        # _wait_for_response callers run in distinct lifecycle phases that do
+        # not overlap a streaming _bg turn.
         self._turn_lock: asyncio.Lock = asyncio.Lock()
         self._stale_eligible: bool = False  # set by _dispatch_events after text chunks
         # Set when a tool_call is yielded, cleared when the tool resolves
@@ -8039,15 +8054,28 @@ class AcpClient:
         except (OSError, ValueError, TypeError):
             logger.warning("post-capture re-seed of settings.local.json failed", exc_info=True)
 
-    async def set_config_option(self, config_id: str, value: str) -> None:
+    async def set_config_option(
+        self,
+        config_id: str,
+        value: str,
+        *,
+        lock_timeout: float | None = None,
+    ) -> None:
         """Set a session config option (e.g. effort level) via session/set_config_option."""
         if not self._session_id:
             raise AcpError("Cannot set config option before session is initialized")
-        req_id = await self._send_request(
-            "session/set_config_option",
-            {"sessionId": self._session_id, "configId": config_id, "value": value},
-        )
-        await self._wait_for_response(req_id, timeout=10.0)
+        # A config change is a second stdout reader. Lock before the write so a
+        # live prompt cannot consume this request's reply while the config
+        # coroutine waits to read it.
+        await self._acquire_turn_lock(lock_timeout)
+        try:
+            req_id = await self._send_request(
+                "session/set_config_option",
+                {"sessionId": self._session_id, "configId": config_id, "value": value},
+            )
+            await self._wait_for_response(req_id, timeout=10.0)
+        finally:
+            self._turn_lock.release()
 
     # ── Dynamic Config from ACP ──
 
@@ -10614,6 +10642,16 @@ class AcpClient:
 
     # ── JSON-RPC Transport ──
 
+    async def _acquire_turn_lock(self, timeout: float | None = None) -> None:
+        """Acquire sole stdout ownership, optionally within a caller's bound."""
+        if timeout is None:
+            await self._turn_lock.acquire()
+            return
+        try:
+            await asyncio.wait_for(self._turn_lock.acquire(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes") from exc
+
     async def _send_request(self, method: str, params: dict) -> int:
         if not self._process or not self._process.stdin:
             raise AcpError("ACP process not running")
@@ -11175,26 +11213,55 @@ class AcpClient:
 
     async def _prompt_loop(
         self,
-        req_id: int,
+        req_id: int | Callable[[], Awaitable[int]],
         timeout: float,
     ) -> AsyncGenerator[tuple[str, JsonRpcMessage], None]:
         """Core prompt read loop. Yields (action, msg) pairs.
 
-        Always releases ``_turn_done`` on exit — including abnormal exits
-        (process death, cancel-grace exceeded, or a caller that raises on an
-        ``error`` action and closes this generator). Without the ``finally``,
-        those paths bypass the callers' trailing ``_turn_done.set()`` and a
-        ``wait_turn_done`` waiter (the cooperative-stop ack) blocks for its
-        full budget before escalating to a session-losing hard kill.
+        Publishes ``_turn_done`` only while this invocation owns ``_turn_lock``.
+        The owner releases it on every exit, including abnormal exits (process
+        death, cancel-grace exceeded, or a caller that raises on an ``error``
+        action and closes this generator). Without the ``finally``, those paths
+        bypass the callers' trailing ``_turn_done.set()`` and a
+        ``wait_turn_done`` waiter (the cooperative-stop ack) blocks for its full
+        budget before escalating to a session-losing hard kill.
         """
-        # L1 turn-lock: serialize the whole read turn on this client's single
-        # stdout StreamReader so two _bg streaming turns can't both park on
-        # readline() and trip "readuntil() called while another coroutine is
-        # already waiting". Acquired here (every streaming consumer funnels
-        # through _prompt_loop), released in the finally — see the __init__
-        # comment for the finalization + coverage caveats.
-        await self._turn_lock.acquire()
+        # Serialize the request write and its whole read turn on this client's
+        # single stdout StreamReader. A callable req_id is the deferred request
+        # write, so prompt and streaming-command callers take ownership before
+        # bytes reach stdin; an int is a request that was already written.
+        lock_acquired = False
+        cancelled_before_wait = self._cancelled
+        self._admitted_prompt_count += 1
+        self._turn_state_changed.set()
         try:
+            try:
+                await self._turn_lock.acquire()
+                lock_acquired = True
+            finally:
+                # The acquire either granted ownership or exited before
+                # ownership. Both paths retire exactly one pending entry.
+                self._admitted_prompt_count -= 1
+                self._turn_state_changed.set()
+            # The lock owner alone publishes the shared turn boundary. A waiter
+            # cancelled before lock ownership must leave the active owner's
+            # boundary untouched.
+            self._turn_done.clear()
+            if self._cancelled and not cancelled_before_wait:
+                # Stop won while this turn waited behind a command/config owner.
+                # Publish the ordinary cancelled terminal without invoking the
+                # deferred write, so every prompt API follows its normal
+                # completion path and no model work starts after Stop.
+                yield "complete", JsonRpcMessage(
+                    id=None,
+                    method=None,
+                    result={"stopReason": STOP_REASON_CANCELLED},
+                    error=None,
+                    params=None,
+                )
+                return
+            if callable(req_id):
+                req_id = await req_id()
             # Retire the liveness state HERE, under the lock, because this is the
             # one point every prompt path funnels through: send_message (via
             # _read_prompt_response), send_message_stream, and _dispatch_events.
@@ -11471,14 +11538,14 @@ class AcpClient:
                 finally:
                     parked_total += max(0.0, time.monotonic() - _parked_since)
         finally:
-            self._turn_lock.release()
-            # Release any cooperative-stop waiter regardless of how the loop
-            # ends. The callers set the precise stop reason on the clean
-            # "complete" path before this runs (idempotent); on abnormal exit
-            # the reason stays "" → provider.cancel reports "timeout" →
-            # escalates to hard kill, the correct outcome for a dead turn.
-            if not self._turn_done.is_set():
-                self._turn_done.set()
+            if lock_acquired:
+                # Publish completion before releasing the lock. Otherwise the
+                # next owner could acquire, clear, and have this owner set the
+                # event over its active turn.
+                if not self._turn_done.is_set():
+                    self._turn_done.set()
+                self._turn_lock.release()
+            self._turn_state_changed.set()
 
     async def _consult_liveness_model_wait(self) -> tuple[str, str]:
         """Liveness verdict for the stale-turn gate, offloaded off the loop.
@@ -11525,11 +11592,11 @@ class AcpClient:
         """Send a prompt and return the full response text."""
         timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
-        self._turn_done.clear()
         await self.ensure_ready()
 
-        req_id = await self._send_prompt(message)
-        return await self._read_prompt_response(req_id, timeout)
+        return await self._read_prompt_response(
+            functools.partial(self._send_prompt, message), timeout
+        )
 
     async def send_message_stream(
         self, message: str, timeout: float | None = None
@@ -11542,10 +11609,8 @@ class AcpClient:
         # path (_maybe_fire_pre_tool_hooks / _maybe_fire_post_tool_hooks). If a future
         # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
         self._cancelled = False
-        self._turn_done.clear()
         await self.ensure_ready()
 
-        req_id = await self._send_prompt(message)
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
         # aclosing(): _prompt_loop holds _turn_lock and releases it in its
@@ -11555,7 +11620,9 @@ class AcpClient:
         # return point, so the lock would stay held past the turn (next _bg
         # caller blocks = the freeze). aclosing() runs aclose() deterministically
         # on block exit, firing the finally and releasing the lock immediately.
-        async with aclosing(self._prompt_loop(req_id, timeout)) as _loop:
+        async with aclosing(
+            self._prompt_loop(functools.partial(self._send_prompt, message), timeout)
+        ) as _loop:
             async for action, msg in _loop:
                 if action == "complete":
                     reason = ""
@@ -11651,15 +11718,15 @@ class AcpClient:
         """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete)."""
         timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
-        self._turn_done.clear()
         await self.ensure_ready()
-        req_id = await self._send_prompt(message)
-        async for event in self._dispatch_events(req_id, timeout):
+        async for event in self._dispatch_events(
+            functools.partial(self._send_prompt, message), timeout
+        ):
             yield event
 
     async def _dispatch_events(
         self,
-        req_id: int,
+        req_id: int | Callable[[], Awaitable[int]],
         timeout: float,
         *,
         extract_agent_from_result: bool = False,
@@ -12183,11 +12250,21 @@ class AcpClient:
             "sessionId": self._session_id,
             "command": {"command": cmd_name, "args": args if args is not None else cmd_args},
         }
-        req_id = await self._send_request(METHOD_COMMANDS_EXECUTE, payload)
-        result = await self._wait_for_response(req_id, timeout=60.0)
-        return result if isinstance(result, dict) else {}
+        await self._acquire_turn_lock()
+        try:
+            req_id = await self._send_request(METHOD_COMMANDS_EXECUTE, payload)
+            result = await self._wait_for_response(req_id, timeout=60.0)
+            return result if isinstance(result, dict) else {}
+        finally:
+            self._turn_lock.release()
 
-    async def send_command(self, command: str, args: dict | None = None) -> str:
+    async def send_command(
+        self,
+        command: str,
+        args: dict | None = None,
+        *,
+        lock_timeout: float | None = None,
+    ) -> str:
         """Execute a kiro slash command (e.g. '/compact', '/usage', '/effort').
 
         Returns the response text (if any).  For streaming output use
@@ -12200,28 +12277,36 @@ class AcpClient:
         older kiro-cli.
         """
         await self.ensure_ready()
-        if args:
-            cmd_name = command.strip().split(None, 1)[0].lstrip("/")
-            payload: dict = {
-                "sessionId": self._session_id,
-                "command": {"command": cmd_name, "args": args},
-            }
-        else:
-            payload = {"sessionId": self._session_id, "command": command}
-        req_id = await self._send_request(METHOD_COMMANDS_EXECUTE, payload)
+        # Commands such as /effort read their own response from the prompt's
+        # stdout stream. Lock before the write so the prompt loop cannot consume
+        # that response, and keep the lock through the bounded response wait so
+        # only one coroutine can call readline().
+        await self._acquire_turn_lock(lock_timeout)
         try:
-            result = await self._wait_for_response(req_id, timeout=60.0)
-            raw = result.get("text", "") or result.get("message", "")
-            if raw:
-                # Two-pass redaction (URLs + credentials) to match the shared
-                # AcpSessionHandle.send_command path: a URL-only pass leaves
-                # tokens/keys in slash-command output.
-                raw, _ = redact_exfiltration_urls(raw)
-                raw, _ = redact_credentials(raw)
-            return raw
-        except AcpTimeoutError:
-            logger.debug("Command '%s' response timed out (may still be running)", command)
-            return ""
+            if args:
+                cmd_name = command.strip().split(None, 1)[0].lstrip("/")
+                payload: dict = {
+                    "sessionId": self._session_id,
+                    "command": {"command": cmd_name, "args": args},
+                }
+            else:
+                payload = {"sessionId": self._session_id, "command": command}
+            req_id = await self._send_request(METHOD_COMMANDS_EXECUTE, payload)
+            try:
+                result = await self._wait_for_response(req_id, timeout=60.0)
+                raw = result.get("text", "") or result.get("message", "")
+                if raw:
+                    # Two-pass redaction (URLs + credentials) to match the shared
+                    # AcpSessionHandle.send_command path: a URL-only pass leaves
+                    # tokens/keys in slash-command output.
+                    raw, _ = redact_exfiltration_urls(raw)
+                    raw, _ = redact_credentials(raw)
+                return raw
+            except AcpTimeoutError:
+                logger.debug("Command '%s' response timed out (may still be running)", command)
+                return ""
+        finally:
+            self._turn_lock.release()
 
     async def stream_command(
         self, command: str, timeout: float | None = None
@@ -12237,14 +12322,15 @@ class AcpClient:
         await self.ensure_ready()
 
         cmd_name, cmd_args = parse_slash_command(command)
-        req_id = await self._send_request(
-            METHOD_COMMANDS_EXECUTE,
-            {
-                "sessionId": self._session_id,
-                "command": {"command": cmd_name, "args": cmd_args},
-            },
-        )
-        async for event in self._dispatch_events(req_id, timeout, extract_agent_from_result=True):
+        payload = {
+            "sessionId": self._session_id,
+            "command": {"command": cmd_name, "args": cmd_args},
+        }
+        async for event in self._dispatch_events(
+            functools.partial(self._send_request, METHOD_COMMANDS_EXECUTE, payload),
+            timeout,
+            extract_agent_from_result=True,
+        ):
             yield event
 
     async def cancel_session(self, grace_secs: float = 0.0) -> None:
@@ -12355,7 +12441,34 @@ class AcpClient:
 
     async def wait_turn_done(self, timeout: float) -> str:
         """Wait for the current prompt to finish. Returns stop_reason or raises TimeoutError."""
-        await asyncio.wait_for(self._turn_done.wait(), timeout=timeout)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._admitted_prompt_count or not self._turn_done.is_set():
+            # Clear before re-checking. No await separates these operations, so
+            # a state change cannot be lost between the check and waiter setup.
+            self._turn_state_changed.clear()
+            if not self._admitted_prompt_count and self._turn_done.is_set():
+                break
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+
+            waiters = {asyncio.create_task(self._turn_state_changed.wait())}
+            if not self._turn_done.is_set():
+                waiters.add(asyncio.create_task(self._turn_done.wait()))
+            try:
+                done, _pending = await asyncio.wait(
+                    waiters,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for waiter in waiters:
+                    if not waiter.done():
+                        waiter.cancel()
+                await asyncio.gather(*waiters, return_exceptions=True)
+            if not done:
+                raise asyncio.TimeoutError()
         return self._last_stop_reason
 
     def has_active_turn(self) -> bool:
@@ -12365,7 +12478,11 @@ class AcpClient:
         before the agent acknowledges the cancel. Callers that need to force
         a kill regardless of cancel state should skip this check.
         """
-        return not self._cancelled and not self._turn_done.is_set() and self._is_process_alive()
+        return (
+            not self._cancelled
+            and (self._admitted_prompt_count > 0 or not self._turn_done.is_set())
+            and self._is_process_alive()
+        )
 
     def has_unfinished_turn(self) -> bool:
         """True if the native turn has NOT reached its done boundary and the
@@ -12395,7 +12512,9 @@ class AcpClient:
             },
         )
 
-    async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
+    async def _read_prompt_response(
+        self, req_id: int | Callable[[], Awaitable[int]], timeout: float
+    ) -> str:
         output: list[str] = []
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
 

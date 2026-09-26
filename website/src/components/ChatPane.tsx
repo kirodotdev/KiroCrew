@@ -674,14 +674,26 @@ export default function ChatPane({
   const effortLevelsOverride = selectionCapabilities
     ? selectionCapabilities.effort_levels
     : paneRemoteCrew.isRemote ? (paneRemoteCrew.capabilities?.effort_levels ?? []) : undefined
-  const { data: defaultEffort = '' } = useQuery({
-    queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(),
+  // Read from the shared ['kirocrewConfig'] entry, as the main composer does:
+  // queries never go stale on their own here, and that entry is the one the
+  // Settings save writes and the server's refresh broadcast invalidates, so a
+  // changed default shows in this pane without a reload.
+  const { data: _kirocrewCfg, isError: kirocrewConfigIsError } = useQuery({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
     enabled: provider.capabilities.reasoningEffort,
   })
-  const effectiveEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
+  const defaultEffort: string = provider.capabilities.reasoningEffort
+    ? _kirocrewCfg?.agent?.reasoning_effort || ''
+    : ''
+  // The slot's own effort (its override, or a legacy model-suffix level); empty
+  // means the pane inherits the Settings default. The effective value, the
+  // picker's current row and the config-read-failure notice all read this one
+  // expression, so they cannot disagree about whether the default is in force.
+  const slotEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
     paneSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  )
+  const effectiveEffort = slotEffort || defaultEffort
   // What the pin alone would say; differing from `shownModel` means the chip
   // is naming the served default an inheriting slot runs on (see ChatPage).
   const _pinShownModel = displayModel(
@@ -1843,6 +1855,17 @@ export default function ChatPane({
           message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         />
+        {/* No hand-off: same composer draft. A failed Settings read leaves an
+            inheriting pane's effort control on Default; the composer still
+            sends. A pane with its own effort shows that level whatever the
+            read did, so it gets no notice. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-default-effort-config-error"
+          message={provider.capabilities.reasoningEffort && kirocrewConfigIsError && !slotEffort
+            ? i18nT('pages.chatPage.default_effort_settings_unavailable') : ''}
+        />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}
         <ErrorNotice
@@ -2115,7 +2138,7 @@ export default function ChatPane({
           >
             <ReasoningEffortDropdown
               slot={slotKey}
-              currentEffort={paneSlot?.reasoning_effort || legacyCodexEffort(paneSlot?.model || '', '', codexPairModels)}
+              currentEffort={slotEffort}
               defaultEffort={defaultEffort}
               levelsOverride={effortLevelsOverride}
               onClose={() => setReasoningEffortDropdown(false)}

@@ -23571,6 +23571,797 @@ class TestBulkModelSwitch:
         assert state._slots["a"].model == "claude-fable-5"
         state.sessions.reset.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_effort_applies_with_the_model(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        a = state.get_or_create_slot("a", model="claude-opus-4.6")
+        b = state.get_or_create_slot("b", model="claude-sonnet-4.6")
+        b.reasoning_effort = "low"
+        a._dirty = False
+        b._dirty = False
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert "reasoning_effort" not in data  # no consumer; the slots push carries it
+        assert sorted(data["switched"]) == ["a", "b"]
+        assert (a.model, a.reasoning_effort) == ("claude-opus-4.8", "high")
+        assert (b.model, b.reasoning_effort) == ("claude-opus-4.8", "high")
+        assert a._dirty is True
+        assert b._dirty is True
+        assert state.sessions.reset.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_effort_only_difference_applies_without_reset_or_model_pick_bump(self, tmp_path):
+        # A slot already on the target model but at another effort is switched
+        # WITHOUT a reset: the model still serves the transcript, so only the
+        # effort moves (recorded here, with no live session, for the next cold
+        # start). The model-pick generation stays put, because the model did
+        # not change, and the conversation stays too.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        slot._dirty = False
+        gen_before = slot._model_pick_gen
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "max"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert slot.reasoning_effort == "max"
+        assert slot._dirty is True
+        assert slot._model_pick_gen == gen_before
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_matching_model_and_effort_is_unchanged(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        slot._dirty = False
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["unchanged"] == ["a"]
+        assert slot._dirty is False
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_absent_effort_leaves_each_slot_effort_alone(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.6")
+        slot.reasoning_effort = "xhigh"
+        on_target = state.get_or_create_slot("b", model="claude-opus-4.8")
+        on_target.reasoning_effort = "low"
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-opus-4.8"})
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert "reasoning_effort" not in data
+        assert data["switched"] == ["a"]
+        assert data["unchanged"] == ["b"]
+        assert slot.reasoning_effort == "xhigh"
+        assert on_target.reasoning_effort == "low"
+
+    @pytest.mark.asyncio
+    async def test_empty_effort_clears_the_override(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert slot.reasoning_effort == ""
+        state.sessions.reset.assert_not_awaited()  # effort-only: the conversation is kept
+
+    @staticmethod
+    def _live_effort_provider(*, active_turn: bool = False, supports_effort: bool = True):
+        """An idle (or mid-turn) live AcpProvider double the effort push targets."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=supports_effort)
+        provider.has_active_turn = MagicMock(return_value=active_turn)
+        provider.change_effort = AsyncMock(return_value=True)
+        provider.clear_effort = AsyncMock(return_value=True)
+        return provider
+
+    @staticmethod
+    def _real_effort_provider(*, backend: str, default: str | None = None):
+        """A real AcpProvider whose effort map exposes clear mutations."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        model = "claude-opus-4.8"
+        defaults = {} if default is None else {model: default}
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(
+                acp_backend=backend,
+                effort_per_model={model: "high"},
+                effort_defaults=defaults,
+            )
+        provider._client = MagicMock()
+        provider._client.backend = backend
+        provider._client._model = model
+        provider._client._work_dir = MagicMock()
+        # A bare MagicMock answer is truthy, which reads as a running turn.
+        provider._client.has_active_turn = MagicMock(return_value=False)
+        provider._client.send_command = AsyncMock()
+        provider._client.set_config_option = AsyncMock()
+        provider._client.supports_config_option = MagicMock(return_value=True)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_effort_only_live_idle_provider_is_pushed_without_reset(self, tmp_path):
+        # The single-slot effort pick's happy path, in bulk: the level goes to
+        # the live session through change_effort and nothing is torn down.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert slot.reasoning_effort == "high"
+        provider.change_effort.assert_awaited_once_with("high")
+        provider.clear_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_rebind_during_live_push_commits_level(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async def _push_then_rebind(level: str) -> bool:
+            slot.linked_session_key = "cron:replacement"
+            return True
+
+        provider.change_effort = AsyncMock(side_effect=_push_then_rebind)
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["skipped_running"] == []
+        assert data["failed"] == []
+        assert slot.reasoning_effort == "high"
+        provider.change_effort.assert_awaited_once_with("high")
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_slot_replaced_during_live_push_is_skipped(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        dead_slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        dead_slot.reasoning_effort = "low"
+        replacement = _ChatSlot("a", model="claude-opus-4.8")
+        replacement.reasoning_effort = "max"
+        state.push_slots_update = MagicMock()
+
+        async def _push_then_replace(level: str) -> bool:
+            state._slots["a"] = replacement
+            return True
+
+        provider.change_effort = AsyncMock(side_effect=_push_then_replace)
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == []
+        assert data["skipped_running"] == ["a"]
+        assert data["failed"] == []
+        assert dead_slot.reasoning_effort == "low"
+        assert replacement.reasoning_effort == "max"
+        provider.change_effort.assert_awaited_once_with("high")
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_turn_lock_busy_is_skipped_uncommitted(self, tmp_path):
+        from kiro_crew.acp.client import TurnLockBusy
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider()
+        provider.change_effort = AsyncMock(side_effect=TurnLockBusy("turn active"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == []
+        assert data["skipped_running"] == ["a"]
+        assert data["failed"] == []
+        assert slot.reasoning_effort == "low"
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_clears_to_configured_default_without_reset(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load",
+            MagicMock(side_effect=AssertionError("bulk Default must call clear_effort")),
+        )
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._real_effort_provider(backend=ACP_BACKEND_KIRO, default="medium")
+        real_clear = provider.clear_effort
+        provider.clear_effort = AsyncMock(wraps=real_clear)
+        provider.change_effort = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+
+        with patch.object(provider, "_apply_effort_overlay", return_value=True):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/model",
+                    json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["failed"] == []
+        assert data["effort_deferred"] == []
+        assert slot.reasoning_effort == ""
+        assert provider._effort_per_model == {}
+        provider.clear_effort.assert_awaited_once_with()
+        provider.change_effort.assert_not_awaited()
+        provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "medium"})
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_turn_lock_busy_is_deferred_with_pin_cleared(self, tmp_path):
+        # clear_effort drops the pin and persists the default overlay before
+        # its live push meets the busy turn lock, so the slot must record
+        # Default too; reporting a skip would leave the slot on the old level
+        # while the provider already runs Default on its next start.
+        from kiro_crew.acp.client import TurnLockBusy
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._real_effort_provider(backend=ACP_BACKEND_KIRO, default="medium")
+        provider._client.send_command = AsyncMock(side_effect=TurnLockBusy("turn active"))
+        provider.clear_effort = AsyncMock(wraps=provider.clear_effort)
+        provider.change_effort = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        with patch.object(provider, "_apply_effort_overlay", return_value=True):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/model",
+                    json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["effort_deferred"] == ["a"]
+        assert data["skipped_running"] == []
+        assert data["failed"] == []
+        assert slot.reasoning_effort == ""
+        assert provider._effort_per_model == {}
+        provider.clear_effort.assert_awaited_once_with()
+        provider.change_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_config_backend_is_deferred_and_clears_pin(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._real_effort_provider(backend=ACP_BACKEND_CLAUDE)
+        real_clear = provider.clear_effort
+        provider.clear_effort = AsyncMock(wraps=real_clear)
+        provider.change_effort = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["effort_deferred"] == ["a"]
+        assert data["failed"] == []
+        assert slot.reasoning_effort == ""
+        assert provider._effort_per_model == {}
+        provider.clear_effort.assert_awaited_once_with()
+        provider.change_effort.assert_not_awaited()
+        provider._client.set_config_option.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_mid_turn_is_skipped_not_torn_down(self, tmp_path):
+        # skip_running=false forces a MODEL change through a running slot; an
+        # effort-only slot has nothing to force. No live push (it would race
+        # the streaming prompt loop), no reset, and no recorded level either:
+        # the live session reads the slot's effort only at creation, so a
+        # recorded level would be advertised but not run. Skipped for a retry.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider(active_turn=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        self._mark_running(slot)
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={
+                    "model": "claude-opus-4.8",
+                    "reasoning_effort": "high",
+                    "skip_running": False,
+                },
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == []
+        assert data["skipped_running"] == ["a"]
+        assert slot.reasoning_effort == "low"
+        provider.change_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_running_slot_is_skipped_by_default(self, tmp_path):
+        # The panel's checkbox still means what it says for effort-only slots.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider(active_turn=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        self._mark_running(slot)
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["skipped_running"] == ["a"]
+        assert data["switched"] == []
+        assert slot.reasoning_effort == "low"
+        provider.change_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_non_capable_model_is_a_persisted_no_op(self, tmp_path):
+        # The live model cannot use effort: record the level for a later switch
+        # to a capable model, touch neither the session nor its transcript.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider(supports_effort=False)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-haiku-4.5")
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-haiku-4.5", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert slot.reasoning_effort == "high"
+        provider.change_effort.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "push",
+        [
+            pytest.param(
+                {"change_effort": AsyncMock(side_effect=RuntimeError("boom"))}, id="raised"
+            ),
+            pytest.param({"change_effort": AsyncMock(return_value=False)}, id="not-applied"),
+        ],
+    )
+    async def test_effort_only_failed_live_push_lands_in_failed_with_effort_unchanged(
+        self, tmp_path, push
+    ):
+        # Where the single-slot handler falls back to a reset, the bulk switch
+        # must not: the caller was told an effort-only switch keeps the
+        # conversation. The slot is reported failed and keeps its old level.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._live_effort_provider()
+        provider.change_effort = push["change_effort"]
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["failed"] == ["a"]
+        assert data["switched"] == []
+        assert slot.reasoning_effort == "low"
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_kiro_without_default_is_deferred_and_clears_pin(
+        self, tmp_path
+    ):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._real_effort_provider(backend=ACP_BACKEND_KIRO)
+        real_clear = provider.clear_effort
+        provider.clear_effort = AsyncMock(wraps=real_clear)
+        provider.change_effort = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        with patch("kiro_crew.providers.acp._clear_cli_overlay_effort", return_value=True):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/model",
+                    json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["effort_deferred"] == ["a"]
+        assert data["failed"] == []
+        assert data["skipped_running"] == []
+        assert slot.reasoning_effort == ""
+        assert provider._effort_per_model == {}
+        provider.clear_effort.assert_awaited_once_with()
+        provider.change_effort.assert_not_awaited()
+        provider._client.send_command.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_overlay_busy_is_skipped_uncommitted(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._real_effort_provider(backend=ACP_BACKEND_KIRO)
+        real_clear = provider.clear_effort
+        provider.clear_effort = AsyncMock(wraps=real_clear)
+        provider.change_effort = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        with patch("kiro_crew.providers.acp._clear_cli_overlay_effort", return_value=False):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/model",
+                    json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+                )
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == []
+        assert data["effort_deferred"] == []
+        assert data["failed"] == []
+        assert data["skipped_running"] == ["a"]
+        assert slot.reasoning_effort == "high"
+        assert provider._effort_per_model == {"claude-opus-4.8": "high"}
+        provider.clear_effort.assert_awaited_once_with()
+        provider.change_effort.assert_not_awaited()
+        provider._client.send_command.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_effort_only_default_without_configured_level_records_clear_without_live(
+        self, tmp_path
+    ):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.sessions.get_provider = MagicMock(return_value=None)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "high"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": ""},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["failed"] == []
+        assert data["skipped_running"] == []
+        assert slot.reasoning_effort == ""
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remote_bound_slot_effort_is_not_applied_locally(self, tmp_path):
+        # A remote-bound slot runs its turns on a peer; the single-slot effort
+        # pick relays there, this bulk path has no relay. Writing the local
+        # mirror would report a level the peer never runs, so the effort is
+        # left untouched. Reported in effort_not_applied -- not in
+        # skipped_running, whose skips a retry can land; no retry of this
+        # request reaches the peer.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        slot.executor = "remote"
+        slot.instance_id = "peer-1"
+        slot.remote_slot = "their-slot"
+        assert slot.is_remote
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["effort_not_applied"] == ["a"]
+        assert data["skipped_running"] == []
+        assert data["switched"] == []
+        assert data["unchanged"] == []
+        assert data["failed"] == []
+        assert slot.reasoning_effort == "low"
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remote_bound_model_change_switches_and_reports_effort_not_applied(
+        self, tmp_path
+    ):
+        # The model still moves for a remote-bound slot (the pre-existing bulk
+        # behaviour), and the requested effort still does not: the slot is in
+        # BOTH switched and effort_not_applied, so the caller can say the model
+        # changed while the peer kept its own effort. Nothing is silently
+        # reported as fully applied.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.6")
+        slot.reasoning_effort = "low"
+        slot.executor = "remote"
+        slot.instance_id = "peer-1"
+        slot.remote_slot = "their-slot"
+        assert slot.is_remote
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["effort_not_applied"] == ["a"]
+        assert data["skipped_running"] == []
+        assert data["failed"] == []
+        assert (slot.model, slot.reasoning_effort) == ("claude-opus-4.8", "low")
+
+    @pytest.mark.asyncio
+    async def test_effort_not_applied_is_empty_when_no_remote_slot_is_asked(self, tmp_path):
+        # The list is additive and present on every response, empty unless a
+        # remote-bound slot had an effort requested.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("a", model="claude-opus-4.6")
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["switched"] == ["a"]
+        assert data["effort_not_applied"] == []
+        assert data["effort_deferred"] == []
+
+    @pytest.mark.asyncio
+    async def test_effort_left_untouched_when_the_reset_fails(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("boom"))
+        slot = state.get_or_create_slot("a", model="claude-opus-4.6")
+        slot.reasoning_effort = "low"
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["failed"] == ["a"]
+        assert (slot.model, slot.reasoning_effort) == ("claude-opus-4.6", "low")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["extreme", 3, ["high"], {"level": "high"}])
+    async def test_invalid_effort_rejected_no_slot_touched(self, tmp_path, bad):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="claude-opus-4.6")
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": bad},
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert "reasoning_effort" in data["error"]
+        assert data["code"] == "invalid_reasoning_effort"  # house form: every 400 carries a code
+        assert slot.model == "claude-opus-4.6"
+        state.sessions.reset.assert_not_awaited()
+
+
+class TestIncompleteRemoteEffort:
+    @staticmethod
+    def _single_effort_app(state: DashboardState) -> web.Application:
+        from kiro_crew.dashboard.chat import api_chat_slot_reasoning_effort
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post(
+            "/api/chat/slots/{slot}/reasoning-effort", api_chat_slot_reasoning_effort
+        )
+        return app
+
+    @pytest.mark.asyncio
+    async def test_bulk_incomplete_remote_binding_reports_effort_not_applied(self, tmp_path):
+        state = _make_state(tmp_path)
+        provider = TestBulkModelSwitch._live_effort_provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        slot.executor = "remote"
+        slot.instance_id = ""
+        slot.remote_slot = "peer-slot"
+        assert not slot.is_remote
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(TestBulkModelSwitch._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/model",
+                json={"model": "claude-opus-4.8", "reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["effort_not_applied"] == ["a"]
+        assert data["switched"] == []
+        assert data["skipped_running"] == []
+        assert data["failed"] == []
+        assert slot.reasoning_effort == "low"
+        provider.change_effort.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_incomplete_remote_binding_refuses_effort(self, tmp_path):
+        state = _make_state(tmp_path)
+        provider = TestBulkModelSwitch._live_effort_provider()
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.reasoning_effort = "low"
+        slot.executor = "remote"
+        slot.instance_id = "peer-1"
+        slot.remote_slot = ""
+        assert not slot.is_remote
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._single_effort_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/reasoning-effort",
+                json={"reasoning_effort": "high"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 409
+        assert data["code"] == "remote_binding_incomplete"
+        assert slot.reasoning_effort == "low"
+        provider.change_effort.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
 
 class TestSlotModelGuard:
     """POST /api/chat/slots/{slot}/model — reject canonical registry keys the

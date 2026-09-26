@@ -329,7 +329,8 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    // Third argument = the effort pick; undefined (Keep) leaves each session's own.
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
     expect(await screen.findByText('1 session failed to switch')).toBeTruthy()
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
   })
