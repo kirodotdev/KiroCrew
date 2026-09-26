@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.monitoring.models import MonitorObservationStatus
+from kiro_crew.monitoring.models import MonitorObservationStatus, ProviderErrorKind
 from kiro_crew.monitoring.pull_request import (
     PULL_REQUEST_MONITOR_KINDS,
     PullRequestCheck,
     PullRequestFacts,
     build_pull_request_probe_result,
+    classify_provider_error_text,
 )
 
 _HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -44,6 +45,58 @@ def test_supported_kinds_are_a_closed_cross_provider_set() -> None:
             "azure_devops_pull_request",
             "bitbucket_pull_request",
         }
+    )
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "kind"),
+    [
+        ("HTTP 429 from the provider", ProviderErrorKind.RATE_LIMITED),
+        ("API rate limit exceeded", ProviderErrorKind.RATE_LIMITED),
+        ("Too Many Requests", ProviderErrorKind.RATE_LIMITED),
+        ("the request was throttled by the instance", ProviderErrorKind.RATE_LIMITED),
+        ("HTTP 401 from the provider", ProviderErrorKind.AUTHENTICATION),
+        ("Unauthorized", ProviderErrorKind.AUTHENTICATION),
+        ("you are not logged in to this host", ProviderErrorKind.AUTHENTICATION),
+        ("authentication failed", ProviderErrorKind.AUTHENTICATION),
+        ("invalid token supplied", ProviderErrorKind.AUTHENTICATION),
+        ("expired token supplied", ProviderErrorKind.AUTHENTICATION),
+        ("revoked token supplied", ProviderErrorKind.AUTHENTICATION),
+        ("HTTP 404 from the provider", ProviderErrorKind.NOT_FOUND),
+        ("Not Found", ProviderErrorKind.NOT_FOUND),
+        ("that merge request does not exist", ProviderErrorKind.NOT_FOUND),
+        ("HTTP 403 from the provider", ProviderErrorKind.AUTHORIZATION),
+        ("Forbidden", ProviderErrorKind.AUTHORIZATION),
+        ("permission denied", ProviderErrorKind.AUTHORIZATION),
+        ("access denied", ProviderErrorKind.AUTHORIZATION),
+    ],
+)
+def test_one_shared_diagnostic_vocabulary_decides_every_provider_error_kind(
+    diagnostic: str, kind: ProviderErrorKind
+) -> None:
+    """Every marker's kind is asserted once here, not per transport.
+
+    :func:`classify_provider_error_text` is the single classifier behind the GitLab
+    and Azure DevOps call sites, which each raise
+    :class:`PullRequestProviderError` carrying its answer, so the kind decides how
+    those watches report and retry a refusal. Held per transport instead, a marker
+    is asserted only for whichever consumer spells it out, and narrowing the set
+    for one provider's benefit stays green for the others.
+
+    The literals are spelled out rather than read back from the module: a table
+    derived from the set under test agrees with any set.
+    """
+    assert classify_provider_error_text(diagnostic) is kind
+
+
+def test_an_unrecognised_diagnostic_falls_through_to_transient() -> None:
+    """The fall-through is the answer for text no marker claims.
+
+    It is what makes an unfamiliar refusal retryable rather than reported as a
+    specific, wrong cause, so it is a pinned answer and not merely the last line.
+    """
+    assert classify_provider_error_text("the socket closed mid-response") is (
+        ProviderErrorKind.TRANSIENT
     )
 
 

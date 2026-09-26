@@ -1016,6 +1016,68 @@ def test_azure_forbidden_is_terminal_and_omits_provider_text(monkeypatch):
     assert "super-secret" not in result.observation.reason_code
 
 
+def test_gitlab_throttling_refusal_is_rate_limited(monkeypatch):
+    """A throttle reaches this watch as RATE_LIMITED, not as the generic default.
+
+    The wording carries no status code and no ``rate limit`` phrase, so the shared
+    classifier's ``throttled`` marker is the only thing that can answer -- which is
+    what makes this a case about GitLab's own call site rather than a second copy
+    of the classifier's table.
+    """
+
+    def fail(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            ["glab"],
+            1,
+            stdout="",
+            stderr="the request was throttled by the instance token=super-secret",
+        )
+
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.gitlab_merge_request.run_provider_cli",
+        fail,
+    )
+
+    result = _probe(
+        GitLabMergeRequestProvider(gitlab_hosts=[]),
+        "https://gitlab.com/acme/widgets/-/merge_requests/8",
+    )
+
+    assert result.observation.provider_error is ProviderErrorKind.RATE_LIMITED
+    assert result.observation.reason_code == "provider_rate_limited"
+    assert "super-secret" not in result.observation.reason_code
+
+
+def test_azure_throttling_refusal_is_rate_limited(monkeypatch):
+    """Azure DevOps reaches the same answer through its own call site.
+
+    Its handler inspects the text for a missing-extension refusal before
+    classifying, so the throttle has to survive that branch to be reported.
+    """
+
+    def fail(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            ["az"],
+            1,
+            stdout="",
+            stderr="TF400733: the request has been throttled token=super-secret",
+        )
+
+    monkeypatch.setattr(
+        "kiro_crew.monitoring.azure_devops_pull_request.run_provider_cli",
+        fail,
+    )
+
+    result = _probe(
+        AzureDevOpsPullRequestProvider(),
+        "https://dev.azure.com/acme/project/_git/widgets/pullrequest/9",
+    )
+
+    assert result.observation.provider_error is ProviderErrorKind.RATE_LIMITED
+    assert result.observation.reason_code == "provider_rate_limited"
+    assert "super-secret" not in result.observation.reason_code
+
+
 def test_azure_channel_probe_does_not_load_owner_credentials_or_cli_state(monkeypatch):
     audit_calls: list[str] = []
 
