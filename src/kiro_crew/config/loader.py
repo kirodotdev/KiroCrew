@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import copy
 import json
+import locale
 import logging
 import math  # noqa: F401 - historical loader namespace compatibility
 import os
@@ -2205,9 +2206,28 @@ def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
     """
     ep = env_file if env_file is not None else env_path()
     try:
-        text = ep.read_text()
+        raw = ep.read_bytes()
     except OSError:
         return ""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # UTF-8 is the store's contract: every other reader and writer of it
+        # (cli_setup, the dashboard credential writer, the WeChat QR handler,
+        # the secrets migrator, the service warning reader) names UTF-8
+        # explicitly, and a locale decode of UTF-8 content on cp936/cp1252
+        # either raises or mojibakes the value. A store saved under a legacy
+        # code page predates that contract, so the fallback decodes the SAME
+        # snapshot with the host's ANSI page through locale.getencoding(),
+        # the codec its writer used. A bare read would answer utf-8 here,
+        # because the gateway launches with PYTHONUTF8=1, and the retry would
+        # fail the same way the first decode did; a second read would decode
+        # a file a concurrent save may have replaced. Only a store that
+        # neither decoder can read is unset, per the docstring above.
+        try:
+            text = raw.decode(locale.getencoding())
+        except UnicodeDecodeError:
+            return ""
     value = ""
     for line in text.splitlines():
         line = line.strip()
@@ -5593,7 +5613,21 @@ class KiroCrewConfig:
                     ep.chmod(0o600)
             except OSError:
                 logger.warning("Cannot enforce permissions on %s", ep)
-            for line in ep.read_text().splitlines():
+            raw = ep.read_bytes()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # UTF-8 is the store's contract, but a store saved under a
+                # legacy code page predates it; the fallback decodes the SAME
+                # snapshot with the host's ANSI page through
+                # locale.getencoding(), the codec its writer used — a bare
+                # read would answer utf-8 under the gateway's PYTHONUTF8
+                # launch and abort the boot the same way the first decode
+                # did, and a second read would decode a file a concurrent
+                # save may have replaced. A store neither decoder can read
+                # still raises here.
+                text = raw.decode(locale.getencoding())
+            for line in text.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
