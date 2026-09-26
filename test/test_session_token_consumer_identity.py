@@ -243,6 +243,28 @@ class TestFromEnvReadsTheToken:
         assert ctx.session_key == protected
         assert ctx.session_type == "protected-pid"
 
+    def test_a_raising_protected_probe_falls_through_to_the_env_key(self, cfg, monkeypatch):
+        """Seatbelt/IO errors on the protected probe must not invent a blank refusal.
+
+        Mapping ``except Exception: protected = ""`` made ``from_env`` return an
+        empty protected-pid identity and shadow ``KIROCREW_SESSION_KEY``, which
+        stranded sandboxed ``spawn_run`` without an X-Session-Key. A raising
+        probe is absence — fall through to token/env like a ``None`` return.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
+        monkeypatch.setattr(mcp_caller, "_FROM_ENV_CACHE", None)
+
+        def _boom(_pid, **_kw):
+            raise PermissionError("seatbelt deny")
+
+        with patch(
+            "kiro_crew.member_memory_auth.protected_member_session_for_pid",
+            _boom,
+        ):
+            ctx = CallerContext.from_env()
+        assert ctx.session_key == STALE_KEY
+        assert ctx.session_type == "env"
+
 
 # ---------------------------------------------------------------------------
 # _resolve_excluded_tools — the managed-tool-policy lookup
@@ -359,6 +381,27 @@ class TestToolPolicyReadsTheToken:
                     == "no_session_key"
                 )
 
+    def test_a_raising_protected_probe_falls_through_to_the_env_key(self, cfg, monkeypatch, policy):
+        """Seatbelt/IO errors on the policy probe must not abort env fallthrough.
+
+        ``_policy_session_key`` treats a raising ``protected_member_session_for_pid``
+        as absence (not ``resolution_failed``), so fallthrough still reaches
+        ``KIROCREW_SESSION_KEY``. Probe exceptions are absence — same contract as
+        ``CallerContext.from_env``.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
+        policy.policies[STALE_KEY] = ["stale_tool"]
+
+        def _boom(_pid, **_kw):
+            raise PermissionError("seatbelt deny")
+
+        with patch(
+            "kiro_crew.member_memory_auth.protected_member_session_for_pid",
+            _boom,
+        ):
+            assert policy.resolve() == {"stale_tool"}
+        assert policy.asked_keys() == [STALE_KEY]
+
     def test_an_identity_resolved_mid_race_window_is_not_masked_by_it(
         self, cfg, monkeypatch, policy
     ):
@@ -419,22 +462,22 @@ class TestToolPolicyReadsTheToken:
         """A broken host is not a startup race, and the two have different windows.
 
         Resolution answers with three states rather than two — a key, ``""`` for "no
-        identity yet or refused", and ``None`` for "resolution itself broke" — so a
-        raising probe keeps the 60s window and the ``resolution_failed`` audit it had
-        when the resolution lived inline, instead of being retried every call as the
-        5s race.
+        identity yet or refused", and ``None`` for "resolution itself broke" — so an
+        unreadable ``config_dir`` / failed pid walk keeps the 60s window and the
+        ``resolution_failed`` audit, instead of being retried every call as the 5s
+        race. A raising ``protected_member_session_for_pid`` is absence (token/env
+        fallthrough), not this class — see
+        ``test_a_raising_protected_probe_falls_through_to_the_env_key``.
         """
-
-        def _boom(_pid, **_kw):
-            raise RuntimeError("unreadable home")
-
-        with patch("kiro_crew.member_memory_auth.protected_member_session_for_pid", _boom):
+        # Probe stays absent; break the LENIENT tail so the outer resolver returns
+        # None (resolution_failed) rather than "" (startup race).
+        with patch.object(mcp_shared, "config_dir", side_effect=RuntimeError("unreadable home")):
             assert policy.resolve() == set()
         ops = [c.kwargs.get("operation") for c in policy.audit.log_api_access.call_args_list]
         assert ops == ["tool_policy.resolution_failed"]
         assert mcp_shared._last_failure_time > 0.0
         assert mcp_shared._last_startup_race_time == 0.0
-        with patch("kiro_crew.member_memory_auth.protected_member_session_for_pid", _boom):
+        with patch.object(mcp_shared, "config_dir", side_effect=RuntimeError("unreadable home")):
             assert (
                 mcp_shared._resolve_tool_policy(ignore_negative_cache=True).unresolved
                 == "resolution_failed"
