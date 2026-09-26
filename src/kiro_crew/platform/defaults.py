@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         ImportSource,
         InboundToken,
         McpScope,
+        MemoryRoots,
         SessionPrincipal,
         WorkloadIdentity,
     )
@@ -578,6 +579,25 @@ class DefaultTelemetryProvider:
                 signals=frozenset({"metrics"}),
             ),
         )
+
+
+class DefaultMemoryFilesProvider:
+    """Local-disk memory files — today's behaviour, unchanged.
+
+    Every store gets a :class:`~kiro_crew.memory_files.LocalMemoryFiles`, which is
+    the gate/reader/writer code lifted out of ``MemoryStore`` without alteration,
+    so the public edition reads and writes memory with the same syscalls in the
+    same order as before this seam existed.
+
+    The import is deferred: ``memory_files`` pulls in ``hooks``, ``pinned_fs`` and
+    ``memory_startup``, and this module is imported at boot by every edition
+    including ones that never touch memory.
+    """
+
+    def files_for(self, roots: "MemoryRoots") -> Any:
+        from kiro_crew.memory_files import LocalMemoryFiles
+
+        return LocalMemoryFiles(roots)
 
 
 class DefaultKnowledgeProvider:

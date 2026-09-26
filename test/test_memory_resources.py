@@ -26,6 +26,7 @@ env = _member_env
 @pytest.mark.asyncio
 async def test_member_snapshot_combines_guarded_manual_files_and_database_history(env, monkeypatch):
     import kiro_crew.memory as module
+    import kiro_crew.memory_files as files_module
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     memory._memory_dir.mkdir(exist_ok=True)
@@ -33,9 +34,9 @@ async def test_member_snapshot_combines_guarded_manual_files_and_database_histor
     memory._projects_file.write_text("Project Atlas", encoding="utf-8")
     memory.append_history("Decision from the member database")
     validate = MagicMock(wraps=memory_stores.require_memory_store)
-    opened = MagicMock(wraps=module.fd_real_path)
+    opened = MagicMock(wraps=files_module.fd_real_path)
     monkeypatch.setattr(memory_stores, "require_memory_store", validate)
-    monkeypatch.setattr(module, "fd_real_path", opened)
+    monkeypatch.setattr(files_module, "fd_real_path", opened)
     snapshot = memory.markdown_snapshot()
     assert len(snapshot["history"]) == 1
     assert "Decision from the member database" in snapshot["history"][0]["content"]

@@ -343,7 +343,7 @@ class TestGuardedReadRobustness:
     def test_concurrent_rewrite_retries_to_consistent_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         ms = _store(tmp_path)
         ms.init()
@@ -367,7 +367,7 @@ class TestGuardedReadRobustness:
     def test_file_changing_on_every_read_degrades_to_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         ms = _store(tmp_path)
         ms.init()
@@ -399,7 +399,7 @@ class TestUncWorkspaceGate:
     def _unc_store(self, monkeypatch: pytest.MonkeyPatch) -> "object":
         import types
 
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
         from kiro_crew.memory import MemoryStore
 
         store = MemoryStore(workspace=Path("//evil-host/share/ws"))
@@ -412,7 +412,7 @@ class TestUncWorkspaceGate:
     def test_snapshot_refuses_unc_workspace_without_filesystem_touch(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         ms = self._unc_store(monkeypatch)
 
@@ -1239,7 +1239,7 @@ class TestLinkedWorkspaceAncestorGate:
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import types
 
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         # Patch ONLY memory.py's view of os (same rationale as the UNC gate
         # tests above): patching the global os.name would make pathlib
@@ -1253,7 +1253,7 @@ class TestLinkedWorkspaceAncestorGate:
     ) -> None:
         """Ordering IS the property: the leaf predicate is wired to explode,
         so a regression that lstats first fails loudly instead of silently."""
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         ms = _populated_store(tmp_path)
         self._windows(monkeypatch)
@@ -1265,7 +1265,7 @@ class TestLinkedWorkspaceAncestorGate:
         monkeypatch.setattr(memory_mod, "is_link_or_junction", _boom)
         audits: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            ms,
+            ms._files,
             "_audit_read_refusal",
             lambda rule, path, reason: audits.append((rule, reason)),
         )
@@ -1286,7 +1286,7 @@ class TestLinkedWorkspaceAncestorGate:
     ) -> None:
         """Mutation check: with the walk reporting no link, the same store
         reads again -- the refusal above is attributable to the guard."""
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         ms = _populated_store(tmp_path)
         self._windows(monkeypatch)
@@ -1304,7 +1304,7 @@ class TestLinkedWorkspaceAncestorGate:
         agent-writable), so the walk must not even run there."""
         if os.name == "nt":
             pytest.skip("gate is active on Windows by design")
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         def _boom(_p: object) -> None:  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
@@ -1355,7 +1355,7 @@ async def test_member_history_ignores_old_file_copies(env, monkeypatch, escape):
         os.link(other, path)
     else:
         path.write_text("This member's own content.", encoding="utf-8")
-        monkeypatch.setattr("kiro_crew.memory.fd_real_path", lambda descriptor: str(other))
+        monkeypatch.setattr("kiro_crew.memory_files.fd_real_path", lambda descriptor: str(other))
     assert "Current database history" in memory.read_recent_history()
     assert "Private evidence" not in memory.read_recent_history()
     assert other.read_text(encoding="utf-8") == "Private evidence belonging elsewhere."
@@ -1380,13 +1380,13 @@ async def test_private_anchor_read_refuses_unsafe_present_files(
         os.link(other, path)
         reason = "hard links"
     elif failure == "opened_path":
-        monkeypatch.setattr("kiro_crew.memory.fd_real_path", lambda descriptor: str(other))
+        monkeypatch.setattr("kiro_crew.memory_files.fd_real_path", lambda descriptor: str(other))
         reason = "bound path"
     elif failure == "invalid_utf8":
         path.write_bytes(b"\xff")
         reason = "UTF-8"
     else:
-        monkeypatch.setattr(memory, "_HISTORY_SNAPSHOT_MAX_BYTES", 128)
+        monkeypatch.setattr(memory._files, "_HISTORY_SNAPSHOT_MAX_BYTES", 128)
         path.write_text("x" * 129, encoding="utf-8")
         reason = "size cap"
     with pytest.raises(OSError, match=reason):
@@ -1473,7 +1473,7 @@ async def test_member_index_rebuild_ignores_old_file_sources(env, monkeypatch, f
         memory._history_dir.rmdir()
         make_dir_link(memory._history_dir, other)
     else:
-        monkeypatch.setattr(memory, "_read_root_guard", lambda: False)
+        monkeypatch.setattr(memory._files, "_read_root_guard", lambda: False)
     with monkeypatch.context() as traversal_guard:
         traversal_guard.setattr(
             "kiro_crew.memory.os.scandir",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import plant_day_link
+from conftest import make_dir_link, plant_day_link
 from kiro_crew.memory import MemoryStore
 
 
@@ -797,7 +797,7 @@ class TestNamedV1StoreUnderFencedTree:
         """
         from datetime import date, timedelta
 
-        from kiro_crew import memory as memory_mod
+        from kiro_crew import memory_files as memory_mod
 
         store = self._named_store(monkeypatch)
         self._fence(monkeypatch, store._workspace)
@@ -904,3 +904,86 @@ class TestNamedV1StoreUnderFencedTree:
         # nolink reader, so the fence leaves the protected preferences in place.
         assert "PREF_SENTINEL" in store.read_preferences()
         assert "## Recent History" not in store.get_activity_context()
+
+
+class TestAtomicWriteTextPublishesOnce:
+    """``MemoryStore._atomic_write_text`` is ONE unconditional publish.
+
+    It is the direct-write path for ``init``'s seeding and the validated
+    private-profile write. Routing a single logical write through the seam's
+    ``write`` more than once doubles every atomic publish (two temp files, two
+    renames) and, for a remote-backed provider, two network round trips — so
+    the count of underlying writes is the property, not merely that the call
+    returns.
+    """
+
+    def test_a_single_atomic_write_calls_the_seam_write_exactly_once(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        (tmp_path / "memory" / "history").mkdir(parents=True)
+        seam = store._files
+        calls: list[str] = []
+        real_write = seam.write
+
+        def counting_write(path, content, *, newline=None):
+            calls.append(str(path))
+            return real_write(path, content, newline=newline)
+
+        seam.write = counting_write  # type: ignore[method-assign]
+        store._atomic_write_text(store._preferences_file, "# User Preferences\n\n- once\n")
+        assert calls == [str(store._preferences_file)]
+        assert store.read_preferences() == "# User Preferences\n\n- once\n"
+
+
+class TestContextBuildSurvivesLinkedRoot:
+    """A linked memory root must not crash the every-turn context build.
+
+    Pre-seam ``read_preferences``/``read_projects`` ran no link gate and simply
+    read the target; the seam routes them through ``read_text``, whose link
+    refusal now raises ``OSError``. ``get_context`` and ``rebuild_index`` catch
+    only ``UnicodeDecodeError``, so a linked root turned every context build and
+    index rebuild into a hard crash. The refusal is kept (a linked root is never
+    read through), but the section it guards must DEGRADE, not abort the build.
+    """
+
+    def _linked_root_store(self, tmp_path) -> MemoryStore:
+        real = tmp_path / "real-ws"
+        (real / "memory" / "history").mkdir(parents=True)
+        (real / "memory" / "preferences.md").write_text(
+            "# User Preferences\n\n- from target\n", encoding="utf-8"
+        )
+        link_ws = tmp_path / "link-ws"
+        try:
+            make_dir_link(link_ws, real)
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows CI
+            pytest.skip("directory links not available on this platform")
+        return MemoryStore(workspace=link_ws)
+
+    def test_get_context_degrades_instead_of_raising_on_a_linked_root(self, tmp_path):
+        store = self._linked_root_store(tmp_path)
+        # No crash: the refused preferences section is skipped, not raised.
+        ctx = store.get_context()
+        assert isinstance(ctx, str)
+        # The link is refused, so its target's bytes never reach the context.
+        assert "from target" not in ctx
+
+    def test_rebuild_index_does_not_erase_the_index_on_a_refused_root(self, tmp_path, monkeypatch):
+        # Build a real index first.
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_projects("# Active Projects\n\n- PROJ-123 sentinel\n")
+        store.rebuild_index()
+        before = store.index_row_count()
+        assert before and before > 0
+        assert store.search("sentinel")
+
+        # Now the seam's read gate refuses the root (a linked/untrusted root):
+        # read_text raises OSError. Rebuilding must NOT wipe the existing index
+        # by DELETE-ing it and committing an empty one; it keeps the old index.
+        # Scope the patch to this block so it reverts without touching any other
+        # active patch (a bare monkeypatch.undo() would drop shared ones too).
+        with monkeypatch.context() as refused:
+            refused.setattr(store._files, "_read_root_guard", lambda: False)
+            assert store.rebuild_index() == before
+        # Gate restored on context exit: the index is still the one built before.
+        assert store.index_row_count() == before
+        assert store.search("sentinel")
