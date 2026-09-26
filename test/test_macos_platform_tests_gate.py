@@ -118,6 +118,15 @@ class TestTheMovedLaneIsTheSameLane:
         assert job["timeout-minutes"] == 60
         runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
         assert "--splits" in runs and "--group" in runs
+        # An explicit worker count, never `-n auto`: the budget plugin behind
+        # `auto` reads ~3 GiB free on the 7 GiB macos-15 runner and answers ONE
+        # worker, which is what made a 3-core shard run ~45k tests serially for
+        # 32-39 minutes. The runner is a fixed shape the lane can state outright.
+        shard = next(
+            str(s.get("run", "")) for s in job["steps"] if "--splits" in str(s.get("run", ""))
+        )
+        assert "-n auto" not in shard, "the mac shard is back on the memory budget (1 worker)"
+        assert "-n 2 " in shard
 
     def test_the_sharded_run_cannot_report_success_through_tee(self) -> None:
         # The shard pipes pytest to `tee` so the log survives as an artifact, and
