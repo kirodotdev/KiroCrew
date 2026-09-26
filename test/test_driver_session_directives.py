@@ -418,7 +418,7 @@ class _ArmSvc:
         self.added.append(kw)
         return _FakeLoop("loop-armed")
 
-    async def remove(self, loop_id):
+    async def remove(self, loop_id, *, stop_reason="", stop_detail=""):
         self.removed.append(loop_id)
 
 

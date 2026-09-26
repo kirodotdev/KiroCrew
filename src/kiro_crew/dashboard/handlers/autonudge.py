@@ -1126,7 +1126,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
     denied = await _require_monitor_owner(request, "autonudge_delete")
     if denied is not None:
         return denied
-    await svc.remove(loop_id)
+    await svc.remove(loop_id, stop_reason="dashboard_delete")
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
         source="dashboard",

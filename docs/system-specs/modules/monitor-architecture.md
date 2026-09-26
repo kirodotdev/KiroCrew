@@ -500,6 +500,14 @@ Four things the shape decides, each for a reason worth keeping:
   decided the stop. Both writers of `stopped_reason` otherwise copy the
   observation's own code and would file a stall as `checks_failed`.
 
+Every stop, whichever writer decided it, is also reported once more after the
+store commits: `autonudge_stop_log` compares the loops active in the previous
+committed store with the new one, logs each loop that stopped at WARNING with its
+`stopped_reason`, and appends one line to `autonudge/autonudge-stops.jsonl` under the store's folder.
+A removed legacy loop has no row to carry a reason, so `remove()` takes a
+`stop_reason` for that record alone. A new stop path needs nothing extra to be
+recorded; a new REMOVAL path should pass its reason.
+
 Streak counters do exist and are about something else: `quiet_streak` with
 `floor_ticks` counts consecutive quiet observations and the deliveries they
 force, `consecutive_provider_errors` counts provider failures, and `irq.py`
