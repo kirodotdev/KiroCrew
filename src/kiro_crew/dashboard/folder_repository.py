@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
 
+from kiro_crew.dashboard.snapshot_commit import commit_snapshot_while_holding_the_lock
 from kiro_crew.loop_lock import LoopBoundLock
 
 FOLDERS_FILE = "folders.json"
@@ -82,13 +83,18 @@ class FolderRepository:
                 return value
             path = path_provider()
             snapshot = [dict(folder) for folder in folders_provider()]
+
+            # The restore lives here, not in the helper: the helper re-raises the write's
+            # own failure and never a cancellation, so a still-completing write skips it.
+            write = asyncio.ensure_future(asyncio.to_thread(write_confirmed, path, snapshot))
             try:
-                await asyncio.to_thread(write_confirmed, path, snapshot)
+                await commit_snapshot_while_holding_the_lock(
+                    write,
+                    publish=lambda: on_committed() if on_committed is not None else None,
+                )
             except Exception:
                 folders_provider()[:] = before
                 raise
-            if on_committed is not None:
-                on_committed()
             return value
 
     @staticmethod
