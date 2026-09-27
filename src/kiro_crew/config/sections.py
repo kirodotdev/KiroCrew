@@ -5797,16 +5797,21 @@ class McpConfig:
         ),
     )
     honour_auto_approve: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Honour MCP autoApprove",
-            "Keep an ``autoApprove`` list no server spec declares -- one hand-added "
-            "to ``mcp.json`` -- in the agent config Kiro Crew writes. Off by default, "
-            "and off DROPS those verbs: such a tool is approved locally with no "
-            "permission request, so no approval card is ever shown for it. A ceiling "
-            "strips the key whatever this says; a verb a spec declares is kept either "
-            "way. Applies at restart, when the spec is rebuilt, so turning it off "
-            "does not retract a grant already in the file.",
+            "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to "
+            "``mcp.json`` or to an agent file -- in the agent config Kiro Crew "
+            "writes. On by default: an ``autoApprove`` is a deliberate choice about "
+            "your own tools and is respected, so those verbs run without an approval "
+            "card. Know what it costs before writing one: the agent runtime approves "
+            "such a call locally and emits no permission request, so Kiro Crew's "
+            "own tool gate never runs for it. Turn this OFF to drop every verb no "
+            "server spec declares, which puts those tools back through the gate. A "
+            "governance ceiling strips the key whatever this says, and a verb a spec "
+            "declares is kept either way. Applies at restart, when the spec is "
+            "rebuilt, so a change does not retract or restore a grant already in the "
+            "file.",
             restart=True,
         ),
     )

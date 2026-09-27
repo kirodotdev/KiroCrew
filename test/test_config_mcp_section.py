@@ -51,7 +51,7 @@ def test_round_trips_through_to_dict(tmp_path, monkeypatch):
     cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin"]}})
     assert cfg.to_dict()["mcp"] == {
         "extra_path_dirs": ["/opt/a/bin"],
-        "honour_auto_approve": False,
+        "honour_auto_approve": True,
     }
 
 
@@ -118,9 +118,31 @@ def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
     assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
 
 
-def test_honour_auto_approve_defaults_to_off():
-    """Fail-closed: the default must drop a server's own ``autoApprove``."""
-    assert KiroCrewConfig().mcp.honour_auto_approve is False
+def test_honour_auto_approve_defaults_to_on():
+    """An ``autoApprove`` the owner wrote is respected without opting in.
+
+    It is a deliberate statement about their own tools, and dropping it silently
+    left them with no way to express it and nothing telling them it had gone.
+    """
+    assert KiroCrewConfig().mcp.honour_auto_approve is True
+
+
+def test_an_absent_key_reads_as_on_through_the_real_load(tmp_path, monkeypatch):
+    """The DEFAULT has to survive the loader, not just the dataclass field.
+
+    ``_build_mcp_config`` sets this field on every load, so the field's own default
+    never reaches a loaded config: a default declared only there reads as off for
+    every real install while the schema and the docs claim it is on. Pinned through
+    the load path that decides it.
+    """
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": []}})
+    assert cfg.mcp.honour_auto_approve is True
+
+
+def test_a_real_false_opts_out(tmp_path, monkeypatch):
+    """The strict floor is still reachable, which is the whole point of the key."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": False}})
+    assert cfg.mcp.honour_auto_approve is False
 
 
 def test_honour_auto_approve_parses_a_real_true(tmp_path, monkeypatch):
@@ -129,11 +151,17 @@ def test_honour_auto_approve_parses_a_real_true(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("raw", ["true", "yes", 1, ["x"], {}, None])
-def test_only_a_real_true_opts_in(tmp_path, monkeypatch, raw):
-    """config.json is hand-editable and this key grants a gate bypass, so a
-    merely truthy value must not be read as consent."""
+def test_a_value_that_is_not_a_boolean_degrades_to_the_default(tmp_path, monkeypatch, raw):
+    """config.json is hand-editable, and a value of the wrong type is not a decision.
+
+    The schema validator removes an invalid value before the loader parses, so the
+    documented default applies rather than a guess at what the text meant. That is
+    the same rule every other field in this section follows, and it cannot invent a
+    bypass on its own: the owner still has to have written an ``autoApprove`` for
+    this key to decide anything. Opting out takes a real ``false``.
+    """
     cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": raw}})
-    assert cfg.mcp.honour_auto_approve is False
+    assert cfg.mcp.honour_auto_approve is True
 
 
 def test_honour_auto_approve_is_in_the_schema_registry():

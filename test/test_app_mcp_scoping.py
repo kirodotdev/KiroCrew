@@ -1412,6 +1412,67 @@ class TestStripAutoApproveIsAudited:
         assert events and events[0]["operation"] == "mcp_auto_approve_withheld"
         assert "@srv" in events[0]["resources"]
 
+    def test_honouring_an_owner_written_list_emits_its_own_event(self, monkeypatch) -> None:
+        """GRANTING an exemption is a permission decision too.
+
+        The default respects an ``autoApprove`` the owner wrote, and those calls
+        never reach the tool gate, so without this event the only autoApprove an
+        operator can find in the feed is one that was taken AWAY -- the allowed
+        ones would leave no trace of why they were allowed.
+        """
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)  # ungoverned
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda servers: {})
+        events: list[dict] = []
+
+        monkeypatch.setattr(
+            gov,
+            "sel",
+            lambda: type("S", (), {"log_api_access": lambda _s, **k: events.append(k)})(),
+        )
+        out = gov.strip_ungoverned_auto_approve({"srv": {"url": "u", "autoApprove": ["x"]}})
+        assert out["srv"]["autoApprove"] == ["x"], "the owner's own choice is respected"
+        assert events and events[0]["operation"] == "mcp_auto_approve_honoured"
+        assert "@srv" in events[0]["resources"]
+
+    def test_a_declared_list_is_not_reported_as_the_owners_decision(self, monkeypatch) -> None:
+        """What a server spec declares is Kiro Crew's own emission, not a choice
+        the owner made, so honouring it is not a grant worth a record."""
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda servers: {"srv": ("x",)})
+        events: list[dict] = []
+
+        monkeypatch.setattr(
+            gov,
+            "sel",
+            lambda: type("S", (), {"log_api_access": lambda _s, **k: events.append(k)})(),
+        )
+        out = gov.strip_ungoverned_auto_approve({"srv": {"url": "u", "autoApprove": ["x"]}})
+        assert out["srv"]["autoApprove"] == ["x"]
+        assert events == []
+
+    def test_the_ceiling_still_wins_over_the_owners_choice(self, monkeypatch) -> None:
+        """The ceiling is the OPERATOR's policy, not the owner's preference.
+
+        Respecting an owner-written ``autoApprove`` is a floor decision on an
+        ungoverned host. A governed ref keeps nothing whatever the config says, so
+        no value of ``mcp.honour_auto_approve`` can widen an enterprise ceiling.
+        """
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: False)  # governed
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)  # owner said keep
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda servers: {})
+        out = gov.strip_ungoverned_auto_approve(
+            {"srv": {"url": "u", "autoApprove": ["x"]}}, audit=False
+        )
+        assert "autoApprove" not in out["srv"]
+
 
 class TestRebuildDoesNotResurrectDeregisteredApps:
     """The final locked re-merge reconciles app-namespaced servers WITH on_disk:

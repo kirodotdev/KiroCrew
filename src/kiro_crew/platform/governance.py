@@ -54,6 +54,7 @@ from typing import (
     MutableMapping,
     Optional,
     Protocol,
+    Sequence,
     Tuple,
     runtime_checkable,
 )
@@ -4294,6 +4295,45 @@ def _auto_approve_is_honoured() -> bool:
         return False
 
 
+def _undeclared_verbs(asked: object, declared: Sequence[str]) -> tuple[str, ...]:
+    """The verbs in *asked* that no server spec declared.
+
+    A non-list ``autoApprove`` yields nothing rather than raising: the shape is
+    the agent runtime's to validate, and this helper only decides what to report.
+    """
+    if not isinstance(asked, list):
+        return ()
+    return tuple(v for v in asked if v not in declared)
+
+
+def _audit_auto_approve_honoured(name: str, verbs: Sequence[str]) -> None:
+    """Record that an owner-written ``autoApprove`` was kept.
+
+    Best-effort, exactly like the withhold audit beside it: an unavailable audit
+    sink must never break a spec rebuild, because the spec is what the product
+    needs to run and the record is what an operator reads afterwards.
+    """
+    logger.info(
+        "Honoured owner-written autoApprove verbs on MCP server %s (%r): "
+        "mcp.honour_auto_approve is on, so these calls skip the tool gate",
+        name,
+        list(verbs),
+    )
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_honoured",
+            outcome="ok",
+            source="strip_ungoverned_auto_approve",
+            resources=(
+                f"@{name} autoApprove kept for {list(verbs)} (owner-written and no "
+                "ceiling constrains it); these calls do not reach the tool gate"
+            ),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break the filter
+        logger.debug("SEL audit unavailable for honoured autoApprove", exc_info=True)
+
+
 def strip_ungoverned_auto_approve(
     servers: Mapping[str, object], *, audit: bool = True
 ) -> Dict[str, object]:
@@ -4317,12 +4357,17 @@ def strip_ungoverned_auto_approve(
     Only the key is dropped, never the server: the tools stay available and go
     through the approval gate, which is where a per-tool ceiling rule is applied.
 
-    An ungoverned host is a FLOOR, not a pass: ``may_skip_gate_now`` is always true
-    there, so a verb NO spec declares is dropped there too unless
-    ``mcp.honour_auto_approve`` is on; what a spec declares is our own emission and
-    is kept. A governed ref keeps nothing — tightest-wins. The declarations are
-    resolved here, not taken from the caller: of the six write paths reaching this
-    helper only one could name them, and the other five would erase them.
+    An ungoverned host RESPECTS THE OWNER'S OWN CHOICE: ``mcp.honour_auto_approve``
+    is on by default, so an ``autoApprove`` the owner wrote by hand survives there.
+    An ``autoApprove`` is a deliberate statement about their own tools, and silently
+    deleting it left them with no way to express it and nothing telling them it had
+    gone. Turning that key OFF restores the strict floor, where a verb NO spec
+    declares is dropped and only what a spec declares -- our own emission -- is
+    kept. A governed ref keeps nothing either way: the ceiling is the OPERATOR's
+    policy, not the owner's preference, so no config value can widen it, and the
+    enterprise path is unchanged. The declarations are resolved here, not taken from
+    the caller: of the six write paths reaching this helper only one could name them,
+    and the other five would erase them.
     """
     seeded = _declared_auto_approve(servers)
     honoured = _auto_approve_is_honoured()
@@ -4335,6 +4380,15 @@ def strip_ungoverned_auto_approve(
         if not may_skip_gate_now(f"@{name}"):
             pass  # governed: nothing survives, and the enterprise path is unchanged
         elif honoured:
+            # GRANTING a gate exemption is as much a permission decision as
+            # revoking one, so the honoured path audits too. Without this the
+            # only autoApprove that appears in the feed is one that was taken
+            # away, and the calls that skip the gate leave no trace of why they
+            # were allowed to. Only an UNDECLARED list is reported: what a spec
+            # declares is our own emission and is not the owner's decision.
+            undeclared = _undeclared_verbs(spec["autoApprove"], seeded.get(name) or ())
+            if undeclared and audit:
+                _audit_auto_approve_honoured(name, undeclared)
             out[name] = spec
             continue
         else:

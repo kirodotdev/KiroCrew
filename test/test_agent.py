@@ -824,14 +824,16 @@ class TestInstallAgent:
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
         assert config["mcpServers"]["kirocrew-core"]["command"] == "/usr/bin/kirocrew"
 
-    def test_existing_config_drops_a_hand_added_mcp_auto_approve(self, tmp_path: Path):
-        """A hand-added ``autoApprove`` does not survive a restart.
+    def test_existing_config_keeps_a_hand_added_mcp_auto_approve(self, tmp_path: Path):
+        """A hand-added ``autoApprove`` survives a restart.
 
-        kiro-cli approves an autoApproved MCP tool locally and emits no permission
-        request, so no card is shown and ``hooks.on_tool_call`` never runs for it.
         Nothing DECLARES these verbs -- the managed registry seeds none -- so they
-        are the user-authored kind the floor drops. ``mcp.honour_auto_approve``
-        keeps them; the command refresh below is unaffected either way.
+        are the owner-authored kind, and the owner's own statement about their own
+        tools is respected by default. They carry a real cost, which is why the
+        setting exists: kiro-cli approves an autoApproved MCP tool locally and emits
+        no permission request, so no card is shown and ``hooks.on_tool_call`` never
+        runs for it. ``mcp.honour_auto_approve: false`` drops them (the test below);
+        the command refresh is unaffected either way.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
@@ -863,17 +865,56 @@ class TestInstallAgent:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
-        # kirocrew-cron/core: command still refreshed, the undeclared grant gone
+        # kirocrew-cron/core: command still refreshed, and the owner's grant kept
         assert config["mcpServers"]["kirocrew-cron"]["command"] == "/usr/bin/kirocrew"
-        assert "autoApprove" not in config["mcpServers"]["kirocrew-cron"]
-        assert "autoApprove" not in config["mcpServers"]["kirocrew-core"]
-        # a user's own server is the reported case, and it is dropped too
-        assert "autoApprove" not in config["mcpServers"]["builder-mcp"]
+        assert config["mcpServers"]["kirocrew-cron"]["autoApprove"] == ["cron_list", "cron_add"]
+        assert config["mcpServers"]["kirocrew-core"]["autoApprove"] == ["learn_list"]
+        # a user's own server is the reported case, and it is kept too
+        assert config["mcpServers"]["builder-mcp"]["autoApprove"] == ["ReadInternalWebsites"]
         # hooks are always refreshed from bundled defaults; the retired
         # deniedCommands injection is stripped on refresh, so the emptied
         # toolsSettings scaffolding is removed entirely.
         assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
+
+    def test_opting_out_drops_a_hand_added_mcp_auto_approve(self, tmp_path: Path, monkeypatch):
+        """``mcp.honour_auto_approve: false`` restores the strict floor.
+
+        The operator who wants every MCP call to reach the gate still has one
+        switch that does it, and the server itself stays reachable: only the
+        exemption goes, so the tool shows an approval card instead.
+        """
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = False
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        (kiro_dir / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "model": "claude-user-custom",
+                    "tools": [],
+                    "allowedTools": [],
+                    "mcpServers": {
+                        "builder-mcp": {
+                            "command": "builder-mcp",
+                            "autoApprove": ["ReadInternalWebsites"],
+                        }
+                    },
+                    "hooks": {},
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+        assert "builder-mcp" in config["mcpServers"], "the server stays reachable"
+        assert "autoApprove" not in config["mcpServers"]["builder-mcp"]
 
     def test_kirocrew_mcp_json_overrides_kiro_mcp(self, tmp_path: Path, monkeypatch):
         """~/.kirocrew/mcp.json overrides ~/.kiro/settings/mcp.json for kirocrew agent.

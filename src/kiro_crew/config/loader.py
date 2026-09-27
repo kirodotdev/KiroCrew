@@ -3680,9 +3680,15 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         extra_path_dirs=[
             d for d in _safe_list(mcp_data.get("extra_path_dirs", [])) if isinstance(d, str)
         ],
-        # Only a real ``true`` opts in: a hand-edited truthy string must not grant
-        # a gate bypass by accident.
-        honour_auto_approve=mcp_data.get("honour_auto_approve") is True,
+        # ABSENT takes the documented default (on): an ``autoApprove`` the owner
+        # wrote is respected, and nobody has to name this key to get that. Opting
+        # out takes a real ``false``; a value of the wrong type is removed by the
+        # schema validator before this runs, so it reads as absent and the default
+        # applies rather than a guess at what the text meant. The default lives
+        # here as well as on the dataclass field because this builder always sets
+        # the field explicitly, so the field's own default never reaches a loaded
+        # config.
+        honour_auto_approve=mcp_data.get("honour_auto_approve", True) is True,
     )
 
 

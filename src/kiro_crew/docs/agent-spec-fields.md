@@ -397,12 +397,13 @@ and emits no permission request at all, so Crew's callback never runs. Crew's ow
 managed server entries ship without an `autoApprove` key, and Crew's own writers
 are barred from adding one. That is a rule on the writers, not a property of the
 file: the managed-server refresh preserves user customizations on an existing
-entry, so a hand-added `autoApprove` reaches the map. What removes one is
-governance — `_strip_ungoverned_auto_approve` drops any the ceiling has not
-cleared, and drops any verb no server spec declares unless the operator sets
-`mcp.honour_auto_approve`. A verb a managed or edition spec declares is kept on an
-ungoverned host. Each withhold is recorded as a `mcp_auto_approve_withheld`
-security event.
+entry, so a hand-added `autoApprove` reaches the map and, by default, survives.
+What removes one is governance — `_strip_ungoverned_auto_approve` drops any the
+ceiling has not cleared, and drops any verb no server spec declares once the
+operator sets `mcp.honour_auto_approve` to `false`. A verb a managed or edition
+spec declares is kept on an ungoverned host either way. Both decisions are
+recorded as security events: `mcp_auto_approve_withheld` for a grant taken away,
+`mcp_auto_approve_honoured` for an owner-written one kept.
 
 On the KAS wire, `env` and `headers` are withheld from every entry — `env`
 routinely holds tokens, and a remote entry's `headers` can hold a static
