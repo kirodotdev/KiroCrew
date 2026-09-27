@@ -341,6 +341,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "already presents this choice before a session or Settings card exists; a "
         "wrong membership would send someone through a setup path that cannot work"
     ),
+    "ACP_BACKENDS_NATIVE_TODOS": (
+        "whether the dashboard may forward the harness-native /todos command. The "
+        "dashboard still renders agent-authored task state for every harness, so this "
+        "membership selects a command-dispatch path rather than a task capability a "
+        "reader loses by choosing another harness. A wrong membership forwards a "
+        "command the acquired provider cannot serve, which is a defect"
+    ),
     "ACP_BACKENDS_MEMBER_PANEL": (
         "whether a member DM session may mount its own webview. Its membership is the "
         "same as ACP_BACKENDS_MEMBER_DISPATCH's, and the member-thread-tools line "
