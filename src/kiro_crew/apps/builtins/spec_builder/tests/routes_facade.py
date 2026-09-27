@@ -5,15 +5,40 @@ from __future__ import annotations
 import inspect
 from types import ModuleType
 
-from ..backend import decisions, handlers, parsers, repository
+from ..backend import decisions, handlers, orchestration, parsers, repository
 from ..backend import routes as composition
 from ..backend import runtime
+from ..backend.orchestration import (
+    controls,
+    create,
+    decision_outbox,
+    delete,
+    dispatch_claims,
+    duplicate,
+    execution,
+    execution_state,
+    messages,
+    request_identity,
+    turn_guard,
+)
 
 BACKEND_MODULES: tuple[ModuleType, ...] = (
     parsers,
     repository,
     decisions,
     runtime,
+    orchestration,
+    execution_state,
+    turn_guard,
+    dispatch_claims,
+    decision_outbox,
+    request_identity,
+    create,
+    messages,
+    execution,
+    controls,
+    duplicate,
+    delete,
     handlers,
     composition,
 )

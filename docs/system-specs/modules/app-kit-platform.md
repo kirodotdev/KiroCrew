@@ -2489,6 +2489,53 @@ Writers: `website/src/components/AppHost.tsx`, `apps/manifest.py` (the manifest
 `entry` field), `apps/routes.py` (static UI serving),
 `dashboard/server.py` (the CSP allowances the CDN import map needs).
 
+## 19. Spec Builder's backend is composed by lifecycle owner
+
+Spec Builder's backend carries more orchestration than a typical app: agent turns
+that must never run twice over one spec directory, a one-way decision ledger, an
+autonomous build loop, and destructive delete and duplicate transactions. The
+behaviour those owners implement — the decision record and its outbox, creation
+identity, and Stop/Delete revocation — is specified in
+[security](security.md) under "Spec Builder's decision record". This section
+records which module owns which part, so a change lands in its owner.
+
+| Module under `src/kiro_crew/apps/builtins/spec_builder/backend/` | Owns |
+|---|---|
+| `routes.py` | Route registration and the enabled-app gate |
+| `handlers.py` | The route facade, plus every response that projects stored or agent-writable values through the app redactor: list, detail, settings, repo info, browse, messages, and the duplicate adapter |
+| `orchestration/request_identity.py` | Authentication, the JSON body, and the client-rendered creation identity (`_ClientClaim`, `_pinned_entry`) |
+| `orchestration/turn_guard.py` | The per-directory turn lock and alias occupancy (`_turn_lock`, `_alias_slots`, `_final_alias_conflict`) |
+| `orchestration/dispatch_claims.py` | Process-owned dispatch and execution generations, and the Stop/Delete barrier (`_execution_stop_barrier`) |
+| `orchestration/execution_state.py` | The autonomous run: nudge-loop lookup and removal, the `planning -> executing` claim, status reconciliation, halt, and orphan recovery |
+| `orchestration/decision_outbox.py` | Relaying one durable answer through a turn: the relay boundary, dispatch, finalization, and crash replay |
+| `orchestration/create.py`, `messages.py`, `execution.py`, `controls.py`, `delete.py` | The mutating route families: create; message, decision answer and recovery; execute and stop; approve, task, title and archive; delete |
+| `orchestration/duplicate.py` | The duplicate's staged publication transaction |
+| `runtime.py` | The worker session binding: slot scoping, turn relay, turn and slot stop, and the transcript projection |
+| `decisions.py` | The protected decision ledger and its outbox rows |
+| `repository.py`, `parsers.py` | The index, the documents, settings, and state-file projections |
+
+Imports only point down this order: `routes`, `handlers`, the `orchestration`
+owners, `runtime`, `decisions`, `repository`, `parsers`. There is no cycle, and no
+owner imports the facade. `handlers.py` re-exports each route entry point straight
+from its owner, one hop, so `routes.py` keeps a single import surface.
+
+Two placements are constraints rather than style. Only the modules listed in
+`NON_EGRESS_REDACTION_MODULES` (`handlers.py`, `runtime.py`, `repository.py`,
+`parsers.py`) call the redactor, so a redacting projection stays in one of them. The
+persisted-transcript read stays in `_serialize_messages` in `runtime.py`, the
+plumbing site the transcript-derivation seam allowlists.
+
+`_INDEX_LOCK` is always taken before `_DECISIONS_LOCK`, and both are held only on
+worker threads. The per-directory `asyncio.Lock` from `_turn_lock` is the only lock
+held across an await. The app's tests reach every module through one facade,
+`tests/routes_facade.py`, which patches each module that binds a name, so every
+shared name must be one object. `test_orchestration_composition_contract.py` pins
+that, the import order, the one-hop facade, and the lock order end to end.
+
+Writers: `apps/builtins/spec_builder/backend/handlers.py`, `runtime.py`,
+`decisions.py`, `orchestration/`; `apps/builtins/spec_builder/tests/routes_facade.py`
+(`BACKEND_MODULES`).
+
 
 ## Windows stale-backend cleanup capacity
 

@@ -142,24 +142,24 @@ def test_turn_lock_fold_is_macos_only_because_normcase_already_folds_windows():
     needs the extra fold. Pinned because "Windows is case-insensitive too" is a
     tempting patch that only double-folds.
     """
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
+    from kiro_crew.apps.builtins.spec_builder.backend.orchestration import turn_guard
 
-    assert runtime._CASE_FOLD_TURN_KEYS is platform_compat.IS_MACOS
+    assert turn_guard._CASE_FOLD_TURN_KEYS is platform_compat.IS_MACOS
 
     mixed, lower = r"C:\p\.kiro\specs\MySpec", r"C:\p\.kiro\specs\myspec"
     if platform_compat.IS_WINDOWS:
-        assert runtime._turn_key(mixed) == runtime._turn_key(lower)
+        assert turn_guard._turn_key(mixed) == turn_guard._turn_key(lower)
 
 
 def test_turn_key_folding_collapses_case_variants_when_enabled(monkeypatch):
     """The fold itself, independent of which platform turns it on."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
+    from kiro_crew.apps.builtins.spec_builder.backend.orchestration import turn_guard
 
     mixed, lower = "/p/.kiro/specs/MySpec", "/p/.kiro/specs/myspec"
 
-    monkeypatch.setattr(runtime, "_CASE_FOLD_TURN_KEYS", True)
-    assert runtime._turn_key(mixed) == runtime._turn_key(lower)
+    monkeypatch.setattr(turn_guard, "_CASE_FOLD_TURN_KEYS", True)
+    assert turn_guard._turn_key(mixed) == turn_guard._turn_key(lower)
 
-    monkeypatch.setattr(runtime, "_CASE_FOLD_TURN_KEYS", False)
+    monkeypatch.setattr(turn_guard, "_CASE_FOLD_TURN_KEYS", False)
     if not platform_compat.IS_WINDOWS:  # normcase would fold them anyway
-        assert runtime._turn_key(mixed) != runtime._turn_key(lower)
+        assert turn_guard._turn_key(mixed) != turn_guard._turn_key(lower)

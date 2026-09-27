@@ -38,7 +38,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins.spec_builder import backend as backend_package
-from kiro_crew.apps.builtins.spec_builder.backend.handlers import _ClientClaim
+from kiro_crew.apps.builtins.spec_builder.backend.orchestration.request_identity import (
+    _ClientClaim,
+)
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import (
     BACKEND_MODULES,
     backend_namespace,
