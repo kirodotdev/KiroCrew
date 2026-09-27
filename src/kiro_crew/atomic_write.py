@@ -1244,6 +1244,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    mtime_ns: int | None = None,
     replace_budget_s: float | None = None,
     on_staged: Callable[[int], None] | None = None,
 ) -> None:
@@ -1321,6 +1322,11 @@ def atomic_write(
     there are none. Reading from the descriptor rather than by name keeps the
     read pinned to the inode the caller validated. The carry is ADDITIVE to
     ``mode=``, not a replacement.
+
+    *mtime_ns* sets the staged inode's access and modification times after its
+    content is complete (and synced when requested) but before the publishing
+    rename. Applying the timestamp through the open descriptor keeps a later
+    writer at the destination name from receiving this write's timestamp.
 
     *parent_dir_fd* is an OPEN descriptor for the destination's directory,
     already pinned component-by-component by the caller (``pinned_fs`` supplies
@@ -1449,6 +1455,7 @@ def atomic_write(
         restrict_on_error=restrict_on_error,
         src_xattrs=src_xattrs,
         pin=pin,
+        mtime_ns=mtime_ns,
         on_staged=on_staged,
     )
     if pin is None:
@@ -1507,6 +1514,7 @@ def _stage_temp(
     restrict_on_error: RestrictErrorPolicy,
     src_xattrs: list[tuple[str, bytes]],
     pin: int | None,
+    mtime_ns: int | None = None,
     on_staged: Callable[[int], None] | None = None,
 ) -> str:
     """Write *content* to a new temp file beside *path*, closed; return its name.
@@ -1561,6 +1569,19 @@ def _stage_temp(
             _carry_xattrs(fd, src_xattrs, path)
         if fsync:
             os.fsync(fd)
+        if mtime_ns is not None:
+            timestamp = (mtime_ns, mtime_ns)
+            if os.utime in os.supports_fd:
+                os.utime(fd, ns=timestamp)
+            elif pin is None:
+                os.utime(tmp, ns=timestamp)
+            elif os.utime in os.supports_dir_fd:
+                os.utime(os.path.basename(tmp), ns=timestamp, dir_fd=pin)
+            else:  # pragma: no cover - no supported platform has this capability gap
+                raise NotImplementedError(
+                    "stamping a descriptor-relative atomic write requires "
+                    "descriptor- or dir_fd-capable os.utime"
+                )
         if on_staged is not None:
             on_staged(fd)
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that

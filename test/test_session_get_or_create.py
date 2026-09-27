@@ -1434,3 +1434,33 @@ class TestRealClaimJoinsAnInFlightEagerStart:
         assert mgr._allocation_state.speculative_starts == {}
         mgr.release(key)
         await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_send_waiting_on_an_eager_start_is_not_a_cold_start(self, cfg):
+        """Only the eager start reads the key's effort basis. The send that
+        joins it reads none while it waits, so it holds no cold-start mark that
+        would refuse an effort pick for the same chat."""
+        gate = asyncio.Event()
+        providers: list = []
+        mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
+        key = "dashboard:join-eager-cold-mark"
+
+        eager = asyncio.create_task(mgr.get_or_create(key, speculative=True))
+        await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+        assert len(mgr._allocation_state.cold_start_reservations) == 1
+        real = asyncio.create_task(mgr.get_or_create(key))
+        await async_wait_until(
+            lambda: self._real_claim_parked(mgr, key, providers),
+            describe=lambda: len(providers),
+        )
+
+        assert len(providers) == 1
+        assert len(mgr._allocation_state.cold_start_reservations) == 1
+
+        gate.set()
+        await await_until(eager, what="eager start")
+        mgr.release(key)
+        await await_until(real, what="real claim")
+        assert mgr._allocation_state.cold_start_reservations == set()
+        mgr.release(key)
+        await mgr.close_all()

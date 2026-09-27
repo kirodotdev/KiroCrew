@@ -16,6 +16,7 @@ import pytest
 from acp_frame_replay_harness import read_fixture
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_slot_reasoning_effort_helpers import _mock_state
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import (
@@ -34,7 +35,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.chat import api_chat_slot_reasoning_effort
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.providers.acp import AcpProvider
 
 _CAPTURE = Path(__file__).parent / "fixtures" / "acp_frames" / "claude" / "effort-clear-live.jsonl"
@@ -206,13 +207,7 @@ async def test_a_backend_without_a_clear_value_still_asks_for_a_reset(backend):
 
 
 def _handler_state(slot: _ChatSlot, provider: AcpProvider) -> MagicMock:
-    state = MagicMock(spec=DashboardState)
-    state._slots = {slot.key: slot}
-    state.push_slots_update = MagicMock()
-    state.sessions = MagicMock()
-    state.sessions.reset = AsyncMock()
-    state.sessions.get_provider = MagicMock(return_value=provider)
-    return state
+    return _mock_state(slot, provider=provider)
 
 
 @pytest.mark.asyncio

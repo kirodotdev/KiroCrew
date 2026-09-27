@@ -74,10 +74,12 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_parent_runtime_kwargs": ("function", False, "f408fa261a2b", "companions"),
     "_reacquire_and_validate": ("function", True, "c69e8f69c8aa", "get_or_create"),
     "_refuse_if_ending": ("function", False, "4fa619d0b3bc", "facade"),
+    "_release_explicit_effort_default": ("function", False, "958babeb61c8", "facade"),
     "_release_reacquired": ("function", False, "a6707a152144", "get_or_create"),
     "_remember_capability_failure": ("function", False, "6efcfdf79280", "get_or_create"),
     "_remove_reservation_cancellation_drained": ("function", True, "d02e096bed1e", "get_or_create"),
     "_remove_reservation_now": ("function", False, "d02e096bed1e", "get_or_create"),
+    "_reserve_explicit_effort_default": ("function", False, "1eda252b53bd", "facade"),
     "_resolve_agent_model": ("function", False, "e7a565bb1ba0", "facade"),
     "_runtime_pid": ("staticmethod", False, "9a018c130ad5", "companions"),
     "_safe_cleanup": ("function", True, "76a7c030508f", "facade"),
@@ -112,6 +114,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_provider": ("function", False, "c66f77f7d253", "facade"),
     "get_subagent_runtime": ("function", True, "23c9947d4e41", "companions"),
     "has_allocation_reservation": ("function", False, "1eda252b53bd", "facade"),
+    "has_cold_start_reservation": ("function", False, "1eda252b53bd", "facade"),
     "has_session": ("function", False, "1eda252b53bd", "facade"),
     "inbound_callback_count": ("property", False, "fa6cfecd5574", "facade"),
     "is_busy": ("function", False, "1eda252b53bd", "facade"),
@@ -395,6 +398,7 @@ _REFUSALS = (
     "SessionClosingError",
     "SessionEndingError",
     "SpeculativeResumeRefused",
+    "_WarmPoolEffortRewriteDiscard",
 )
 
 
