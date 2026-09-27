@@ -2330,8 +2330,8 @@ async def test_a_claim_that_binds_while_the_register_runs_still_names_it(
     """The stranding case. A token-carrying connection is nameable by claim-push
     alone, so a claim that binds after resolution and before the index leaves
     nothing able to name it: every in-tree MCP call in that session is refused
-    for the connection's whole life. The register re-asks once the index holds
-    it, so the deferral resolves on the same two factors instead of stranding."""
+    for the connection's whole life. The register asks after its last await,
+    so the claim is already bound when it does and the connection is named."""
     backend, _acks, reader, task = await _register_racing_a_claim(monkeypatch, 9020, [9100, 9020])
     assert backend.callers[0] is not None
     assert backend.callers[0].session_key == SUB_KEY
@@ -2390,7 +2390,7 @@ async def test_a_recycled_pid_cannot_satisfy_a_stale_binding(
 ) -> None:
     """A pid is a reusable NUMBER, so membership in the attested chain is not on
     its own evidence that the process the claim named is the one this stub sits
-    under. The binding carries the claimed process's start token and the re-read
+    under. The binding carries the claimed process's start token and the register
     compares it against this connection's own register-time snapshot, the same
     guard claim-push applies, so a definite mismatch refuses rather than hand
     over the session that holds the number's earlier generation."""
@@ -2418,4 +2418,68 @@ async def test_a_matching_generation_still_resolves(
     )
     assert backend.callers[0] is not None
     assert backend.callers[0].session_key == SUB_KEY
+    await _close(reader, task)
+
+
+def _count_token_asks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    asks: list[tuple[Any, ...]] = []
+    real = gw._token_caller
+
+    def counting(*args: Any) -> Any:
+        asks.append(args)
+        return real(*args)
+
+    monkeypatch.setattr(gw, "_token_caller", counting)
+    return asks
+
+
+def _denials(sel: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in sel if e.get("operation") == "mcp-gateway.peer-identity-denied"]
+
+
+@pytest.mark.asyncio
+async def test_a_token_carrying_stub_asks_its_binding_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One ask decides the connection, and it is the one that sees a claim which
+    bound while the register ran: no refusal is logged or audited for a stub
+    that ends up named."""
+    asks = _count_token_asks(monkeypatch)
+    backend, sel = _patch_env(monkeypatch)
+    _attest(monkeypatch, [9100, 9020])
+    acks = _claim_during_register(monkeypatch, _claim_with_token(9020, SUB_KEY, TOKEN_B))
+    reader = _QueueReader()
+    reader.feed(_register_with_token("", TOKEN_B, stub_uuid="stub-once"))
+    reader.feed(_CALL)
+    task = asyncio.create_task(_handle(reader, _RecordingWriter()))
+    await asyncio.wait_for(backend.forwarded.wait(), timeout=5.0)
+    assert acks == [{"type": "claim-noop", "updated": 0, "connections": 0}]
+    assert len(asks) == 1
+    assert backend.callers[0] is not None
+    assert backend.callers[0].session_key == SUB_KEY
+    assert _denials(sel) == []
+    await _close(reader, task)
+
+
+@pytest.mark.asyncio
+async def test_an_unclaimed_token_still_logs_and_audits_its_refusal(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The single ask keeps the fail-closed branch whole: no identity, the
+    ``unclaimed session token`` log line, and the peer-identity denial audit."""
+    caplog.set_level(logging.INFO, logger=gw.logger.name)
+    asks = _count_token_asks(monkeypatch)
+    backend, sel = _patch_env(monkeypatch)
+    _attest(monkeypatch, [9100, 9020])
+    reader = _QueueReader()
+    reader.feed(_register_with_token("", TOKEN_B, stub_uuid="stub-unclaimed"))
+    reader.feed(_CALL)
+    task = asyncio.create_task(_handle(reader, _RecordingWriter()))
+    await asyncio.wait_for(backend.forwarded.wait(), timeout=5.0)
+    assert len(asks) == 1
+    assert backend.callers[0] is None
+    assert any("unclaimed session token" in r.getMessage() for r in caplog.records)
+    denied = _denials(sel)
+    assert len(denied) == 1
+    assert "unclaimed session token" in denied[0]["resources"]
     await _close(reader, task)

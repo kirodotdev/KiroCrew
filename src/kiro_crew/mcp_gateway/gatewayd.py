@@ -3480,6 +3480,23 @@ async def _handle_connection(
     # verified — deny-by-default preserved).
     indexed_pids = stub_pids + [p for p in peer_host_pids if p not in stub_pids]
 
+    # PID-recycle guard: snapshot each indexed PID's start token NOW, while
+    # the register-time process tree is still alive. A later claim carries
+    # the claimed runtime's own token; a definite mismatch means the OS
+    # recycled the PID to a different process and the claim must not land
+    # here. Computed server-side so old stubs are covered with no wire
+    # change. subprocess_executor: a /proc read can wedge on a D-state
+    # target, so keep it off the event loop, matching the
+    # _resolve_peer_identity walk above.
+    try:
+        pid_start_ids: dict[int, Optional[str]] = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            lambda: {p: _get_process_start_id(p) for p in indexed_pids},
+        )
+    except Exception:  # graceful degradation: unknown tokens never deny claims
+        logger.exception("pid start-id snapshot failed for stub %s", stub_uuid)
+        pid_start_ids = {}
+
     # Identity, in precedence order: the session this connection's token names,
     # then the refusal any other token state forces, then the process-tree
     # sources exactly as before for a connection carrying no token.
@@ -3489,7 +3506,10 @@ async def _handle_connection(
     # stub's self-reported ``ancestor_pids``. Those are fine for the claim INDEX
     # (a claim only ever narrows to connections carrying its own token or none)
     # and wrong for authentication.
-    token_caller = _token_caller(stub_session_token, peer_host_pids)
+    #
+    # The ONE token ask sits after the last await before ``_conn_index_add``, so
+    # a claim cannot bind between the answer and the index that lets it land.
+    token_caller = _token_caller(stub_session_token, peer_host_pids, pid_start_ids)
     if token_caller is not None:
         caller = token_caller
         logger.info(
@@ -3542,23 +3562,6 @@ async def _handle_connection(
             peer_pid,
         )
 
-    # PID-recycle guard: snapshot each indexed PID's start token NOW, while
-    # the register-time process tree is still alive. A later claim carries
-    # the claimed runtime's own token; a definite mismatch means the OS
-    # recycled the PID to a different process and the claim must not land
-    # here. Computed server-side so old stubs are covered with no wire
-    # change. subprocess_executor: a /proc read can wedge on a D-state
-    # target, so keep it off the event loop, matching the
-    # _resolve_peer_identity walk above.
-    try:
-        pid_start_ids: dict[int, Optional[str]] = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            lambda: {p: _get_process_start_id(p) for p in indexed_pids},
-        )
-    except Exception:  # graceful degradation: unknown tokens never deny claims
-        logger.exception("pid start-id snapshot failed for stub %s", stub_uuid)
-        pid_start_ids = {}
-
     conn = _StubConn(
         stub_uuid,
         indexed_pids,
@@ -3569,34 +3572,6 @@ async def _handle_connection(
         stub_session_token,
     )
     _conn_index_add(conn)
-    if stub_session_token:
-        # The binding was read before anything could reach this connection, and a
-        # claim landing across the awaits above matches ZERO connections — so the
-        # pre-await reading would stand for life: no identity, or the session the
-        # token was rekeyed away from. Re-ask once the index holds it and take the
-        # answer WHOLE, ``None`` included: a stale name is worse than none, and
-        # nothing revokes one later. Factors unchanged — the attested chain, never
-        # ``indexed_pids``, plus the recycle guard. No eviction is owed: no frame
-        # has been read, so no grant exists under the old name.
-        rebound = _token_caller(stub_session_token, peer_host_pids, conn.pid_start_ids)
-        old_key = caller.session_key if caller is not None else ""
-        new_key = rebound.session_key if rebound is not None else ""
-        caller = rebound
-        conn.caller = rebound
-        if new_key != old_key:
-            _audit_caller_claimed(
-                old_key,
-                new_key,
-                conn.pool_label,
-                "allowed" if rebound is not None else "denied",
-                "" if rebound is not None else "token not claimed from this attested runtime",
-            )
-            logger.info(
-                "stub %s: session binding re-read once indexed — %s (was %s)",
-                stub_uuid,
-                new_key or "<none>",
-                old_key or "<none>",
-            )
 
     # Register this connection for the keepalive probe. Scoped to the handler's
     # own task so a dead transport can cancel exactly the coroutine that is
