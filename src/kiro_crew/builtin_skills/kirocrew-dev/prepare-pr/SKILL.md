@@ -681,10 +681,10 @@ Omit a section only when truly not applicable, and say so.
 `diff_signals.py --check-body` applies two rules to the finished body. Both
 stop the loop; they pull in opposite directions on purpose (why: `references/rationale.md`):
 
-| check | what it measures | on breach | why that strength |
-|---|---|---|---|
-| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff | an unnamed change is how a stray edit rides along |
-| Length | words of prose in `What changed` (fenced blocks, table rows, image lines excluded) against the 500 of section 3's paragraph rule | **exit 21** — stop, compress the prose | with the ledger complete, a cap cuts only restated facts; the diff is the evidence |
+| check | what it measures | on breach |
+|---|---|---|
+| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
+| Length | words of prose in `What changed` (fenced blocks, table rows, image lines excluded) against the 500 of section 3's paragraph rule | **exit 21** — stop, compress the prose |
 
 Paths, tables and pictures never count against the limit. When both breach,
 20 is reported and both findings print.
