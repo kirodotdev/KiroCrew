@@ -838,6 +838,123 @@ class TestAutoApproveIsFilteredAtTheWriteChokepoint:
         assert "_strip_ungoverned_auto_approve" in inspect.getsource(bridges._register_agents)
 
 
+class TestOnlyTheOwnersOwnAutoApproveIsHonoured:
+    """The opt-in respects the OWNER's statement, not any writer's.
+
+    "Owner-written" was first implemented as "undeclared by any spec", and the
+    declared set covers only the managed registry and the edition's contribution.
+    An app's own ``<app>:<server>`` entry is in neither, so an installed app that
+    shipped ``autoApprove`` inherited the exemption on every default-config host --
+    a third party exempting its own tools from the gate with no card, which is the
+    opposite of the decision the opt-in records. The wrong SHAPE is the sibling
+    hole: the strict floor coerces a non-list to ``[]``, and preserving one writes
+    a spec kiro-cli rejects, with no self-heal for an invalid file.
+    """
+
+    @staticmethod
+    def _honoured(monkeypatch: pytest.MonkeyPatch, servers: dict) -> dict:
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda emitted: {})
+        _pin_honour_auto_approve(monkeypatch, True)
+        return dict(gov.strip_ungoverned_auto_approve(servers, audit=False))
+
+    def test_an_apps_own_server_is_not_the_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``apps/bridges.py`` keys an app's own servers ``<app>:<server>``."""
+        out = self._honoured(
+            monkeypatch, {"weather:api": {"command": "w", "autoApprove": ["write_all"]}}
+        )
+        assert "autoApprove" not in out["weather:api"], "an app manifest grant must not survive"
+        assert out["weather:api"]["command"] == "w", "the server itself must stay available"
+
+    def test_an_entry_kiro_crew_authored_is_not_the_owner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A marker means we wrote it into a file we do not own -- our emission."""
+        from kiro_crew.mcp_provenance import stamp
+
+        out = self._honoured(
+            monkeypatch, {"mail": stamp({"command": "m", "autoApprove": ["email_send"]})}
+        )
+        assert "autoApprove" not in out["mail"]
+
+    def test_the_owners_own_entry_still_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The provenance test must not cost the owner the thing they asked for."""
+        out = self._honoured(monkeypatch, {"mail": {"command": "m", "autoApprove": ["email_send"]}})
+        assert out["mail"]["autoApprove"] == ["email_send"]
+
+    def test_a_name_the_caller_calls_third_party_is_not_the_owner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """For a map that MIXES the two: the shared `mcp.json` an app registers into.
+
+        The app's entries there carry its `<app>:` prefix, so naming them is exact
+        and closed, and the owner's own entries in the same file keep the opt-in.
+        """
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda emitted: {})
+        _pin_honour_auto_approve(monkeypatch, True)
+        out = gov.strip_ungoverned_auto_approve(
+            {
+                "shipped": {"command": "s", "autoApprove": ["write_all"]},
+                "mine": {"command": "m", "autoApprove": ["email_send"]},
+            },
+            audit=False,
+            third_party={"shipped"},
+        )
+        assert "autoApprove" not in out["shipped"], "an app-chosen key must not survive"
+        assert out["mine"]["autoApprove"] == ["email_send"], "the owner's own key must survive"
+
+    def test_a_whole_map_that_is_an_apps_declines_the_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No key of it is honoured, and a DECLARED verb still survives.
+
+        Naming an app's keys is an enumeration that goes stale: the manifest's
+        servers, the shipped agent spec's own un-namespaced keys and the per-agent
+        policy's `servers` keys were each found only after the previous one was
+        covered. A writer whose whole map is an app's therefore declines the opt-in
+        instead of listing what it knows about today.
+        """
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        monkeypatch.setattr(gov, "_declared_auto_approve", lambda emitted: {"ours": ("read",)})
+        _pin_honour_auto_approve(monkeypatch, True)
+        out = gov.strip_ungoverned_auto_approve(
+            {
+                "policy_written": {"command": "p", "autoApprove": ["write_all"]},
+                "ours": {"command": "o", "autoApprove": ["read"]},
+            },
+            audit=False,
+            honour_owner_written=False,
+        )
+        assert "autoApprove" not in out["policy_written"], "no app key may be honoured"
+        assert out["ours"]["autoApprove"] == ["read"], "a DECLARED verb still survives"
+
+    def test_the_app_agent_writer_declines_the_opt_in(self) -> None:
+        """Pin the call shape: the app writer must not re-grow a key enumeration."""
+        import inspect
+
+        from kiro_crew.apps import bridges
+
+        src = inspect.getsource(bridges._register_agents)
+        assert "honour_owner_written=False" in src
+        assert "third_party=" not in src, "an app's keys must not be enumerated here"
+
+    @pytest.mark.parametrize("asked", ["email_send", {"email_send": True}, ["ok", 7], None])
+    def test_a_value_that_is_not_a_list_of_str_is_not_preserved(
+        self, monkeypatch: pytest.MonkeyPatch, asked: object
+    ) -> None:
+        """Preserving one writes a spec kiro-cli rejects, and no rebuild repairs it."""
+        out = self._honoured(monkeypatch, {"mail": {"command": "m", "autoApprove": asked}})
+        assert "autoApprove" not in out["mail"], f"{asked!r} reached the emitted spec"
+        assert out["mail"]["command"] == "m"
+
+
 class TestAnUngovernedHostDoesNotKeepAutoApprove:
     """The ungoverned host was the hole, and no ceiling could close it.
 

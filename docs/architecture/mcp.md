@@ -162,6 +162,15 @@ every verb no server spec declares and put those tools back through the gate. A
 verb a managed or edition spec declares is unaffected either way, and a
 governance ceiling strips the key whatever the setting says.
 
+Only the OWNER's own list is honoured. An app's `<app>:<server>` entry is granted
+by its manifest rather than chosen by the owner; an agent config materialized for an
+app declines the opt-in for its whole map, since an app's keys arrive from the
+manifest, the shipped spec and the per-agent policy and need not be namespaced; and
+an entry carrying the `x-kirocrew` provenance marker is Kiro Crew's own. All three
+stay on the strict floor, as does a value that is not a `list[str]`, which kiro-cli's
+strict parsing would reject with no rebuild able to repair the file. On that app map
+a verb a server spec DECLARES still survives.
+
 For KAS native managed servers, session projection supplies the actual gateway
 listener port and the allocation-time caller session key. These values come
 from the gateway rather than the editable agent environment. Native tools keep

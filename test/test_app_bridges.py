@@ -391,10 +391,49 @@ class TestAgentRegistration:
         entry = written["mcpServers"]["test-app:srv"]
         assert "autoApprove" not in entry, "a governed grant must not reach the file kiro-cli reads"
 
-    def test_register_mcp_keeps_autoapprove_only_with_the_opt_in(
+    def test_a_malformed_agent_spec_does_not_abort_the_apps_other_agents(
+        self, tmp_path, app_env
+    ):
+        """One bad `mcpServers` must not cost the app every agent after it.
+
+        `_register_agents` loops over the manifest's agents, so anything that raises
+        on one spec stops the LATER, valid ones from being materialized and the app
+        silently loses capability it declared. A value that is not a mapping is
+        carried through to the writer, which skips what it cannot read.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+
+        src = _make_app_source(
+            tmp_path, agents=["agents/bad-agent.json", "agents/my-agent.json"]
+        )
+        # A LIST of mappings: truthy, so `or {}` does not neutralize it, and its
+        # elements are unhashable, so building a name set from it raises.
+        (src / "agents" / "bad-agent.json").write_text(
+            json.dumps({"name": "bad-agent", "model": "auto", "mcpServers": [{"srv": {}}]})
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+        registered = bridges_mod._register_agents("test-app", manifest, app_root)
+        assert any(
+            "my-agent" in name for name in registered
+        ), f"the valid agent was not materialized: {registered}"
+
+    def test_register_mcp_never_keeps_an_apps_own_autoapprove(
         self, tmp_path, app_env, monkeypatch
     ):
-        """An absent ceiling does not keep the key -- ``mcp.honour_auto_approve`` does."""
+        """The opt-in honours the OWNER's list, and an app's own is not the owner's.
+
+        ``mcp.honour_auto_approve`` records a decision about a list the owner typed
+        about their own tools. A manifest's ``autoApprove`` is chosen by the app,
+        reaches this file as ``<app>:<server>``, and would exempt a third party's
+        own tools from the approval gate with no card -- so it is stripped whatever
+        the key says. This reverses the earlier expectation here, which kept it once
+        the key was on; making that key default ON is what turned a setting almost
+        nobody had into a grant on every default-config host.
+        """
         from kiro_crew.apps import bridges as bridges_mod
         from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
@@ -414,7 +453,9 @@ class TestAgentRegistration:
         )
         bridges_mod._register_mcp_servers("test-app", manifest)
         written = json.loads(bridges_mod._mcp_json_path().read_text(encoding="utf-8"))
-        assert written["mcpServers"]["test-app:srv"].get("autoApprove") == ["ok"]
+        entry = written["mcpServers"]["test-app:srv"]
+        assert "autoApprove" not in entry, "an app's own grant must not reach the file kiro-cli reads"
+        assert entry["command"] == "run", "the server itself must stay available"
 
     def test_missing_agent_file_skipped(self, tmp_path, app_env):
         src = _make_app_source(tmp_path, agents=["agents/nonexistent.json"])
@@ -4673,7 +4714,7 @@ class TestLifecycleWritersShareTheHealthSerialization:
 
         # A non-empty manifest: the function returns before the lock when there is
         # nothing to register, so an empty one would pass this test vacuously.
-        monkeypatch.setattr(brmod, "strip_ungoverned_auto_approve", lambda m: m)
+        monkeypatch.setattr(brmod, "strip_ungoverned_auto_approve", lambda m, **kw: m)
         brmod._register_mcp_servers(
             "app",
             SimpleNamespace(

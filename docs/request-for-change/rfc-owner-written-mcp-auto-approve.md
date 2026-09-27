@@ -50,6 +50,39 @@ discard a deliberate one and leave nothing in its place. That is the defect this
 RFC records, and respecting the list is the smaller of the two risks: the owner
 already had to write it.
 
+## Boundary: only the owner's own list, and only a usable one
+
+"Owner-written" is a claim about PROVENANCE, so the filter tests it rather than
+inferring it from "no spec declared this". Two sources are not the owner and are
+excluded from the honoured path, which leaves them on the strict floor exactly as
+before:
+
+- An app's own server. `apps/bridges.py` keys the ones it registers into the
+  shared config `<app>:<server>` and grants them from the manifest, not from any
+  choice the owner made, so honouring one would let a third party exempt its own
+  tools from the approval gate with no card. Any `:` in a server name is read as
+  that shape, which means an owner who used one keeps getting cards: the ambiguous
+  case fails closed.
+- Everything a writer materializes for an APP. That writer declines the opt-in
+  outright rather than naming the app's keys, because naming them is an enumeration
+  that goes stale: the manifest's servers, the shipped agent spec's own
+  un-namespaced keys and the per-agent policy's `servers` keys were each found only
+  after the previous one was covered, and the policy is app-controlled state that
+  may carry `autoApprove` (a shipped builtin already writes one). Nothing on that
+  map is the owner stating a preference about their own tools; what a spec DECLARES
+  still survives, and everything else routes through the approval gate. The
+  shared config, whose map genuinely mixes the two, names the app's `<app>:`-prefixed
+  entries instead, which is exact and closed.
+- An entry Kiro Crew authored in a file it does not own, which carries the
+  `x-kirocrew` provenance marker. That is our own emission.
+
+A value that is not a `list[str]` is not honoured either. The floor this replaces
+coerced any other shape to `[]` and popped the key, so a wrong-typed value never
+reached disk; preserving one writes an agent spec kiro-cli's strict parsing
+rejects, and nothing repairs it -- the self-heal covers a MISSING spec file, not
+an invalid one, so every later rebuild re-preserves the same bad value. Falling
+through to the floor keeps the recovery path that already exists.
+
 ## Boundary: the ceiling is not the owner's to widen
 
 `may_skip_gate_now` is unchanged and remains authoritative. A ref a governance

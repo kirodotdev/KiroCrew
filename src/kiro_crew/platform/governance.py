@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     Callable,
+    Container,
     Dict,
     List,
     Mapping,
@@ -60,6 +61,7 @@ from typing import (
 )
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.mcp_provenance import is_marked
 from kiro_crew.platform.admission import (
     canonical_signing_bytes,
     hmac_signature,
@@ -4334,8 +4336,57 @@ def _audit_auto_approve_honoured(name: str, verbs: Sequence[str]) -> None:
         logger.debug("SEL audit unavailable for honoured autoApprove", exc_info=True)
 
 
+def _is_owner_written(name: str, spec: Mapping[str, object], third_party: Container[str]) -> bool:
+    """Whether this entry's ``autoApprove`` can be the OWNER's own statement.
+
+    The opt-in respects a list the owner typed about their own tools. It must not
+    also respect one a THIRD PARTY typed, and three sources here are not the owner:
+
+    * An entry the CALLER names in ``third_party``, for a map that genuinely MIXES
+      the owner's entries with a third party's: the shared ``mcp.json``, where the
+      app entries are exactly the ones carrying that app's ``<app>:`` prefix. A
+      writer whose whole map is third-party does not enumerate at all -- it passes
+      ``honour_owner_written=False``, because an enumeration of app sources is a
+      list that goes stale (manifest servers, the shipped agent spec's own keys, the
+      per-agent policy's keys -- each found after the previous one was covered).
+    * An APP's namespaced server. ``apps/bridges.py`` keys those ``<app>:<server>``
+      and grants them from the manifest rather than from any user choice. Any ``:``
+      in the name is treated as that shape: an owner who really used one keeps
+      getting approval cards, which is the behaviour that shipped before this key
+      existed, so the ambiguous case fails CLOSED rather than granting a bypass.
+    * An entry Kiro Crew itself authored in a file it does not own, which carries
+      :data:`~kiro_crew.mcp_provenance.MARKER_KEY`. That is our own emission, and
+      what a spec declares is already handled by the declared set.
+    """
+    if name in third_party or ":" in name:
+        return False
+    try:
+        return not is_marked(spec)
+    except Exception:  # noqa: BLE001 — an unreadable marker must not grant a bypass
+        logger.warning("could not read the MCP provenance marker on %s", name, exc_info=True)
+        return False
+
+
+def _is_honourable_shape(asked: object) -> bool:
+    """Whether ``autoApprove`` is the ``list[str]`` kiro-cli will accept.
+
+    The strict floor this opt-in replaces coerced any other shape to ``[]`` and
+    popped the key, so a wrong-typed value never reached disk. Preserving one
+    verbatim writes an agent spec kiro-cli's strict parsing rejects, and nothing
+    re-sanitizes it: ``ensure_agent_materialized`` self-heals a MISSING spec file,
+    not an invalid one, so every later rebuild re-preserves the same bad value and
+    sessions keep failing. A wrong type therefore falls through to the floor,
+    which is the recovery path that already exists.
+    """
+    return isinstance(asked, list) and all(isinstance(v, str) for v in asked)
+
+
 def strip_ungoverned_auto_approve(
-    servers: Mapping[str, object], *, audit: bool = True
+    servers: Mapping[str, object],
+    *,
+    audit: bool = True,
+    third_party: Container[str] = (),
+    honour_owner_written: bool = True,
 ) -> Dict[str, object]:
     """Return ``servers`` with a ceiling-governed ``autoApprove`` removed.
 
@@ -4361,7 +4412,19 @@ def strip_ungoverned_auto_approve(
     is on by default, so an ``autoApprove`` the owner wrote by hand survives there.
     An ``autoApprove`` is a deliberate statement about their own tools, and silently
     deleting it left them with no way to express it and nothing telling them it had
-    gone. Turning that key OFF restores the strict floor, where a verb NO spec
+    gone. Only the OWNER's own statement is honoured. A writer whose map is entirely
+    a third party's passes ``honour_owner_written=False`` and keeps nothing; a writer
+    whose map MIXES the two names the third party's entries in ``third_party``; and an
+    app's ``<app>:<server>`` entry, one Kiro Crew authored in a shared file, and a
+    value that is not a ``list[str]`` are never honoured either (see
+    :func:`_is_owner_written` and :func:`_is_honourable_shape`). Each of those falls
+    through to the strict floor below. The whole-map switch exists because
+    enumerating an app's sources is a list that GOES STALE: the manifest's servers,
+    the shipped agent spec's own keys and the per-agent policy's keys were each found
+    only after the previous one was covered, so the writer that materializes an app
+    declines the opt-in outright rather than naming what it knows about today.
+    Turning that key OFF restores the
+    strict floor for everything, where a verb NO spec
     declares is dropped and only what a spec declares -- our own emission -- is
     kept. A governed ref keeps nothing either way: the ceiling is the OPERATOR's
     policy, not the owner's preference, so no config value can widen it, and the
@@ -4379,7 +4442,12 @@ def strip_ungoverned_auto_approve(
         kept: list = []
         if not may_skip_gate_now(f"@{name}"):
             pass  # governed: nothing survives, and the enterprise path is unchanged
-        elif honoured:
+        elif (
+            honoured
+            and honour_owner_written
+            and _is_owner_written(name, spec, third_party)
+            and _is_honourable_shape(spec["autoApprove"])
+        ):
             # GRANTING a gate exemption is as much a permission decision as
             # revoking one, so the honoured path audits too. Without this the
             # only autoApprove that appears in the feed is one that was taken

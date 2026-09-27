@@ -22,7 +22,7 @@ import zipfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Container, Iterable, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
 
 from kiro_crew import platform_compat
@@ -314,9 +314,24 @@ def _apply_agent_prompt(
     return merged
 
 
-def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
-    """Drop a ceiling-governed ``autoApprove`` from a server map (see governance)."""
-    return dict(strip_ungoverned_auto_approve(servers))
+def _strip_ungoverned_auto_approve(
+    servers: dict[str, Any],
+    *,
+    third_party: Container[str] = (),
+    honour_owner_written: bool = True,
+) -> dict[str, Any]:
+    """Drop a ceiling-governed ``autoApprove`` from a server map (see governance).
+
+    ``third_party`` names the keys THIS app chose in a map that also holds the
+    owner's; ``honour_owner_written=False`` is for a map that is entirely an app's.
+    """
+    return dict(
+        strip_ungoverned_auto_approve(
+            servers,
+            third_party=third_party,
+            honour_owner_written=honour_owner_written,
+        )
+    )
 
 
 def _may_auto_approve(ref: str) -> bool:
@@ -1059,9 +1074,22 @@ def _register_agents(
                 # on-disk entry — filtering each of those separately is how earlier
                 # rounds kept leaving one open. The host agent's writer does the same
                 # thing at the same position (see agent.install_agent).
+                #
+                # This map is an APP's, so it declines the owner-written opt-in
+                # outright instead of naming the app's keys. Naming them is an
+                # enumeration that goes stale: the manifest's servers, the shipped
+                # agent spec's own un-namespaced keys and the per-agent policy's
+                # `servers` keys were each found only after the previous one was
+                # covered, and a policy IS app-controlled state that may carry
+                # `autoApprove` (a shipped builtin already writes one). Nothing here
+                # is the owner stating a preference about their own tools, so the
+                # verbs a spec DECLARES still survive and everything else routes
+                # through the approval gate.
                 _servers = merged.get("mcpServers")
                 if isinstance(_servers, dict):
-                    merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
+                    merged["mcpServers"] = _strip_ungoverned_auto_approve(
+                        _servers, honour_owner_written=False
+                    )
                 # The map above is FINAL — every source of servers has been merged —
                 # so this is the one point a dangling `@` grant is decidable. Warn,
                 # never reject: kiro-cli just skips the ref, so the agent works
@@ -2898,7 +2926,17 @@ def _register_mcp_servers(
         # the ceiling's denial, the same second route the agent-config writers
         # already close. Strip a governed grant here too; the tools stay, they
         # just go through the gate. Idempotent and a no-op on an ungoverned host.
-        mcp_data["mcpServers"] = dict(strip_ungoverned_auto_approve(servers))
+        # This app's own entries are named explicitly rather than left to the
+        # name-shape test: the rest of this map is the owner's own file, whose
+        # `autoApprove` the opt-in exists to honour, so the two cannot share one
+        # verdict. Every key carrying this app's prefix counts, including a stale
+        # one from an earlier registration.
+        mcp_data["mcpServers"] = dict(
+            strip_ungoverned_auto_approve(
+                servers,
+                third_party={k for k in servers if k.startswith(f"{app_name}:")},
+            )
+        )
         _write_mcp_json_unlocked(mcp_data)
     logger.info(
         "Registered %d MCP server(s) for app %s (live_port=%s); skipped %d HTTP server(s) "
