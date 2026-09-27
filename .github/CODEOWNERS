@@ -4,9 +4,10 @@
 # Owners are auto-requested for review on every PR. Branch protection can
 # additionally enforce approval ("Require review from Code Owners").
 #
-# All components are owned by the kirocrew-team. Enable review
-# auto-assignment on the team (Org -> Teams -> kirocrew-team -> Settings ->
-# Code review, round-robin or load-balance) so each PR's team request
-# resolves to individual members instead of notifying the whole team.
+# All components are owned by the kirocrew-pr-review team. Review
+# auto-assignment is enabled on that team (Org -> Teams ->
+# kirocrew-pr-review -> Settings -> Code review, load-balance) so each PR's
+# team request resolves to individual members instead of notifying the whole
+# team.
 
-*                                   @kirodotdev/kirocrew-team
+*                                   @kirodotdev/kirocrew-pr-review

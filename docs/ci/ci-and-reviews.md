@@ -246,8 +246,9 @@ name never fires and never says so.
 
 ### Code ownership
 
-`.github/CODEOWNERS` assigns every repository path to `@kirodotdev/kirocrew-team`
-through a single wildcard rule. GitHub reads that file to request reviews; the file
+`.github/CODEOWNERS` assigns every repository path to
+`@kirodotdev/kirocrew-pr-review` through a single wildcard rule. GitHub reads that
+file to request reviews; the file
 itself establishes no approval count and enforces no branch protection, so a tier, a
 required number of reviewers, or a designated-maintainer requirement cannot be
 inferred from it. The wildcard rule carries the ownership declaration, and GitHub

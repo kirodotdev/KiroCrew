@@ -12,7 +12,7 @@ How maintainers are added, how they step down, and how decisions get made are co
 | Joe Guo | [@iamwhatever](https://github.com/iamwhatever) |
 | Zezhen Xu | [@CrysisDeu](https://github.com/CrysisDeu) |
 
-Every path in this repository is owned by `@kirodotdev/kirocrew-team` in [CODEOWNERS](.github/CODEOWNERS), so reviewers are requested automatically and you do not need to pick one by hand.
+Every path in this repository is owned by `@kirodotdev/kirocrew-pr-review` in [CODEOWNERS](.github/CODEOWNERS), so reviewers are requested automatically and you do not need to pick one by hand.
 
 ## Emeritus
 
