@@ -849,6 +849,10 @@ async def relay_remote_turn(
         # unblocked and a reload must still recover the interruption. A terminal
         # outcome (success / truncation / error) takes the branch below.
         if not cancelled:
+            # Capture before persistence yields: this completion belongs to the
+            # relay turn entering this terminal block, never a later task.
+            turn = slot._turn_generation
+            turn_gen = chunk_generation()
             # Clear the in-flight marker FIRST, so the save records a turn that
             # finished: whether it completed, truncated or errored, the tail is now
             # in the local window and there is nothing for a reload to recover.
@@ -856,7 +860,14 @@ async def relay_remote_turn(
             await save_slot_off_loop(state, slot)
             # The composer is unblocked by ``chat_done``, so skipping it on the
             # error paths would leave the session looking permanently busy.
-            state.broadcast_ws("chat_done", {"slot": slot.key})
+            state.broadcast_ws(
+                "chat_done",
+                {
+                    "slot": slot.key,
+                    "turn": turn,
+                    "turn_gen": turn_gen,
+                },
+            )
 
     # A message sent DURING a relayed turn is REFUSED — the busy branch of
     # ``api_chat`` returns 409 ``remote_turn_busy`` for a remote (or ``relay=1``)

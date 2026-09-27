@@ -121,6 +121,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _resettle_restricted_key,
     _sync_dashboard_slots,
+    chunk_generation,
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
@@ -2922,6 +2923,8 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     key = slot.key
     workspace = slot.workspace
     running = slot.running
+    turn = slot._turn_generation
+    turn_gen = chunk_generation()
     stopping = slot._stopping
     display_title = slot.display_title
     # Shallow copies, so the off-loop render below reads a frozen entry while
@@ -2953,6 +2956,8 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 # configuration.
                 "title": _redact_for_display(display_title),
                 "running": running,
+                "turn": turn,
+                "turn_gen": turn_gen,
                 "stopping": stopping,
                 "messages": prepared,
                 "queue": [queue_entry_view(q) for q in queue_snapshot],

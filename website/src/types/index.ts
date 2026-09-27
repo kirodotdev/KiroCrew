@@ -1037,7 +1037,20 @@ export interface RemoteCrewCapabilities {
   unavailable: Record<string, string>
 }
 
-export interface ChatSlot {
+/** Turn identity is monotonic only within one gateway process generation. */
+export interface TurnIdentityFields {
+  turn?: number
+  turn_gen?: string
+}
+
+/** Terminal WebSocket payload; identity is optional for older gateways. */
+export interface ChatDonePayload extends TurnIdentityFields {
+  slot: string
+  continuing?: boolean
+  needs_input?: boolean
+}
+
+export interface ChatSlot extends TurnIdentityFields {
   /** Which namespace `agent` was chosen in: a configured member, a shared
    *  provider template, or "" when the choice was made by name alone or came
    *  back from history. Display provenance for the picker's selected row; the
@@ -1384,6 +1397,22 @@ export interface ChatMessage {
    *  both doors; this top-level spelling is accepted too, as `decisions_strip`
    *  and the split `kind` above are. */
   decisions_tool_risk?: unknown
+}
+
+/** GET /api/chat/slots/{slot}; identity is optional for older gateways. */
+export interface ChatSlotDetailResponse extends TurnIdentityFields {
+  key: string
+  title?: string
+  running: boolean
+  stopping?: boolean
+  messages: ChatMessage[]
+  queue?: unknown[]
+  total: number
+  has_more: boolean
+  next_before: number
+  context_pct?: number
+  context_used_tokens?: number
+  context_window_tokens?: number
 }
 
 export interface SubagentActivity {

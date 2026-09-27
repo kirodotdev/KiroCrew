@@ -1259,7 +1259,7 @@ def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool
 
 
 async def chat_done_payload(
-    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False
+    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False, ends_turn: bool = True
 ) -> dict[str, Any]:
     """Describe whether a turn boundary actually hands the floor to the user.
 
@@ -1269,11 +1269,22 @@ async def chat_done_payload(
     and results still being delivered. This is a notification hint only; it never
     changes dispatch, transcript finalization, or the slot's running state.
 
+    ``turn`` / ``turn_gen`` name the turn this frame ENDS, and the dashboard
+    records that turn as ended. A caller whose turn keeps running past the frame
+    (the deferred ``/compact`` acknowledgement) passes ``ends_turn=False`` and
+    the identity is omitted, so the frame cannot fence the live turn.
+
     A coroutine for one reason: that guard's queued half reads the task store,
     and every caller here is a turn-boundary frame on the gateway loop, so the
     read belongs on the store's writer thread
     (:func:`subagents_attached_async`).
     """
+    # Capture before the queued-subagent probe yields: a successor can start
+    # while that store read is in flight, but this frame still ends the turn
+    # that called the helper.
+    turn = slot._turn_generation
+    turn_gen = chunk_generation()
+
     # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
     from kiro_crew.autonudge import get_instance
 
@@ -1300,11 +1311,13 @@ async def chat_done_payload(
         # notification failure must never prevent the terminal frame itself.
         logger.warning("Completion activity unavailable for slot %s", slot.key, exc_info=True)
         continuing = True
-    return {
-        "slot": slot.key,
-        "continuing": continuing,
-        "needs_input": bool(slot._question_pending),
-    }
+    payload: dict[str, Any] = {"slot": slot.key}
+    if ends_turn:
+        payload["turn"] = turn
+        payload["turn_gen"] = turn_gen
+    payload["continuing"] = continuing
+    payload["needs_input"] = bool(slot._question_pending)
+    return payload
 
 
 def wire_session_subagent_probe(state: DashboardState) -> None:
