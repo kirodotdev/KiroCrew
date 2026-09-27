@@ -11,7 +11,7 @@ import {
 } from './panelTabRegistry'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -71,6 +71,7 @@ export const PINNED_VIEWS: ViewKind[] = ['changes', 'artifacts', 'files']
  *  classifying it is a type error, so a new transcript-fed view cannot slip
  *  onto the Members page unfed — the default is not "offered", it is "decide". */
 export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
+  'command-center': 'slot',
   changes: 'chat-transcript',
   issues: 'chat-transcript',
   links: 'chat-transcript',
@@ -187,6 +188,7 @@ export interface PanelTab {
  * displayed title is localised.
  */
 const VIEW_TITLE_KEY: Record<ViewKind, string> = {
+  'command-center': 'commandCenter.title',
   changes: 'hooks.usePanelTabs.changes',
   issues: 'hooks.usePanelTabs.issues',
   files: 'hooks.usePanelTabs.files',

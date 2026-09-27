@@ -16,8 +16,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
 
 _WAIT_SECS = 30.0
@@ -76,6 +77,7 @@ def test_projection_reads_coordinator_record_for_this_slot() -> None:
 
     assert payload["pending_approval"] is True
     assert payload["pending_approval_info"] == {
+        "origin": "coordinator",
         "tool": "spawn_run(t)",
         "tool_input": "task text",
         "tool_kind": "spawn",
@@ -95,6 +97,16 @@ def test_projection_without_coordinator_records_is_unchanged() -> None:
     assert payload["pending_approval_info"] is None
 
 
+def test_projection_preserves_only_the_selected_coordinator_purpose() -> None:
+    slot = _ChatSlot("parent")
+    first = {**_record("spawn:first", "parent"), "tool_purpose": "Check the release"}
+    second = {**_record("spawn:second", "parent"), "tool_purpose": "Unrelated purpose"}
+    slot._coordinator_approvals = lambda key: [first, second]
+    info = slot.to_dict()["pending_approval_info"]
+    assert info["request_id"] == "spawn:first"
+    assert info["tool_purpose"] == "Check the release"
+
+
 def test_projection_tolerates_an_unwired_slot() -> None:
     """A slot built outside DashboardState (tests, probes) has no callback."""
     slot = _ChatSlot("bare")
@@ -103,6 +115,62 @@ def test_projection_tolerates_an_unwired_slot() -> None:
 
     assert payload["pending_approval"] is False
     assert payload["pending_approval_info"] is None
+
+
+@pytest.mark.parametrize("character,extra", [("x", -1), ("x", 0), ("x", 1), ("界", 0), ("界", 1)])
+def test_projection_bounds_coordinator_purpose_without_splitting_text(character, extra):
+    slot = _ChatSlot("parent")
+    unit_bytes = len(character.encode("utf-8"))
+    purpose = character * (_MAX_TOOL_PURPOSE // unit_bytes + extra)
+    slot._coordinator_approvals = lambda key: [{**_record("request", key), "tool_purpose": purpose}]
+    actual = slot.to_dict()["pending_approval_info"]["tool_purpose"]
+    if len(purpose.encode("utf-8")) <= _MAX_TOOL_PURPOSE:
+        assert actual == purpose
+    else:
+        prefix, sentinel = actual.split("\n", 1)
+        assert len(prefix.encode("utf-8")) <= _MAX_TOOL_PURPOSE
+        assert prefix == character * (_MAX_TOOL_PURPOSE // unit_bytes)
+        assert sentinel == f"… [truncated at {_MAX_TOOL_PURPOSE:,} bytes]"
+
+
+def test_projection_redacts_full_coordinator_purpose_before_the_display_cut(monkeypatch):
+    from kiro_crew.dashboard import state as state_module
+
+    secret = "ghp_" + "A" * 36
+    purpose = "x" * (_MAX_TOOL_PURPOSE - 12) + secret + " tail" * 10
+    original_redact = state_module._redact
+    seen = []
+
+    def redact(text):
+        seen.append(text)
+        return original_redact(text).replace("tail", "safe")
+
+    monkeypatch.setattr(state_module, "_redact", redact)
+    slot = _ChatSlot("parent")
+    slot._coordinator_approvals = lambda key: [{**_record("request", key), "tool_purpose": purpose}]
+    actual = slot.to_dict()["pending_approval_info"]["tool_purpose"]
+    assert purpose in seen
+    assert "ghp_" not in actual
+    assert "tail" not in actual
+    assert actual.endswith(f"… [truncated at {_MAX_TOOL_PURPOSE:,} bytes]")
+
+
+def test_projection_preserves_native_upstream_cap_and_one_intact_notice():
+    raw = "x" * (_MAX_TOOL_PURPOSE - 50) + "ghp_" + "A" * 36 + " tail" * 100
+    purpose = _redact_tool_field(raw, limit=_MAX_TOOL_PURPOSE)
+    slot = _ChatSlot("parent")
+    loop = asyncio.new_event_loop()
+    try:
+        meta = json.dumps({"approval_id": "request", "tool_purpose": purpose})
+        row = slot.append("permission", "shell", meta)
+        slot.register_approval("request", loop.create_future(), row)
+        actual = slot.to_dict()["pending_approval_info"]["tool_purpose"]
+    finally:
+        loop.close()
+    assert actual == purpose
+    assert "ghp_" not in actual
+    assert actual.count("[truncated at") == 1
+    assert actual.endswith(f"… [truncated at {_MAX_TOOL_PURPOSE:,} bytes]")
 
 
 def test_non_spawn_coordinator_record_has_empty_tool_kind() -> None:
@@ -121,18 +189,92 @@ def test_slot_registry_future_still_supplies_the_card_first() -> None:
     record is only the fallback for a slot whose own registry is empty."""
     slot = _ChatSlot("parent")
     meta = json.dumps({"tool_input": "ls", "tool_kind": "bash", "request_id": "r1"})
-    slot.messages.append({"role": "permission", "content": "shell", "cls": meta, "ts": "t1"})
+    row = slot.append("permission", "shell", meta)
     loop = asyncio.new_event_loop()
     try:
-        slot._approval_futures["r1"] = loop.create_future()
-        slot._coordinator_approvals = lambda key: [_record("spawn:a1", key)]
+        slot.register_approval("r1", loop.create_future(), row)
+        slot._coordinator_approvals = lambda key: [_record("r1", key)]
 
         info = slot.to_dict()["pending_approval_info"]
     finally:
         loop.close()
 
     assert info["request_id"] == "r1"
+    assert info["origin"] == "native"
+    assert info["request_mid"] == row_mid(row)
     assert info["tool"] == "shell"
+
+
+@pytest.mark.parametrize("stale_kind", ["missing", "done", "idless", "malformed"])
+def test_native_projection_selects_only_a_live_matching_permission_row(stale_kind):
+    slot = _ChatSlot("parent")
+    loop = asyncio.new_event_loop()
+    try:
+        live = slot.append("permission", "live tool", json.dumps({"approval_id": "live"}))
+        slot.register_approval("live", loop.create_future(), live)
+        if stale_kind == "done":
+            slot._approval_futures["stale"] = loop.create_future()
+            slot._approval_futures["stale"].set_result(True)
+        slot.messages = [
+            live,
+            {
+                "role": "permission",
+                "content": "stale tool",
+                "cls": json.dumps(
+                    {}
+                    if stale_kind == "idless"
+                    else {"request_id": [] if stale_kind == "malformed" else "stale"}
+                ),
+            },
+        ]
+        info = slot.to_dict()["pending_approval_info"]
+        assert info["request_id"] == "live"
+        assert info["tool"] == "live tool"
+        assert info["origin"] == "native"
+        slot.messages = slot.messages[1:]
+        assert slot.to_dict()["pending_approval_info"] is None
+        assert slot.to_dict()["pending_approval"] is True
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("replacement", ["registered", "unbound", "done", "missing"])
+def test_native_projection_and_cleanup_are_bound_to_the_exact_future(replacement):
+    slot = _ChatSlot("parent")
+    loop = asyncio.new_event_loop()
+    try:
+        old_row = slot.append("permission", "Old", json.dumps({"request_id": "same"}))
+        old = loop.create_future()
+        slot.register_approval("same", old, old_row)
+        current_row = slot.append("permission", "Current", json.dumps({"request_id": "same"}))
+        current = loop.create_future()
+        if replacement == "registered":
+            slot.register_approval("same", current, current_row)
+        else:
+            slot._approval_futures["same"] = current
+            if replacement == "done":
+                current.set_result("rejected")
+            elif replacement == "missing":
+                slot._approval_futures.pop("same")
+        # Replaying an old row last must not describe the replacement future.
+        slot.messages.append(dict(old_row))
+        info = slot.to_dict()["pending_approval_info"]
+        if replacement == "registered":
+            assert info["tool"] == "Current"
+            assert info["request_mid"] == row_mid(current_row)
+        else:
+            assert info is None
+        assert slot.unregister_approval("same", old) is False
+        if replacement == "registered":
+            assert slot.approval_instance("same") == row_mid(current_row)
+            assert slot._approval_futures["same"] is current
+            assert slot.unregister_approval("same", current) is True
+            assert slot.approval_instance("same") is None
+            assert not slot._approval_instances
+        elif replacement != "missing":
+            assert slot._approval_futures["same"] is current
+    finally:
+        loop.close()
 
 
 def test_stale_permission_row_does_not_describe_a_coordinator_approval() -> None:

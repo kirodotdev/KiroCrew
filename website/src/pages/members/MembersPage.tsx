@@ -88,6 +88,7 @@ import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewWebview from './CrewWebview'
+import CommandCenterPanel from '../chat/command-center/CommandCenterPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../../components/MeetCrewmatesFlow'
@@ -228,15 +229,16 @@ export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WO
  *  chip on the crewmate panel, the chat page's "Summary" view would be a second,
  *  unrelated summary of this same thread. Exported so the test pins the set. */
 export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
-/** Everything this page withholds once the thread is confirmed. Today that is
- *  exactly the unfed set: Side chat IS offered — its composer draft lives in
+/** Everything this page withholds once the thread is confirmed. The task
+ *  dashboard lives in the permanent Dashboard tab, not a second chat view.
+ *  Side chat IS offered — its composer draft lives in
  *  the chat-core store (`sideChatDrafts`, per slot, persisted), so `SidePanel`
  *  unmounting the body on a tab or member switch loses nothing, and the
  *  selection toolbar's "Ask about this" needs the tab as its landing
  *  (`openMemberSideChat`). Kept as its own name so the "withheld" and "unfed"
  *  reasons stay separable if they diverge again. Exported so the test pins
  *  the set. */
-export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS]
+export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS, 'command-center']
 /** Everything the panel withholds while the thread is UNCONFIRMED: every
  *  classified view, plus Terminal and app tabs. Derived from
  *  `VIEW_DATA_SOURCE` (the exhaustive `Record<ViewKind, …>`) rather than
@@ -1591,6 +1593,11 @@ export default function MembersPage() {
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const notesVisible = panelVisible && activeTabId === CREW_NOTES_TAB_ID
   const workLogVisible = panelVisible && activeTabId === CREW_WORK_LOG_TAB_ID
+  const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (dashboardVisible) setDashboardVisitedFor(activeMemberKey)
+  }, [dashboardVisible, activeMemberKey])
   const closeOverlay = useCallback(() => setOverlayOpen(false), [])
   // Mount continuity — the chat page's rule, verbatim: a live Browser tab (its
   // WebContentsView) or a body-owning app tab (any slot's) cannot survive a
@@ -1598,7 +1605,8 @@ export default function MembersPage() {
   // rather than unmounted. There is no find pane on this page.
   const hasLiveAppTab = useAnyLiveAppTab()
   const hasBrowserTab = tabsCtl.tabs.some((tab) => tab.kind === 'browser')
-  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, searchOpen: false }
+  const hasTaskDashboard = dashboardVisible || dashboardVisitedFor === activeMemberKey || tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: false }
   const panelMounted = shouldMountSidePanel(mountInput)
   const panelHidden = isSidePanelHidden(mountInput)
   // File / artifact / save for the panel's Files, Artifacts and document tabs —
@@ -3159,6 +3167,11 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
+                    onOpenCommandCenter={() => {
+                      tabsCtl.setActive(CREW_DASHBOARD_TAB_ID)
+                      if (beside) setDockedOpen(true)
+                      else setOverlayOpen(true)
+                    }}
                     threads={threadHooks}
                   />
                 </ErrorBoundary>
@@ -3645,23 +3658,29 @@ export default function MembersPage() {
               visible={notesVisible}
             />
           ) : null
-          // Dashboard — the page the crewmate publishes itself (CrewWebview,
-          // the shipped component: docked summary, expandable to full window).
-          // Its empty state's one action jumps to the crewmate's detail page,
-          // which is where setup lives.
+          // One Dashboard: the existing crew publication is one task view.
+          // Preserve its renderer and exact member identity, while the host
+          // owns live task summaries, questions and approval controls.
           const dashboardBody = (
-            <div className="px-3 py-3" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
-              {identityRow}
-              {activeSlug && activeMemberName ? (
-                <CrewWebview
+            <div className="h-full min-h-0 flex flex-col" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
+              <div className="px-3 pt-3 shrink-0">{identityRow}</div>
+              {!confirmedSlot && !activeThreadFailed && <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>}
+              <div className="flex-1 min-h-0">
+                <CommandCenterPanel
+                  key={activeMemberKey}
+                  slot={activeSlot || null}
+                  active={dashboardVisible && !!confirmedSlot}
+                  sessionReady={!!confirmedSlot}
+                  publishedView={activeSlug && activeMemberName ? { title: crewDisplayName(activeView ?? active), content: <CrewWebview
                   slug={activeSlug}
                   member={activeMemberName}
                   onSetUp={() => {
                     const destination = crewEditPath(activeMemberName)
                     leave(() => navigate(destination), destination)
                   }}
+                /> } : undefined}
                 />
-              ) : null}
+              </div>
             </div>
           )
           // The panel's three host tabs, in strip order. Kind glyphs, not the
@@ -3684,6 +3703,7 @@ export default function MembersPage() {
               id: CREW_DASHBOARD_TAB_ID,
               title: t('pages.membersPage.dashboard_tab'),
               icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
+              keepMounted: dashboardVisitedFor === activeMemberKey,
               render: () => dashboardBody,
             },
           ]

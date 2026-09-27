@@ -5811,6 +5811,16 @@ class ContextBuilder:
             # what blocks is the DECISION, not the tool call. [OPTIONS:] remains
             # the cheaper choice mechanism on every interactive surface.
             if has_dashboard_surface(session_key or "") and _agent_includes_crew_context(agent):
+                if not minimal_context:
+                    current_config = live.snapshot() or KiroCrewConfig.load()
+                    if current_config.dashboard.dynamic_dashboard_cards:
+                        _interactive_guidance.append(
+                            "\n\n(Automatic cards: At milestones, failures or human-only "
+                            "decisions, report concise evidence, result and next step. "
+                            "The host queues eligible updates; queued is not published. "
+                            "Do not enable generation, spawn a builder or publish a duplicate "
+                            "status artifact.)"
+                        )
                 _interactive_guidance.append(
                     "\n\n(The ask_question tool posts a NON-BLOCKING dashboard card. "
                     "DEFAULT TO SILENCE: use it only when work cannot continue without a "

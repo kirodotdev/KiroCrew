@@ -1,4 +1,5 @@
 """Tests for to_dict() Board fields: options, waiting_for_input, pending_approval_info, last_activity_ts."""
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -59,10 +60,11 @@ def test_not_waiting_when_running():
 
 def test_pending_approval_info():
     meta = json.dumps({"tool_input": "ls -la", "tool_kind": "bash", "request_id": "r1"})
-    s = _slot({"role": "permission", "content": "shell", "cls": meta, "ts": "t1"})
+    s = _slot()
+    row = s.append("permission", "shell", meta)
     loop = asyncio.new_event_loop()
     fut = loop.create_future()
-    s._approval_futures["r1"] = fut
+    s.register_approval("r1", fut, row)
     d = s.to_dict()
     assert d["pending_approval"] is True
     assert d["pending_approval_info"]["tool"] == "shell"
@@ -75,11 +77,11 @@ def test_pending_approval_skips_resolved():
     new_meta = json.dumps({"tool_input": "cat foo", "request_id": "r2"})
     s = _slot(
         {"role": "permission", "content": "old_tool", "cls": old_meta, "ts": "t1"},
-        {"role": "permission", "content": "new_tool", "cls": new_meta, "ts": "t2"},
     )
+    row = s.append("permission", "new_tool", new_meta)
     loop = asyncio.new_event_loop()
     fut = loop.create_future()
-    s._approval_futures["r2"] = fut
+    s.register_approval("r2", fut, row)
     d = s.to_dict()
     assert d["pending_approval_info"]["tool"] == "new_tool"
     assert d["pending_approval_info"]["request_id"] == "r2"
@@ -260,7 +262,12 @@ def test_not_interrupted_after_deliberate_stop():
     # the stop card must win.
     s = _slot(
         {"role": "user", "content": "do the thing", "ts": "t1"},
-        {"role": "system", "content": "stopped", "cls": json.dumps({"kind": "stop_event"}), "ts": "t2"},
+        {
+            "role": "system",
+            "content": "stopped",
+            "cls": json.dumps({"kind": "stop_event"}),
+            "ts": "t2",
+        },
     )
     d = s.to_dict()
     assert d["interrupted"] is False
@@ -283,8 +290,18 @@ def test_not_interrupted_while_running():
 def test_interrupted_inject_successor_outranks_older_stop():
     s = _slot(
         {"role": "user", "content": "first", "ts": "t1"},
-        {"role": "system", "content": "stopped", "cls": json.dumps({"kind": "stop_event"}), "ts": "t2"},
-        {"role": "inject", "content": "continue queued work", "ts": "t3", "meta": {"injectKind": "recovery"}},
+        {
+            "role": "system",
+            "content": "stopped",
+            "cls": json.dumps({"kind": "stop_event"}),
+            "ts": "t2",
+        },
+        {
+            "role": "inject",
+            "content": "continue queued work",
+            "ts": "t3",
+            "meta": {"injectKind": "recovery"},
+        },
         {"role": "tool", "content": "read complete", "ts": "t4"},
     )
 

@@ -7,8 +7,8 @@ import type { ClientTransport } from './transport'
 
 export function createApprovalsEndpoints({ post, j }: ClientTransport) {
   const requests = {
-    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
-    resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
+    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
+    resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once', target?: { origin: 'coordinator'; slot: string }) => post('/api/approvals/' + encodeURIComponent(id) + '/' + action + (target ? '?' + new URLSearchParams(target) : ''), {}).then(j),
     /** Question cards still awaiting an answer, for rehydration after a reload or
      *  websocket reconnect (`question_card` is a one-shot broadcast). A blocking
      *  ask carries `ask_id`; a stateless card carries `card_id` instead, and

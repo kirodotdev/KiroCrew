@@ -11,6 +11,89 @@ conventions around them (a11y, data fetching, typography) live in
 
 ## Page skeleton
 
+### Dynamic Dashboard in chat and Crew
+
+Long-run status uses the existing side-panel dock, expansion and narrow-screen
+overlay, not another drawer. In chat, a collapsible summary above the composer
+opens the Dynamic Dashboard tab; the panel's + menu remains the empty-state
+entry. Crew reuses its single permanent **Dashboard** tab instead: its compact
+entrance focuses that tab, and its + menu withholds the parallel chat view.
+The existing member publication and task artifacts share a Published view selector, with
+human-readable titles, while retaining their separate renderer sandboxes. A
+pipeline board is one publication, not another product. Visited Crew dashboards
+stay mounted across Notes/Work log switches and panel hiding; a pending member
+thread revalidation hides controls without discarding the last confirmed body.
+The task
+page itself is model-authored HTML and may choose any appropriate responsive
+layout. Host chrome owns scope, current activity, questions and one-shot tool
+approvals. Keep native answer drafts mounted when hiding the panel or switching
+tabs, but unload model-authored iframe documents while inactive to cap resources.
+This does not change the existing Crew protected-template renderer's lifecycle.
+Approval counts and exact session identity stay outside the
+sandboxed page, so a model redesign cannot hide or impersonate those controls.
+The panel keeps its approval count on the Approvals tab; the compact entrance
+retains its Needs you count while collapsed.
+
+The Sessions header's three-dot menu offers **All Dynamic Dashboards**, a standalone
+`/session-dashboards` page with currently open sessions' saved summaries and authored
+dashboards. Native pending questions and approvals appear in a central **Needs
+you** inbox above the summary gallery, with each request labeled by its exact
+session. Approval headings name the requested action, with the secondary session
+name explicitly labeled “From session”. Both the fleet inbox and task panel show
+recorded session context when available, never an invented approval reason.
+Dashboard questions use “Send answer”;
+the shared chat control retains its default label. Unverified requests explain
+that this view cannot verify the request and offer
+Open session, without in-page approval or submission guidance. Native approvals
+carry the host permission-row identity bound to the current request, not just a
+reusable connection ID. Replacements get separate card keys and cannot inherit
+a previous card's submitted or expired state. Snapshots missing this identity
+use the same Open session fallback. Verified approvals
+share a per-request rejection explanation without changing permission mode.
+Successfully responding resolves the same shared request; other views show the result when
+refreshed, not necessarily immediately.
+Summary cards do not repeat these controls. Unavailable inventory shows
+a stale notice rather than an empty-inbox claim. Input-needed sessions appear
+first in the gallery, then blocked and running ones.
+Search and Needs you filter the cards and inbox without discarding answer drafts.
+The filter and inbox count pending requests, not distinct sessions. The
+current page of at most 12 active summaries reads summary/dashboard contents;
+Next sessions and Previous sessions move between pages. Wrappers remain mounted for
+the bounded live inventory (`MAX_LIVE_SLOTS`, 500), preserving published-view
+selection. There are at most 24 iframe documents, including both frame types.
+Each session can have one automatic status frame and one selected saved view.
+The task panel mounts at most twelve status frames. Needs you precedes status
+cards in both surfaces. The explicit **Automatic cards for all sessions** opt-in
+leads with summaries of recent work and next steps. Secondary copy retains the
+default-off state, background model use and shared attempt limits, including
+failures; merely opening the page never starts generation. Each
+frame shows its successful content publication time, separate from host runtime
+state and inventory read freshness. The model may reuse HTML and update only
+text data; host-native answer and approval controls are never inside the frame.
+Automatic-card CSS is parsed in detached CSSOM, never attached to the host.
+Parsed `content`, `list-style`, `list-style-type`, `quotes` and
+`hyphenate-character` declarations are removed,
+including nested rules and keyframes; custom counter styles and rules that
+cannot be inspected are omitted. Inline styles use the same generated-text
+boundary; native quotation and hyphenation cannot consume model-authored strings.
+Ordinary browser quotation and hyphenation defaults remain available.
+Safe layout styles and literal text bindings remain available. If
+isolated parsing fails, the affected model style is omitted, not passed through.
+Saved published views retain their existing CSS behavior. This is a rendering
+restriction, not a claim that the backend cache contains no encoded text.
+This is an explicit fleet view, never a fallback for an unresolved task scope.
+It uses the standard page header and scroll container, with one column narrow
+and two wide, and never generates a summary merely because the page opened.
+Verify at both 320px and 390px: keep native approval targets at least 44px tall
+and the page free of horizontal overflow. Main labels use meaningful names or
+localized numbered session/task labels; opaque IDs remain routing data, not
+headings. The artifact authoring contract asks models for the same readable,
+phone-friendly treatment without prescribing their layout.
+The Crew entry remains **Dashboard**. The agent-authored publication's collapsed
+and expanded chrome says **published view**, including loading and error states.
+
+### Standard page composition
+
 ```tsx
 <>
   <PageHeader title="PageName" subtitle="Short description" />

@@ -12,6 +12,11 @@ const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, ha
   ({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen })
 
 describe('side panel mount decision', () => {
+  it('keeps dashboard documents and answer drafts mounted when closed or searching', () => {
+    const input = { ...S(false, false, true), hasTaskDashboard: true }
+    expect(shouldMountSidePanel(input)).toBe(true)
+    expect(isSidePanelHidden(input)).toBe(true)
+  })
   it('mounts while open, with or without an app tab', () => {
     expect(shouldMountSidePanel(S(true, false))).toBe(true)
     expect(shouldMountSidePanel(S(true, true))).toBe(true)

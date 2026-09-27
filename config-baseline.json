@@ -6969,6 +6969,7 @@
           "keep_awake": true
         },
         "restore_sessions": false,
+        "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
@@ -7185,6 +7186,20 @@
       "enumValues": null,
       "defaultValue": false,
       "requiresRestart": true
+    },
+    {
+      "path": "dashboard.dynamic_dashboard_cards",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Automatic session cards",
+      "help": "Use the background model to update session-owned HTML cards after activity. Off by default. One call at a time, at most one per session every two minutes and 60 per gateway hour. Live status and native decisions work without it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.crewmate_threads",

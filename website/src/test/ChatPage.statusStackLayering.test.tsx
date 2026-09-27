@@ -38,6 +38,7 @@ const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="com
 /** Every component the stack renders, paired with the z-index its own outermost
  *  wrapper declares. Each value is read out of that component's real source. */
 const CHILDREN: Record<string, RegExp> = {
+  CommandCenterDock: /className="mx-4 mb-2 rounded-lg border border-border bg-card overflow-hidden relative z-\[(\d+)\]"/,
   TaskProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   SubagentProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   WorkflowProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
@@ -45,6 +46,7 @@ const CHILDREN: Record<string, RegExp> = {
   QueueStack: /className="px-4 mx-auto w-full relative" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)', zIndex: (\d+) \}\}/,
 }
 const FILES: Record<keyof typeof CHILDREN | string, string> = {
+  CommandCenterDock: 'pages/chat/command-center/CommandCenterDock.tsx',
   TaskProgressBar: 'pages/chat/TaskProgressBar.tsx',
   SubagentProgressBar: 'pages/chat/SubagentProgressBar.tsx',
   WorkflowProgressBar: 'pages/chat/WorkflowProgressBar.tsx',

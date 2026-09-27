@@ -176,6 +176,20 @@ Slack thread text and folder paths are also screened by `contains_injection` and
 
 ## 2. During a session
 
+Dashboard sessions discover the artifacts skill through the existing system
+prompt's `WIDGET_BLOCK` in both density variants and through the on-demand skill
+catalog. `build_message` does not repeat that pointer every turn. Interactive
+sessions with a Dashboard surface receive milestone evidence, result and next-step
+guidance only when the current live `dashboard.dynamic_dashboard_cards` setting
+is on, including warm, resumed and re-injected turns.
+Every turn reads the live snapshot (the current config loader when no watcher
+exists), so toggling affects the next turn without rebuilding the context builder.
+The guidance does not load the skill body, enable generation, start another producer,
+or grant persistence or approval authority. The host owns eligibility and updates.
+Minimal-context calls, sessions without a Dashboard surface, and agents with
+`includeCrewContext: false` do not receive the hint. It shares the existing
+per-turn guidance envelope so the current request remains at the recency edge.
+
 After the first turn `build_message` injects no transcript — the ACP session
 carries its history natively, and a second copy is two sources of truth. Per turn
 it adds:

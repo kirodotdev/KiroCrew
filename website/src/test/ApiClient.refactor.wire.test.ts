@@ -45,6 +45,35 @@ afterEach(() => {
 
 const lastCall = () => fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string, RequestInit | undefined]
 
+describe('dynamic dashboard facade contracts', () => {
+  it('reads a card with an encoded slot and bare fetch, retaining the response', async () => {
+    const card = { card: { html: '<p>Done</p>', data: {} }, status: 'published', published_at: 123, content_event_at: 122, stale: false }
+    fetchMock.mockResolvedValue(res(200, card))
+    await expect(api.dashboardCard('slot a/b')).resolves.toEqual(card)
+    expect(fetchMock.mock.calls).toEqual([['/api/chat/slots/slot%20a%2Fb/dashboard-card']])
+  })
+
+  it('reads accepted work through the shared keyed GET, retaining the projection', async () => {
+    const projection = { value: { items: [{ id: 'work-1', state: 'accepted' }] }, seq: 7 }
+    fetchMock.mockResolvedValue(res(200, projection))
+    await expect(api.sessionWorkProjection('slot a/b')).resolves.toEqual(projection)
+    expect(fetchMock.mock.calls).toEqual([['/api/sessions/slot%20a%2Fb/crew-log/projection/work', { headers: { 'X-Session-Key': 'dashboard:ui' } }]])
+  })
+
+  it('retains approval purpose and coordinator scope without changing legacy resolution', async () => {
+    const approvals = [{ id: 'request/id', tool_purpose: 'Check changes', slot: 'slack:thread/id' }]
+    fetchMock.mockResolvedValue(res(200, approvals))
+    await expect(api.approvals()).resolves.toEqual(approvals)
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/approvals'])
+    await api.resolveApproval('request/id', 'reject_once', { origin: 'coordinator', slot: 'slack:thread/id' })
+    expect(lastCall()).toEqual(['/api/approvals/request%2Fid/reject_once?origin=coordinator&slot=slack%3Athread%2Fid', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: '{}',
+    }])
+    await api.resolveApproval('legacy', 'reject_once')
+    expect(lastCall()[0]).toBe('/api/approvals/legacy/reject_once')
+  })
+})
+
 describe('raw-fetch reads stay raw', () => {
   // These reads were written on bare `fetch`, so they carry no `X-Session-Key`
   // and no init at all. Routing one through `get` would ADD the header, which

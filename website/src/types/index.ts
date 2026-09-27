@@ -1538,6 +1538,9 @@ export interface NotificationChannel {
 }
 
 export interface PendingApproval {
+  origin?: 'native' | 'coordinator'
+  request_mid?: string
+  tool_purpose?: string
   tool: string
   tool_input: string
   tool_kind: string

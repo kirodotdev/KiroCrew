@@ -3624,9 +3624,25 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     action = request.match_info["action"]
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
-    ok = state.resolve_approval(
-        approval_id, action == "approve", rejected_once=action == "reject_once"
-    )
+    if "origin" in request.query:
+        # Dynamic Dashboard echoes the inventory record's origin and exact slot.
+        # Do not fall through to native futures when that displayed record expires.
+        slot = request.query.get("slot", "")
+        if request.query["origin"] != "coordinator" or not slot:
+            return web.json_response(
+                {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
+            )
+        pending = state._pending_approvals.get(approval_id)
+        # No await between checking the record and resolving its state-only future.
+        ok = bool(
+            pending
+            and pending.get("slot") == slot
+            and state.resolve_state_approval(approval_id, action == "approve")
+        )
+    else:
+        ok = state.resolve_approval(
+            approval_id, action == "approve", rejected_once=action == "reject_once"
+        )
     if not ok:
         return web.json_response({"error": "not found or expired"}, status=404)
     return web.json_response({"ok": True})

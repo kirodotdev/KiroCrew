@@ -32,6 +32,100 @@ Loading, empty results, filtering, and read errors therefore keep the same mode.
 
 ## Storage Layout
 
+### Dynamic Dashboard presentation
+
+Automatic session status cards and saved task views have different owners.
+With `dashboard.dynamic_dashboard_cards` enabled, host session events queue a
+bounded background update using only that session's recent, redacted messages.
+The model chooses the card's HTML/CSS and flat text fields; subsequent updates
+can omit HTML and reuse the prior layout with exactly the same data field names.
+A field-name change requires explicit replacement HTML; invalid data-only output
+does not blank the valid prior publication. Large prior layouts stay on the host
+when necessary to leave room for recent evidence in the bounded model input.
+Generation failure retains prior content only while its source and privacy remain
+valid. These cards are transient, not saved
+artifacts, and do not require a conductor or worker to call `artifact_update`.
+The host shows their content publication time separately from live run state.
+The event, privacy and resource contract is in
+[learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
+The Needs you inbox precedes cards, and all answer/approval authority stays in
+native controls. Disabling automatic content does not disable those controls.
+
+An HTML/widget artifact tagged `task-dashboard` is a model-authored task view,
+not a fixed dashboard schema. The chat's **Dynamic Dashboard** panel and Crew's
+single **Dashboard** tab select
+only artifacts whose recorded originating slot is the current slot or a durable
+`created_by` descendant. A presentation-only child session can therefore publish
+without impersonating its conductor. The same slug is updated at milestones;
+visible hosts poll the artifact inventory every ten seconds and load new revisions.
+Session matching strips the dashboard scope and normalizes registered channel
+keys with the history safe-key rules, retaining the channel namespace. Unknown
+prefixes are not folded; missing task roots remain fail-closed.
+Models choose the layout and task-specific content; no particular board or graph
+is mandatory. The `artifacts` skill documents this publishing contract.
+Crew's existing member-published webview shares this presentation selector, not
+its renderer or permissions. Its member-panel API and sandbox remain unchanged;
+a pipeline publication is one view within the same dashboard. The global session
+dashboard supplies the cross-session summary and Needs you inbox, while questions
+and approvals remain native host controls outside every published document.
+The Crew entry stays **Dashboard**; the publication's expand/collapse, dialog,
+loading and error chrome consistently names the **published view**.
+
+The host independently projects live sessions, subagents, workflows and accepted
+conductor work. It never treats idle sessions as completed work, nor worker
+`done` reports as conductor acceptance. Missing/failed sources are shown as
+unknown or stale, not as an empty successful run. Questions and approvals have
+native host controls, exact session/request identities and explicit submission;
+Normal/Reads/Trust/YOLO mode is explicitly labeled as the permission mode, never
+changed by the dashboard. Native Reject once addresses both the owning slot and
+exact request ID through the slot approval endpoint, which preserves the
+`rejected_once` decision without rejecting the remaining batch. Connection-scoped
+request IDs may collide across unrelated sessions and must never be resolved by
+a global ID scan. Dashboard actions bind the request's origin as well: native
+actions send `origin: native` and require that exact slot's live request; coordinator
+actions send `origin=coordinator` and the inventory record's exact raw slot. The
+server checks the coordinator record and resolves its state-only future without
+an intervening await. Stale/missing/mismatched targets return 404, never fall
+through to another origin, and retire the displayed controls without claiming
+success. Origin-qualified card identity prevents a coordinator's delivered state
+from hiding a colliding native request after the inventory changes. Existing
+callers that omit origin retain their legacy fallback behavior.
+Command input stays verbatim in a keyboard-accessible scrolling
+preview, including on narrow screens. No bulk approval is implied. A failed or
+uncertain send retains the answer and
+does not automatically retry. Native answers steer their own waiting turn when
+either live run state or that slot's reloaded dashboard snapshot is running;
+sibling sessions never determine this decision. Approvals are separate from informational blockers.
+
+`TaskDashboardFrame` uses the sandbox-document service with an empty sandbox:
+no scripts, same-origin, forms, popups or control bridge. A dedicated document
+builder removes executable code, resource hints, nested documents and outbound
+navigation before rendering. It inspects actual attributes irrespective of SVG
+namespace and keeps only fragment hrefs; empty hrefs are navigation too.
+Models freely design supported HTML/CSS/SVG layouts and native
+disclosures; dynamic evidence arrives through published revisions, not model
+JavaScript. Deny-by-default CSP permits only inline styling and data images/fonts.
+The page receives no credentials or host state. Model-authored status is labeled a
+published view; it never replaces the host's trusted approval inventory.
+Automatic card data binds through `data-dashboard-field` text containers using
+`textContent`, never HTML interpolation or an executable update script. An absent
+field clears the old text. Only visible frames obtain a sandbox document; hiding
+or paging them out releases it. The fleet keeps wrappers for the bounded live
+slot inventory (`MAX_LIVE_SLOTS`, 500) to retain each saved-view selection. Twelve
+session summaries are active on a page, with one automatic card and at most one
+selected saved view each: at most 24 iframe documents, not twelve mounted wrappers.
+Native attention controls remain mounted independently to preserve drafts across
+filters and pages. The task panel
+mounts at most twelve automatic cards plus its selected task publication; Crew's
+existing protected-template renderer retains its own lifecycle.
+The optional creation request is a model-facing English prompt; translated UI
+copy names the published view, and the artifacts skill owns its technical
+publishing contract. Source failures render through the shared error notice in
+both the dock and panel, with no navigation hand-off beside unsent answer drafts.
+Incognito/temporary artifact persistence restrictions remain unchanged.
+
+### Artifact files
+
 ```
 ~/.kiro/crew/artifacts/
 └── <slug>/

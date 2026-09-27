@@ -41,7 +41,7 @@ vi.mock('../api/client', () => ({
         // no-op in a way production never is.
         if (prop === 'slashCommands')
           return vi.fn().mockResolvedValue([{ name: '/side' }, { name: '/clear' }])
-        if (prop === 'models' || prop === 'workspaces' || prop === 'notifications')
+        if (prop === 'models' || prop === 'workspaces' || prop === 'notifications' || prop === 'pendingQuestions' || prop === 'approvals')
           return vi.fn().mockResolvedValue([])
         return vi.fn().mockResolvedValue({})
       },

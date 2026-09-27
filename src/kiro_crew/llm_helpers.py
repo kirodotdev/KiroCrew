@@ -1396,6 +1396,8 @@ async def run_bg_oneliner(
     strict_model: bool = False,
     crew_log_kind: str = "",
     crew_log_session_key: str = "",
+    max_output_bytes: int | None = None,
+    retry_rejected_model: bool = True,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
@@ -1431,6 +1433,11 @@ async def run_bg_oneliner(
     unchanged. ``sessions`` is duck-typed (a ``SessionManager``-like object
     exposing ``get_bg_session()``) rather than statically imported, so this
     low-level helper stays free of a dashboard/session import cycle.
+
+    ``max_output_bytes`` bounds accumulated UTF-8 text before concatenation;
+    ``retry_rejected_model=False`` disables the extra reactive model call for a
+    caller that accounts each attempt against a hard call budget. Neither changes
+    the configured-model resolution or the default behavior of other callers.
     """
     # Pinned before the acquisition below, not in the teardown that writes it: a
     # slot reset, switch or compaction gives the successor a new ACP session id,
@@ -1453,6 +1460,7 @@ async def run_bg_oneliner(
 
     async def _drive(model_to_use: str | None) -> str:
         text = ""
+        output_bytes = 0
         set_model = getattr(session, "set_model", None)
         # Pass the caller's preference (often the governed "auto") to set_model,
         # which resolves it against the session's advertised model list at the
@@ -1501,6 +1509,10 @@ async def run_bg_oneliner(
         # a text-only background model rejected the whole request on each pass.
         async for event in session.prompt(strip_image_refs(prompt)):
             if event.kind == EVENT_TEXT_CHUNK:
+                if max_output_bytes is not None:
+                    output_bytes += len(event.text.encode("utf-8"))
+                    if output_bytes > max_output_bytes:
+                        raise ValueError("background response exceeded its output budget")
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 # Audit the denial BEFORE rejecting: every permission decision
@@ -1552,7 +1564,7 @@ async def run_bg_oneliner(
             advertised = getattr(exc, "advertised", None) or []
             fallback = (
                 first_advertised_fallback(advertised, rejected)
-                if rejected and not strict_model
+                if rejected and not strict_model and retry_rejected_model
                 else None
             )
             if not fallback:

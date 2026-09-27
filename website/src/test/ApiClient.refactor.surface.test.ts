@@ -24,10 +24,10 @@ vi.mock('../utils/resizeImage', () => ({
 const API_KEY_ORDER = [
   'status', 'tunnelStatus', 'system', 'sessionStorage',
   'sessionStorageCleanup', 'sessionStorageRestore', 'sessionStorageEmpty', 'sessionStorageEmptyStatus',
-  'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'sessionCrewLogProjections',
+  'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'sessionCrewLogProjections', 'sessionWorkProjection',
   'telemetryStartup', 'telemetryContextTrace', 'usageTurns', 'wakatimeStats',
   'wakatimeExportUrl', 'crewBoard', 'crewBoardAction', 'wakatimeExportDownload',
-  'sessionSummary', 'generateSessionSummary',
+  'sessionSummary', 'dashboardCard', 'generateSessionSummary',
   'beaconStatus', 'collectionStatus', 'kiroPrerequisite', 'repairKiroPrerequisiteSpecs',
   'updateKiroPrerequisiteCli', 'kasLoginStatus', 'kasLoginBeginDevice', 'kasLoginPoll',
   'kasLoginBeginLoopback', 'kasLoginCancel', 'kasLoginLogout', 'onboardingImportScan',
@@ -200,7 +200,7 @@ const NESTED_KEY_ORDER: Record<string, string[]> = {
 const NO_SESSION_KEY = [
   'status', 'tunnelStatus', 'system', 'sessionCrewLogProjections',
   'telemetryStartup', 'telemetryContextTrace', 'usageTurns', 'wakatimeStats',
-  'sessionSummary', 'generateSessionSummary', 'beaconStatus', 'collectionStatus',
+  'sessionSummary', 'dashboardCard', 'generateSessionSummary', 'beaconStatus', 'collectionStatus',
   'suggestions', 'branding', 'memoryPreferences', 'memoryProjects',
   'memoryHistory', 'memorySettings', 'memoryStores', 'memoryRetired',
   'memoryBackups', 'memoryCarve', 'memoryRecall', 'memoryRecords',

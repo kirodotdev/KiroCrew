@@ -66,6 +66,19 @@ class _FakeSessions:
         return self._session
 
 
+@pytest.mark.asyncio
+async def test_output_byte_budget_refuses_multibyte_overflow_and_destroys_handle():
+    session = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="界"),
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="界"),
+        ]
+    )
+    with pytest.raises(ValueError, match="output budget"):
+        await run_bg_oneliner(_FakeSessions(session), "p", max_output_bytes=5)
+    assert session.destroyed
+
+
 class _ResettingSessions(_FakeSessions):
     """A registry whose owning slot is RESET while the background call runs.
 
@@ -313,6 +326,16 @@ async def test_reactive_retry_reraises_when_no_usable_fallback():
     sess = _RejectThenSucceedSession("auto", ["auto"])
     with pytest.raises(AcpError):
         await run_bg_oneliner(_FakeSessions(sess), "p", model="auto")
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_budgeted_caller_does_not_spend_a_second_attempt_on_model_rejection():
+    sess = _RejectThenSucceedSession("auto", ["available-test-model"])
+    with pytest.raises(AcpError):
+        await run_bg_oneliner(_FakeSessions(sess), "p", model="auto", retry_rejected_model=False)
+    assert sess._calls == 1
+    assert sess.models == ["auto"]
     assert sess.destroyed is True
 
 

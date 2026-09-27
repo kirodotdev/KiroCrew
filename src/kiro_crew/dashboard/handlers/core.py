@@ -2586,6 +2586,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # thread frame); off by default, and the Settings toggle under Crewmates is
     # the only dashboard door to it.
     "dashboard.crewmate_threads": {"type": "bool"},
+    "dashboard.dynamic_dashboard_cards": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready
     # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.

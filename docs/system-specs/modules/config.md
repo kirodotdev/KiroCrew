@@ -101,6 +101,17 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+`dashboard.dynamic_dashboard_cards` follows the same cost rule: default false,
+hot-applied through the live watcher, with a native control on Dynamic Dashboard
+surfaces. It enables event-driven per-session HTML cards without enabling
+`session_summary`. Runtime status and native decisions remain available when it
+is off. Route and watcher registration do not import or construct the optional
+producer. Both server entrypoints activate it in the deferred post-listen watcher
+task when enabled, or on the first live enable; later toggles reuse that instance
+and its charged budgets. Fixed call, byte, cache and iframe limits and the disable/cancellation
+contract are documented in
+[learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and

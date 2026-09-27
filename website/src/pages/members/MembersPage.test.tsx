@@ -59,6 +59,11 @@ vi.mock('../../api/client', () => ({
     // tab raises a red alert, so a silent fallback (a remembered crew that
     // was renamed away) would read as an error on a page that is behaving.
     memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
+    pendingQuestions: vi.fn(() => Promise.resolve([])),
+    approvals: vi.fn(() => Promise.resolve([])),
+    workflowRuns: vi.fn(() => Promise.resolve({ runs: [] })),
+    sessionWorkProjection: vi.fn(() => Promise.resolve({ value: { items: [] } })),
+    artifacts: vi.fn(() => Promise.resolve({ artifacts: [] })),
     // `dashboard.crewmate_threads` (reply threads) is read from the shared config
     // query; an empty config is the default -- the flag is OFF.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
@@ -129,9 +134,10 @@ vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string }) => (
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void }) => (
     <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
       {slotKey}
+      <button onClick={onOpenCommandCenter}>Open task dashboard</button>
     </div>
   ),
 }))
@@ -972,7 +978,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-dashboard'))
     const dashboard = await screen.findByTestId('member-dashboard')
     expect(await within(dashboard).findByTestId('crew-webview-empty')).toHaveTextContent(
-      'This crewmate has not published a dashboard yet.',
+      'This crewmate has not published a view yet.',
     )
     expect(screen.queryByTestId('member-work-log')).toBeNull()
   })
@@ -993,6 +999,44 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
       expect(body).not.toHaveTextContent(/Agent template/i)
       expect(body).not.toHaveTextContent(/Edit in crew manager/i)
     }
+  })
+  it('the task entrance opens the existing Crew Dashboard, never a parallel dynamic tab', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open task dashboard' }))
+    expect(screen.getByTestId('side-panel-leading-tab-crew-dashboard')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+    const dashboard = await screen.findByTestId('member-dashboard')
+    expect(await within(dashboard).findByTestId('crew-webview-empty')).toBeVisible()
+    expect(within(dashboard).getByTestId('command-center-panel')).toBeVisible()
+    expect(within(dashboard).queryByRole('button', { name: 'Create published view' })).not.toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Open side panel tab' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the unified dashboard body across Notes and panel hide/show', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValueOnce([{ slot: 'member-oncall', ask_id: 'scope', questions: [{ question: 'Which release?', options: [{ label: 'Core release' }] }] }])
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
+    })
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open task dashboard' }))
+    const dashboard = await screen.findByTestId('command-center-panel')
+    // Section names stay visible, wrapping rather than collapsing to icons.
+    fireEvent.click(within(dashboard).getByRole('radio', { name: /Questions/ }))
+    fireEvent.click(await within(dashboard).findByText('Core release'))
+    expect(within(dashboard).getByRole('button', { name: 'Send answer' })).toBeEnabled()
+    fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-notes'))
+    expect(dashboard).toBeInTheDocument()
+    expect(dashboard).not.toBeVisible()
+    fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-dashboard'))
+    expect(screen.getByTestId('command-center-panel')).toBe(dashboard)
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(dashboard).toBeInTheDocument()
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(screen.getByTestId('command-center-panel')).toBe(dashboard)
+    expect(within(dashboard).getByRole('button', { name: 'Send answer' })).toBeEnabled()
   })
   it('the + menu offers the chat panel\'s per-chat Terminal on a member DM (a member thread is a chat slot)', async () => {
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -1023,7 +1067,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     // Nothing else is withheld once the thread is confirmed: Side chat is
     // offered (its draft persists in the chat-core store, and the selection
     // toolbar's Ask lands in it — MembersPage.sideChat.test.tsx).
-    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS].sort())
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center'].sort())
     // While the thread is unconfirmed EVERY classified view is withheld, plus
     // Terminal and app tabs — derived from the classification, so a new
     // ViewKind lands in this set without anyone listing it.

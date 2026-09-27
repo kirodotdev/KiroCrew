@@ -419,6 +419,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the sidecar is durable and read straight back to the panel.",
     ),
     (
+        "Automatic session status cards",
+        "dashboard/card_lifecycle.py",
+        "Bounded recent transcript messages sent to the background model and its "
+        "HTML/text response served by GET /api/chat/slots/{slot}/dashboard-card. "
+        "Both boundaries run credential and exfiltration-URL redaction before "
+        "model input or cached publication; the owner-only GET never generates content.",
+    ),
+    (
         "Cross-session turn delivery",
         "dashboard/chat_delivery.py",
         "The text a steer or a queued message carries into a turn, on the path "

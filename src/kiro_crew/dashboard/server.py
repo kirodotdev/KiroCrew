@@ -4963,6 +4963,9 @@ def _register_config_watch(
     from kiro_crew.config.live import ConfigChange
     from kiro_crew.dashboard.handlers.updates import apply_log_level_from_config
 
+    # Wiring only: optional producer import/construction belongs after bind.
+    live.bind("dashboard.dynamic_dashboard_cards", state.set_dynamic_cards_enabled)
+
     async def _switch_provider(cfg: KiroCrewConfig) -> None:
         # Refresh agent artifacts so the target provider is immediately usable.
         # For claude_code this (re)writes ~/.claude/agents/kirocrew.mcp.json --
@@ -5155,6 +5158,11 @@ def _register_config_watch(
 
     async def _config_watch_shutdown(app_: web.Application) -> None:
         await live.watch().stop()
+        lifecycle = getattr(state, "_dynamic_cards", None)
+        if lifecycle is not None:
+            lifecycle.set_enabled(False)
+            if lifecycle.worker is not None:
+                await asyncio.gather(lifecycle.worker, return_exceptions=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 
@@ -5185,6 +5193,12 @@ def _kick_config_watch(app: web.Application, state: DashboardState) -> None:
         watcher.prime(initial)
 
     async def _start() -> None:
+        try:
+            current = live.snapshot() or initial
+            if current is not None:
+                state.set_dynamic_cards_enabled(current.dashboard.dynamic_dashboard_cards)
+        except Exception:  # noqa: BLE001 — optional cards must not disable live configuration
+            logger.warning("Automatic dashboard cards failed to start", exc_info=True)
         try:
             await live.watch().start(initial=initial)
         except Exception:  # noqa: BLE001 — a dead watcher must not take the gateway down
@@ -6860,6 +6874,9 @@ async def start_dashboard(
         # Reseed it past the highest restored index so the next new chat can't
         # re-mint a colliding low index (which scrambles the tab -> session map).
         state.reseed_slot_counter()
+
+    if state._dynamic_cards is not None:
+        state._dynamic_cards.seed_open_sessions()
 
     # Surface conversations started on Slack/Discord/Teams (etc.) in the chat
     # list. These persist under channel-namespaced keys (``slack:<ts>``), which

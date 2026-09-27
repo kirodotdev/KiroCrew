@@ -1331,6 +1331,10 @@ export function useWebSocket() {
         // Invalidate every slot's summary (the key is per-slot and we cannot
         // know which ones moved); react-query only refetches the observed ones.
         queryClient.invalidateQueries({ queryKey: ['session-summary'] })
+        // A missed removal may have reused a slot key. Discard cached content
+        // and cancel old reads before refetching observed cards.
+        queryClient.resetQueries({ queryKey: ['dashboard-card'] })
+        queryClient.invalidateQueries({ queryKey: ['command-center'] })
         // Same one-shot problem for the artifact library: `artifact_update`
         // frames pushed while the socket was down were never delivered, and a
         // list query that ERRORED during the gap (gateway restart 403s /
@@ -1690,6 +1694,7 @@ export function useWebSocket() {
             const frame = data as SlotPatchFrame
             const dashboard = store.getState().dashboard
             const removed = new Set(frame.removed ?? [])
+            for (const slot of removed) queryClient.resetQueries({ queryKey: ['dashboard-card', slot] })
             const hasUnknownRow = (frame.slots ?? []).some(row =>
               typeof row?.key === 'string'
               && !removed.has(row.key)
@@ -1699,6 +1704,16 @@ export function useWebSocket() {
             // restore that row, so the authoritative list repairs the omission.
             if (hasUnknownRow) dispatch(fetchSlots())
             dispatch(sseSlotPatch(frame))
+            break
+          }
+          case 'dashboard_card': {
+            const { slot, removed } = data as { slot?: string; removed?: boolean }
+            if (slot) {
+              // Invalidating alone leaves stale content available on remount.
+              // Ordinary updates retain last-good content; removals must not.
+              if (removed) queryClient.resetQueries({ queryKey: ['dashboard-card', slot] })
+              else queryClient.invalidateQueries({ queryKey: ['dashboard-card', slot] })
+            }
             break
           }
           case 'session_summary': {
@@ -1818,6 +1833,7 @@ export function useWebSocket() {
             dispatch(clearAllNotifications())
             break
           case 'approval': {
+            queryClient.invalidateQueries({ queryKey: ['command-center', 'approvals'] })
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
             if (typeof data.id === 'string') {
               coordinatorApprovalsRef.current.set(
@@ -1896,6 +1912,7 @@ export function useWebSocket() {
             break
           }
           case 'approval_resolved': {
+            queryClient.invalidateQueries({ queryKey: ['command-center', 'approvals'] })
             const id = typeof data.id === 'string' ? data.id : ''
             const frameSlot = typeof data.slot === 'string' ? data.slot : undefined
             const targetSlot = frameSlot ?? coordinatorApprovalsRef.current.get(id)
@@ -2275,6 +2292,7 @@ export function useWebSocket() {
             dispatch(sseMcpAppRender(data as Parameters<typeof sseMcpAppRender>[0]))
             break
           case 'question_card': {
+            queryClient.invalidateQueries({ queryKey: ['command-center', 'questions'] })
             const previous = store.getState().chat.pendingQuestions?.[data.slot]
             // Every card carries its server identity (`ask_id` or `card_id`);
             // the reducer coalesces a re-delivery of the same id. Audio
@@ -2292,6 +2310,7 @@ export function useWebSocket() {
             break
           }
           case 'question_card_resolved': {
+            queryClient.invalidateQueries({ queryKey: ['command-center', 'questions'] })
             const ask = data as { ask_id?: string; card_id?: string }
             // Recorded independently of local state: a resolution can arrive for
             // a card this client never held (empty state, or the card only exists

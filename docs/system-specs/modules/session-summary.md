@@ -313,6 +313,24 @@ retry, and a user correction is the highest-value signal per character in the fi
 
 ## Endpoint
 
+The Sessions three-dot menu also opens `/session-dashboards`: a read-only
+summary gallery alongside each session's model-authored Dynamic Dashboards.
+A centralized Needs you inbox precedes the gallery, including on phones. Each
+native question or approval has one control there, labeled with its human
+session name and current task context when available; session cards do not
+duplicate those controls. Search filters both sections, but the summary page
+limit never hides pending decisions. The view shares `['session-summary', slot]` with the chat
+panel and its websocket invalidation. Only visible cards read summaries (12
+initially, with explicit Show more); opening, filtering, or refreshing this
+page never calls the generation POST. Disabled, missing, stale, and failed
+summary reads remain distinct. Filtering hides inbox items rather than unmounting
+their unsent answer drafts. Hidden model-authored iframe documents are unloaded;
+the current page mounts at most 12 session cards. This view does not change summary
+generation, privacy, or ownership policy. Automatic HTML status cards are a
+separate opt-in (`dashboard.dynamic_dashboard_cards`), updated from session
+events under their own budget, not by this summary GET or its refresh interval.
+See [automatic session cards](learn-cron-dashboard.md#automatic-session-status-cards).
+
 ```
 GET /api/chat/slots/{slot}/summary
 ```

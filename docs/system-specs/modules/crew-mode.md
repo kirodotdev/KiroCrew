@@ -866,8 +866,18 @@ auto-patrol status, and the DM thread's own Crew Log record under the heading
 "This conversation" — named for the thread, so it is not read as one of the
 driven sessions listed above it.
 
-**Dashboard** is the crewmate's published webview
-(`GET /api/members/{slug}/panel`).
+**Dashboard** is the single dashboard entrance for the crewmate. Dynamic
+Dashboard adds native task progress, descendant-session summaries, questions
+and approvals to this tab; the chat's compact entrance focuses it, and the
+panel's + menu offers no parallel Dynamic Dashboard tab. The existing published
+webview (`GET /api/members/{slug}/panel?member=<exact-name>`) remains a view inside
+it, selectable alongside task-dashboard artifacts. A pipeline-specific board is
+one published view, not a separate dashboard product. The existing publisher,
+exact member identity and sandbox are unchanged. Published pages never resolve
+questions or approvals: only the host's exact-session/request controls do so.
+Once visited, the dashboard stays mounted across tab and panel visibility changes
+to retain answer drafts and published frames. A pending thread revalidation hides
+the native controls without re-keying the last confirmed session's body.
 
 Settings content — the built-from template, wake sources and schedules, the
 memory binding, cloud — lives only on the crew editor / detail page.

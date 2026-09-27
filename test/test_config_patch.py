@@ -102,6 +102,7 @@ def _arm(app: web.Application, state: SimpleNamespace) -> None:
     from kiro_crew.dashboard.server import _register_config_watch
 
     app["state"] = state
+    state.set_dynamic_cards_enabled = MagicMock()
     initial = KiroCrewConfig.load()
     _register_config_watch(app, state, initial=initial)  # type: ignore[arg-type]
 
