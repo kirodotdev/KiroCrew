@@ -121,6 +121,18 @@ _SEL_DEDUP_WINDOW_SECS = 300.0  # 5 minutes
 #: (app, event_type, reason) -> (last emitted monotonic ts, denies suppressed since)
 _sel_last_audit: dict[tuple[str, str, str], tuple[float, int]] = {}
 
+#: SEL ``caller`` for a grant made to a socket authenticated as the dashboard
+#: user. Such a socket carries an EMPTY app claim (``ws["_app"] == ""``), so
+#: keyed by app its grants would land in the ``<unknown>`` bucket next to an
+#: unnamed app token's and the operator could not tell the two apart -- which
+#: is the one thing the record exists to tell them. Angle brackets keep the
+#: label outside the app-id namespace (``manifest.KEBAB_RE`` admits only
+#: ``[a-z0-9-]``), so no manifest can claim it. Also the dedup key, so all
+#: dashboard sockets share one window per event type; the per-frame decision
+#: is the highest-volume class in the trail and one record per window is what
+#: ``_audit_decision``'s contract already promises for grants.
+DASHBOARD_USER_AUDITEE = "<dashboard-user>"
+
 
 def _audit_decision(app: str, event_type: str, outcome: str, dedup_reason: str) -> None:
     """Emit a deduplicated SEL audit event for one WS authorization decision.

@@ -23,6 +23,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
 from kiro_crew.dashboard.ws_event_scope import (
+    DASHBOARD_USER_AUDITEE,
     _audit_allow,
     _audit_deny,
     effective_allowed_events,
@@ -147,7 +148,11 @@ def _audit_grant_quietly(app: str, event: str) -> None:
     envelope field), the periodic ``dashboard`` status frame, and the
     ``subscribe_logs`` ring replay -- so ``ws_event_allowed`` never sees them
     and none of them would otherwise leave an SEL record, even though each is
-    a permission decision ``AUTOSDE.yaml`` requires one for.
+    a permission decision ``AUTOSDE.yaml`` requires one for. The same three
+    sends reach a dashboard-user socket on identical grounds, so each site
+    records the grant for BOTH socket kinds, under :func:`_grant_auditee`'s
+    label -- a dashboard user has an empty app claim, and recording it as the
+    app would file the owner's grants under ``<unknown>``.
 
     One helper rather than the same ``try``/``except`` inlined at each site:
     the swallow is the load-bearing part and needs to behave identically
@@ -160,6 +165,21 @@ def _audit_grant_quietly(app: str, event: str) -> None:
         _audit_allow(app or "<unknown>", event)
     except Exception:
         logger.debug("ws: SEL audit for %s grant failed", event, exc_info=True)
+
+
+def _grant_auditee(ws: web.WebSocketResponse, ws_app: str) -> str:
+    """Return the SEL ``caller`` a grant on this socket is recorded under.
+
+    A dashboard-user socket is identified by the positive ``_is_dashboard_user``
+    flag and carries an empty app claim, so it gets the reserved
+    ``DASHBOARD_USER_AUDITEE`` label -- the same one the broadcast chokepoint
+    (``WebSocketHub._ws_client_allowed``) uses, so one socket kind has one
+    identity in the trail whichever path delivered the frame. Every other
+    socket is recorded as its app.
+    """
+    if ws.get("_is_dashboard_user", False):
+        return DASHBOARD_USER_AUDITEE
+    return ws_app
 
 
 def broadcast_side_result(
@@ -588,12 +608,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             # never receives the tree, so its generation would describe data the
             # app does not have.
             envelope_extras["foldersGeneration"] = state.folders_generation()
-        if not ws.get("_is_dashboard_user", False) and "yolo" in envelope_extras:
-            # Handing an app token the live blanket-approval override is a
-            # grant of operator security posture, not slot data, and this
-            # initial push writes to the socket directly -- so record it here
-            # or it goes unrecorded entirely.
-            _audit_grant_quietly(ws_app, "slots_yolo")
+        if "yolo" in envelope_extras:
+            # Handing a socket the live blanket-approval override is a grant
+            # of operator security posture, not slot data, and this initial
+            # push writes to the socket directly -- so record it here or it
+            # goes unrecorded entirely. Dashboard users included: they always
+            # receive the field, and until this was ungated the owner's own
+            # socket was the one kind whose grant left no record.
+            _audit_grant_quietly(_grant_auditee(ws, ws_app), "slots_yolo")
         snapshot_frame = {
             "type": "slots",
             "data": slots_data,
@@ -690,12 +712,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     # dashboard-user tokens and keep the full snapshot.
                     for _owner_only in ("branch", "commit"):
                         data.pop(_owner_only, None)
-                    # Tier 0 admits every app unconditionally, but the decision
-                    # is still a grant per ``AUTOSDE.yaml`` -- this frame is
-                    # sent directly rather than through the broadcast
-                    # chokepoint, so nothing else records it. The dedup window
-                    # already bounds the 5-second interval to one record.
-                    _audit_grant_quietly(ws_app, "dashboard")
+                # Tier 0 admits every socket unconditionally, but the decision
+                # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
+                # directly rather than through the broadcast chokepoint, so
+                # nothing else records it. Outside the app-token narrowing
+                # above on purpose: the dashboard user receives the full frame
+                # and that is a grant too. The dedup window already bounds the
+                # 5-second interval to one record.
+                _audit_grant_quietly(_grant_auditee(ws, ws_app), "dashboard")
                 try:
                     await ws.send_json({"type": "dashboard", "data": data})
                 except Exception:
@@ -905,11 +929,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     exc_info=True,
                                 )
                             continue
-                        if not ws.get("_is_dashboard_user", False):
-                            # Mirror the deny branch above: the grant is a
-                            # permission decision too, and only the deny side
-                            # left an SEL record before this.
-                            _audit_grant_quietly(ws_app, "subscribe_logs")
+                        # Mirror the deny branch above: the grant is a
+                        # permission decision too, and only the deny side left
+                        # an SEL record before this. Not gated on the socket
+                        # kind: the dashboard user is admitted to the ring
+                        # replay on the same grounds, and skipping the record
+                        # for that socket left the privileged log history the
+                        # one hand-over the trail never showed.
+                        _audit_grant_quietly(_grant_auditee(ws, ws_app), "subscribe_logs")
                         state.subscribe_logs(ws)
                         # Replay log ring buffer
                         for entry in list(_log_ring):

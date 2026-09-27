@@ -2055,10 +2055,15 @@ async def _safe_ws_send(ws: web.WebSocketResponse, msg: str, state: DashboardSta
     would fall back to a synchronous manifest read.
     """
     try:
-        if not ws.get("_is_dashboard_user", False):
-            if not state._ws_client_allowed(ws, "log", {}):
-                state._ws_log_subscribers.discard(ws)
-                return
+        # Every socket kind goes through the predicate: for a dashboard user it
+        # answers True at once and records the grant under the reserved
+        # dashboard-user auditee, so the live stream leaves the same record as
+        # the ring replay that ``subscribe_logs`` admitted it to. Skipping the
+        # call for that socket kind was the one place the log stream's grant to
+        # the owner went unrecorded.
+        if not state._ws_client_allowed(ws, "log", {}):
+            state._ws_log_subscribers.discard(ws)
+            return
         await ws.send_str(msg)
     except Exception:
         state._ws_log_subscribers.discard(ws)

@@ -1448,11 +1448,19 @@ class TestLiveScopeNarrowing:
         _aio.run(upd._safe_ws_send(ws, '{"type":"log"}', state))
         assert sent == ['{"type":"log"}']
 
-    def test_log_subscriber_send_skips_the_check_for_dashboard_users(self):
+    def test_log_subscriber_send_takes_the_chokepoint_for_dashboard_users(self):
+        """The dashboard user is delivered every log line -- and that grant is
+        recorded, because the send goes through ``_ws_client_allowed`` for this
+        socket kind too. The live stream's grant to the owner and the ring
+        replay that admits the same socket leave the same SEL record.
+        """
         import asyncio as _aio
 
+        from kiro_crew.dashboard import ws_event_scope as mod
         from kiro_crew.dashboard.handlers import updates as upd
+        from kiro_crew.dashboard.state import DashboardState
 
+        mod._sel_last_audit.clear()
         ws = MagicMock()
         ws.get.side_effect = lambda k, default=None: (
             True if k == "_is_dashboard_user" else default
@@ -1463,9 +1471,22 @@ class TestLiveScopeNarrowing:
             sent.append(msg)
 
         ws.send_str = _send
-        state = MagicMock()
-        _aio.run(upd._safe_ws_send(ws, '{"type":"log"}', state))
-        assert sent == ['{"type":"log"}']
+        state = MagicMock(spec=DashboardState)
+        state._slots = {}
+        state._ws_client_allowed = DashboardState._ws_client_allowed.__get__(state)
+        state._ws_log_subscribers = {ws}
+        with patch("kiro_crew.sel.sel") as sel_mock:
+            _aio.run(upd._safe_ws_send(ws, '{"type":"log"}', state))
+        assert sent == ['{"type":"log"}'], "the owner must still receive the line"
+        assert ws in state._ws_log_subscribers
+        grants = [
+            c.kwargs
+            for c in sel_mock.return_value.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "granted"
+        ]
+        assert [(g["caller"], g["resources"]) for g in grants] == [
+            (mod.DASHBOARD_USER_AUDITEE, "log")
+        ], "the live log grant to the dashboard user must leave one SEL record"
 
     def test_source_guard_status_frame_withholds_checkout_identity(self):
         """Tier 0 holds only while the `dashboard` payload stays non-sensitive.
@@ -3548,7 +3569,288 @@ class TestDirectSendGrantsAreAudited:
         region = " ".join(src[src.index(marker):].split())
         # Look only as far as the send that ends the block.
         region = region[: region.index('ws.send_json({"type": "dashboard"')]
-        assert re.search(r'_audit\w*\([^)]*"dashboard"\)', region), (
+        # ``.*`` rather than ``[^)]*``: the auditee is now resolved by a nested
+        # call (``_grant_auditee(ws, ws_app)``), and the guard is about the
+        # record existing between the narrowing and the send, not its arity.
+        assert re.search(r'_audit\w*\(.*"dashboard"\)', region), (
             "the periodic dashboard frame's grant to an app socket must be "
-            "SEL-audited in the same branch that narrows the payload"
+            "SEL-audited between the payload narrowing and the send"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard-user grants reach the SEL trail
+#
+# ``_ws_client_allowed`` records the grant for a ``_is_dashboard_user`` socket
+# at the chokepoint itself, under a reserved auditee that no app id can
+# collide with. The three direct-send grant sites in ``ws.py`` (``slots_yolo``,
+# ``dashboard``, ``subscribe_logs``) and the live log fan-out's per-send
+# recheck audit the dashboard user through the same path, so one socket kind
+# has one identity in the stream whichever path delivers a frame, and the
+# trail shows what is handed to the operator as well as what is withheld from
+# app tokens.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_user_ws() -> MagicMock:
+    ws = MagicMock()
+    ws.closed = False
+    store = {"_is_dashboard_user": True, "_app": "", "_allowed_events": frozenset()}
+    ws.get.side_effect = lambda k, default=None: store.get(k, default)
+    return ws
+
+
+def _granted(sel_mock) -> list[tuple[str, str]]:
+    """(caller, resources) of every granted record the patched sink saw."""
+    return [
+        (c.kwargs["caller"], c.kwargs["resources"])
+        for c in sel_mock.return_value.log_api_access.call_args_list
+        if c.kwargs.get("outcome") == "granted"
+    ]
+
+
+class TestDashboardUserGrantsAreAudited:
+    def _predicate(self):
+        from kiro_crew.dashboard import ws_event_scope as mod
+        from kiro_crew.dashboard.state import DashboardState
+
+        mod._sel_last_audit.clear()
+        state = MagicMock(spec=DashboardState)
+        state._slots = {}
+        state._ws_client_allowed = DashboardState._ws_client_allowed.__get__(state)
+        return state._ws_client_allowed
+
+    def test_chokepoint_records_the_dashboard_user_grant(self):
+        """The pin for the short-circuit itself: restoring the bare
+        ``return True`` ahead of the audit makes this red.
+
+        The record carries the reserved auditee rather than the socket's empty
+        app claim, so the operator can tell their own socket's grants from an
+        unnamed app token's (``<unknown>``) or the fail-closed empty-app deny
+        (``<empty>``).
+        """
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        allowed = self._predicate()
+        with patch("kiro_crew.sel.sel") as sel_mock:
+            assert allowed(_dashboard_user_ws(), "chat_chunk", {"slot": "chat-1"}) is True
+        assert _granted(sel_mock) == [(DASHBOARD_USER_AUDITEE, "chat_chunk")]
+        record = sel_mock.return_value.log_api_access.call_args.kwargs
+        assert record["operation"] == "ws_event_scope"
+        assert record["caller"] not in ("", "<unknown>", "<empty>")
+
+    def test_dashboard_user_grants_share_the_dedup_window(self):
+        """Volume contract: the per-frame decision on the owner's socket is the
+        highest-volume class in the trail, and ``_audit_decision`` already
+        promises one record per (auditee, event, reason) per window for grants.
+        A chunk flood collapses to one record; a different event type is a
+        different key and gets its own.
+        """
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        allowed = self._predicate()
+        ws = _dashboard_user_ws()
+        with patch("kiro_crew.sel.sel") as sel_mock:
+            for _ in range(5):
+                assert allowed(ws, "chat_chunk", {"slot": "chat-1"}) is True
+            assert allowed(ws, "slots", []) is True
+        assert _granted(sel_mock) == [
+            (DASHBOARD_USER_AUDITEE, "chat_chunk"),
+            (DASHBOARD_USER_AUDITEE, "slots"),
+        ]
+
+    def test_a_failing_audit_sink_never_withholds_a_dashboard_frame(self):
+        """The audit must never become a gate: an entitled frame is delivered
+        even when the sink raises. Patched at the module attribute the
+        chokepoint resolves at call time, so this exercises the real swallow.
+        """
+        from kiro_crew.dashboard import ws_event_scope as mod
+
+        allowed = self._predicate()
+        with patch.object(mod, "_audit_allow", side_effect=RuntimeError("sink down")):
+            assert allowed(_dashboard_user_ws(), "chat_chunk", {"slot": "chat-1"}) is True
+
+    def test_reserved_auditee_is_outside_the_app_id_namespace(self):
+        """No manifest can claim the label, so a record under it is always the
+        dashboard user and never an app that picked a confusable id.
+        """
+        from kiro_crew.apps.manifest import KEBAB_RE
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        assert KEBAB_RE.match(DASHBOARD_USER_AUDITEE) is None
+        assert DASHBOARD_USER_AUDITEE not in ("", "<unknown>", "<empty>")
+
+    def test_grant_auditee_names_the_socket_kind(self):
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        assert dashboard_ws._grant_auditee(_dashboard_user_ws(), "") == DASHBOARD_USER_AUDITEE
+        app_ws = MagicMock()
+        app_ws.get.side_effect = lambda k, default=None: {"_is_dashboard_user": False}.get(
+            k, default
+        )
+        assert dashboard_ws._grant_auditee(app_ws, "mochi-pet") == "mochi-pet"
+        # An absent flag is an app socket, never inferred as the owner.
+        bare = MagicMock()
+        bare.get.side_effect = lambda k, default=None: default
+        assert dashboard_ws._grant_auditee(bare, "mochi-pet") == "mochi-pet"
+
+    # -- direct-send sites in ws.py, driven functionally like the app-token
+    #    tests in TestDirectSendGrantsAreAudited -----------------------------
+
+    def _dashboard_state(self):
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.side_effect = lambda **_kw: []
+        state._yolo = True
+        state._folders = []
+        state.folders_generation.return_value = 1
+        return state
+
+    def _dashboard_request(self, state):
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"app": "", "user": "U_OWNER"})
+                self["is_dashboard_user"] = True
+                self.app = {"state": state}
+
+        return Request()
+
+    def _wire(self, monkeypatch, fake_ws):
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
+
+    def test_connect_time_yolo_grant_to_the_dashboard_user_is_audited(self, monkeypatch):
+        """The owner always receives the live blanket-approval override on the
+        initial push; that is a grant of operator security posture and was the
+        one socket kind recorded nowhere (the site was gated on the flag).
+        """
+        import asyncio as _aio
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        state = self._dashboard_state()
+        fake_ws = TestDirectSendGrantsAreAudited()._fake_ws()
+        self._wire(monkeypatch, fake_ws)
+        with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
+            _aio.run(dashboard_ws.api_ws(self._dashboard_request(state)))  # type: ignore[arg-type]
+
+        assert fake_ws.sent and fake_ws.sent[0].get("yolo") is True, (
+            "the dashboard user must actually receive the field"
+        )
+        assert (DASHBOARD_USER_AUDITEE, "slots_yolo") in [
+            tuple(c.args) for c in audit.call_args_list
+        ]
+
+    def _drive_one_message(self, monkeypatch, state, payload: dict):
+        """Run ``api_ws`` for a dashboard user whose socket yields ONE frame."""
+        import asyncio as _aio
+
+        from aiohttp import WSMsgType
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+
+        class Msg:
+            type = WSMsgType.TEXT
+            data = json.dumps(payload)
+
+        base = TestDirectSendGrantsAreAudited()._fake_ws()
+
+        class LoopWs(type(base)):  # type: ignore[misc]
+            def __init__(self) -> None:
+                super().__init__()
+                self._yielded = False
+
+            async def __anext__(self):
+                if self._yielded:
+                    raise StopAsyncIteration
+                self._yielded = True
+                return Msg()
+
+        fake_ws = LoopWs()
+        self._wire(monkeypatch, fake_ws)
+        _aio.run(dashboard_ws.api_ws(self._dashboard_request(state)))  # type: ignore[arg-type]
+        return fake_ws
+
+    def test_subscribe_logs_grant_to_the_dashboard_user_is_audited(self, monkeypatch):
+        """The ring replay hands over the privileged gateway log history; the
+        grant that admits the owner to it was gated out of the record.
+        """
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        state = self._dashboard_state()
+        with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
+            fake_ws = self._drive_one_message(monkeypatch, state, {"type": "subscribe_logs"})
+
+        state.subscribe_logs.assert_called_once_with(fake_ws)
+        assert (DASHBOARD_USER_AUDITEE, "subscribe_logs") in [
+            tuple(c.args) for c in audit.call_args_list
+        ]
+
+    def test_reconnect_replay_to_the_dashboard_user_takes_the_chokepoint(self, monkeypatch):
+        """The subagent reconnect replay writes to the socket directly but
+        filters every frame through ``_ws_client_allowed``, so the record
+        present after a gateway restart is the same record the live broadcast
+        leaves -- the divergence the report worried about cannot open.
+        """
+        from kiro_crew.dashboard import ws_event_scope as mod
+        from kiro_crew.dashboard.state import DashboardState
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
+
+        mod._sel_last_audit.clear()
+        state = self._dashboard_state()
+        state._ws_client_allowed = DashboardState._ws_client_allowed.__get__(state)
+        state.native_subagent_snapshots.return_value = [
+            {
+                "id": "sa-1",
+                "slot": "chat-1",
+                "task": "t",
+                "agent": "default",
+                "streaming": "",
+                "last_tool": "",
+                "started": 1.0,
+                "done": False,
+            }
+        ]
+        state.subagents = None
+        with patch("kiro_crew.sel.sel") as sel_mock:
+            fake_ws = self._drive_one_message(
+                monkeypatch, state, {"type": "subscribe_subagents"}
+            )
+
+        assert any(f.get("type") == "subagent_snapshot" for f in fake_ws.sent), (
+            "the replay frame must still be delivered"
+        )
+        assert (DASHBOARD_USER_AUDITEE, "subagent_snapshot") in _granted(sel_mock)
+
+    def test_periodic_dashboard_frame_grant_covers_both_socket_kinds(self):
+        """Structural pin, same anchoring as the app-token guard above: the
+        ``dashboard`` grant record must sit OUTSIDE the app-token narrowing
+        block (at the indentation of the send that follows it), not inside
+        the ``if not _is_dashboard_user`` branch where the owner's socket
+        never reaches it.
+        """
+        src = (
+            Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
+        ).read_text(encoding="utf-8")
+        marker = 'for _owner_only in ("branch", "commit"):'
+        assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
+        # Start at the beginning of the marker's LINE so its indentation is kept.
+        start = src.rfind("\n", 0, src.index(marker)) + 1
+        region = src[start : src.index('ws.send_json({"type": "dashboard"')]
+        lines = region.splitlines()
+        narrowing_indent = len(lines[0]) - len(lines[0].lstrip())
+        audit_lines = [ln for ln in lines if re.search(r'_audit\w*\(.*"dashboard"\)', ln)]
+        assert len(audit_lines) == 1, "exactly one grant record for the periodic frame"
+        audit_indent = len(audit_lines[0]) - len(audit_lines[0].lstrip())
+        assert audit_indent < narrowing_indent, (
+            "the periodic dashboard frame's grant must be recorded for the "
+            "dashboard user too, i.e. outside the app-token-only branch"
         )

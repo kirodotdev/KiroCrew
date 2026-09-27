@@ -166,6 +166,31 @@ class WebSocketHub:
                     pending.add(slug)
                 return False
         if ws.get("_is_dashboard_user", False):
+            # Granted, and the grant is a permission decision like any other:
+            # ``AUTOSDE.yaml`` wants an SEL record for it, not only for the
+            # refusals below. Recorded HERE, at the chokepoint every dashboard
+            # frame passes (live broadcast via ``_send_ws_all``, the log
+            # fan-out's per-send recheck, and the subagent reconnect replay in
+            # ``ws.py`` all funnel through this predicate), rather than at each
+            # sender, so a send path added later is covered by construction --
+            # the same reasoning ``ws_event_allowed`` gives for app tokens.
+            # Under a reserved auditee rather than the empty app claim, so the
+            # operator can tell their own socket's grants from an unnamed
+            # app's. Never raises: a failing audit sink must not withhold a
+            # frame the owner is entitled to.
+            try:
+                from kiro_crew.dashboard.ws_event_scope import (
+                    DASHBOARD_USER_AUDITEE,
+                    _audit_allow,
+                )
+
+                _audit_allow(DASHBOARD_USER_AUDITEE, msg_type)
+            except Exception:
+                self._log.debug(
+                    "state: SEL audit for dashboard-user grant %s failed",
+                    msg_type,
+                    exc_info=True,
+                )
             return True
         ws_app: str = ws.get("_app", "")
         snapshot: frozenset[str] = ws.get("_allowed_events", frozenset())
