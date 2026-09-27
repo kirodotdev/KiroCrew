@@ -180,8 +180,17 @@ def _guard(request: web.Request, operation: str) -> web.Response | None:
     cfg = KiroCrewConfig.load()
     if not cfg.instances.enabled:
         _audit(operation, "denied", error="feature disabled")
+        # Carries a ``code`` because this is the ONE denial on this route the
+        # dashboard treats as routine: it is expected on every install that has
+        # not turned the feature on, so the SPA opts it out of the error journal
+        # rather than reporting it.  The opt-out is keyed on this code, not on the
+        # 403 -- the owner-only and Slack-origin denials above share that status
+        # and are real authorization failures a reader must still see.
         return web.json_response(
-            {"error": "instances feature is disabled (set instances.enabled=true)"},
+            {
+                "error": "instances feature is disabled (set instances.enabled=true)",
+                "code": "instances_disabled",
+            },
             status=403,
         )
     return None

@@ -755,7 +755,7 @@ export const isAuthExpiredError = (e: unknown): boolean =>
  * `e.message`. `utils/errorReport` then lets a shared error banner recover that
  * context from the message alone — see AskAgentButton / ErrorNotice.
  */
-const apiFailure = (r: Response, errText: string): ApiError => {
+const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiError => {
   // An auth denial's own reason text ("invalid signature") describes HMAC
   // verification, not anything the user can act on, and every card that renders
   // it hides the fact that one re-auth clears all of them at once. Substitute
@@ -785,15 +785,39 @@ const apiFailure = (r: Response, errText: string): ApiError => {
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
         || `HTTP ${r.status}`
-  recordError({
-    source: 'api',
-    message,
-    status: r.status,
-    code: parseErrorCode(errText),
-    endpoint: requestPath(r.url),
-    detail: errText,
-  })
-  // A stale-owner denial is authRequired in the sense call sites care about:
+  const code = parseErrorCode(errText)
+  // One specific denial on one endpoint is a DESIGNED, benign signal rather than a
+  // failure worth showing the user — a disabled optional feature answering its own
+  // probe (instances is deny-by-default; see listInstances). The caller opts that
+  // one out via `benign`: the ApiError is still THROWN so the caller's catch runs,
+  // but it is not journaled, so it cannot surface as a spurious error report on an
+  // unrelated route (e.g. /chat/new-session mounting the sidebar).
+  //
+  // The match is on status AND the gateway's own `code`, never status alone. The
+  // same endpoint answers 403 to a non-owner caller and to a Slack-origin request,
+  // and both are real authorization failures a reader needs; keyed on status they
+  // would be silently swallowed along with the routine one.
+  //
+  // The three auth-recovery denials above are additionally excluded, including the
+  // edge challenge: a proxy answering with its own sign-in page carries no code of
+  // ours, so it cannot match `benign`, but the term is kept explicit because each of
+  // the three needs a person and none may ever be opted out by a call site.
+  const expectedBenign = !!benign
+    && r.status === benign.status
+    && code === benign.code
+    && !authRequired
+    && !staleOwnerSession
+    && !edgeAuthExpired
+  if (!expectedBenign) {
+    recordError({
+      source: 'api',
+      message,
+      status: r.status,
+      code,
+      endpoint: requestPath(r.url),
+      detail: errText,
+    })
+  }
   // no retry can succeed until the user signs in again.
   return new ApiError(
     r.status, message, errText,
@@ -823,30 +847,81 @@ function sendResponseAuthRecovery(r: Response): Response {
   return r
 }
 
-const j = async (r: Response) => {
+/**
+ * A non-2xx this endpoint's caller handles itself, identified by the denial it
+ * IS rather than by the status it arrives with.
+ *
+ * Status alone is not enough to identify a denial, and on the motivating
+ * endpoint it is actively wrong: `/api/instances` answers 403 for a disabled
+ * feature, for a non-owner caller, and for a Slack-origin request, and only the
+ * first is routine. `code` is the machine-readable discriminator the gateway
+ * emits for exactly that case, so both must match before anything is opted out.
+ */
+type BenignDenial = { readonly status: number; readonly code: string }
+
+/**
+ * The one parser body behind `j`, `jNullable` and `jInstancesDisabled`.
+ *
+ * `benign` and `nullOn204` are the ONLY differences between the three, so they
+ * share this rather than holding copies that drift as the auth-recovery steps
+ * above change.
+ */
+const parseJson = async (r: Response, benign?: BenignDenial, nullOn204 = false) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
+  // Before the !r.ok branch, because 204 IS ok: the banner clear above still runs,
+  // exactly as it did when this was its own copy of the body.
+  if (nullOn204 && r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
-    throw apiFailure(r, errText)
+    throw apiFailure(r, errText, benign)
   }
   return r.json()
 }
+
+const j = (r: Response) => parseJson(r)
 
 /**
  * Nullable variant of j(): preserves auth recovery + ApiError semantics but
  * returns null on 204 (No Content). Used by tips endpoints.
  */
-const jNullable = async (r: Response) => {
-  checkSessionExpired(r)
-  if (r.ok) removeAuthBanner()
-  if (r.status === 204) return null
-  if (!r.ok) {
-    const errText = await r.text()
-    throw apiFailure(r, errText)
-  }
-  return r.json()
-}
+const jNullable = (r: Response) => parseJson(r, undefined, true)
+
+/**
+ * The one denial in the dashboard that is a DESIGNED, benign signal rather than
+ * a failure worth journaling: `/api/instances` answering its own list probe on
+ * an install where the control plane is simply off.
+ *
+ * Deliberately NOT a `(status, code)` parameter pair. A parser taking those
+ * would hand every domain module a general "ignore this status everywhere"
+ * opt-out, and there is exactly one denial that has earned it. A second one
+ * would be a second constant here, reviewed on its own merits — which is the
+ * point: each addition is a visible decision at the facade rather than a call
+ * site quietly passing different arguments.
+ */
+const INSTANCES_DISABLED: BenignDenial = { status: 403, code: 'instances_disabled' }
+
+/**
+ * `j` for the one benign denial above — nothing else.
+ *
+ * `j`'s exact semantics (auth recovery, `ApiError` on non-2xx) EXCEPT that a 403
+ * carrying `instances_disabled` is thrown but NOT recorded in the error journal.
+ * Any other denial on that same endpoint, INCLUDING another 403, journals
+ * normally: `/api/instances` also answers 403 to a non-owner caller and to a
+ * Slack-origin request, and both are real authorization failures a reader needs.
+ *
+ * Why it exists: the instances control plane is deny-by-default
+ * (`instances.enabled` off), so a 403 to its own list probe is expected on most
+ * installs. Journaling it made the sidebar's routine `['instances']` query
+ * publish a spurious "/api/instances -> 403" error report on whatever route
+ * mounted the sidebar (e.g. /chat/new-session).
+ *
+ * Handed to the domain modules through `ClientTransport` rather than imported by
+ * them, for the reason that interface's own docstring gives: a module must reach
+ * the SAME parser objects the facade installs, or an edition's calls and core's
+ * calls diverge.
+ */
+const jInstancesDisabled = (r: Response) => parseJson(r, INSTANCES_DISABLED)
 // X-Session-Key ensures the server-side ephemeral gate always runs.
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
@@ -1000,6 +1075,7 @@ const transport: ClientTransport = {
   patch,
   j,
   jNullable,
+  jInstancesDisabled,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
