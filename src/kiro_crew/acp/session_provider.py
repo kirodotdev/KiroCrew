@@ -564,6 +564,9 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def native_context_documents(self) -> dict[str, str]:
+        fit = getattr(self._handle, "native_context_documents_fit", None)
+        if fit is not None and not fit():
+            return {}
         return dict(self._handle.native_context_documents)
 
     @property

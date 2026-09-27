@@ -434,7 +434,7 @@ def build_v2_essentials(
     trigger_text: str,
     steering_dirs: tuple[str, ...],
     desk_withheld: bool,
-    provider_type: str,
+    provider_type: str | None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
 
@@ -446,7 +446,10 @@ def build_v2_essentials(
     ``provider_type`` names the harness serving the session. Only kiro-cli
     (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
     so its verdict is read once here, where the harness is known, and handed
-    to every consumer; no consumer reads the setting itself.
+    to every consumer; no consumer reads the setting itself. ``None`` means
+    the harness is not known to be kiro-cli, so the opt-out is not read and
+    the snapshot keeps inheriting: a caller that omits it can never drop the
+    global steering on a harness that has nothing delivering it instead.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.member_essential_context import (
@@ -539,12 +542,12 @@ def build_v2_essentials(
     # The project and global ``.kiro/steering`` trees are skipped as already
     # delivered only while the snapshot above actually delivered them: a
     # kiro-cli workspace that opts out of the default resources gets them
-    # from neither the snapshot nor the harness, so a folder that declares
-    # one of those roots must carry its documents itself. The template's
-    # declared resources can still carry some of those files, so under the
-    # opt-out a folder document whose canonical path the template already
-    # delivered is not collected again. Same verdict as the snapshot, read
-    # once above.
+    # only as far as the template declares them, so a folder that declares
+    # one of those roots must carry the rest of its documents itself. A
+    # folder document whose canonical path the template already delivered
+    # is not collected again under the opt-out. Same verdict as the
+    # snapshot, read once above; the non-member path takes the same
+    # decision in _render_folder_steering_section.
     folder_docs: SteeringCollection = ctx.SteeringCollection()
     folder_insert_at = len(documents)
     if steering_dirs and include_project:

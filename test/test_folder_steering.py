@@ -35,7 +35,7 @@ from kiro_crew.folder_steering import (
     collect_folder_steering,
     render_folder_steering,
 )
-from kiro_crew.member_essential_context import _MAX_SOURCE_BYTES
+from kiro_crew.member_essential_context import _MAX_SOURCE_BYTES, projected_resource_documents
 
 _LOGGER_NAME = "kiro_crew.folder_steering"
 
@@ -284,6 +284,76 @@ def test_delivered_sources_skip_only_the_same_canonical_file(tmp_path, monkeypat
     )
     assert resolved_delivered_inputs == []
     assert validated_delivered_inputs == []
+
+
+def test_delivered_bodies_skip_only_an_unchanged_document(tmp_path):
+    """A recorded body is compared against the document as it reads today: the
+    same text is skipped, an edited document is collected with its current
+    text, and a document absent from the record is collected as usual."""
+    root = tmp_path / "standards"
+    unchanged = _write(root / "unchanged.md", "always", body="Recorded and still so.")
+    edited = _write(root / "edited.md", "always", body="Recorded text.")
+    other = _write(root / "other.md", "always", body="Never recorded.")
+    unchanged_path = str(unchanged.resolve())
+    edited_path = str(edited.resolve())
+    recorded = {
+        unchanged_path: unchanged.read_text(encoding="utf-8"),
+        edited_path: edited.read_text(encoding="utf-8"),
+    }
+    edited.write_text("---\ninclusion: always\n---\nEdited after launch.\n", encoding="utf-8")
+
+    docs = collect_folder_steering(
+        [str(root)],
+        project=None,
+        home=_fake_home(tmp_path),
+        delivered_bodies=recorded,
+    )
+
+    assert [path for path, _ in docs] == [edited_path, str(other.resolve())]
+    assert docs[0][1].strip() == "Edited after launch."
+    assert docs[1][1].strip() == "Never recorded."
+
+
+def test_delivered_bodies_match_the_launch_reading_of_the_document(tmp_path):
+    """The folder reader skips a guide only when its fresh read equals the body
+    the launch reader recorded, so both readers must spell one document
+    identically: whole file, frontmatter kept, every line ending as ``\\n``.
+    This reads one mixed-ending UTF-8 file with the real launch reader and the
+    real folder reader; a normalization drift between them fails here."""
+    root = tmp_path / "standards"
+    doc = root / "mixed.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(
+        b"---\r\ninclusion: always\r\n---\r\nSame words.\r\nSecond line.\rThird caf\xc3\xa9 line.\n"
+    )
+
+    launch_reading = projected_resource_documents({"resources": ["file://mixed.md"]}, str(root))
+
+    (launch_body,) = launch_reading.values()
+    expected_spelling = "---\ninclusion: always\n---\nSame words.\nSecond line.\nThird café line.\n"
+    assert launch_body == expected_spelling
+    recorded = {str(doc.resolve()): launch_body}
+
+    docs = collect_folder_steering(
+        [str(root)], project=None, home=_fake_home(tmp_path), delivered_bodies=recorded
+    )
+
+    assert list(docs) == []
+
+
+def test_delivered_bodies_collect_a_document_the_read_cap_truncates(tmp_path):
+    """A body cut at the read cap cannot be proven unchanged, so it is sent even
+    when the record holds exactly the prefix the cap leaves."""
+    root = tmp_path / "standards"
+    body = "x" * (_MAX_SOURCE_BYTES + 10)
+    doc = _write(root / "big.md", None, body=body)
+    recorded = {str(doc.resolve()): doc.read_bytes()[:_MAX_SOURCE_BYTES].decode("utf-8")}
+
+    docs = collect_folder_steering(
+        [str(root)], project=None, home=_fake_home(tmp_path), delivered_bodies=recorded
+    )
+
+    assert [path for path, _ in docs] == [str(doc.resolve())]
 
 
 def test_project_and_home_kiro_steering_are_skipped(tmp_path):

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -582,6 +582,7 @@ def collect_folder_steering(
     home: Path | None = None,
     skip_delivered_roots: bool = True,
     delivered_sources: Collection[str] = (),
+    delivered_bodies: Mapping[str, str] | None = None,
 ) -> SteeringCollection:
     """``(source_path, body)`` for every always-inclusion ``*.md`` under *steering_dirs*.
 
@@ -614,6 +615,18 @@ def collect_folder_steering(
     delivers. Matching candidates are skipped before they are read. The paths
     are compared as strings and are never resolved or otherwise opened here.
 
+    *delivered_bodies* maps canonical document paths to the body the caller
+    already delivered: for a launch record, the body read at launch, kept by
+    the runtime only while the file was still that version once the session was
+    up. A matching candidate is read as usual and skipped only when the read was
+    not cut at the size cap and its whole normalized text (line endings folded
+    to ``\\n``, frontmatter kept -- the spelling the launch reader records)
+    equals the recorded body; an edited document, or one too large to compare,
+    is collected so the current text reaches the model, a duplicate of the
+    caller's copy at worst and never a stale-only delivery. Its paths are
+    compared as strings like *delivered_sources*, and the two keywords are
+    independent: both may be given.
+
     *home* exists for the tests and for a caller that knows the operator home
     without paying ``Path.home()``; it defaults to ``Path.home()``.
     """
@@ -623,6 +636,11 @@ def collect_folder_steering(
     if not steering_dirs:
         return result
     delivered_source_keys = {os.path.normcase(source) for source in delivered_sources}
+    delivered_body_by_key = (
+        {os.path.normcase(source): body for source, body in delivered_bodies.items()}
+        if delivered_bodies
+        else {}
+    )
     if not pinned_fs.supports_pinned_tree_walk():
         # Refuse BEFORE resolving any root: the walker's own refusal fires only
         # after ``validate_file_path`` has canonicalized the name, and on a host
@@ -742,6 +760,16 @@ def collect_folder_steering(
                 continue
             body = body.replace("\r\n", "\n").replace("\r", "\n")
             truncated = len(data) >= _MAX_SOURCE_BYTES
+            if delivered_body_by_key and not truncated:
+                # The recorded body is the launch reader's whole normalized
+                # file, so it is compared BEFORE the frontmatter is split. The
+                # ``not truncated`` guard protects a record whose reader does
+                # not refuse an oversize file (the launch reader refuses one,
+                # so its record never holds a truncated prefix); a file exactly
+                # at the cap reads as truncated here and is sent, a duplicate
+                # and never a loss.
+                if delivered_body_by_key.get(os.path.normcase(key)) == body:
+                    continue
             fields, stripped = split_frontmatter(body, STEERING_LOADER)
             if truncated and not fields and body.lstrip().startswith("---"):
                 # The frontmatter fence opened but its close fell past the read
