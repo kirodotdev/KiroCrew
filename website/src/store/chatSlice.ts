@@ -21,7 +21,7 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, TurnIdentityFields } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
@@ -29,7 +29,17 @@ import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
 import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
-import { bumpRunEpoch, runStateReducers, setRunState, syncOriginRun } from './chat/runState'
+import {
+  bumpRunEpoch,
+  finalizeActiveTurn,
+  recordEndedTurn,
+  runStateReducers,
+  setRunState,
+  settleEndedBackgroundTurn,
+  syncOriginRun,
+  turnAlreadyEnded,
+  wireTurnIdentity,
+} from './chat/runState'
 import { setPagingCursor, slotCacheReducers, writeSlotPage } from './chat/slotCache'
 import { composerCardReducers } from './chat/composerCards'
 import { messageReducers } from './chat/messages'
@@ -155,7 +165,7 @@ export const batchedTextAboveFloor = (parts: BatchedChunkPart[], floor: number |
 }
 
 /** One `chat_message` frame as the WebSocket hook hands it to `sseChatMessage`. */
-type ChatFrame = { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }
+type ChatFrame = TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }
 
 /**
  * Path B (native session grid): apply a WS chat frame for a NON-active slot
@@ -242,17 +252,19 @@ function applyNonActiveFrame(
     if (seq !== undefined) run.lastChunkSeq = seq
     return
   }
+  // The same server-turn rule as the active path: a late duplicate `_done` can
+  // arrive after this slot was switched into the background. Leave a newer
+  // cached streaming row and busy run state intact.
   if (role === '_done') {
-    setRunState(run, 'idle')
+    const identity = wireTurnIdentity(p)
+    if (identity && turnAlreadyEnded(state, slot, identity)) return
+    settleEndedBackgroundTurn(state, slot)
     // The replay floor survives `_done`: seqs never restart within a gateway
     // generation, so a chunk redelivered after the turn ends sits at or below
     // it and is dropped instead of opening a second bubble. A turn-starting
     // `user`/`inject` frame clears it, which covers a slot whose server
     // counter did restart (rebuilt slot, gen-less gateway).
-    syncOriginRun(state, slot, 'idle')
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'streaming') { msgs[i].role = 'assistant'; msgs[i].rawText = msgs[i].content; break }
-    }
+    if (identity) recordEndedTurn(state, slot, p)
     return
   }
   if (role === 'compacting') { if (run.state === 'idle') bumpRunEpoch(state, slot); setRunState(run, 'compacting'); syncOriginRun(state, slot, 'compacting'); return }
@@ -432,23 +444,18 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     if (seq !== undefined) state.lastChunkSeq = seq
     return
   }
-  // WS done — finalize streaming into assistant, rawText preserved for reparse
+  // WS done — finalize streaming into assistant, rawText preserved for reparse.
+  // The turn step is shared with settleEndedActiveTurn. On an ordinary turn
+  // the idle `slots` row already recorded this same server turn, so this
+  // `_done` is a duplicate and cannot finalize a successor turn.
   if (role === '_done') {
+    const identity = wireTurnIdentity(p)
+    if (identity && turnAlreadyEnded(state, slot, identity)) return
     countLiveFrame(state)
-    state.slotState = 'idle'
+    finalizeActiveTurn(state)
     // Floor kept on purpose; see the background `_done` branch.
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'streaming') {
-        const msg = state.messages[i]
-        msg.role = 'assistant'
-        msg.rawText = msg.content
-        break
-      }
-    }
-    state.slotRunning = false
-    state.slotStopping = false
-    state.slotState = 'idle'
     state.pendingTurnSlot = null
+    if (identity) recordEndedTurn(state, slot, p)
     return
   }
   // Compacting — block input, show footer indicator (no visible message)
@@ -1013,6 +1020,7 @@ export {
 } from './chat/selectors'
 export { clearSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'
 export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
+export { wireTurnIdentity } from './chat/runState'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
 export { createSlot, deleteHistorySession, fetchHistory, forkSlot, resumeFromHistory } from './chat/lifecycle'
 

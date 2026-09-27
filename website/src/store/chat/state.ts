@@ -45,6 +45,7 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
   )
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
+export type EndedTurn = { gen: string; turn: number }
 
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
@@ -160,6 +161,12 @@ export interface ChatState {
   slotSwitchRequestId: string | null
   /** Slot the in-flight switch targets; it only installs a cursor for that one. */
   slotSwitchTarget: string | null
+  /** requestId of the newest switchSlot request, written by every `pending`
+   *  and, unlike `slotSwitchRequestId`, not cleared when that request
+   *  settles. A settlement carrying a different requestId was superseded by a
+   *  later switch, which owns the pane, so it applies nothing. Null after a
+   *  hand-rolled `pending` that carries no requestId. */
+  slotSwitchLatestRequestId: string | null
   /** Pre-switch selection, recorded by `switchSlot.pending` so `rejected` can
    *  restore it when the target turns out to be GONE (404). `pending` mutates
    *  four things atomically -- `activeSlot`, the outgoing slot's activity, its
@@ -493,6 +500,9 @@ export interface ChatState {
    *  newest view. A same-value round trip (idle -> a turn ran -> idle) always
    *  counts a turn start, so the epoch tells it apart from "never moved". */
   activeRunEpochAtEntry: number
+  /** Newest server turn this tab knows ended, per slot. The gateway generation
+   *  makes the monotonic turn counter comparable across frames and history. */
+  endedTurn: Record<string, EndedTurn>
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
@@ -557,6 +567,7 @@ export const initialState: ChatState = {
   slotCursorKey: null,
   slotSwitchRequestId: null,
   slotSwitchTarget: null,
+  slotSwitchLatestRequestId: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
   loadingOlder: false,
@@ -621,6 +632,7 @@ export const initialState: ChatState = {
   stopPressedAt: {},
   runEpoch: {},
   activeRunEpochAtEntry: 0,
+  endedTurn: {},
   pendingTurnSlot: null,
   closeRefused: null,
 }

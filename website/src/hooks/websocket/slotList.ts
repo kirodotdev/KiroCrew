@@ -5,9 +5,11 @@ import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
-import { reconcileSubagentQueuedFromSlots } from '../../store/chatSlice'
+import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
+import type { StreamBuffers } from './streamBuffers'
+import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 
 export interface SlotListSync {
@@ -24,7 +26,11 @@ function notifyAppsSlotsChanged(): void {
   window.dispatchEvent(new CustomEvent('mc:app:slots', { detail: null }))
 }
 
-export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient): SlotListSync {
+export function useSlotListSync(
+  dispatch: AppDispatch,
+  queryClient: QueryClient,
+  buffers: StreamBuffers,
+): SlotListSync {
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
   const lastGovernanceGenRef = useRef<number | null>(null)
@@ -44,6 +50,8 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       // Forget the last raw slots frame too, so a reconnect whose first frame
       // repeats the last one before it cannot swallow that first frame.
       lastSlotsRawRef.current = null
+      // A `_done` the old socket never delivered will not arrive on this one.
+      clearIdleRowRefreshes()
     },
     onSlots(msg, data, raw) {
       // The queued-depth reconcile rides this frame only, never `fetchSlots`: a
@@ -55,13 +63,51 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       if (Array.isArray(data)) dispatch(reconcileSubagentQueuedFromSlots(data))
       // An identical repeat carries identical values for every arm below, but
       // only while no other writer (fetchSlots) has since replaced the list.
+      // Current history replies carry turn identity and cannot restore busy
+      // for this ended turn. Keep the bypass for an identity-less older
+      // reply, whose pre-existing behavior still relies on the next repeated
+      // idle frame to heal it; a pending local send remains protected.
+      const chat = store.getState().chat
+      const activeKey = chat.activeSlot
+      const activeSlotEnded = !!activeKey && Array.isArray(data)
+        && data.some(s => s.key === activeKey && s.running === false)
+      const mustResettleActiveSlot = activeSlotEnded
+        && (chat.slotState !== 'idle' || chat.slotRunning)
+        && chat.pendingTurnSlot !== activeKey
       if (raw === lastSlotsRawRef.current
-          && store.getState().dashboard.slots === lastSlotsArrayRef.current) return
+          && store.getState().dashboard.slots === lastSlotsArrayRef.current
+          && !mustResettleActiveSlot) return
       lastSlotsRawRef.current = raw
+      // The common server path clears a task and pushes its idle slots row
+      // before broadcasting chat_done; leading/trailing coalescing can also
+      // make either frame observable first. In both orders, text already
+      // received for any slot this frame settles must land before settlement.
+      // Otherwise a still-buffered tail would be dispatched afterwards and
+      // open a second, stranded streaming row.
+      if (Array.isArray(data)
+          && data.some(s => s.running === false && buffers.hasPendingChunks(s.key))) {
+        buffers.flushChunks()
+      }
       // Query keys this frame has made stale; flushed once at the end.
       const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
+      const beforeSettle = store.getState().chat
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // When this frame idled the active pane (`settleEndedActiveTurn`), it
+      // ended the turn without a `_done`. `_done` leaves the pane idle AND
+      // re-hydrated: its refresh recovers frames the socket lost. So this end
+      // dispatches the same refresh, and the `_done` that usually follows for
+      // the same turn skips its own (`takeIdleRowRefresh`): one refresh per
+      // turn end. The state is read on both sides of the dispatch because
+      // `mustResettleActiveSlot` misses two such ends: text the flush above
+      // just landed, and a pending send this row itself ends.
+      const afterSettle = store.getState().chat
+      if (activeSlotEnded && activeKey && afterSettle.activeSlot === activeKey
+          && (beforeSettle.slotState !== 'idle' || beforeSettle.slotRunning)
+          && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
+        recordIdleRowRefresh(activeKey, wireTurnIdentity(data.find(s => s.key === activeKey) ?? {}))
+        dispatch(refreshSlot(activeKey))
+      }
       if (msg.yolo !== undefined) {
         dispatch(sseYolo(msg.yolo))
       }
@@ -194,5 +240,5 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       dispatch(sseSlotPatch(frame))
       notifyAppsSlotsChanged()
     },
-  }), [dispatch, queryClient])
+  }), [buffers, dispatch, queryClient])
 }

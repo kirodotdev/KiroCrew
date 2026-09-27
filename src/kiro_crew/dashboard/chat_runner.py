@@ -7693,6 +7693,10 @@ async def _finish_queue_cycle(
         # the read. That turn owns the slot now and ends its own cycle.
         return
     slot.append("done", "", "done")
+    # Frontend contract: the dashboard treats the first `slots` frame reporting
+    # `running: false` as the turn's end (runState settleEndedActiveTurn), so all
+    # content is already out, `slot.task = None` precedes the push and the push
+    # precedes `chat_done`. Pinned by test/test_finish_queue_cycle_terminal_order.py.
     slot.task = None
     state.push_slots_update()
     await _send_chat_done(state, slot, payload=payload)
@@ -7734,6 +7738,7 @@ async def _send_chat_done(
     slot: _ChatSlot,
     *,
     continuing: bool = False,
+    ends_turn: bool = True,
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Send a turn-boundary ``chat_done`` frame; the runner sends no other way.
@@ -7743,7 +7748,7 @@ async def _send_chat_done(
     here. Either way :func:`chat_utils.chat_done_payload` is awaited before the
     broadcast, so a coroutine never reaches the serializer."""
     if payload is None:
-        payload = await chat_done_payload(state, slot, continuing=continuing)
+        payload = await chat_done_payload(state, slot, continuing=continuing, ends_turn=ends_turn)
     state.broadcast_ws("chat_done", payload)
 
 
@@ -16216,7 +16221,7 @@ async def _run_chat(
             assistant_text = ""
             _wsred.reset()
             _produced_visible_output = True
-            await _send_chat_done(state, slot, continuing=True)
+            await _send_chat_done(state, slot, continuing=True, ends_turn=False)
 
             # claude-agent-acp performs /compact synchronously inside session/prompt;
             # there is no out-of-band _kiro.dev/compaction/status notification, so

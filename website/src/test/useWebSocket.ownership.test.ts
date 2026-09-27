@@ -53,6 +53,7 @@ const OWNER_MODULES = [
   'connection.ts',
   'contextTraceRefresh.ts',
   'frames.ts',
+  'idleRowRefresh.ts',
   'reconnectCatchUp.ts',
   'retiredIds.ts',
   'rowDeliveryWatchdog.ts',
@@ -221,7 +222,8 @@ describe('dependency direction', () => {
     'composerCards.ts': ['attention.ts', 'retiredIds.ts'],
     'reconnectCatchUp.ts': ['bundleReload.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
-    'turnCompletion.ts': ['attention.ts', 'serverState.ts'],
+    'slotList.ts': ['idleRowRefresh.ts'],
+    'turnCompletion.ts': ['attention.ts', 'idleRowRefresh.ts', 'serverState.ts'],
   }
 
   it('owners import each other only along the listed edges', () => {

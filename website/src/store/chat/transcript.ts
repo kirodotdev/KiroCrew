@@ -191,20 +191,48 @@ export function reconcileOptimisticEcho(
  *  card — the "streaming marker stuck at the steer point" bug. Freezing first
  *  means pre-steer text stays above the bubble and the next chunk opens a
  *  fresh streaming message below it. */
+const finalizeStreamingAt = (msgs: ChatMessage[], index: number) => {
+  const raw = msgs[index].content
+  const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
+  if (isPlaceholder) {
+    msgs.splice(index, 1)
+  } else {
+    msgs[index].role = 'assistant'
+    msgs[index].rawText = msgs[index].content
+  }
+}
+
 export const finalizeTrailingStreaming = (msgs: ChatMessage[]) => {
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role === 'streaming') {
-      const raw = msgs[i].content
-      const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
-      if (isPlaceholder) {
-        msgs.splice(i, 1)
-      } else {
-        msgs[i].role = 'assistant'
-        msgs[i].rawText = msgs[i].content
-      }
+      finalizeStreamingAt(msgs, i)
       break
     }
   }
+}
+
+/** Finalize every live segment in a copied stale history page. A stop card can
+ * split one reply into multiple folded streaming rows, and none may remain as
+ * an append target for a successor turn. */
+export const finalizeAllStreaming = (msgs: ChatMessage[]) => {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'streaming') finalizeStreamingAt(msgs, i)
+  }
+}
+
+/** Finalize the live segments a stale history page contributed to `merged`
+ * (the page's own row objects), each on a copy, and leave every other row as
+ * it is: a newer local reply the merge kept beside the page is not the page's
+ * to finalize. Returns a new array; `page` and its rows are not written. */
+export const finalizePageStreaming = (merged: ChatMessage[], page: readonly ChatMessage[]): ChatMessage[] => {
+  const fromPage = new Set(page)
+  const out = merged.slice()
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].role !== 'streaming' || !fromPage.has(out[i])) continue
+    out[i] = { ...out[i] }
+    finalizeStreamingAt(out, i)
+  }
+  return out
 }
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */

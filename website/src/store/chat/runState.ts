@@ -3,7 +3,8 @@
  *  `slotRun` entry with its receipt tick, the turn-start epoch, the failed-
  *  switch origin snapshot, and the navigation MRU. */
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { ChatState, SlotState, SlotStatusDetail } from './state'
+import type { TurnIdentityFields } from '../../types'
+import type { ChatState, EndedTurn, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { finalizeTrailingStreaming } from './transcript'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
@@ -64,6 +65,131 @@ export function applyWarmRunState(run: { state: SlotState; runWarmSeq?: number }
   if (typeof warmSeq === 'number') run.runWarmSeq = Math.max(run.runWarmSeq ?? 0, warmSeq)
 }
 
+/** Parse the two-field wire identity. Both fields are required: the counter
+ *  restarts with the gateway, so either field alone is ambiguous. */
+export const wireTurnIdentity = (payload: TurnIdentityFields): EndedTurn | null => {
+  const { turn, turn_gen: gen } = payload
+  return Number.isSafeInteger(turn) && (turn as number) >= 0 && typeof gen === 'string' && !!gen
+    ? { gen, turn: turn as number }
+    : null
+}
+
+/** Whether this tab already knows this turn (or a later turn in the same
+ *  gateway generation) ended. */
+export const turnAlreadyEnded = (
+  state: ChatState,
+  slot: string,
+  identity: EndedTurn,
+): boolean => {
+  const known = state.endedTurn?.[safeKey(slot)]
+  return known?.gen === identity.gen && known.turn >= identity.turn
+}
+
+/** Remember the newest ended turn for a slot. A different gateway generation
+ *  replaces the old counter because counters are comparable only within gen. */
+export const recordEndedTurn = (
+  state: ChatState,
+  slot: string,
+  payload: TurnIdentityFields,
+): void => {
+  if (isUnsafeKey(slot)) return
+  const identity = wireTurnIdentity(payload)
+  if (!identity) return
+  const turns = (state.endedTurn ??= {})
+  const key = safeKey(slot)
+  const known = turns[key]
+  if (!known || known.gen !== identity.gen || identity.turn > known.turn) turns[key] = identity
+}
+
+/** A history reply cannot restore busy for a turn a live idle row or `_done`
+ *  already ended. Identity-less replies retain the older-gateway behavior. */
+export const historyReportsRunning = (
+  state: ChatState,
+  slot: string,
+  running: boolean,
+  payload: TurnIdentityFields,
+): boolean => {
+  const identity = wireTurnIdentity(payload)
+  return running && !(identity && turnAlreadyEnded(state, slot, identity))
+}
+
+/** Finalize the last streaming row with turn-end semantics.
+ *
+ *  Deliberately not `finalizeTrailingStreaming`: that segment-boundary helper
+ *  drops placeholder rows such as "…" and "---", while `_done` preserves them.
+ *  Live-slot settlement must leave the same transcript as `_done` alone. */
+const finalizeTurnTranscript = (messages: ChatState['messages']): void => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'streaming') {
+      const msg = messages[i]
+      msg.role = 'assistant'
+      msg.rawText = msg.content
+      break
+    }
+  }
+}
+
+/** Finalize the active slot exactly as `_done` does. The chunk replay floor
+ *  deliberately survives; the at-least-once delivery contract keeps it until
+ *  the next turn starts. */
+export const finalizeActiveTurn = (state: ChatState): void => {
+  state.slotState = 'idle'
+  finalizeTurnTranscript(state.messages)
+  state.slotRunning = false
+  state.slotStopping = false
+}
+
+/** Apply `_done`-equivalent finalization to an idle row for a background slot.
+ *  The ordered row is a terminal signal just like the active-slot row, so its
+ *  cached run and transcript must settle before its identity is recorded. */
+export const settleEndedBackgroundTurn = (state: ChatState, slot: string): void => {
+  if (slot === state.activeSlot || isUnsafeKey(slot)) return
+  const key = safeKey(slot)
+  const messages = state.slotMessages?.[key] ?? []
+  const settled = ((state.slotRun ??= {})[key] ??= { state: 'idle' })
+  setRunState(settled, 'idle')
+  syncOriginRun(state, slot, 'idle')
+  finalizeTurnTranscript(messages)
+}
+
+/** Idle the active slot when a live `slots` frame reports its turn ended.
+ *
+ * The server emits the idle row before `chat_done` on the ordinary path, and
+ * both carry the same `{turn, turn_gen}`. The row therefore records the ended
+ * turn and the later `_done` is a duplicate, even if a successor has already
+ * started or the slot moved into the background. The socket hook flushes this
+ * slot's buffered chunks before dispatching the row, so finalization cannot
+ * strand a text tail below the finished reply.
+ *
+ * A local send awaiting confirmation stays protected when the row carries no
+ * identity, belongs to another gateway generation, or is no newer than the
+ * turn already known ended. If the row is newer in the same generation, it is
+ * the pending send's own terminal row and may settle it. HTTP slot-list replies
+ * never call this helper because they have no ordering against live frames. */
+export const settleEndedActiveTurn = (
+  state: ChatState,
+  payload: readonly (TurnIdentityFields & { key: string; running?: boolean })[],
+): void => {
+  const slot = state.activeSlot
+  if (!slot || isUnsafeKey(slot)) return
+  const row = payload.find(s => s.key === slot)
+  if (!row || row.running !== false) return
+  if (state.slotState === 'idle' && !state.slotRunning) return
+  const identity = wireTurnIdentity(row)
+  const known = state.endedTurn?.[safeKey(slot)]
+  // The pending send's turn is newer than the last turn this tab knows ended
+  // in the row's gateway generation. With none known (a new chat, or a
+  // restarted gateway whose counters begin again) the baseline is turn 0: the
+  // counter advances when a turn task is assigned, so no turn carries 0. The
+  // `sseSlots` reducer records the row after this, so refusing a row that
+  // ends the pending turn would fence that turn's own `_done`.
+  const baseline = identity && known?.gen === identity.gen ? known.turn : 0
+  const rowEndsPendingTurn = !!identity && identity.turn > baseline
+  if (state.pendingTurnSlot === slot && !rowEndsPendingTurn) return
+  finalizeActiveTurn(state)
+  if (state.pendingTurnSlot === slot) state.pendingTurnSlot = null
+}
+
 /** THE way `activeSlot` moves to `target`: hands the outgoing slot's run
  *  mirror back to its keyed entry, assigns, and records the entry epoch.
  *  Fused into one setter so a future `activeSlot` writer cannot skip the
@@ -120,7 +246,13 @@ export const runStateReducers = {
     if (action.payload !== state.activeSlot) parkActiveTranscript(state)
     enterActiveSlot(state, action.payload); state.slotState = 'idle'; state.pendingTurnSlot = null
   },
-  clearSlotState(state: ChatState) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
+  clearSlotState(state: ChatState) {
+    state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
+    // This clears only the active mirror, not the slot's cached identity. Keep
+    // ended-turn identity so a late `_done` remains guarded while the slot is
+    // live; `evictSlotState` removes it when the slot is gone.
+    state.pendingTurnSlot = null
+  },
   setSlotRunning(state: ChatState, action: PayloadAction<boolean>) {
     state.slotRunning = action.payload
     if (!action.payload) state.pendingTurnSlot = null
@@ -170,7 +302,7 @@ export const runStateReducers = {
    *  running=true is always trusted (also catches Slack/cron-initiated turns);
    *  running=false is ignored while a local turn is pending confirmation, since
    *  the snapshot may predate the send. Turn end is owned by _done/refreshSlot. */
-  syncSlotRunningFromServer(state: ChatState, action: PayloadAction<{ slot: string; running: boolean; stopping: boolean; epoch?: number }>) {
+  syncSlotRunningFromServer(state: ChatState, action: PayloadAction<TurnIdentityFields & { slot: string; running: boolean; stopping: boolean; epoch?: number }>) {
     const { slot, running, stopping, epoch } = action.payload
     if (slot !== state.activeSlot) {
       // A BACKGROUND slot (a member DM thread, a split pane) keeps its run
@@ -208,6 +340,12 @@ export const runStateReducers = {
       return
     }
     if (running) {
+      // `dashboard.slots` is also written by the HTTP `fetchSlots` reply,
+      // which can land after the live idle row. A snapshot naming a turn this
+      // tab already knows ended cannot restore busy, the same rule the
+      // history replies follow (`historyReportsRunning`).
+      const identity = wireTurnIdentity(action.payload)
+      if (identity && turnAlreadyEnded(state, slot, identity)) return
       if (!state.slotRunning) bumpRunEpoch(state, slot)
       state.slotRunning = true
       state.slotStopping = stopping

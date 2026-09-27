@@ -222,9 +222,10 @@ owners behind it are:
 whole chained transcript. When their newest window misses the rows a tab holds, they
 walk OLDER one `SLOT_DETAIL_MAX_LIMIT` (500-row) page at a time, up to
 `WINDOW_WALK_MAX_PAGES` (8) pages, plus one re-read of the newest page so the
-returned tail is as fresh as the returned status. When the cap is spent, or the held
-rows carry no `meta.mid` to anchor on, the replacing reducer keeps no head: the rows
-above the walked window leave the tab and are one page-back away.
+returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status fields
+come from the same newest edge. When the cap is spent, or the held rows carry no
+`meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
+walked window leave the tab and are one page-back away.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands

@@ -221,6 +221,11 @@ class SlotProjection:
         input the slot reads as idle while its owner is parked on an approval.
         Oldest first; the projection reads only the first one for the card.
         """
+        # Local import avoids the state -> slot_projection -> chat_utils -> state
+        # cycle at module import time. The value is process-local and cheap to
+        # read; it pairs the slot's restarting turn counter with its gateway.
+        from kiro_crew.dashboard.chat_utils import chunk_generation
+
         # The newest DURABLE row: a transient row (the turn-end ``done`` row
         # among them) is never persisted, so a slot rebuilt from disk after a
         # gateway restart lacks it. Projecting from one would move ``last_ts``
@@ -400,6 +405,8 @@ class SlotProjection:
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.turn_running,
+            "turn": slot._turn_generation,
+            "turn_gen": chunk_generation(),
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads
             # idle while it holds the session, which without this field looks
