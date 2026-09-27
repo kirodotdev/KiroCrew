@@ -1820,7 +1820,7 @@ When a new session starts inside an existing Slack thread, the handler fetches t
 
 ### Mermaid Diagram Sandboxing
 
-Mermaid `securityLevel` is set to `'strict'` in `MarkdownRenderer.tsx`, rendering diagrams inside an iframe sandbox. This prevents JavaScript execution from prompt-injected Mermaid diagram payloads.
+Mermaid `securityLevel` is set to `'strict'` in `components/markdown/MermaidBlock.tsx`, rendering diagrams inside an iframe sandbox. This prevents JavaScript execution from prompt-injected Mermaid diagram payloads.
 
 ### MCP Input/Output Validation (`validation.py`)
 

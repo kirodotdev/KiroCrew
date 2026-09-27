@@ -588,7 +588,7 @@ this section.
 
 **Have the agent print `---` in its message.** This already draws a rule today:
 `MarkdownRenderer` maps a markdown thematic break to `<hr>`
-(`website/src/components/MarkdownRenderer.tsx:984`), so an assistant message
+(the `hr` entry of `ELEMENT_OVERRIDES` in `website/src/components/markdown/elements.tsx`), so an assistant message
 containing `---` renders a horizontal line with no new code at all. It is the
 cheapest thing that produces the *pixels*, and it is worth saying why it is not
 the feature. The rule is inside one message's content, so there is no row to

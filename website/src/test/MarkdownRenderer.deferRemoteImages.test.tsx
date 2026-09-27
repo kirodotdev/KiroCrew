@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
@@ -495,10 +495,14 @@ describe('deferRemoteImages', () => {
   })
 
   it('the renderer exposes no remote-media deferral opt-out — no prop, no context', () => {
-    const source = readFileSync(
-      join(__dirname, '../components/MarkdownRenderer.tsx'),
-      'utf8',
-    )
+    // The renderer is the facade plus its owners under `components/markdown/`,
+    // so every one of those files is read.
+    const components = join(__dirname, '../components')
+    const source = [join(components, 'MarkdownRenderer.tsx'), ...readdirSync(join(components, 'markdown'))
+      .filter(name => /\.tsx?$/.test(name))
+      .map(name => join(components, 'markdown', name))]
+      .map(path => readFileSync(path, 'utf8'))
+      .join('\n')
     expect(source).not.toMatch(/\bdeferRemoteImages\b/)
     // Round 8: the context itself is deleted — deferral is unconditional
     // inline, so no future file can import a knob to consume.

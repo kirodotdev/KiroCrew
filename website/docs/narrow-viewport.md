@@ -133,7 +133,8 @@ one.
 
 **Count the surfaces this rule binds before believing it holds.** There are **three**
 full-viewport magnify overlays — the image viewer (`Lightbox` in
-`MarkdownRenderer.tsx`), the diagram viewer (`DiagramLightbox.tsx`), and the
+`components/markdown/Lightbox.tsx`, exported through `MarkdownRenderer.tsx`), the
+diagram viewer (`DiagramLightbox.tsx`), and the
 screenshot viewer in `pages/AppDetailPage.tsx`. Each one needs its own gesture: a
 diagram viewer without one is unmagnifiable by any gesture, because its content is
 fit-scaled vector whose labels are smallest at exactly the state it opens in. Checking the
@@ -194,8 +195,9 @@ requirement directly. `AppDetailPage.screenshotLightbox.zoom.test.tsx` separatel
 the screenshot viewer's reconciliation with arrow-key navigation, paging, and
 click-to-dismiss — the prev/next seam the other two do not have.
 
-Code blocks take the other legitimate route and scroll
-horizontally instead. And note what is *not* lost — the OS Display Zoom setting sits
+Code blocks (`CodeBlock.tsx`) and markdown tables (the scroll wrapper in
+`components/markdown/MarkdownTable.tsx`) take the other legitimate route and
+scroll horizontally instead. And note what is *not* lost — the OS Display Zoom setting sits
 outside the viewport contract and still magnifies anything. A browser tab's own
 text-size control does too, but it is **not** a fallback in the installed app: a
 standalone PWA has no Safari toolbar to reach it from, so on a home-screen install
@@ -312,8 +314,9 @@ copying:
   is inside the shell.
 - **Content that scrolls horizontally** already claims the gesture by being
   scrollable: the hook defers to the nearest horizontally-scrollable ancestor
-  **outright**, whatever its scroll position. Wide code blocks, markdown tables and
-  diagram strips need nothing declared. The deference is deliberately not the
+  **outright**, whatever its scroll position. Wide code blocks, markdown tables
+  (`components/markdown/MarkdownTable.tsx`) and diagram strips (the Mermaid host in
+  `components/markdown/MermaidBlock.tsx`) need nothing declared. The deference is deliberately not the
   nested-scroll handoff you would give a scrollable PARENT — deferring only while
   the inner scroller still had somewhere to go meant a freshly rendered code block,
   which sits at `scrollLeft: 0`, handed the very first rightward drag to the drawer

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
@@ -123,10 +123,20 @@ describe('path chip glyph reserve', () => {
     // check is that neither site carries its own copy of the numbers: a second
     // literal is how the reserve silently stops matching the glyph it stands in
     // for. Both must render `CHIP_GLYPH_SIZE` / `CHIP_GLYPH_GEOMETRY`.
-    const src = readFileSync(join(__dirname, '..', 'components', 'MarkdownRenderer.tsx'), 'utf8')
+    // The chip lives in `markdown/InlineCode.tsx`; the rest of the pipeline is
+    // read too, so a second definition or an unpinned glyph elsewhere fails.
+    const components = join(__dirname, '..', 'components')
+    const src = readFileSync(join(components, 'markdown', 'InlineCode.tsx'), 'utf8')
+    const pipeline = [join(components, 'MarkdownRenderer.tsx'), ...readdirSync(join(components, 'markdown'))
+      .filter(name => /\.tsx?$/.test(name))
+      .map(name => join(components, 'markdown', name))]
+      .map(path => readFileSync(path, 'utf8'))
+      .join('\n')
     expect(src).toMatch(/const CHIP_GLYPH_SIZE = 12/)
     expect(src).toMatch(/const CHIP_GLYPH_GEOMETRY = 'inline align-middle mr-1'/)
-    const glyphTags = src.match(/<Glyph[^>]*\/>/g) ?? []
+    expect(pipeline.match(/const CHIP_GLYPH_SIZE =/g)).toHaveLength(1)
+    expect(pipeline.match(/const CHIP_GLYPH_GEOMETRY =/g)).toHaveLength(1)
+    const glyphTags = pipeline.match(/<Glyph[^>]*\/>/g) ?? []
     expect(glyphTags.length).toBeGreaterThan(0)
     for (const tag of glyphTags) {
       expect(tag).toContain('size={CHIP_GLYPH_SIZE}')

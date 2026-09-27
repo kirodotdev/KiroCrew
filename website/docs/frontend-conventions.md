@@ -76,7 +76,8 @@ Other shared modules:
 - `AgentSelector.tsx` (portal dropdown with ARIA)
 - `layout.ts` (`LAYOUT` numeric constants: nav widths, sidebar width, max message
   width, topbar height, log line cap)
-- `InfoTip.tsx`, `MarkdownRenderer.tsx` (highlight.js syntax highlighting),
+- `InfoTip.tsx`, `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
+  syntax highlighting; its owners are mapped [below](#the-markdown-renderer)),
   `TypewriterText.tsx`
 
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
@@ -95,6 +96,39 @@ under every theme (`npm run storybook`); see
 one today. A story is the cheapest place to look at a new variant or prop, so add
 or update one when you touch a primitive that has one; a per-primitive
 requirement is not in force until the change that makes CI render stories.
+
+### The markdown renderer
+
+`components/MarkdownRenderer.tsx` is the renderer's only import path. Its default
+export (the memoized component), its named exports and its module id are what
+the consumers import and what about 150 specs mock, so all three stay there. It
+is also the composition root: what has to be decided in one place lives in it,
+and every other concern has one owner under `components/markdown/`.
+
+| Owner | Holds |
+|---|---|
+| `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
+| `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
+| `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions; path candidates, `file:line` suffixes, probe resolution and activation |
+| `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
+| `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
+| `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |
+| `markdown/linkBoundaryRepair.ts` | the source-level link repairs gated on remark's own parse: CJK autolink boundaries and refused link destinations |
+| `markdown/elements.tsx` | the restyle-only element overrides and the sanitizer-derived attribute forwarding they share (`sp` / `spa`) |
+| `markdown/InlineCode.tsx`, `markdown/copyFeedback.tsx` | the inline-code chips (path, session, work item, copy) and the copy outcome every chip shares |
+| `markdown/MarkdownTable.tsx` | a table and its Markdown / CSV copy row |
+| `markdown/ImgWithFallback.tsx`, `markdown/remoteMedia.tsx` | images (local-path routing, the layout reserve, the broken-image chip) and the click-to-load gate for remote images, video and audio |
+| `markdown/MermaidBlock.tsx` | lazily loaded mermaid, its `initialize` config (`securityLevel: 'strict'`), and the diagram's box and font gates, source view and downloads |
+| `markdown/Lightbox.tsx` | the image viewer and `dispatchLightbox` |
+
+Imports run one way. The facade imports the owners, and nothing under
+`components/markdown/` imports the facade: a module that did would receive the
+stub in every spec that mocks the renderer. Consumers keep importing from the
+facade for the same reason. Three things must stay in the facade's own text: the
+seven remark/rehype package imports (`test/test_source_providers.py` pins that
+set against the backend converter), `import '../utils/hljs'`
+(`hljsCoreOnly.test.ts`), and the two lines the i18n added-line gate counts, in
+`MdAnchor` and `stripStrayToolUseTags`.
 
 ### Which switcher
 
@@ -265,6 +299,20 @@ All `dangerouslySetInnerHTML` content goes through DOMPurify, via
 
 A bypass is an XSS bug, so there is no "just this once" case.
 
+The markdown renderer sets no `dangerouslySetInnerHTML`. Raw HTML in markdown
+prose enters its tree only through `rehype-raw`. In the chain
+`MarkdownRenderer.tsx` composes (`rehypeBoundRawDepth`, `rehype-raw`,
+`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`, `rehypeSanitize`, `rehype-katex`)
+the two passes between `rehype-raw` and `rehypeSanitize` only mark and restructure
+the tree; they add no attribute the sanitizer would not judge. Every pass that injects
+elements of its own (the streaming effects, the redaction markers, the stable
+root keys) is appended after sanitize. Two fences take other paths: a widget
+renders in `WidgetFrame`'s sandboxed iframe, and `MermaidBlock` inserts the SVG
+mermaid drew under `securityLevel: 'strict'`. The allowlist and the verbatim pass
+below live in `components/markdown/sanitize.ts`; the facade re-exports both, so a
+second surface that admits raw HTML reuses the one policy instead of carrying a
+copy.
+
 The shared markdown pass `remarkVerbatimUnknownTags` preserves unknown single
 tags as inert source text, including their case, bare attributes and quoted `>`
 characters. Its single-tag recognizer scans each character with a fixed set of
@@ -289,8 +337,9 @@ One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — drive letter or UNC) is passed through **for image
 `src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and
 would blank the sender's own uploaded image (issue #3497). The invariant that
-makes it safe: `ImgWithFallback` routes every local path to the same-origin
-`/api/file-raw` endpoint, so the raw filesystem path never reaches the DOM, and
+makes it safe: `ImgWithFallback` (`components/markdown/ImgWithFallback.tsx`)
+routes every local path to the same-origin `/api/file-raw` endpoint, so the raw
+filesystem path never reaches the DOM, and
 the shape (single letter + separator) cannot express `javascript:`/`data:`
 payloads. Widening that regex or its key scope is a security change — the same
 constant also decides which paths are treated as local file reads, so the two
