@@ -11097,7 +11097,12 @@ class TestReviewLanesPublishOnlyTheReview:
         script = (
             'summary="$(cat body.md)"\n'
             + trim
-            + "\nprintf '%s\\n' \"$summary\" | head -n1\n"
+            # First line via `awk 'NR == 1'`, never `head -n1`: head closes the
+            # pipe on its producer, and under this script's own `-o pipefail`
+            # the producer's SIGPIPE (141) becomes the script's exit status.
+            # Same reason the lanes themselves are held to it -- see
+            # test_guard_function_is_byte_identical_across_all_lanes.
+            + "\nprintf '%s\\n' \"$summary\" | awk 'NR == 1'\n"
             + "awk '/<details>/ { skip = 1 } !skip { print } /<\\/details>/ { skip = 0 }' <<< \"$summary\" | wc -w | tr -d ' '\n"
         )
         result = subprocess.run(
