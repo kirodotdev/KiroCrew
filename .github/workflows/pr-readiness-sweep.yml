@@ -102,13 +102,29 @@ name: PR Readiness Self-Heal Sweep
 #      observable and waits for a push or a manual dispatch.
 on:
   schedule:
-    # Every 5 minutes, which is the shortest cadence GitHub schedules. This is
-    # the verdict's delivery latency: a lane that completes waits at most one
-    # tick plus the publish lag below before its recompute is dispatched. The
-    # cost is bounded by the heads that CHANGED, not by the open set -- the
-    # GraphQL scan is a handful of requests on its own pool, and a recompute is
-    # dispatched only where a monitored check completed after the verdict.
+    # Every 5 minutes, which is the shortest cadence GitHub schedules -- when
+    # it schedules on time. It does not under load: measured 2026-09-27 with
+    # ~330 runs queued, this tick fired at 07:50 and next at 08:27, and a
+    # sibling `*/10` watchdog stretched to 25-minute gaps. GitHub documents the
+    # delay. The sweep is the ONLY path by which a completed lane reaches the
+    # verdict, so a cadence that depends on the scheduler alone is a cadence
+    # that fails exactly when the queue is deepest and verdicts matter most.
+    # Hence the second trigger below.
     - cron: "*/5 * * * *"
+  # A completed lane pulls the sweep in itself. Fast Gate is the one monitored
+  # workflow every same-repo AND fork head runs (it is also the Stage-2 fork
+  # lanes' trigger), so its completion is one event per head update -- about a
+  # hundred an hour against the ~1300 per-completion readiness dispatches this
+  # sweep replaced -- and it lands while the head's other lanes are still
+  # finishing, which is when a scan is worth having. Every such event enters
+  # the single concurrency group below, where GitHub keeps at most one pending
+  # run and lets a newer pending one supersede an older, so a burst of
+  # completions is one queued sweep, not a queue of them. The payload is not
+  # read: the sweep scans the whole open set regardless of which head fired
+  # it, and that is what keeps the two triggers interchangeable.
+  workflow_run:
+    workflows: [Fast Gate]
+    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -318,370 +334,207 @@ jobs:
           [ -z "$scan" ] || total="$(printf '%s\n' "$scan" | wc -l | tr -d ' ')"
           echo "Scanning $total open pull request(s) for stale PR Readiness."
 
-          # First pass: COLLECT every stale PR; do NOT dispatch inline. Inline
-          # dispatch in SCAN order plus a cap starves whichever stale PRs land
-          # past the cap on every sweep -- in practice the oldest, lowest-numbered
-          # ones, since the scan walks newest-updated first. Gather them all here,
-          # then dispatch oldest-first in the second pass below.
-          stale_file="$(mktemp)"
-
-          while read -r row; do
-            [ -n "$row" ] || continue
-            number="$(jq -r '.number' <<<"$row")"
-            sha="$(jq -r '.sha' <<<"$row")"
-            pr_updated_at="$(jq -r '.pr_updated_at // empty' <<<"$row")"
-            [ -n "$sha" ] && [ "$sha" != "null" ] || continue
-            pr_updated_epoch="$(date -u -d "$pr_updated_at" +%s 2>/dev/null || echo 0)"
-
+          # First pass: CLASSIFY every open pull request in ONE jq program, and
+          # COLLECT the stale ones; do NOT dispatch inline. Inline dispatch in
+          # SCAN order plus a cap starves whichever stale PRs land past the cap
+          # on every sweep -- in practice the oldest, lowest-numbered ones, since
+          # the scan walks newest-updated first. Gather them all here, then
+          # dispatch oldest-first in the second pass below.
+          #
+          # One jq pass rather than a bash loop over 650 rows: the loop spent
+          # ~10 jq and `date -d` processes per row, some 480 seconds of a job
+          # whose GraphQL scan takes two minutes -- longer than the cadence it
+          # runs on, so every tick queued behind the last. The decision logic
+          # is unchanged and lives in the program below; bash keeps only what
+          # jq cannot do, the two REST reads a handful of candidates need.
+          #
+          # Each output line is TAB-separated:
+          #   verdict  updated_epoch  number  sha  state  evidence  updated_at  note
+          # verdict is one of: dispatch (note = the reason), skip (note = a
+          # log line, or empty), rest:read_failure (a pending with no evidence,
+          # old enough to ask whether it is the read-failure class), or
+          # rest:disposition (a terminal verdict whose PR moved since, to ask
+          # whether a disposition record did). Every field but the last is
+          # non-empty by construction (`evidence` is complete|partial, a missing
+          # stamp is "-"): bash `read` on a tab IFS collapses an EMPTY field into
+          # its neighbour and shifts everything after it one column left.
+          classified="$(jq -rs \
+            --argjson now "$now_epoch" \
+            --argjson stale "$stale_seconds" \
+            --argjson lag "$publish_lag_seconds" \
+            --argjson min_age "$pending_min_age_seconds" '
+            def epoch: if . == null or . == "" then 0 else (try fromdateiso8601 catch 0) end;
+            .[]
+            | .number as $number
+            | (.sha // "") as $sha
+            | select($sha != "" and $sha != "null")
             # The scan already resolved the "PR Readiness" commit status for this
-            # head SHA, read from the commit's STATUS list and never from the
-            # check rollup -- the rollup interleaves check-runs, so reading the
-            # verdict there would let a check-run named like the aggregate decide
-            # the sweep. An empty state means the SHA carries no readiness status.
+            # head SHA, read from the commit STATUS list and never from the check
+            # rollup -- the rollup interleaves check-runs, so reading the verdict
+            # there would let a check-run named like the aggregate decide the
+            # sweep. An empty state means the SHA carries no readiness status.
             #
             # A pull request the scan could not read is ABSENT from the scan
-            # output rather than present with an empty status, which is what keeps
-            # a GraphQL failure from reading as an unpublished verdict. Conflating
-            # them would turn transient GitHub trouble into a spurious re-fire of
-            # an arbitrary old PR, on a shared token budget, every 15 minutes.
-            state="$(jq -r '.readiness.state // empty' <<<"$row")"
-            updated_at="$(jq -r '.readiness.updated_at // empty' <<<"$row")"
-
+            # output rather than present with an empty status, which is what
+            # keeps a GraphQL failure from reading as an unpublished verdict.
+            # Conflating them would turn transient GitHub trouble into a
+            # spurious re-fire of an arbitrary old PR, on a shared token budget,
+            # every tick.
+            | (.readiness.state // "") as $raw_state
+            # NO readiness status on this SHA. Skipping on the assumption that
+            # "the run belonging to the PR is coming" is only true for a few minutes after a
+            # push. Past that it means no run ever published one -- most often
+            # because the status POST in pr-readiness.yml failed and is deliberately
+            # not retried, which leaves the required aggregate absent with no
+            # pending to age out and no event owed. That is the freeze mode
+            # nothing else can clear, so it is rescued on the age of the PR itself --
+            # its last activity (a push bumps updatedAt, so the window restarts
+            # on every new revision). Carried as a sentinel STATE so it reuses
+            # the one staleness comparison below; the GitHub states are
+            # error/failure/pending/success, so the sentinel cannot collide.
+            | (if $raw_state == "" then "__unpublished__" else $raw_state end) as $state
+            | (if $raw_state == "" then .pr_updated_at else .readiness.updated_at end) as $updated_at
+            | ($updated_at | epoch) as $updated
+            | ($now - $updated) as $age
+            | (.pr_updated_at | epoch) as $pr_updated
             # Newest completed / newest failure-class check-run on this SHA, both
             # folded across every rollup page by the scan. The failure class is
-            # the same six conclusions the REST reader listed, in GraphQL's
-            # UPPER_CASE spelling; test_readiness_sweep_scan.py compares the two
-            # lists so they cannot drift.
-            newest_check="$(jq -r '.newest_completed_check_at // empty' <<<"$row")"
-            newest_fail="$(jq -r '.newest_failed_check_at // empty' <<<"$row")"
+            # the same six conclusions the REST reader listed
+            # (failure/timed_out/cancelled/action_required/stale/startup_failure),
+            # in the GraphQL UPPER_CASE spelling; test_readiness_sweep_scan.py
+            # compares the two lists so they cannot drift. A rollup page the scan
+            # could not read leaves this evidence PARTIAL; it is evaluated
+            # anyway, because
+            # missing evidence can only fail to prove a verdict stale, never
+            # invent staleness -- the worst case is a rescue delayed one tick.
+            | (.newest_completed_check_at | epoch) as $newest
+            | (.newest_failed_check_at | epoch) as $newest_fail
+            | (if .checks_complete == true then "complete" else "partial" end) as $evidence
+            | (
+              if $state == "__unpublished__" then
+                # Age from the last activity of the PR itself, so a brand-new PR whose
+                # run is genuinely still queueing is left alone. Self-limiting:
+                # one dispatch per sweep per PR, and the moment any verdict
+                # lands this branch stops applying.
+                if $updated == 0 or $age < $stale then {v: "skip", n: ""}
+                else {v: "dispatch",
+                      n: "no readiness status published; PR last active \($age)s ago (> \($stale)s)"} end
+              elif $state == "pending" then
+                # Younger than the publish lag: the recompute that wrote it may
+                # still be inside its own evaluate-to-publish gap, and any check
+                # it did not see is still evidence on the next tick.
+                if $updated == 0 or $age < $min_age then {v: "skip", n: ""}
+                # The ordinary delivery: a check completed after the evaluation the
+                # verdict came from, which the floor approximates from the
+                # publication stamp MINUS the lag -- a lane that completed inside
+                # the evaluate-to-publish gap of the aggregator is evidence the verdict
+                # never read, though it pre-dates the stamp. Age proves nothing
+                # by itself: a lane added to the monitored list after a head was
+                # pushed has zero runs on that immutable head and re-derives the
+                # same pending forever, so nudging on age alone re-fired 22 PRs
+                # every sweep and changed nothing. Self-terminating both ways:
+                # republishing makes readiness the newest stamp (the min-age /
+                # lag pairing carries the same check below the new floor on the
+                # very next tick), and any later completion reopens it. A
+                # pending with NO completed check is left alone for the same
+                # reason: its lanes are still owed.
+                elif $newest > ($updated - $lag) then
+                  {v: "dispatch",
+                   n: "pending for \($age)s with a check completed later at \(.newest_completed_check_at)"}
+                # No evidence. The one pending that still deserves a nudge is
+                # the read-failure class, published at the end of a job whose
+                # reads broke, so it can post-date every check on the head and
+                # hold no later evidence by construction while a recompute
+                # resolves it outright. Aged against STALE_MINUTES, not the lag:
+                # a read failure is the pool being exhausted, and re-dispatching
+                # every such head every tick would spend more of the pool on the
+                # one condition that needs it left alone. The class is told by
+                # the status DESCRIPTION, which the scan does not carry, so it
+                # is a REST read -- made only here, for a pending the evidence
+                # test is about to skip.
+                elif $age < $stale then
+                  {v: "skip",
+                   n: "pending for \($age)s at \($sha) but no check completed within \($lag)s of it being published; a recompute would re-derive the same verdict, so not re-firing."}
+                else
+                  {v: "rest:read_failure",
+                   n: "pending for \($age)s (> \($stale)s) after a read failure, which a recompute resolves"} end
+              elif $state == "failure" then
+                # A TERMINAL verdict goes stale too. Re-running jobs inside a
+                # completed run creates a new ATTEMPT whose completion emits no
+                # fresh event, so nothing recomputes (PR #2064: CI reached
+                # attempt 2 and passed while readiness stayed frozen red). The
+                # condition is deliberately NOT "state is failure" -- that would
+                # nudge every legitimately failing PR forever -- but "a check
+                # finished AFTER the verdict was published", which makes the
+                # verdict stale by construction and is self-terminating: the
+                # republish is the newest stamp again. The five-second slack
+                # absorbs same-second ordering. Failing that, a disposition
+                # record posted or edited after the verdict changes it too, and
+                # readiness has no issue_comment trigger; that read costs a REST
+                # request and is made only when the PR itself moved since.
+                if $updated == 0 then {v: "skip", n: ""}
+                elif $newest > ($updated + 5) then
+                  {v: "dispatch",
+                   n: "failure published at \($updated_at) but a check completed later at \(.newest_completed_check_at)"}
+                elif $pr_updated > $updated then {v: "rest:disposition", n: ""}
+                else {v: "skip", n: ""} end
+              elif ($state == "success" or $state == "error") then
+                # The mechanism of mode 2 is direction-blind: a job re-run that flips a
+                # lane RED after a green verdict emits no event either, leaving
+                # the required aggregate green over a now-red revision -- which
+                # PERMITS a merge. The evidence is narrowed to failure-class
+                # conclusions, because housekeeping check-runs legitimately
+                # complete long after a verdict and would otherwise re-fire every
+                # green PR on every sweep. The disposition arm mirrors the red
+                # one: a violating record posted after a green verdict leaves it
+                # green over a revision that now violates the rule.
+                if $updated == 0 then {v: "skip", n: ""}
+                elif $newest_fail > ($updated + 5) then
+                  {v: "dispatch",
+                   n: "\($state) published at \($updated_at) but a check FAILED later at \(.newest_failed_check_at)"}
+                elif $pr_updated > $updated then {v: "rest:disposition", n: ""}
+                else {v: "skip", n: ""} end
+              # Any state this sweep does not model is left to a real event.
+              else {v: "skip", n: ""} end
+            ) as $d
+            | [$d.v, $updated, $number, $sha, $state, $evidence, ($updated_at // "-"), $d.n] | @tsv
+          ' <<<"$scan")"
 
-            # A rollup page the scan could not read leaves this evidence PARTIAL.
-            # Evaluate anyway: missing evidence can only fail to prove a verdict
-            # stale, never invent staleness, so the worst case is a rescue delayed
-            # to the next sweep -- the same degradation as a skipped PR page.
-            if [ "$(jq -r '.checks_complete' <<<"$row")" != "true" ]; then
+          stale_file="$(mktemp)"
+
+          while IFS=$'\t' read -r verdict updated_epoch number sha state evidence updated_at note; do
+            [ -n "$number" ] || continue
+            if [ "$evidence" = "partial" ]; then
               echo "PR #$number: check-run evidence is partial (a rollup page" \
                 "failed); evaluating on what was read."
             fi
-
-            # NO readiness status on this SHA. Skipping here on the assumption
-            # that "the PR's own run is coming" is only true for a few minutes
-            # after a push. Past that window it means no run ever published one
-            # -- most often because `pr-readiness.yml`'s status POST failed and
-            # is deliberately not retried, which leaves the required aggregate
-            # absent with no `pending` to age out and no event pending. That is
-            # the freeze mode nothing else can clear, so it is rescued on the
-            # PR's own last-activity age (a push bumps `updatedAt`, so the
-            # window restarts on every new revision).
-            #
-            # Self-limiting by construction: one dispatch per sweep per PR, and
-            # the moment any verdict lands this branch stops applying. Bounded by
-            # MAX_DISPATCH like every other path.
-            #
-            # Carried as a sentinel STATE rather than an early `printf` so this
-            # case reuses the one staleness comparison and the one stale-file
-            # record writer below, instead of restating either. GitHub's commit
-            # status states are error/failure/pending/success, so the sentinel
-            # cannot collide with a real one.
-            if [ -z "$state" ]; then
-              state="__unpublished__"
-              updated_at="$pr_updated_at"
-            fi
-            updated_epoch="$(date -u -d "$updated_at" +%s 2>/dev/null || echo 0)"
-            age=$(( now_epoch - updated_epoch ))
-
-            case "$state" in
-              __unpublished__)
-                # Age is measured from the PR's own last activity, because a push
-                # bumps `updatedAt` -- so the grace window restarts on every new
-                # revision, and a brand-new PR whose run is genuinely still
-                # queueing is left alone.
-                if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$stale_seconds" ]; then
+            case "$verdict" in
+              dispatch)
+                reason="$note"
+                ;;
+              skip)
+                [ -z "$note" ] || echo "PR #$number: PR Readiness $note"
+                continue
+                ;;
+              rest:read_failure)
+                if ! readiness_is_read_failure "$sha"; then
+                  age=$(( now_epoch - updated_epoch ))
+                  echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
+                    "check completed within ${publish_lag_seconds}s of it being published;" \
+                    "a recompute would re-derive the same verdict, so not re-firing."
                   continue
                 fi
-                reason="no readiness status published; PR last active ${age}s ago (> ${stale_seconds}s)"
+                reason="$note"
                 ;;
-              pending)
-                if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$pending_min_age_seconds" ]; then
-                  # Either unparseable, or younger than the publish lag: the
-                  # recompute that wrote it may still be inside its own
-                  # evaluate-to-publish gap, and any check it did not see is
-                  # still evidence on the next tick.
+              rest:disposition)
+                disposition_epoch="$(newest_disposition_epoch "$number")"
+                [ "$disposition_epoch" -ne 0 ] || continue
+                if [ "$disposition_epoch" -le "$updated_epoch" ]; then
                   continue
                 fi
-                # Age says the verdict is settled, nothing more. It does not
-                # prove a recompute would read anything different, and re-firing
-                # one that cannot is pure waste. A readiness lane added to the
-                # monitored list after a head was pushed has zero runs on that
-                # immutable head and can never acquire one, so the aggregator
-                # counts it "(not started)" and re-derives the identical pending
-                # every time. On age alone that ran every sweep for as long as
-                # the pull request stayed open -- measured on 22 of them, one
-                # carrying over 100 identical `PR Readiness` rows on a single
-                # SHA.
-                #
-                # So the test is the one modes 2, 4 and 5 already use, read in
-                # the pending direction: dispatch only when a check-run for this
-                # SHA completed after the verdict's own evaluation, which the
-                # floor below approximates from the publication stamp. That is
-                # the ordinary delivery now -- the aggregator no longer hears
-                # `completed` -- and the only shape a recompute can resolve. A
-                # verdict newer than every check on its head has already seen
-                # all the evidence there is.
-                #
-                # Self-terminating in both directions, which is what makes it
-                # safe on a schedule. Republishing makes readiness the newest
-                # timestamp again, so a rescue nudges at most once per new piece
-                # of check evidence; and the moment any lane does complete after
-                # the verdict this condition flips back on, so a head parked
-                # here is not parked permanently. A pending with NO completed
-                # check at all is left alone for the same reason: its lanes are
-                # still owed, and the first completion is what brings it here.
-                #
-                # One CLASS of pending is exempt, and it is the exception that
-                # keeps this test from stranding anything: a pending the
-                # publisher stamps as a read failure. Those are published at the
-                # end of a job whose reads broke, so they can post-date every
-                # check on the head and hold no later evidence by construction,
-                # while a recompute resolves them outright. They keep an
-                # age-based retry, which is their only signal -- see
-                # readiness_is_read_failure above -- at STALE_MINUTES rather
-                # than the lag: a read failure is the pool being exhausted, and
-                # re-dispatching every such head every tick would spend more of
-                # the pool on the one condition that needs it left alone. The
-                # evidence test therefore applies to a verdict derived from lane
-                # state, which is the shape a recompute cannot change.
-                #
-                # The lanes cannot be re-run by this sweep -- it dispatches the
-                # aggregator only, never a gate -- and the aggregator's own
-                # status now NAMES them, so the author reads which lane is
-                # missing from the status line and clears it with a push or a
-                # re-run of that lane. Residual, documented rather than solved:
-                # REMOVING a lane from the monitored list on the default branch
-                # changes a frozen verdict with no new check evidence behind it,
-                # and that case waits for a push or a manual dispatch of this
-                # sweep, the same way mode 5 documents a deleted record.
-                newest_epoch=0
-                if [ -n "$newest_check" ]; then
-                  newest_epoch="$(date -u -d "$newest_check" +%s 2>/dev/null || echo 0)"
-                fi
-                # The floor is the publication stamp MINUS publish_lag_seconds,
-                # not the stamp itself. A lane that completed inside the
-                # aggregator's own evaluate-to-publish gap is evidence the
-                # verdict never read, even though it pre-dates the stamp;
-                # comparing against the stamp alone calls that check old and
-                # strands the head permanently -- there is no completion event
-                # left to catch it. The bound doubles as this arm's minimum age
-                # (see pending_min_age_seconds), which is what carries a
-                # rescue's own republish past the same check on the next tick.
-                if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
-                  # No evidence. The one pending that still deserves a nudge
-                  # here is the read-failure class, and it is aged against
-                  # STALE_MINUTES, not the lag -- see the note above.
-                  if [ "$age" -lt "$stale_seconds" ] || ! readiness_is_read_failure "$sha"; then
-                    echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
-                      "check completed within ${publish_lag_seconds}s of it being published;" \
-                      "a recompute would re-derive the same verdict, so not re-firing."
-                    continue
-                  fi
-                  reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
-                else
-                  reason="pending for ${age}s with a check completed later at $newest_check"
-                fi
-                ;;
-              failure)
-                # A TERMINAL verdict can go stale too, and this is the case the
-                # pending-only sweep missed entirely. Re-running individual jobs
-                # inside an already-completed run (`gh run rerun --failed`)
-                # creates a new run ATTEMPT, and that attempt's completion does
-                # NOT emit a fresh `workflow_run: completed` event -- so nothing
-                # re-triggers the aggregator. Proven on PR #2064: CI run
-                # 31208434535 reached attempt 2 and completed SUCCESS at
-                # 19:16:13Z, while `PR Readiness` stayed frozen on its 19:01:24Z
-                # failure. Every underlying check was green and the aggregate was
-                # red, with no event left to fix it.
-                #
-                # The re-fire condition is deliberately NOT "state is failure":
-                # that would dispatch on every legitimately-failing PR every 15
-                # minutes, forever. It is "a check run for this SHA finished
-                # AFTER the verdict was published" -- i.e. the verdict is stale
-                # BY CONSTRUCTION, because evidence landed after it was computed.
-                #
-                # That condition is self-terminating, which is what makes it safe
-                # to run on a schedule: republishing the verdict makes the
-                # readiness status the newest timestamp again, so the next sweep
-                # sees nothing newer and does not re-fire. A PR that is genuinely
-                # failing is nudged at most once per new piece of check evidence,
-                # not once per sweep.
-                [ "$updated_epoch" -ne 0 ] || continue
-                # `newest_check` is the newest COMPLETED check-run on this SHA,
-                # folded by the scan across every rollup page. A GraphQL contexts
-                # connection serves at most 100 nodes and this repository's PRs
-                # already carry 65-98, so the paging is not hypothetical: a
-                # page-blind read would silently exempt every PR whose lanes have
-                # been re-run, which is exactly the population mode 2 rescues.
-                newest_epoch=0
-                if [ -n "$newest_check" ]; then
-                  newest_epoch="$(date -u -d "$newest_check" +%s 2>/dev/null || echo 0)"
-                fi
-                # Strictly newer, with a small margin so a check completing in
-                # the same second as the publish does not look like new evidence.
-                if [ "$newest_epoch" -gt $(( updated_epoch + 5 )) ]; then
-                  reason="failure published at $updated_at but a check completed later at $newest_check"
-                else
-                  # Mode 5: COMMENT evidence. Since #6658 readiness also fails on
-                  # a disposition-rule violation, so the verdict now depends on
-                  # comment bytes -- and `pr-readiness.yml` has no
-                  # `issue_comment` trigger. Correcting the offending comment
-                  # therefore emits NO event and produces NO check-run, so mode 2
-                  # above cannot see it and the red freezes on an unchanged
-                  # commit. That is this sweep's own subject matter, in the red
-                  # direction.
-                  #
-                  # Same shape and same safety argument as mode 2: the test is
-                  # "a disposition record changed AFTER the verdict was
-                  # published", which makes the verdict stale by construction and
-                  # is self-terminating, because republishing makes readiness the
-                  # newest timestamp again. A PR that genuinely violates the rule
-                  # is nudged at most once per edit, never once per sweep.
-                  #
-                  # An `issue_comment` trigger on `pr-readiness.yml` was the
-                  # alternative and is the wrong trade: that workflow is already
-                  # the majority of this repository's run creation, the review
-                  # bots rewrite their comments in place on every push, and the
-                  # dispatch is spent whether or not a job-level `if` then skips
-                  # the run. A scheduled sweep that already iterates these PRs
-                  # pays one extra read per candidate PR instead.
-                  #
-                  # The marker prefix in the helper SELECTS candidate comments; it
-                  # does not evaluate the rule. A drift in that prefix changes
-                  # only how often a nudge fires, never what counts as a
-                  # violation -- which is why this is not the "fourth parser"
-                  # #6658 forbids. Deletion with no replacement leaves nothing
-                  # observable: in the red direction that residual waits for a
-                  # push or a manual dispatch, and the docs say so. In the green
-                  # direction it needs no rescue, because removing a record can
-                  # only remove a violation.
-                  # Gate the comment read on the PR's own last-activity
-                  # time. Creating OR editing an issue comment bumps the pull
-                  # request's `updatedAt` -- measured directly: a comment PATCH at
-                  # 06:04:01Z moved `updated_at` from 06:02:52Z to 06:04:01Z. So
-                  # an `updatedAt` no newer than the verdict PROVES no disposition
-                  # record was created or edited after it, and there is nothing
-                  # here for the read to find.
-                  #
-                  # The gate is deliberately one-sided. A label, a review or a
-                  # push bumps `updatedAt` too, so it opens for PRs that carry no
-                  # new comment at all -- each costing exactly one REST read --
-                  # but it never closes on a PR that does. It cannot hide comment
-                  # evidence; it only skips reads that cannot find any. Measured
-                  # on 2026-09-15: 317 of 502 open PRs were untouched since their
-                  # verdict and skip this read; the other 185 mostly carry the
-                  # label writes readiness itself makes AFTER publishing, which
-                  # bump `updatedAt` past the verdict and cost one read each.
-                  [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
-                  disposition_epoch="$(newest_disposition_epoch "$number")"
-                  [ "$disposition_epoch" -ne 0 ] || continue
-                  # STRICT, with no margin. The check-evidence modes carry a
-                  # 5s margin so a check completing in the same second as the
-                  # publish is not read as new evidence; `-le` already excludes
-                  # the same second by itself, so for comment evidence that
-                  # margin bought nothing and cost a 1-5s window in which a
-                  # record could be posted and then never re-examined, since
-                  # nothing else observes comments. Self-termination is
-                  # unaffected: republishing moves the verdict past the record.
-                  if [ "$disposition_epoch" -le "$updated_epoch" ]; then
-                    continue
-                  fi
-                  reason="failure published at $updated_at but a disposition record changed later at $(date -u -d "@$disposition_epoch" +%Y-%m-%dT%H:%M:%SZ)"
-                fi
-                ;;
-              success|error)
-                # Mode 2's mechanism does not care which way the re-run went. A
-                # job re-run that turns a lane RED after a green verdict emits no
-                # `workflow_run: completed` either, so the required aggregate
-                # stays green over a now-red revision -- and a stale green
-                # PERMITS a merge, where a stale red only blocks one. The unsafe
-                # direction is therefore the one that was never rescued.
-                #
-                # The evidence test is narrowed to FAILURE-CLASS conclusions
-                # rather than "any check completed later". Housekeeping check-runs
-                # (`Strip stale workflow-change override`, `Fork workflow-change
-                # guard`) routinely complete days after a verdict on a long-lived
-                # PR, so the unnarrowed test would re-fire most green PRs on every
-                # sweep while proving nothing. A later `success` needs no rescue:
-                # it cannot turn a green verdict red.
-                #
-                # Self-terminating exactly like mode 2 -- republishing makes the
-                # verdict the newest timestamp, so the same red evidence is not
-                # counted twice. `error` shares this arm because it is the same
-                # dropped-event problem: "the next real event will correct it"
-                # holds only when a next event exists.
-                [ "$updated_epoch" -ne 0 ] || continue
-                # `newest_fail` is the newest failure-class check-run on this SHA
-                # (failure/timed_out/cancelled/action_required/stale/
-                # startup_failure), folded by the scan across every rollup page.
-                newest_fail_epoch=0
-                if [ -n "$newest_fail" ]; then
-                  newest_fail_epoch="$(date -u -d "$newest_fail" +%s 2>/dev/null || echo 0)"
-                fi
-                if [ "$newest_fail_epoch" -gt $(( updated_epoch + 5 )) ]; then
-                  reason="$state published at $updated_at but a check FAILED later at $newest_fail"
-                else
-                  # Mode 5 in the PERMITTING direction, and this is the half that
-                  # actually matters. A writer can post a rule-violating
-                  # disposition record AFTER readiness published success: the
-                  # record immediately carries adjudication-ledger downgrade
-                  # power, the revision now violates the rule, and no event
-                  # re-evaluates it -- so the required status stays green over a
-                  # revision that should be red, which PERMITS a merge. Mode 4's
-                  # own reasoning applies verbatim: a stale green permits, a
-                  # stale red merely blocks, so the permitting direction is the
-                  # one that must not be left unrescued.
-                  #
-                  # No narrowing is needed here beyond the marker prefix the
-                  # helper already applies. Mode 4 has to restrict check evidence
-                  # to failure-class conclusions because housekeeping check-runs
-                  # complete late on every long-lived PR; a disposition record, by
-                  # contrast, is only ever written by a writer ruling on this PR,
-                  # and each one is counted at most once because republishing
-                  # makes readiness the newest timestamp again.
-                  # Gate the comment read on the PR's own last-activity
-                  # time. Creating OR editing an issue comment bumps the pull
-                  # request's `updatedAt` -- measured directly: a comment PATCH at
-                  # 06:04:01Z moved `updated_at` from 06:02:52Z to 06:04:01Z. So
-                  # an `updatedAt` no newer than the verdict PROVES no disposition
-                  # record was created or edited after it, and there is nothing
-                  # here for the read to find.
-                  #
-                  # The gate is deliberately one-sided. A label, a review or a
-                  # push bumps `updatedAt` too, so it opens for PRs that carry no
-                  # new comment at all -- each costing exactly one REST read --
-                  # but it never closes on a PR that does. It cannot hide comment
-                  # evidence; it only skips reads that cannot find any. Measured
-                  # on 2026-09-15: 317 of 502 open PRs were untouched since their
-                  # verdict and skip this read; the other 185 mostly carry the
-                  # label writes readiness itself makes AFTER publishing, which
-                  # bump `updatedAt` past the verdict and cost one read each.
-                  [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
-                  disposition_epoch="$(newest_disposition_epoch "$number")"
-                  [ "$disposition_epoch" -ne 0 ] || continue
-                  # STRICT, with no margin. The check-evidence modes carry a
-                  # 5s margin so a check completing in the same second as the
-                  # publish is not read as new evidence; `-le` already excludes
-                  # the same second by itself, so for comment evidence that
-                  # margin bought nothing and cost a 1-5s window in which a
-                  # record could be posted and then never re-examined, since
-                  # nothing else observes comments. Self-termination is
-                  # unaffected: republishing moves the verdict past the record.
-                  if [ "$disposition_epoch" -le "$updated_epoch" ]; then
-                    continue
-                  fi
-                  reason="$state published at $updated_at but a disposition record changed later at $(date -u -d "@$disposition_epoch" +%Y-%m-%dT%H:%M:%SZ)"
-                fi
+                reason="$state published at $updated_at but a disposition record changed later at $(date -u -d "@$disposition_epoch" +%Y-%m-%dT%H:%M:%SZ)"
                 ;;
               *)
-                # Any state this sweep does not model is left to a real event.
                 continue
                 ;;
             esac
@@ -690,7 +543,7 @@ jobs:
             # staleness epoch is the status's own updated_at, so a numeric sort
             # ascending on column 1 orders by HOW LONG each PR has been frozen.
             printf '%s\t%s\t%s\t%s\n' "$updated_epoch" "$number" "$sha" "$reason" >>"$stale_file"
-          done < <(printf '%s\n' "$scan")
+          done <<<"$classified"
 
           stale_total=0
           [ -s "$stale_file" ] && stale_total="$(wc -l <"$stale_file" | tr -d ' ')"
