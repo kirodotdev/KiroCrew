@@ -55,6 +55,24 @@ describe('hi punctuation (style/hi.md §1)', () => {
     // Baselined: existing catalog may use periods
     expect(bad.length, report(bad)).toBeLessThanOrEqual(30)
   })
+
+  // The ceiling's companion: it tolerates the inherited catalog, but it cannot say
+  // whose violation it is, so a branch that adds one rides under it until the count
+  // crosses and the round that reds belongs to someone else. See
+  // docs/ci/i18n-gates.md.
+  it('[changed-values] ends a Devanagari sentence with purna viram at zero tolerance', () => {
+    const changed = changedHiValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, value]) => DEVANAGARI.test(value) && /[\u0900-\u097f]\.$/.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(-30))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
+  })
 })
 
 describe('hi tone (style/hi.md §4)', () => {

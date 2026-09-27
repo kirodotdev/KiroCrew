@@ -4126,6 +4126,81 @@ xdist a block would take the worker with it (flake class 6 above), and on Window
 that aborts the run. `test/e2e/test_gateway_boot_matrix.py` is the reference
 shape; `docs/ci/e2e-gate.md` documents the job that runs it.
 
+## A gate that reds on someone else's pull request
+
+The flake classes above are about a test that disagrees with itself. This is the
+other failure mode: a gate that is perfectly deterministic and still sends its bill
+to the wrong person. Main goes red, and the contributor who pays is whoever opens
+the next pull request — someone whose own diff contains nothing to fix, and who has
+to spend an hour proving that before they can even read their own result.
+
+On 2026-09-27 three of these fired at once and took **every open pull request** red
+on three separate lanes. They are three different shapes of the same mistake, and
+each has a cheap structural fix.
+
+**Before you believe a red is yours, price the alternative.** Ask whether the same
+check is failing on other people's heads: list the most recently updated open pull
+requests and read the check-runs on their head SHAs. It costs no rerun, spends no
+review quota, and it answers in seconds what reproducing locally can take an hour to
+answer. A check failing on 8 of 10 unrelated heads is main's, not yours — and the
+one head where it passes usually turns out to sit on a base from before the break,
+which is itself the confirmation.
+
+### A count ceiling with no diff-scoped companion
+
+`expect(bad.length).toBeLessThanOrEqual(8)` tolerates inherited debt, which is
+legitimate. What it cannot do is say WHOSE violation it is: a branch that adds one
+rides under the ceiling, and the round that finally reds belongs to whichever branch
+happens to run after the count crosses.
+
+Pair every ceiling with a zero-tolerance assertion over the values the branch itself
+wrote, diff-scoped against its base. The count keeps guarding the inheritance, the
+diff-scoped half names the author, and nothing is stored, so two branches have no
+ledger line to conflict on. `website/src/i18n/style/bnStyle.test.ts` carries both
+halves now; [i18n-gates](../../ci/i18n-gates.md) states the rule.
+
+### A whole-tree registration pin, not selected by diff relevance
+
+Some pins scan the entire tree and require every call site of a guarded shape to be
+declared in a list — `test/test_link_screen_hold_pin.py` for screen-then-operate
+TOCTOU sites, `website/electron/test/port-owner-self-asserted-identity.test.js` for
+port-verdict sites. They are the right design: an unclassifiable site fails rather
+than passing, so a new one cannot join quietly.
+
+The trap is that `scripts/local-gate.py` selects tests by diff relevance, and a pin
+that scans everything is relevant to a diff that names none of its files. So adding
+a guarded call site passes the local gate, merges, and reds every pull request
+opened afterwards.
+
+When your change adds a call of a guarded shape — a link screen, a tree walk, an
+`unlink`/`rmdir`, a port verdict — run the tree-scan pins explicitly. Registering a
+site is one line, and the pin's own message says which list it belongs in; what it
+will not do is guess.
+
+### A test that ASSERTS a host capability instead of gating on it
+
+`assert supervisor.can_reap()` inside a test body says "this host supports pidfd".
+That is not an assertion about the code under test, it is a claim about the runner —
+and on a heterogeneous fleet it is false on some machines, so the test fails where
+the capability is absent rather than standing aside.
+
+Gate it. Probe through the REAL path first, while it is still present, and skip when
+the host itself says no; assert only the thing the test is actually for. The skip
+stays honest because it cannot trigger on the subject failing: in the pidfd case,
+`pidfd_open(2)` is one syscall number, so a host that refuses it to `os` refuses it
+to the ctypes fallback too, and a host that allows it to `os` while the fallback
+fails is a genuine regression that must still red. A file that already has such a
+marker — `reaping = pytest.mark.skipif(not supervisor.can_reap(), ...)` — is telling
+you the precondition exists and this test forgot to use it.
+
+**How to tell a capability gap from a real break, from the CI summary alone:** diff
+the counts between a passing and a failing run of the same shard. The failing
+`Backend Tests (3.12, 2)` read `22089 passed, 1030 skipped, 1 failed` against a
+passing `22094 passed, 1026 skipped` — five fewer passes, four more skips, one
+failure. The four extra skips ARE the capability-gated tests standing aside, which
+proves the runner lacked the capability and the one failure was the test that forgot
+to stand aside with them. No log spelunking required.
+
 ## Keeping the suite fast
 
 The measured runs above exceeded 100k tests. At that scale, setup overhead rather

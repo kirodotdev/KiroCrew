@@ -170,22 +170,45 @@ describe('fr register (style/fr.md §4)', () => {
 })
 
 describe('fr accents (style/fr.md §7)', () => {
-  it('capitals have their accents', () => {
-    // Common violations: "Etat" should be "État", "A propos" should be "À propos"
-    const MUST_ACCENT: Array<[string, string]> = [
-      ['Etat', 'État'],
-      ['Ecran', 'Écran'],
-      ['Element', 'Élément'],
-      ['Evenement', 'Événement'],
-    ]
+  // Shared by the ceiling below and its companion, so the two can never come to
+  // disagree about what a violation is.
+  const MUST_ACCENT: Array<[string, string]> = [
+    ['Etat', 'État'],
+    ['Ecran', 'Écran'],
+    ['Element', 'Élément'],
+    ['Evenement', 'Événement'],
+  ]
+  const violations = (values: Record<string, string>): string[] => {
     const bad: string[] = []
-    for (const [key, value] of Object.entries(fr)) {
+    for (const [key, value] of Object.entries(values)) {
       for (const [wrong, correct] of MUST_ACCENT) {
         if (value.includes(wrong) && !value.includes(correct)) {
           bad.push(`${key}: has '${wrong}' not '${correct}'`)
         }
       }
     }
+    return bad
+  }
+
+  it('capitals have their accents', () => {
+    // Common violations: "Etat" should be "État", "A propos" should be "À propos"
+    const bad = violations(fr)
     expect(bad.length, report(bad)).toBeLessThanOrEqual(11)
+  })
+
+  // The ceiling's companion: it tolerates the inherited catalog, but it cannot say
+  // whose violation it is, so a branch that adds one rides under it until the count
+  // crosses and the round that reds belongs to someone else. See
+  // docs/ci/i18n-gates.md.
+  it('[changed-values] accents capitals at zero tolerance', () => {
+    const changed = changedFrValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = violations(changed)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
   })
 })

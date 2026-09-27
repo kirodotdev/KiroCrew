@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import json
 import logging
 import os
@@ -236,15 +237,97 @@ def test_reap_is_skipped_when_the_supervisor_does_not_lead_its_group(tmp_path: P
     assert verdict_file.read_text() == "alive", "supervisor reaped a group it does not lead"
 
 
+def _pidfd_open_with_a_number_this_test_states(pid: int) -> int:
+    """``pidfd_open(2)`` through ctypes, with the syscall number written HERE.
+
+    An INDEPENDENT oracle, and the reason it is not a copy of the code under test:
+    the module reads its own ``_SYS_PIDFD_OPEN``, so comparing against a number this
+    file states is what pins that constant. A wrong constant in the module answers a
+    different errno from this call and fails; assuming the constant instead would
+    leave exactly that mistake green.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    ctypes.set_errno(0)
+    result = libc.syscall(434, pid, 0)  # type: ignore[attr-defined]
+    if result < 0:
+        raise OSError(ctypes.get_errno(), "pidfd_open")
+    return int(result)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="pidfd syscalls are Linux-only")
-def test_pidfd_fallback_through_ctypes_signals_a_group_member(
+def test_pidfd_fallback_through_ctypes_answers_what_the_wrapper_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Written as an EQUIVALENCE, not as "pidfd works on this host", because that is
+    # the only form of this assertion that holds on every Linux host and therefore
+    # the only one that never vacates: where the kernel grants a pidfd both paths
+    # return one, and where it refuses -- a container seccomp profile, a missing
+    # /proc -- both must refuse with the SAME errno. So there is no capability skip
+    # here at all, and the failures that matter are caught on any host: a fallback
+    # that cannot resolve ``syscall`` raises something that is not an ``OSError`` and
+    # fails, and one that passes a wrong syscall number answers a different errno
+    # from the wrapper and fails.
+    #
+    # Whether the kernel then GRANTS the descriptor is a host capability, so the
+    # end-to-end signal it enables is a separate test carrying this file's own
+    # ``@reaping`` marker -- the precondition stays controlled and declared instead
+    # of being inferred from a boolean that conflates the two.
+    native = getattr(os, "pidfd_open", None)
+    native_errno: int | None = None
+    if native is not None:
+        try:
+            os.close(int(native(os.getpid())))
+        except OSError as exc:
+            native_errno = exc.errno
+
     # Standalone CPython builds that lack os.pidfd_open are exactly the hosts that
-    # motivated the fix; without the ctypes path can_reap() is False there.
+    # motivated the fix, and deleting the wrappers is how every host is made to look
+    # like one of them.
     monkeypatch.delattr(os, "pidfd_open", raising=False)
     monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
-    assert supervisor.can_reap()
+    fallback_errno: int | None = None
+    try:
+        os.close(supervisor._pidfd_open(os.getpid()))
+    except OSError as exc:
+        fallback_errno = exc.errno
+
+    if native is None:
+        # No wrapper to compare against, so the oracle is a raw syscall this file
+        # numbers itself. Accepting "some errno" instead would pass a module whose
+        # syscall constant is wrong -- the one mistake a wrapper-less interpreter has
+        # no second path to catch, since the end-to-end test below is capability-gated
+        # and stands aside on a host that cannot pidfd at all.
+        oracle_errno: int | None = None
+        try:
+            os.close(_pidfd_open_with_a_number_this_test_states(os.getpid()))
+        except OSError as exc:
+            oracle_errno = exc.errno
+        assert fallback_errno == oracle_errno, (
+            "the ctypes fallback disagrees with a raw pidfd_open(2) on the same pid: "
+            f"oracle errno={oracle_errno!r}, fallback errno={fallback_errno!r}. "
+            "On an interpreter with no os.pidfd_open this is the only check of the "
+            "module's own syscall number."
+        )
+        return
+    assert fallback_errno == native_errno, (
+        "the ctypes fallback and os.pidfd_open disagree on the same pid: wrapper "
+        f"errno={native_errno!r}, fallback errno={fallback_errno!r}. "
+        "python-build-standalone interpreters have only the fallback, so a "
+        "disagreement is a real break rather than a host limitation."
+    )
+
+
+@posix_only
+@reaping
+def test_pidfd_fallback_signals_a_group_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through the fallback, on a host whose kernel grants a pidfd.
+
+    Split from the equivalence test above because THIS one needs the capability:
+    the ``@reaping`` marker is the file's own declared precondition, so it stands
+    aside exactly where the other reaping tests do rather than inventing a gate.
+    """
+    monkeypatch.delattr(os, "pidfd_open", raising=False)
+    monkeypatch.delattr(signal, "pidfd_send_signal", raising=False)
     child = subprocess.Popen(  # noqa: S603 - fixed argv, test-local
         [sys.executable, "-c", "import time; time.sleep(60)"],
         stdin=subprocess.DEVNULL,

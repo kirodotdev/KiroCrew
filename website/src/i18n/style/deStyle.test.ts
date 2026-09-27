@@ -112,22 +112,45 @@ describe('de register (style/de.md §4)', () => {
 })
 
 describe('de compounds (style/de.md §7)', () => {
-  it('English-origin compounds use a hyphen, not a space', () => {
-    // Common violations: "Slack Integration" should be "Slack-Integration"
-    const COMPOUND_CHECKS: Array<[RegExp, string]> = [
-      [/\bSlack Integr/i, 'Slack-Integration'],
-      [/\bGitHub Konto\b/, 'GitHub-Konto'],
-      [/\bAPI Schlüssel\b/, 'API-Schlüssel'],
-      [/\bMCP Server\b/, 'MCP-Server'],
-    ]
+  // Shared by the ceiling below and its companion, so the two can never come to
+  // disagree about what a violation is.
+  const COMPOUND_CHECKS: Array<[RegExp, string]> = [
+    [/\bSlack Integr/i, 'Slack-Integration'],
+    [/\bGitHub Konto\b/, 'GitHub-Konto'],
+    [/\bAPI Schlüssel\b/, 'API-Schlüssel'],
+    [/\bMCP Server\b/, 'MCP-Server'],
+  ]
+  const violations = (values: Record<string, string>): string[] => {
     const bad: string[] = []
-    for (const [key, value] of Object.entries(de)) {
+    for (const [key, value] of Object.entries(values)) {
       for (const [pattern, correct] of COMPOUND_CHECKS) {
         if (pattern.test(value)) {
           bad.push(`${key}: should be '${correct}'`)
         }
       }
     }
+    return bad
+  }
+
+  it('English-origin compounds use a hyphen, not a space', () => {
+    // Common violations: "Slack Integration" should be "Slack-Integration"
+    const bad = violations(de)
     expect(bad.length, report(bad)).toBeLessThanOrEqual(12)
+  })
+
+  // The ceiling's companion: it tolerates the inherited catalog, but it cannot say
+  // whose violation it is, so a branch that adds one rides under it until the count
+  // crosses and the round that reds belongs to someone else. See
+  // docs/ci/i18n-gates.md.
+  it('[changed-values] hyphenates English-origin compounds at zero tolerance', () => {
+    const changed = changedDeValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = violations(changed)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
   })
 })

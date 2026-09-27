@@ -175,6 +175,25 @@ are in
 The short version holds here too: never fix a flake with a rerun, a longer timeout,
 or a weakened assertion. Poll for the condition you actually care about.
 
+### Two front-end gates scan the WHOLE tree, so a diff-relevance run misses them
+
+`website/electron/test/port-owner-self-asserted-identity.test.js` requires every call
+site of the two port probes, and every use of the port-verdict vocabulary, to be
+declared in one of its lists; an unclassifiable site fails rather than passing. The
+i18n style tests under `website/src/i18n/style/` scan the whole catalog the same way.
+
+Neither is selected by a test run scoped to your diff, so a new probe call or a new
+catalog value passes locally and reds **every open pull request** on the round after
+it merges. If your change adds a port verdict, run that electron test explicitly; if
+it adds a catalog value, run the style tests with `I18N_BASE_REF` set so their
+diff-scoped halves actually evaluate. Registering a site is one line and the failure
+message names the list it belongs in.
+
+The general shape of this mistake, and the two other ways a deterministic gate ends
+up billing a stranger, are in
+[the testing spec](../../docs/system-specs/common/testing-conventions.md) under "A
+gate that reds on someone else's pull request".
+
 ## Determinism: establish the state you assert on
 
 Reset owned API mocks before reseeding per-test defaults. `vi.clearAllMocks()`

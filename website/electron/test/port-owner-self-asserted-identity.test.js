@@ -83,8 +83,38 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
+    what: "restart handoff: probe who holds the port the successor should have taken",
+    code: 'const owner = await probeGatewayPortOwner(expectPort);',
+    times: 1,
+  },
+  {
+    what: "restart handoff: our own process or its service manager holds it, so confirm",
+    code: 'if (owner === "kirocrew" || owner === "service") return "confirm";',
+    times: 1,
+  },
+  {
+    what: "restart handoff: someone else holds it, which no further waiting can change",
+    code: 'if (owner === "foreign") return "foreign";',
+    times: 1,
+  },
+  {
+    what: "restart handoff: the probe could not look, and refusing is the safer answer",
+    code: 'if (owner === "unknown") {',
+    times: 1,
+  },
+  {
+    what: "restart handoff: the caller acts on the identity verdict it was handed",
+    code: 'if (verdict === "foreign") {',
+    times: 1,
+  },
+  {
     what: "boot: probe the holder, unless a configured remote host makes it a tunnel",
     code: 'const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);',
+    times: 1,
+  },
+  {
+    what: "boot: refuse to adopt a holder this app did not start with no remote crew configured",
+    code: 'if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {',
     times: 1,
   },
   {

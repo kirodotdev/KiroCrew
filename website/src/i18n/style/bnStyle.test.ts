@@ -43,6 +43,24 @@ describe('bn punctuation (style/bn.md §1)', () => {
     // Baselined: existing catalog may use periods
     expect(bad.length, report(bad)).toBeLessThanOrEqual(30)
   })
+
+  // The ceiling's companion: it tolerates the inherited catalog, but it cannot say
+  // whose violation it is, so a branch that adds one rides under it until the count
+  // crosses and the round that reds belongs to someone else. See
+  // docs/ci/i18n-gates.md.
+  it('[changed-values] ends a Bengali sentence with dari at zero tolerance', () => {
+    const changed = changedBnValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, value]) => BENGALI.test(value) && /[\u0980-\u09ff]\.$/.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(-30))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
+  })
 })
 
 /* ── §5 register, scoped to the values THIS BRANCH wrote ── */
@@ -124,5 +142,33 @@ describe('bn numerals (style/bn.md §2)', () => {
       .filter(([, v]) => BENGALI_DIGITS.test(v))
       .map(([k]) => k)
     expect(bad.length, report(bad)).toBeLessThanOrEqual(8)
+  })
+
+  /**
+   * The ceiling above is inherited debt, and a ceiling alone cannot say WHOSE
+   * violation it is: a branch that adds one rides under it until the count
+   * finally crosses, and then the gate reds on whichever unrelated pull request
+   * happens to run next -- which is how two values added in separate PRs took
+   * this lane, and every other open PR's lane, red at once.
+   *
+   * So the count keeps guarding the inherited catalog while the values THIS
+   * BRANCH wrote are held at zero, exactly as §5's register check already is.
+   * Diff-scoped on purpose: the assertion names the key and the branch that owns
+   * it, and nothing is stored, so two i18n branches have no ledger line to
+   * conflict on.
+   */
+  it('[changed-values] uses Western digits at zero tolerance', () => {
+    const BENGALI_DIGITS = /[\u09e6-\u09ef]/
+    const changed = changedBnValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, value]) => BENGALI_DIGITS.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
   })
 })

@@ -240,6 +240,28 @@ the same change. Being exact, they break on unrelated drift in main, so expect t
 re-measure when you rebase. If you add a diff-scoped gate covering one of them, it
 may be relaxed.
 
+### The rule covers an inline ceiling too, not just the generated ledger
+
+A `toBeLessThanOrEqual(N)` written straight into a style test is the same shape as a
+ledger entry and is bound by the same rule: it needs a diff-scoped companion over the
+same defect. Without one it is strictly worse than the ledger, because nothing
+re-snapshots it, so the violations pile up silently until the count crosses — and the
+run that finally reds is some unrelated branch's, whose own diff contains nothing to
+fix.
+
+`bnStyle.test.ts`'s numerals ceiling was exactly that, and it collected the bill:
+two values carrying Bengali digits landed in separate PRs, the second crossed the
+ceiling of 8, and the next CI round took **every open pull request's Frontend Tests
+shard red at once**, naming a key none of their authors had touched. The register
+check (§5) in the same file already had the right shape, so the fix was to give the
+numerals rule the same one: the count keeps guarding the inherited catalog, while the
+values the branch itself wrote are held at zero and the failure names the key and its
+owner.
+
+So when you add or relax an inline ceiling, add the `[changed-values]` half in the
+same change. A ceiling with no diff-scoped companion is not a lenient gate, it is a
+gate that bills a stranger.
+
 ## The render-time gate: what a source scan structurally cannot see
 
 Every check above reads **source** (an ESLint pass over `src`) or **catalog JSON**.

@@ -46,6 +46,25 @@ describe('ru punctuation (style/ru.md §1)', () => {
     // Baselined — existing catalog may use straight quotes
     expect(bad.length, report(bad)).toBeLessThanOrEqual(20)
   })
+
+  // The ceiling's companion: it tolerates the inherited catalog, but it cannot say
+  // whose violation it is, so a branch that adds one rides under it until the count
+  // crosses and the round that reds belongs to someone else. See
+  // docs/ci/i18n-gates.md.
+  it('[changed-values] quotes Cyrillic with guillemets at zero tolerance', () => {
+    const CYRILLIC = /[\u0400-\u04ff]/
+    const changed = changedRuValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, v]) => CYRILLIC.test(v) && /"[\u0400-\u04ff]/.test(v) && !v.includes('«'))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
+  })
 })
 
 describe('ru tone (style/ru.md §4)', () => {
