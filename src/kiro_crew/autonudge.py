@@ -6514,10 +6514,16 @@ class AutoNudgeService:
                 loop.active,
                 loop.stopped_reason,
             )
+            if merged:
+                subject_state = "merged"
+            elif observation:
+                subject_state = observation.state.lower()
+            else:
+                subject_state = "unknown"
             logger.info(
                 "AutoNudge: loop %s subject reached a terminal state (%s)",
                 loop.id,
-                "merged" if merged else (observation.state.lower() if observation else "unknown"),
+                subject_state,
             )
             # SERIALIZED against ``update``. This path has no second await of its
             # own; this closes the other side of the same race, which is

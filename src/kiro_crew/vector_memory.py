@@ -3470,11 +3470,12 @@ class VectorMemoryStore:
         # ``defer_embedding`` takes the same arm an unavailable embedder takes:
         # the text fallback below. Retiring fewer rephrased episodes is what this
         # path already does whenever the embed answers None.
-        emb = (
-            query_embedding
-            if embedding_resolved
-            else None if defer_embedding else self._try_embed(query)
-        )
+        if embedding_resolved:
+            emb = query_embedding
+        elif defer_embedding:
+            emb = None
+        else:
+            emb = self._try_embed(query)
         with self._db_lock:
             if emb is not None:
                 # mmr=False: internal write-path caller that applies its own cosine
