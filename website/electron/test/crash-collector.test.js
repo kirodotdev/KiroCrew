@@ -1270,3 +1270,104 @@ describe("crashNoticeSummary", () => {
     assert.deepEqual(crashNoticeSummary(null), { newCount: 0 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The facade's surface. main.js and ipc-registrar.js destructure it at load,
+// so every name must be there, in this order, with no Electron at load time.
+// ---------------------------------------------------------------------------
+
+const nodeFs = require("node:fs");
+
+const CRASH_COLLECTOR_EXPORTS = [
+  "armCrashCollector",
+  "collectCrashReports",
+  "crashNoticeSummary",
+  "crashLogPath",
+  "crashStatePath",
+  "parseMinidump",
+  "classifyMinidump",
+  "parseIpsHead",
+  "ipsBelongsToApp",
+  "ipsTimestampToIso",
+  "isOwnModule",
+  "isElectronShaped",
+  "appendCrashLog",
+  "readSeenState",
+  "writeSeenState",
+  "CRASH_LOG_BASENAME",
+  "CRASH_STATE_BASENAME",
+  "MAX_CRASH_LOG_LINES",
+  "MAX_INSPECT_PER_RUN",
+  "MAX_PENDING_ATTEMPTS",
+];
+
+it("the crash collector exports its twenty names, in order, with their values", () => {
+  const collector = require("../crash-collector");
+  assert.deepStrictEqual(Object.keys(collector), CRASH_COLLECTOR_EXPORTS);
+  assert.strictEqual(collector.CRASH_LOG_BASENAME, "crashes.log");
+  assert.strictEqual(collector.CRASH_STATE_BASENAME, "crashes-seen.json");
+  assert.strictEqual(collector.MAX_CRASH_LOG_LINES, 500);
+  assert.strictEqual(collector.MAX_INSPECT_PER_RUN, 25);
+  assert.strictEqual(collector.MAX_PENDING_ATTEMPTS, 3);
+  assert.deepStrictEqual(collector.crashNoticeSummary({ newCrashes: [{}, {}] }), { newCount: 2 });
+  assert.deepStrictEqual(collector.crashNoticeSummary(null), { newCount: 0 });
+});
+
+it("the crash collector loads without Electron and touches no file at load", () => {
+  const NodeModule = require("node:module");
+  const electronDir = path.join(__dirname, "..");
+  const files = [path.join(electronDir, "crash-collector.js")];
+  const runtimeDir = path.join(electronDir, "runtime", "crash");
+  if (nodeFs.existsSync(runtimeDir)) {
+    for (const name of nodeFs.readdirSync(runtimeDir)) {
+      if (name.endsWith(".js")) files.push(path.join(runtimeDir, name));
+    }
+  }
+  const cached = new Map(files.map((file) => [file, require.cache[file]]));
+  for (const file of files) delete require.cache[file];
+  const originalLoad = NodeModule._load;
+  NodeModule._load = function load(request, ...rest) {
+    if (request === "electron" || request === "fs" || request === "node:fs") {
+      throw new Error(`${request} must not load at module scope`);
+    }
+    return originalLoad.call(this, request, ...rest);
+  };
+  try {
+    assert.deepStrictEqual(Object.keys(require("../crash-collector")), CRASH_COLLECTOR_EXPORTS);
+  } finally {
+    NodeModule._load = originalLoad;
+    for (const [file, entry] of cached) {
+      if (entry) require.cache[file] = entry;
+      else delete require.cache[file];
+    }
+  }
+});
+
+it("the facade re-exports each runtime owner's own function, not a copy", () => {
+  const collector = require("../crash-collector");
+  const runtimeDir = path.join(__dirname, "..", "runtime", "crash");
+  assert.deepStrictEqual(
+    nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort(),
+    ["artifact-parsers.js", "candidates.js", "ownership.js", "persistence.js", "scan.js"],
+  );
+  const owners = {
+    ownership: ["isOwnModule", "isElectronShaped", "ipsBelongsToApp"],
+    "artifact-parsers": ["parseMinidump", "classifyMinidump", "parseIpsHead", "ipsTimestampToIso"],
+    persistence: [
+      "armCrashCollector", "crashLogPath", "crashStatePath", "appendCrashLog",
+      "readSeenState", "writeSeenState", "CRASH_LOG_BASENAME", "CRASH_STATE_BASENAME",
+      "MAX_CRASH_LOG_LINES",
+    ],
+    scan: ["collectCrashReports", "MAX_INSPECT_PER_RUN", "MAX_PENDING_ATTEMPTS"],
+  };
+  for (const [owner, names] of Object.entries(owners)) {
+    const module = require(path.join(runtimeDir, `${owner}.js`));
+    for (const name of names) {
+      assert.strictEqual(collector[name], module[name], `${name} is ${owner}.js's own`);
+    }
+  }
+  for (const owner of nodeFs.readdirSync(runtimeDir)) {
+    const source = nodeFs.readFileSync(path.join(runtimeDir, owner), "utf8");
+    assert.doesNotMatch(source, /require\(\s*["'](?:electron|fs|node:fs)["']\s*\)/, `${owner} takes fs from its caller`);
+  }
+});

@@ -190,7 +190,8 @@ function harness(overrides = {}) {
     },
     execFileFn: overrides.execFileFn
       || (() => { throw new Error("execFile must not run in this harness"); }),
-    execFileSyncFn: () => { throw new Error("execFileSync must not run in this harness"); },
+    execFileSyncFn: overrides.execFileSyncFn
+      || (() => { throw new Error("execFileSync must not run in this harness"); }),
     setTimeoutFn: overrides.timers ? overrides.timers.setTimeoutFn : undefined,
     clearTimeoutFn: overrides.timers ? overrides.timers.clearTimeoutFn : undefined,
     setIntervalFn: overrides.timers ? overrides.timers.setIntervalFn : undefined,
@@ -223,6 +224,39 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "onInstallDispatched",
     "onInstallFailed",
   ]);
+});
+
+test("runtime gateway owners take every host dependency from the supervisor", () => {
+  // The factory injects fs, os, path, http, child_process, timers, process and
+  // the Electron directory; an owner that loads its own would bypass every fake
+  // above and, for __dirname, point at runtime/gateway instead of the app.
+  const ownerDir = path.join(__dirname, "..", "runtime", "gateway");
+  const owners = fs.readdirSync(ownerDir).filter((name) => name.endsWith(".js")).sort();
+  assert.deepStrictEqual(owners, [
+    "family-takeover.js",
+    "launch-preflight.js",
+    "port-holders.js",
+    "remote-crew-prompt.js",
+    "token-sources.js",
+  ]);
+  const facade = fs.readFileSync(MODULE_PATH, "utf8");
+  for (const owner of owners) {
+    const source = fs.readFileSync(path.join(ownerDir, owner), "utf8");
+    assert.doesNotMatch(source, /require\(\s*["']electron["']\s*\)/, `${owner} loads Electron`);
+    assert.doesNotMatch(
+      source,
+      /require\(\s*["'](?:node:)?(?:fs|os|path|http|child_process)["']\s*\)/,
+      `${owner} must use the supervisor's injected host modules`,
+    );
+    assert.doesNotMatch(source, /__dirname/, `${owner} must use the injected Electron directory`);
+    assert.doesNotMatch(source, /require\(\s*"\.\.\/\.\.\/gateway-supervisor"\s*\)/, `${owner} requires the facade`);
+    const stem = owner.replace(/\.js$/, "");
+    assert.match(
+      facade,
+      new RegExp(`require\\("\\./runtime/gateway/${stem}"\\)`),
+      `the facade composes ${owner} through an explicit, packaged require`,
+    );
+  }
 });
 
 test("no listener-probe outcome authorises the local secret", async () => {
@@ -2541,4 +2575,254 @@ test("non-installing failure dialogs arm no probe", async () => {
   assert.strictEqual(timers.intervals.length, 0, "no probe for a failure that does not self-resolve");
   windows[0].click("quit");
   await connected;
+});
+
+// ── Characterization of the supervisor's runtime owners ──────────────────
+//
+// The facade composes cohesive owners (token sources, port holders, family
+// takeover, launch preflight, the remote-crew prompt). These tests pin what each
+// one does through the public supervisor surface, so an ownership move that
+// changes an argv, an environment entry or a refusal fails here by name.
+
+function remoteCrewStore(port, crew, extra = {}) {
+  return fakeStore({ remoteHosts: { [String(port)]: crew }, ...extra });
+}
+
+test("fetchRemoteToken runs one bounded ssh against the port's crew and parses its token", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const calls = [];
+  const { supervisor, logs } = harness({
+    store: remoteCrewStore(5476, {
+      host: "myhost.example.com",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "7000",
+      remotePath: "",
+    }, { sshTimeoutMs: 1000 }),
+    execFileFn: (file, args, options, callback) => {
+      calls.push({ file, args, options });
+      callback(null, "open http://localhost:7000/?token=abc123\n", "");
+    },
+  });
+
+  assert.deepStrictEqual(await supervisor.fetchRemoteToken(), { token: "abc123", error: null });
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].file, "/usr/bin/ssh");
+  assert.deepStrictEqual(calls[0].args.slice(0, 3), ["-o", "ConnectTimeout=10", "myhost.example.com"]);
+  assert.strictEqual(calls[0].args.length, 4);
+  assert.match(calls[0].args[3], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
+  assert.deepStrictEqual(calls[0].options, { timeout: 5000 }, "the SSH budget never drops below 5s");
+  assert.ok(logs.includes("SSH token fetch: ssh myhost.example.com for port 7000"));
+});
+
+test("fetchRemoteToken defaults the SSH budget and the remote port to the tab's port", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const calls = [];
+  const { supervisor } = harness({
+    store: remoteCrewStore(7778, {
+      host: "clouddesk",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "",
+      remotePath: "",
+    }),
+    execFileFn: (file, args, options, callback) => {
+      calls.push({ file, args, options });
+      callback(null, "no token here", "");
+    },
+  });
+
+  assert.deepStrictEqual(await supervisor.fetchRemoteToken(7778), { token: "", error: null });
+  assert.deepStrictEqual(calls[0].options, { timeout: 20000 });
+  assert.match(calls[0].args[3], /KIROCREW_PORT=7778/);
+});
+
+test("fetchRemoteToken reports ssh's stderr, else its error message", async (t) => {
+  t.mock.method(console, "error", () => {});
+  let stderr = "  Permission denied (publickey).  \n";
+  const { supervisor } = harness({
+    store: remoteCrewStore(5476, {
+      host: "myhost.example.com",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "",
+      remotePath: "",
+    }),
+    execFileFn: (_file, _args, _options, callback) => {
+      callback(new Error("Command failed: ssh"), "", stderr);
+    },
+  });
+
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(),
+    { token: "", error: "Permission denied (publickey)." },
+  );
+  stderr = "";
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(),
+    { token: "", error: "Command failed: ssh" },
+  );
+});
+
+test("fetchRemoteToken refuses invalid settings and runs nothing without a crew", async (t) => {
+  t.mock.method(console, "error", () => {});
+  let runs = 0;
+  const execFileFn = (_file, _args, _options, callback) => {
+    runs += 1;
+    callback(null, "", "");
+  };
+  const invalid = harness({
+    store: remoteCrewStore(5476, {
+      host: "bad host name",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "",
+      remotePath: "",
+    }),
+    execFileFn,
+  });
+  const refused = await invalid.supervisor.fetchRemoteToken();
+  assert.strictEqual(refused.token, "");
+  assert.match(refused.error, /^Invalid hostname/);
+
+  const none = harness({ execFileFn });
+  assert.deepStrictEqual(await none.supervisor.fetchRemoteToken(), { token: "", error: null });
+  assert.strictEqual(runs, 0, "neither a refused nor an absent crew reaches ssh");
+});
+
+test("the spawned gateway's project dir is the Electron app's parent off Windows", async () => {
+  const { supervisor, spawnCalls } = harness();
+  assert.strictEqual(await supervisor.start(), true);
+  const [bin, args, options] = spawnCalls[0];
+  assert.strictEqual(bin, "kirocrew");
+  assert.deepStrictEqual(args, ["gateway", "--no-open", "--port", "5476"]);
+  assert.strictEqual(options.env.KIROCREW_PROJECT_DIR, "/virtual");
+  assert.deepStrictEqual(options.stdio, ["ignore", 41, 41]);
+  assert.strictEqual(options.detached, false);
+  assert.strictEqual(options.windowsHide, true);
+});
+
+test("Windows takes the first tree above the Electron sources carrying agents and skills", async () => {
+  const baseFs = harness().fsMod;
+  const probed = [];
+  const windowsProcess = (existing) => ({
+    processRef: {
+      platform: "win32",
+      arch: "x64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    fsMod: {
+      ...baseFs,
+      existsSync(candidate) {
+        probed.push(candidate);
+        return existing.has(candidate);
+      },
+    },
+  });
+
+  const twoUp = harness(windowsProcess(new Set(["/agents", "/skills"])));
+  assert.strictEqual(await twoUp.supervisor.start(), true);
+  assert.strictEqual(twoUp.spawnCalls[0][2].env.KIROCREW_PROJECT_DIR, "/");
+  assert.notStrictEqual(probed.indexOf("/virtual/agents"), -1);
+  assert.ok(probed.indexOf("/virtual/agents") < probed.indexOf("/agents"), "one level up is probed first");
+
+  const both = harness(windowsProcess(new Set(["/virtual/agents", "/virtual/skills", "/agents", "/skills"])));
+  assert.strictEqual(await both.supervisor.start(), true);
+  assert.strictEqual(
+    both.spawnCalls[0][2].env.KIROCREW_PROJECT_DIR,
+    "/virtual",
+    "when both levels carry the trees, the nearer one wins",
+  );
+
+  const neither = harness(windowsProcess(new Set(["/agents"])));
+  assert.strictEqual(await neither.supervisor.start(), true);
+  assert.strictEqual(
+    neither.spawnCalls[0][2].env.KIROCREW_PROJECT_DIR,
+    "/virtual",
+    "a tree missing either directory falls back to the app's parent",
+  );
+});
+
+test("a GUI-launched macOS gateway appends only the launchd domain's new PATH entries", async () => {
+  const launchctlCalls = [];
+  const { supervisor, spawnCalls, logs } = harness({
+    processRef: {
+      platform: "darwin",
+      arch: "arm64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home", PATH: "/usr/bin:/bin" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    execFileSyncFn: (file, args) => {
+      launchctlCalls.push([file, ...args]);
+      return "/opt/homebrew/bin:/usr/bin\n";
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.deepStrictEqual(launchctlCalls, [["/bin/launchctl", "getenv", "PATH"]]);
+  assert.strictEqual(spawnCalls[0][2].env.PATH, "/usr/bin:/bin:/opt/homebrew/bin");
+  assert.ok(logs.includes("PATH recovered from launchd domain: +1 dir(s) appended"));
+  assert.strictEqual(spawnCalls[0][2].env.KIROCREW_PORT, undefined, "the explicit --port wins");
+});
+
+test("PATH is left exactly as inherited off macOS", async () => {
+  let reads = 0;
+  const { supervisor, spawnCalls, logs } = harness({
+    processRef: {
+      platform: "linux",
+      arch: "x64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home", PATH: "/usr/bin:/bin", KIROCREW_PORT: "9999" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    execFileSyncFn: () => { reads += 1; return "/opt/extra/bin"; },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(reads, 0);
+  assert.strictEqual(spawnCalls[0][2].env.PATH, "/usr/bin:/bin");
+  assert.strictEqual(spawnCalls[0][2].env.KIROCREW_PORT, undefined);
+  assert.ok(!logs.some((line) => line.startsWith("PATH recovered")));
+});
+
+test("the conflict prompt quits the other family's app through AppleScript by NAME", async () => {
+  const osascript = [];
+  const probes = { released: false };
+  const { supervisor, spawnCalls } = harness({
+    processRef: {
+      platform: "darwin",
+      arch: "arm64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    app: { getVersion: () => "0.6.0" },
+    httpMod: switchableHttp({
+      status: 200,
+      body: JSON.stringify({ app: "kirocrew", version: "0.6.0-nightly.20260101t000000" }),
+    }),
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    execFileFn: (file, args, options, callback) => {
+      if (file === "osascript") {
+        osascript.push({ args, options });
+        probes.released = true;
+        callback(null, "", "");
+        return;
+      }
+      if (String(file).endsWith("lsof")) {
+        callback(null, probes.released ? "" : "4321\n", "");
+        return;
+      }
+      if (file === "/bin/ps") {
+        callback(null, args.includes("ppid=") ? "999\n" : "/opt/kc/bin/kirocrew gateway\n", "");
+        return;
+      }
+      throw new Error(`unexpected ${file}`);
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(osascript.length, 1, "the nightly-owned port prompts one takeover");
+  assert.deepStrictEqual(osascript[0].args, ["-e", 'quit app "KiroCrew Nightly"']);
+  assert.deepStrictEqual(osascript[0].options, { timeout: 10000 });
+  assert.strictEqual(spawnCalls.length, 1, "the released port is spawned into");
 });

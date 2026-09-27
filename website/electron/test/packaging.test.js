@@ -138,6 +138,48 @@ describe("electron-builder files list", () => {
     assert.deepStrictEqual(missing, [], `Missing from build.files: ${missing.join(", ")}`);
   });
 
+  it("reaches every runtime owner from main.js through requires the packaging scans read", () => {
+    // shell-contract.test.js checks that every double-quoted relative require
+    // resolves to a listed file. That check is blind to a single-quoted or
+    // template require, and to an owner no facade composes (listed, shipped and
+    // dead). Walk the closure from the entry point to close both gaps.
+    const closure = new Set();
+    const pending = ["main.js"];
+    while (pending.length) {
+      const file = pending.pop();
+      if (closure.has(file)) continue;
+      closure.add(file);
+      const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+      assert.doesNotMatch(
+        source,
+        /require\(\s*(?:'\.|`\.)/,
+        `${file} has a relative require the packaging scans cannot read; use double quotes`,
+      );
+      for (const match of source.matchAll(/require\(\s*"(\.{1,2}\/[^"]+)"\s*\)/g)) {
+        const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1]));
+        const resolved = target.endsWith(".js") ? target : `${target}.js`;
+        if (!fs.existsSync(path.join(ROOT, resolved))) continue;
+        pending.push(resolved);
+      }
+    }
+    // Every runtime owner on disk is reached from main.js and packaged: none is
+    // an orphan that only a test loads.
+    const runtimeOwners = [];
+    for (const area of fs.readdirSync(path.join(ROOT, "runtime"))) {
+      for (const name of fs.readdirSync(path.join(ROOT, "runtime", area))) {
+        if (name.endsWith(".js")) runtimeOwners.push(`runtime/${area}/${name}`);
+      }
+    }
+    assert.deepStrictEqual(
+      runtimeOwners.filter((f) => !closure.has(f)).sort(),
+      [],
+      "every runtime owner is composed by a facade main.js reaches",
+    );
+    for (const facade of ["gateway-supervisor.js", "window-lifecycle.js", "auto-update.js", "crash-collector.js"]) {
+      assert.ok(closure.has(facade), `${facade} stays the entry the shell loads`);
+    }
+  });
+
   it("does not reference files that no longer exist", () => {
     // Every entry is checked-in source EXCEPT the build-time inputs a build
     // places here on demand (BUILD_TIME_INPUTS, shared with shell-contract.test.js):

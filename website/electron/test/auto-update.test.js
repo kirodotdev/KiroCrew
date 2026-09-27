@@ -1788,7 +1788,8 @@ test("managed command env is CONSTRUCTED: nothing the shell reads as code is inh
   // Derived, not inherited: the launching executable's absolute path, from
   // process.execPath (kernel command line), never from process.env.
   assert.strictEqual(env.KIROCREW_MANAGED_ARGV0, process.execPath);
-  const src = require("node:fs").readFileSync(require.resolve("../auto-update"), "utf8");
+  // The managed lane owns the executor: its spawn and its pinned shell live together.
+  const src = require("node:fs").readFileSync(require.resolve("../runtime/update/managed-lane"), "utf8");
   assert.match(src, /shell: managedShell\(\)/, "spawn must take its shell from managedShell()");
   assert.match(src, /System32\\\\cmd\.exe`/, "managedShell() must pin the system cmd.exe on win32");
   assert.strictEqual(optsList[0].cwd, "/");
@@ -2676,4 +2677,234 @@ test("a genuine install failure after a straddling check settles still fires rec
   assert.strictEqual(calls.quitAndInstall.length, 1, "the retry must commit once the check has settled");
   emit("error", new Error("Squirrel could not validate the update"));
   assert.strictEqual(installFailedCalls, 2, "recovery must remain armed for a real install failure after the check settles");
+});
+
+// ---------------------------------------------------------------------------
+// Characterization of the updater's owners. The facade keeps the policy
+// (channels, feeds, markers, install-shape probes) and composes the lanes and
+// the state reporter; these pin the observable shapes and orderings any move
+// between those owners must keep.
+// ---------------------------------------------------------------------------
+
+const nodePath = require("node:path");
+const nodeFs = require("node:fs");
+const NodeModule = require("node:module");
+
+const AUTO_UPDATE_EXPORTS = [
+  "initAutoUpdate",
+  "channelForFlavor",
+  "channelForVersion",
+  "resolveChannel",
+  "isNewerVersion",
+  "shouldAutoOffer",
+  "buildFeedBase",
+  "configureUpdater",
+  "classifyError",
+  "manualDownloadUrl",
+  "resolveLinuxInstall",
+  "readExternallyManaged",
+  "canRewriteMarker",
+  "DEFAULT_FEED_BASE",
+  "DOWNLOAD_BASE",
+  "SUPPORTED_PLATFORMS",
+];
+
+test("the facade exports exactly its sixteen names, in order", () => {
+  assert.deepStrictEqual(Object.keys(require("../auto-update")), AUTO_UPDATE_EXPORTS);
+});
+
+test("the update runtime loads without Electron and without load-time effects", () => {
+  const electronDir = nodePath.join(__dirname, "..");
+  const updateFiles = [nodePath.join(electronDir, "auto-update.js")];
+  const runtimeDir = nodePath.join(electronDir, "runtime", "update");
+  const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
+  assert.deepStrictEqual(owners, ["feed-lane.js", "managed-lane.js", "state-reporter.js"]);
+  const facade = nodeFs.readFileSync(updateFiles[0], "utf8");
+  for (const owner of owners) {
+    updateFiles.push(nodePath.join(runtimeDir, owner));
+    assert.match(facade, new RegExp(`require\\("\\./runtime/update/${owner.replace(/\.js$/, "")}"\\)`));
+    assert.doesNotMatch(
+      nodeFs.readFileSync(nodePath.join(runtimeDir, owner), "utf8"),
+      /__dirname|require\(\s*["'](?:\.\.\/\.\.\/)?auto-update["']\s*\)/,
+      `${owner} must neither anchor on its own directory nor require the facade`,
+    );
+  }
+  const cached = new Map();
+  for (const file of updateFiles) {
+    cached.set(file, require.cache[file]);
+    delete require.cache[file];
+  }
+  const originalLoad = NodeModule._load;
+  const timers = [];
+  const originalSetTimeout = global.setTimeout;
+  const originalSetInterval = global.setInterval;
+  NodeModule._load = function load(request, ...rest) {
+    if (request === "electron") throw new Error("electron must not load at module scope");
+    return originalLoad.call(this, request, ...rest);
+  };
+  global.setTimeout = (...args) => { timers.push(args); return originalSetTimeout(() => {}, 0); };
+  global.setInterval = (...args) => { timers.push(args); return originalSetInterval(() => {}, 1e9); };
+  try {
+    const fresh = require("../auto-update");
+    assert.deepStrictEqual(Object.keys(fresh), AUTO_UPDATE_EXPORTS);
+    assert.strictEqual(timers.length, 0, "loading arms no timer");
+  } finally {
+    NodeModule._load = originalLoad;
+    global.setTimeout = originalSetTimeout;
+    global.setInterval = originalSetInterval;
+    for (const [file, entry] of cached) {
+      if (entry) require.cache[file] = entry;
+      else delete require.cache[file];
+    }
+  }
+});
+
+test("the baked marker defaults to EXTERNALLY-MANAGED beside main.js", (t) => {
+  const looked = [];
+  t.mock.method(nodeFs, "lstatSync", (target) => {
+    looked.push(target);
+    const error = new Error("absent");
+    error.code = "ENOENT";
+    throw error;
+  });
+  assert.strictEqual(
+    readExternallyManaged({ env: {}, resourcesPath: "/virtual/resources", isPackaged: true }),
+    null,
+  );
+  assert.deepStrictEqual(looked, [
+    nodePath.join(__dirname, "..", "EXTERNALLY-MANAGED"),
+    nodePath.join("/virtual/resources", "EXTERNALLY-MANAGED"),
+  ]);
+});
+
+test("every lane hands back the handle shape its callers read", () => {
+  const keys = (opts) => {
+    const { deps } = makeDeps(opts);
+    const handle = initAutoUpdate(deps);
+    return { keys: Object.keys(handle), disabled: handle.disabled };
+  };
+  const stub = ["check", "download", "install", "getInfo", "disabled"];
+  assert.deepStrictEqual(keys({ externallyManaged: { managedBy: "m", updateCommand: "" } }),
+    { keys: stub, disabled: "externally-managed" });
+  assert.deepStrictEqual(keys({ isPackaged: false }), { keys: stub, disabled: "dev" });
+  assert.deepStrictEqual(keys({ osPlatform: "freebsd" }), { keys: stub, disabled: "platform" });
+  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "getInfo", "isReady"]);
+
+  const restoreTimers = (() => {
+    const originalSetTimeout = global.setTimeout;
+    const originalSetInterval = global.setInterval;
+    global.setTimeout = () => ({ unref() {} });
+    global.setInterval = () => ({ unref() {} });
+    return () => {
+      global.setTimeout = originalSetTimeout;
+      global.setInterval = originalSetInterval;
+    };
+  })();
+  try {
+    assert.deepStrictEqual(
+      keys({ externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" } }),
+      { keys: ["check", "download", "install", "getInfo"], disabled: undefined },
+    );
+  } finally {
+    restoreTimers();
+  }
+
+  assert.deepStrictEqual(
+    keys({ resourcesPath: "/Volumes/Kiro Crew/Kiro Crew.app/Contents/Resources", bundleWritable: false }),
+    { keys: stub, disabled: "volume" },
+  );
+});
+
+test("getInfo and every lifecycle payload keep their key order", async () => {
+  const { deps, states } = makeDeps();
+  const u = initAutoUpdate(deps);
+  assert.deepStrictEqual(Object.keys(u.getInfo()), [
+    "version",
+    "channel",
+    "stampedChannel",
+    "channelSwitchable",
+    "channelPreference",
+    "laneVersion",
+    "runningAheadOfLane",
+    "autoDownload",
+    "managedBy",
+    "updateCommand",
+    "platform",
+    "packaged",
+    "downloadUrl",
+    "lastState",
+  ]);
+  await u.check();
+  assert.deepStrictEqual(Object.keys(states[0]), [
+    "state",
+    "channel",
+    "version",
+    "installHandoff",
+    "laneVersion",
+    "runningAheadOfLane",
+  ]);
+  assert.strictEqual(states[0].state, "checking");
+});
+
+test("the feed lane arms policy, events, feed and timers in one fixed order", () => {
+  const order = [];
+  const { deps } = makeDeps();
+  const updater = {};
+  for (const flag of ["autoDownload", "autoInstallOnAppQuit", "allowDowngrade", "allowPrerelease", "logger"]) {
+    Object.defineProperty(updater, flag, {
+      configurable: true,
+      set(value) { order.push(`set ${flag}=${flag === "logger" ? "log" : value}`); },
+      get() { return undefined; },
+    });
+  }
+  updater.on = (event) => order.push(`on ${event}`);
+  updater.setFeedURL = (options) => order.push(`setFeedURL ${options.url}`);
+  const originalSetTimeout = global.setTimeout;
+  const originalSetInterval = global.setInterval;
+  global.setTimeout = (_fn, ms) => { order.push(`setTimeout ${ms}`); return { unref() {} }; };
+  global.setInterval = (_fn, ms) => { order.push(`setInterval ${ms}`); return { unref() {} }; };
+  try {
+    initAutoUpdate({ ...deps, autoUpdater: updater });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.setInterval = originalSetInterval;
+  }
+  assert.deepStrictEqual(order, [
+    "set autoDownload=false",
+    "set autoInstallOnAppQuit=false",
+    "set allowDowngrade=true",
+    "set allowPrerelease=true",
+    "set logger=log",
+    "on error",
+    "on checking-for-update",
+    "on update-not-available",
+    "on update-available",
+    "on download-progress",
+    "on update-downloaded",
+    "setFeedURL https://cdn.example.dev/feed/stable/",
+    "setTimeout 30000",
+    "setInterval 14400000",
+  ]);
+});
+
+test("the managed lane arms only its launch check and poll, never the feed", () => {
+  const order = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "/usr/bin/apply", checkCommand: "/usr/bin/check" },
+  });
+  const updater = {
+    on: (event) => order.push(`on ${event}`),
+    setFeedURL: () => order.push("setFeedURL"),
+  };
+  const originalSetTimeout = global.setTimeout;
+  const originalSetInterval = global.setInterval;
+  global.setTimeout = (_fn, ms) => { order.push(`setTimeout ${ms}`); return { unref() { order.push("unref"); } }; };
+  global.setInterval = (_fn, ms) => { order.push(`setInterval ${ms}`); return { unref() { order.push("unref"); } }; };
+  try {
+    initAutoUpdate({ ...deps, autoUpdater: updater });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.setInterval = originalSetInterval;
+  }
+  assert.deepStrictEqual(order, ["setTimeout 30000", "setInterval 14400000", "unref", "unref"]);
 });

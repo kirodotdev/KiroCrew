@@ -38,6 +38,39 @@ fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
 not skipped in favor of a later candidate. Remote tunnel sessions check the
 remote gateway host.
 
+## Main-process owners
+
+`main.js` is the composition root. Between them, `main.js` and `ipc-registrar.js`
+require four lifecycle facades (the updater is composed from `ipc-registrar.js`),
+and each facade composes cohesive owners under `runtime/<area>/`:
+
+| Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
+|---|---|---|
+| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) | All gateway state (child, ownership, start failure, liveness monitor, update handoff), the spawn site and its environment, every port occupancy and identity decision, the connect flow, the failure dialog, liveness recovery and shutdown |
+| `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
+| `auto-update.js` (`initAutoUpdate` and 15 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
+
+Three rules keep this layout safe to change:
+
+- Consumers require only the facades. Their export names, factory options,
+  returned object shapes and module-scope constants are the contract. Many tests
+  also read source text, so a pinned construct moves only together with its pin,
+  and the pin reads the file that defines it: the facade for most, a runtime
+  owner for a few (the managed lane's pinned shell, the browser panels' view
+  wiring).
+- A runtime owner never requires Electron, the facade, or `fs`/`os`/`path`/
+  `http`/`child_process` where its facade injects them, and never resolves a
+  path from its own `__dirname`: the Electron directory (`loading.html`, the
+  preload, icons, the baked marker) is always the facade's.
+- Every file is listed individually in `package.json` `build.files` and
+  required with a double-quoted, extensionless, file-explicit path
+  (`require("./runtime/gateway/port-holders")`, `require("../../gateway-stop")`).
+  `test/shell-contract.test.js` fails on a required file missing from the
+  allowlist, and `test/packaging.test.js` on a single-quoted or template-literal
+  relative require, which the scans cannot read, or on an owner no facade
+  composes.
+
 ## Install as macOS App
 
 Build a native `.app` bundle and install to `/Applications`:

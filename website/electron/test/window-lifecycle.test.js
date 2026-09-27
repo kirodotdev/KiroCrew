@@ -12,6 +12,9 @@ const MODULE_PATH = path.join(__dirname, "..", "window-lifecycle.js");
 // shifts every "}\n" anchor to "}\r\n" and fails the match on a file that is
 // otherwise unchanged.
 const SOURCE = fs.readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n");
+const RUNTIME_DIR = path.join(__dirname, "..", "runtime", "window");
+const PANELS_SOURCE = fs.readFileSync(path.join(RUNTIME_DIR, "browser-panels.js"), "utf8")
+  .replace(/\r\n/g, "\n");
 const {
   BROWSER_PARTITION,
   createWindowLifecycle,
@@ -42,6 +45,31 @@ describe("window lifecycle module boundary", () => {
       "Electron must come from the factory argument so node:test can load this module",
     );
     assert.equal(typeof createWindowLifecycle, "function");
+  });
+
+  it("composes its runtime owners, none of which loads Electron or anchors on its own directory", () => {
+    // Electron arrives only through the factory argument, and every asset path
+    // (preload, icons, tray template) stays anchored on the facade's directory.
+    const owners = fs.readdirSync(RUNTIME_DIR).filter((name) => name.endsWith(".js")).sort();
+    assert.deepEqual(owners, [
+      "browser-panels.js",
+      "chrome.js",
+      "linux-captions.js",
+      "prompts.js",
+      "session-security.js",
+    ]);
+    for (const owner of owners) {
+      const source = fs.readFileSync(path.join(RUNTIME_DIR, owner), "utf8");
+      assert.doesNotMatch(source, /require\(\s*["']electron["']\s*\)/, `${owner} loads Electron`);
+      assert.doesNotMatch(source, /__dirname/, `${owner} must not resolve assets from runtime/window`);
+      assert.doesNotMatch(source, /require\(\s*"\.\.\/\.\.\/window-lifecycle"\s*\)/, `${owner} requires the facade`);
+      const stem = owner.replace(/\.js$/, "");
+      assert.match(
+        SOURCE,
+        new RegExp(`require\\("\\./runtime/window/${stem}"\\)`),
+        `the facade composes ${owner} through an explicit, packaged require`,
+      );
+    }
   });
 
   it("fails loudly for every required composition dependency", () => {
@@ -316,7 +344,9 @@ describe("window lifecycle source contracts", () => {
     assert.notEqual(setupEnd, -1);
     const setup = SOURCE.slice(setupStart, setupEnd);
 
-    const manager = setup.match(/createBrowserViewManager\(\{([\s\S]*?)\n      \}\);/);
+    // The panel registry is its own owner; the window hands it the dashboard view.
+    assert.match(setup, /const browserPanels = attachBrowserPanels\(win, view, \{/);
+    const manager = PANELS_SOURCE.match(/createBrowserViewManager\(\{([\s\S]*?)\n    \}\);/);
     assert.ok(manager, "browser view manager wiring missing");
     assert.match(
       manager[1],
@@ -373,7 +403,7 @@ describe("window lifecycle source contracts", () => {
       "the dashboard needs the origin so a chat file link copies as a bare path",
     );
     assert.match(
-      SOURCE,
+      PANELS_SOURCE,
       /onCreate: \(child\) => attachContextMenu\(child\.webContents\),/,
       "an arbitrary site's same-origin pathname is not a local file, so no origin here",
     );
@@ -470,5 +500,534 @@ describe("main window frame-load diagnostics", () => {
       /require\("\.\/frame-load-log"\)/,
       "frame diagnostics must come from the shared, unit-tested module",
     );
+  });
+});
+
+// ── Characterization of the window runtime owners ─────────────────────────
+//
+// The facade composes session security, window chrome, Linux captions, modal
+// prompts and the per-window browser panels. These tests pin what a dashboard
+// window gets wired with, in what order, on each platform, so an ownership
+// move that reorders a listener or drops a registration fails here by name.
+
+function recordingEmitter(label, log) {
+  const handlers = new Map();
+  return {
+    handlers,
+    on(event, handler) {
+      log.push(`${label}.on:${event}`);
+      if (!handlers.has(event)) handlers.set(event, []);
+      handlers.get(event).push(handler);
+      return this;
+    },
+    emit(event, ...args) {
+      for (const handler of handlers.get(event) || []) handler(...args);
+    },
+  };
+}
+
+function dashboardWindowHarness({ platform, frameless = false } = {}) {
+  const log = [];
+  const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).find(Boolean);
+  const viewEvents = recordingEmitter("view", log);
+  const viewContents = {
+    ...viewEvents,
+    mainFrame: { url: "http://localhost:5476/" },
+    session: {
+      webRequest: {
+        onBeforeSendHeaders() { log.push("view.session.onBeforeSendHeaders"); },
+      },
+    },
+    setWindowOpenHandler() { log.push("view.setWindowOpenHandler"); },
+    insertCSS(css) { log.push(`view.insertCSS:${firstLine(css)}`); return Promise.resolve(); },
+    executeJavaScript(script) {
+      log.push(`view.executeJavaScript:${firstLine(script)}`);
+      return Promise.resolve("");
+    },
+    send(channel) { log.push(`view.send:${channel}`); },
+    getZoomFactor: () => 1,
+    isDestroyed: () => false,
+    focus() {},
+    close() { log.push("view.close"); },
+  };
+  const winEvents = recordingEmitter("win", log);
+  const win = {
+    ...winEvents,
+    contentView: {
+      addChildView() { log.push("win.addChildView"); },
+      removeChildView() {},
+    },
+    isDestroyed: () => false,
+    isFullScreen: () => false,
+    isMaximized: () => false,
+    getContentBounds: () => ({ x: 0, y: 0, width: 1280, height: 860 }),
+    setTitle(title) { log.push(`win.setTitle:${title}`); },
+    setBackgroundColor() {},
+    setWindowButtonPosition(position) { log.push(`win.setWindowButtonPosition:${JSON.stringify(position)}`); },
+    setTitleBarOverlay() { log.push("win.setTitleBarOverlay"); },
+  };
+  const panelViews = [];
+  class WebContentsView {
+    constructor(options) {
+      if (options.webPreferences.partition) {
+        // An embedded browser panel: its own page, never the dashboard's.
+        panelViews.push(options);
+        this.webContents = {
+          ...recordingEmitter("panel", []),
+          loads: [],
+          loadURL(url) { this.loads.push(url); return Promise.resolve(); },
+          setWindowOpenHandler() {},
+          isDestroyed: () => false,
+          getTitle: () => "",
+          getURL: () => "",
+          focus() {},
+          close() {},
+        };
+        return;
+      }
+      log.push(`new WebContentsView:${JSON.stringify(options.webPreferences.additionalArguments || [])}`);
+      this.webContents = viewContents;
+    }
+    setBackgroundColor() {}
+    setBounds() {}
+    setVisible() {}
+  }
+  const lifecycle = createWindowLifecycle(validOptions({
+    electron: {
+      WebContentsView,
+      BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => null },
+      Menu: { buildFromTemplate: () => ({ popup() {} }) },
+      shell: { openExternal() {} },
+      nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
+      app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
+    },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
+    platform,
+    env: {},
+  }));
+  return { lifecycle, win, viewContents, log, panelViews };
+}
+
+async function wireDashboardWindow(t, options) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(globalThis, "fetch", async () => ({ ok: true, status: 204, json: async () => null }));
+  const harness = dashboardWindowHarness(options);
+  harness.lifecycle.setupWindowContents(harness.win, "http://localhost:5476");
+  const wiring = harness.log.splice(0);
+  harness.viewContents.emit("did-finish-load");
+  const onLoad = harness.log.splice(0);
+  await harness.win._mcAgentChannel.stop();
+  return { ...harness, wiring, onLoad };
+}
+
+const COMMON_WIRING_HEAD = [
+  "new WebContentsView:[]",
+  "win.addChildView",
+];
+
+describe("dashboard window wiring order", () => {
+  it("a macOS window positions traffic lights and tracks zoom before its load handlers", async (t) => {
+    const { wiring, onLoad } = await wireDashboardWindow(t, { platform: "darwin" });
+    assert.deepEqual(wiring.slice(0, 2), COMMON_WIRING_HEAD);
+    const events = wiring.filter((entry) => entry.startsWith("win.on:") || entry.startsWith("view.on:")
+      || entry.startsWith("view.set") || entry.startsWith("view.session") || entry.startsWith("win.set"));
+    assert.deepEqual(events, [
+      "view.on:did-finish-load",
+      "win.on:closed",
+      "win.on:resize",
+      "win.on:closed",
+      "win.on:enter-full-screen",
+      "win.on:leave-full-screen",
+      "view.on:enter-html-full-screen",
+      "view.on:leave-html-full-screen",
+      "win.on:leave-full-screen",
+      "win.on:show",
+      "win.on:restore",
+      "win.on:move",
+      "view.on:did-finish-load",
+      "view.on:context-menu",
+      "win.setWindowButtonPosition:{\"x\":16,\"y\":11}",
+      "view.on:zoom-changed",
+      "win.on:system-context-menu",
+      "view.on:did-finish-load",
+      "view.on:page-title-updated",
+      "view.on:did-finish-load",
+      "win.on:focus",
+      "win.on:focus",
+      "view.setWindowOpenHandler",
+      "view.session.onBeforeSendHeaders",
+    ]);
+    assert.deepEqual(onLoad, [
+      "view.send:fullscreen-changed",
+      "win.setTitle:Kiro Crew [:5476]",
+      "view.insertCSS:#electron-drag-bar {",
+      "view.executeJavaScript:if (!document.getElementById('electron-drag-bar')) {",
+      "view.executeJavaScript:getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()",
+      "view.executeJavaScript:JSON.stringify({pref: document.documentElement.dataset.modePref || \"\",mode: document.documentElement.dataset.mode || \"\"})",
+    ]);
+  });
+
+  it("a Windows window paints the title-bar overlay and tracks zoom", async (t) => {
+    const { wiring, onLoad } = await wireDashboardWindow(t, { platform: "win32" });
+    const chrome = wiring.filter((entry) => entry === "win.setTitleBarOverlay" || entry === "view.on:zoom-changed"
+      || entry === "win.on:system-context-menu" || entry === "view.on:context-menu");
+    assert.deepEqual(chrome, [
+      "view.on:context-menu",
+      "win.setTitleBarOverlay",
+      "view.on:zoom-changed",
+      "win.on:system-context-menu",
+    ]);
+    assert.ok(!wiring.some((entry) => entry.startsWith("win.setWindowButtonPosition")));
+    assert.equal(onLoad[1], "win.setTitle:Kiro Crew", "the default local port is omitted on Windows");
+    assert.equal(onLoad[2], "view.insertCSS:#electron-drag-bar {");
+  });
+
+  it("a frameless Linux window injects caption controls after the drag band", async (t) => {
+    const { wiring, onLoad, win } = await wireDashboardWindow(t, { platform: "linux", frameless: true });
+    assert.equal(wiring[0], "new WebContentsView:[\"--kc-linux-frameless\"]");
+    assert.ok(!wiring.includes("view.on:zoom-changed"), "zoom tracking is macOS/Windows only");
+    assert.deepEqual(onLoad, [
+      "view.send:fullscreen-changed",
+      "win.setTitle:Kiro Crew [:5476]",
+      "view.insertCSS:#electron-drag-bar {",
+      "view.executeJavaScript:if (!document.getElementById('electron-drag-bar')) {",
+      "view.insertCSS:#electron-linux-controls {",
+      "view.executeJavaScript:if (!document.getElementById('electron-linux-controls')) {",
+      "win.on:maximize",
+      "win.on:unmaximize",
+      "view.executeJavaScript:{",
+      "view.executeJavaScript:getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()",
+      "view.executeJavaScript:JSON.stringify({pref: document.documentElement.dataset.modePref || \"\",mode: document.documentElement.dataset.mode || \"\"})",
+    ]);
+    assert.equal(win._mcLinuxMaximizeSyncArmed, true);
+  });
+
+  it("a framed window injects neither the drag band nor caption controls", async (t) => {
+    const { onLoad } = await wireDashboardWindow(t, { platform: "linux", frameless: false });
+    assert.deepEqual(onLoad, [
+      "view.send:fullscreen-changed",
+      "win.setTitle:Kiro Crew [:5476]",
+      "view.executeJavaScript:getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()",
+      "view.executeJavaScript:JSON.stringify({pref: document.documentElement.dataset.modePref || \"\",mode: document.documentElement.dataset.mode || \"\"})",
+    ]);
+  });
+
+  it("the window carries every cross-module property before any caller loads it", async (t) => {
+    const { win, viewContents } = await wireDashboardWindow(t, { platform: "darwin" });
+    assert.equal(win.webContents, viewContents);
+    assert.equal(win._mcView.webContents, viewContents);
+    assert.equal(win._mcBackendUrl, "http://localhost:5476");
+    assert.ok(win._mcBrowserPanels instanceof Map);
+    assert.equal(typeof win._mcBrowserPanel, "function");
+    assert.equal(typeof win._mcDestroyBrowserPanel, "function");
+    assert.ok(win._mcReachableSessions instanceof Set);
+    assert.equal(typeof win._mcSetCustomName, "function");
+    assert.equal(win._mcGetCustomName(), null);
+    win._mcSetCustomName("Work");
+    assert.equal(win._mcGetCustomName(), "Work");
+  });
+});
+
+describe("browser panel IPC routing", () => {
+  it("resolves every request from its sender and never creates a panel from a layout report", async (t) => {
+    const { lifecycle, win, viewContents } = await wireDashboardWindow(t, { platform: "darwin" });
+    const stranger = { isDestroyed: () => false };
+    assert.equal(lifecycle.browser.getState(stranger, "p1"), null);
+    assert.equal(lifecycle.browser.setBounds(viewContents, "p1", { x: 0, y: 0, width: 1, height: 1 }), null);
+    assert.equal(lifecycle.browser.setOverlay(viewContents, "p1", true), null);
+    assert.equal(lifecycle.browser.setInactive(viewContents, "p1", true), null);
+    assert.equal(lifecycle.browser.close(viewContents, "p1"), null);
+    assert.equal(lifecycle.browser.getControl(viewContents, "p1"), null);
+    assert.equal(await lifecycle.browser.control(viewContents, "p1", "snapshot", {}), null);
+    assert.deepEqual(
+      await lifecycle.browser.annotate(viewContents, "p1", "poll", {}),
+      { ok: false, code: "no_view", error: "no native browser panel" },
+    );
+    assert.equal(win._mcBrowserPanels.size, 0, "no panel was created by any of the above");
+
+    assert.deepEqual(lifecycle.browser.trackSession(stranger, "s1", true), { ok: false });
+    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "  s1  ", true), { ok: true });
+    assert.deepEqual([...win._mcReachableSessions], ["s1"]);
+    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "s1", false), { ok: true });
+    assert.equal(win._mcReachableSessions.size, 0);
+  });
+});
+
+describe("embedded browser panel isolation", () => {
+  it("opens a panel in the deny-all partition with every renderer privilege off", async (t) => {
+    const { lifecycle, viewContents, panelViews, win } = await wireDashboardWindow(t, { platform: "darwin" });
+    lifecycle.browser.open(viewContents, "p1", "https://example.com/");
+    assert.equal(panelViews.length, 1, "open creates exactly one panel view");
+    assert.deepEqual(panelViews[0].webPreferences, {
+      partition: BROWSER_PARTITION,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+    });
+    assert.equal(BROWSER_PARTITION, "persist:kirocrew-browser");
+    assert.ok(win._mcBrowserPanels.has("p1"));
+    lifecycle.browser.close(viewContents, "p1");
+    assert.equal(win._mcBrowserPanels.size, 0);
+  });
+});
+
+describe("window chrome controls", () => {
+  it("places macOS traffic lights from the dashboard zoom", () => {
+    const placed = [];
+    const lifecycle = createWindowLifecycle(validOptions({ platform: "darwin" }));
+    const at = (zoom) => {
+      lifecycle.positionTrafficLights({
+        isDestroyed: () => false,
+        _mcView: { webContents: { getZoomFactor: () => zoom } },
+        setWindowButtonPosition: (position) => placed.push(position),
+      });
+    };
+    at(1);
+    at(1.5);
+    at(2);
+    assert.deepEqual(placed, [{ x: 16, y: 11 }, { x: 24, y: 22 }, { x: 32, y: 32 }]);
+
+    const offMac = [];
+    const elsewhere = createWindowLifecycle(validOptions({ platform: "win32" }));
+    elsewhere.positionTrafficLights({
+      isDestroyed: () => false,
+      _mcView: { webContents: { getZoomFactor: () => 1 } },
+      setWindowButtonPosition: (position) => offMac.push(position),
+    });
+    assert.deepEqual(offMac, [], "traffic lights are placed on macOS only");
+  });
+
+  it("stores only a well-formed accent and resolves only known theme modes", () => {
+    const stored = {};
+    const nativeTheme = { themeSource: "system", shouldUseDarkColors: false };
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: { nativeTheme },
+      store: { get: () => null, set: (key, value) => { stored[key] = value; } },
+    }));
+    lifecycle.chrome.setThemeAccent("#abc");
+    lifecycle.chrome.setThemeAccent("#12345");
+    lifecycle.chrome.setThemeAccent("red");
+    assert.deepEqual(stored, { themeAccent: "#abc" });
+
+    lifecycle.chrome.setThemeMode("dark");
+    assert.equal(nativeTheme.themeSource, "dark");
+    lifecycle.chrome.setThemeMode("sepia");
+    assert.equal(nativeTheme.themeSource, "dark", "an unknown preference is ignored");
+    lifecycle.chrome.setThemeMode("system");
+    assert.equal(nativeTheme.themeSource, "system");
+
+    lifecycle.chrome.setTitlebarMode("dark");
+  });
+
+  it("zoom requests clamp, step, and reconcile every dashboard window", () => {
+    const placed = [];
+    const dashboard = {
+      _mcView: { webContents: { getZoomFactor: () => 1 } },
+      isDestroyed: () => false,
+      setWindowButtonPosition: (position) => placed.push(position),
+    };
+    const lifecycle = createWindowLifecycle(validOptions({
+      platform: "darwin",
+      electron: { BaseWindow: { getAllWindows: () => [dashboard, { isDestroyed: () => false }] } },
+    }));
+    let zoom = 1;
+    const sender = {
+      getZoomFactor: () => zoom,
+      setZoomFactor: (factor) => { zoom = factor; },
+    };
+    assert.equal(lifecycle.chrome.getZoom(sender), 1);
+    const stepped = lifecycle.chrome.stepZoom(sender, 1);
+    assert.ok(stepped > 1);
+    assert.equal(zoom, stepped);
+    assert.equal(lifecycle.chrome.setZoom(sender, 100), zoom, "setZoom returns the clamped factor");
+    assert.ok(zoom < 100);
+    assert.equal(placed.length, 2, "only windows carrying a dashboard view are reconciled");
+  });
+});
+
+describe("modal prompts", () => {
+  function promptHarness({ title, platform = "test" } = {}) {
+    const stored = {};
+    const opened = [];
+    class PromptWindow {
+      constructor(options) {
+        this.options = options;
+        this.handlers = {};
+        opened.push(this);
+      }
+      setMenu() {}
+      on(event, handler) { this.handlers[event] = handler; }
+      loadURL(url) {
+        this.url = url;
+        setImmediate(() => {
+          if (title !== null) this.handlers["page-title-updated"]?.({}, title);
+          this.handlers.closed?.();
+        });
+      }
+    }
+    const names = [];
+    const focused = {
+      isDestroyed: () => false,
+      getTitle: () => "Kiro Crew [:5476]",
+      _mcBackendUrl: "http://localhost:5476",
+      _mcSetCustomName: (name) => names.push(name),
+    };
+    const lifecycle = createWindowLifecycle(validOptions({
+      platform,
+      electron: {
+        BaseWindow: { getFocusedWindow: () => focused },
+        BrowserWindow: PromptWindow,
+        nativeTheme: { shouldUseDarkColors: true },
+      },
+      store: {
+        get: (key) => (key in stored ? stored[key] : null),
+        set: (key, value) => { stored[key] = value; },
+      },
+    }));
+    return { lifecycle, stored, opened, names };
+  }
+  const settle = () => new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+
+  it("rename stores the name and, when asked, the port's default name", async () => {
+    const { lifecycle, stored, opened, names } = promptHarness({
+      title: JSON.stringify({ name: "Work", setDefault: true }),
+    });
+    lifecycle.renameCurrentWindow();
+    await settle();
+    assert.equal(opened.length, 1);
+    assert.deepEqual(
+      { width: opened[0].options.width, height: opened[0].options.height, modal: opened[0].options.modal },
+      { width: 400, height: 200, modal: true },
+    );
+    const html = decodeURIComponent(opened[0].url);
+    assert.match(html, /value="\[:5476\]"/, "opens on the current name without the brand prefix");
+    assert.match(html, /background:#1e293b/, "a window with no dashboard falls back to the native dark palette");
+    assert.deepEqual(names, ["Work"]);
+    assert.deepEqual(stored.remoteHosts, { 5476: { defaultName: "Work" } });
+  });
+
+  it("rename keeps the legacy plain-text answer and ignores a cancel", async () => {
+    const legacy = promptHarness({ title: "Legacy" });
+    legacy.lifecycle.renameCurrentWindow();
+    await settle();
+    assert.deepEqual(legacy.names, ["Legacy"]);
+
+    const cancelled = promptHarness({ title: null });
+    cancelled.lifecycle.renameCurrentWindow();
+    await settle();
+    assert.deepEqual(cancelled.names, []);
+    assert.equal(cancelled.stored.remoteHosts, undefined);
+  });
+});
+
+describe("microphone recovery dialog", () => {
+  it("opens one Privacy dialog per denial burst and none when the probe fails", async () => {
+    const boxes = [];
+    let status = "denied";
+    let release;
+    const lifecycle = createWindowLifecycle(validOptions({
+      platform: "darwin",
+      electron: {
+        systemPreferences: {
+          getMediaAccessStatus: () => {
+            if (status === "throw") throw new Error("probe unavailable");
+            return status;
+          },
+        },
+        dialog: {
+          showMessageBox: (options) => {
+            boxes.push(options);
+            return new Promise((resolve) => { release = () => resolve({ response: 1 }); });
+          },
+        },
+        shell: { openExternal() {} },
+      },
+    }));
+    lifecycle.security.micDenied();
+    lifecycle.security.micDenied();
+    assert.equal(boxes.length, 1, "a racing second denial is latched");
+    assert.equal(boxes[0].title, "Microphone permission needed");
+    assert.deepEqual(boxes[0].buttons, ["Open System Settings", "Cancel"]);
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    status = "restricted";
+    lifecycle.security.micDenied();
+    assert.equal(boxes.length, 2);
+    assert.deepEqual(boxes[1].buttons, ["OK"]);
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    status = "granted";
+    lifecycle.security.micDenied();
+    status = "throw";
+    lifecycle.security.micDenied();
+    assert.equal(boxes.length, 2);
+
+    const offMac = createWindowLifecycle(validOptions({ platform: "win32" }));
+    offMac.security.micDenied();
+  });
+});
+
+describe("gateway port prompt", () => {
+  const { createWindowPrompts } = require("../runtime/window/prompts");
+
+  function portPrompt(answer) {
+    const opened = [];
+    class PromptWindow {
+      constructor(options) {
+        this.options = options;
+        this.handlers = {};
+        opened.push(this);
+      }
+      setMenu() {}
+      on(event, handler) { this.handlers[event] = handler; }
+      loadURL(url) {
+        this.url = url;
+        setImmediate(() => {
+          if (answer !== null) this.handlers["page-title-updated"]?.({}, answer);
+          this.handlers.closed?.();
+        });
+      }
+    }
+    const prompts = createWindowPrompts({
+      BaseWindow: { getFocusedWindow: () => null },
+      BrowserWindow: PromptWindow,
+      nativeTheme: { shouldUseDarkColors: false },
+      store: { get: () => null },
+      getMainWindow: () => null,
+    });
+    return { prompts, opened };
+  }
+  const settle = () => new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+
+  it("parents the form on the window current once its styling is ready", async () => {
+    const { prompts, opened } = portPrompt(null);
+    let parent = "before";
+    const pending = prompts.promptConnectionPort(() => parent, async () => {});
+    parent = "after";
+    await pending;
+    assert.equal(opened[0].options.parent, "after");
+    assert.equal(opened[0].options.modal, true);
+    await settle();
+  });
+
+  it("hands on only a port in 1..65535", async () => {
+    for (const [answer, expected] of [
+      ["7778", [7778]],
+      [" 1 ", [1]],
+      ["65535", [65535]],
+      ["0", []],
+      ["65536", []],
+      ["abc", []],
+      [null, []],
+    ]) {
+      const { prompts } = portPrompt(answer);
+      const ports = [];
+      await prompts.promptConnectionPort(() => null, async (port) => { ports.push(port); });
+      await settle();
+      assert.deepEqual(ports, expected, `answer ${JSON.stringify(answer)}`);
+    }
   });
 });

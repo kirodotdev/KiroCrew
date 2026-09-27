@@ -11,13 +11,11 @@ const {
   execFileSync: defaultExecFileSync,
 } = require("child_process");
 
-const { findKirocrewBin } = require("./find-bin");
 const {
   buildGatewayEnvironment,
   bundledKiroCliEnvironment,
   gatewayBytecodeEnvironment,
 } = require("./gateway-env");
-const { resolveGatewayPath } = require("./mac-env");
 const {
   launchBlockingBundleParts,
   describeIncompleteBundle,
@@ -35,15 +33,11 @@ const {
 } = require("./token-acquire");
 const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
-  forceStopPort,
   classifyPortOwner,
   probePortBinding,
-  isKirocrewCommand,
 } = require("./gateway-stop");
 const {
-  canonicalWindowsPath,
   windowsGatewayExecutablePaths,
-  windowsListenPids,
   windowsProcessCommand,
   windowsTaskkill,
 } = require("./windows-port");
@@ -53,16 +47,12 @@ const {
   tailLines,
   isPortInUse,
 } = require("./gateway-wait");
-const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { createLivenessMonitor, createBackendProbe } = require("./gateway-liveness");
 const {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
   revealWindowForConnect,
   waitForServiceRebind,
-  waitForProcessExit,
-  snapshotPortPids,
-  incumbentSnapshotBlocksRespawn,
   unrecoverableGatewayDialog,
   shouldReresolveBackend,
   isStaleBundleSignal,
@@ -71,31 +61,26 @@ const { capturePySpyDump } = require("./pyspy-dump");
 const {
   decideGatewayAction,
   classifyGatewayReadiness,
-  FAMILY_META,
   HEALTH_IDENTITY_PATH,
   READY_PATH,
 } = require("./instance-guard");
 const { getRemoteHostConfig } = require("./host-config");
-const { validateRemoteSettings } = require("./validation");
 const {
-  parseRemoteCrewFields,
   remoteCrewAction,
   remoteCrewDraft,
   saveRemoteCrewConfig,
 } = require("./remote-crew-setup");
-const {
-  DEFAULT_REMOTE_BIN,
-  DEFAULT_REMOTE_PATH,
-  buildRemoteTokenCommand,
-  parseTokenFromStdout,
-} = require("./remote-token");
-const { fetchLocalToken: fetchTokenFromHome } = require("./local-token");
 const { resolveHome, canonicalHome, secretCandidates } = require("./home-dir");
 const {
   isLocalGatewayEnabled,
   setLocalGatewayEnabled,
   classifyStartFailure,
 } = require("./local-gateway");
+const { createLaunchPreflight } = require("./runtime/gateway/launch-preflight");
+const { createPortHolders } = require("./runtime/gateway/port-holders");
+const { createFamilyTakeover } = require("./runtime/gateway/family-takeover");
+const { createTokenSources } = require("./runtime/gateway/token-sources");
+const { createRemoteCrewPrompt } = require("./runtime/gateway/remote-crew-prompt");
 
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -139,7 +124,6 @@ const SPLASH_PRIMARY_QUERY = Object.freeze({ primary: "1" });
 // and `fail()` killed a gateway that was starting normally.
 const SUCCESSOR_BOOT_MARGIN_MS = 30_000;
 const SUCCESSOR_POLL_MS = 500;
-const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
 /**
  * Own the embedded gateway's complete lifecycle without owning the Electron
@@ -263,23 +247,74 @@ function createGatewaySupervisor({
   // classifying as ours (stop, liveness, port-owner) until it exits.
   let spawnedExecutablePaths = [];
 
-  /**
-   * Can app.relaunch() still find something to re-exec? Electron relaunches
-   * this process's own executable (process.execPath; inside the .app bundle on
-   * a packaged macOS build), so the bundle being pruned out from under a
-   * running app is visible as that path no longer existing. A swapped bundle
-   * leaves a new executable at the same path and reads as relaunchable.
-   */
-  function canRelaunchThisApp() {
-    const target = processObj.execPath;
-    if (typeof target !== "string" || !target) return false;
-    try {
-      fs.accessSync(target, fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  // The cohesive owners this facade composes. Each receives only what it
+  // reads; the lifecycle state above stays in this closure and reaches them
+  // through getters, so no owner can write it.
+  const {
+    canRelaunchThisApp,
+    resolveGatewayBin,
+    resolveProjectDir,
+    probeLaunchBlockingParts,
+    warnSandboxProfileNeed,
+    recoverLaunchdPath,
+  } = createLaunchPreflight({
+    fs,
+    os,
+    path,
+    execFileSync,
+    processObj,
+    dirname,
+    isWindows: IS_WIN,
+    log: glog,
+    warn: userWarn,
+  });
+  const {
+    windowsRealpath,
+    isTrustedWindowsGatewayCommand,
+    winListenPids,
+    lsofListenPids,
+    psCommand,
+    psPpid,
+    snapshotGatewayPortPids,
+    unverifiedIncumbent,
+    waitForIncumbentExit,
+    forceStopGatewayPort,
+  } = createPortHolders({
+    fs,
+    os,
+    path,
+    execFile,
+    processObj,
+    dirname,
+    isWindows: IS_WIN,
+    log: glog,
+    getSpawnedExecutablePaths: () => spawnedExecutablePaths,
+  });
+  const { resolveFamilyConflict } = createFamilyTakeover({
+    dialog,
+    execFile,
+    processObj,
+    port: PORT,
+    log: glog,
+    sendStatus,
+    snapshotGatewayPortPids,
+    waitForPortFree,
+    waitForIncumbentExit,
+  });
+  const { fetchRemoteToken, fetchLocalToken } = createTokenSources({
+    store,
+    port: PORT,
+    backendUrl: BACKEND_URL,
+    execFile,
+    fs,
+    path,
+    http,
+    log: glog,
+    sendStatus,
+    snapshotGatewayPortPids,
+    getGatewayProcess: () => gatewayProcess,
+  });
+  const { promptRemoteCrew } = createRemoteCrewPrompt({ BrowserWindow, nativeTheme });
 
   /**
    * May the failure dialog offer "Start Local Gateway"?
@@ -306,9 +341,10 @@ function createGatewaySupervisor({
    * copy is demonstrably alive.
    *
    * app.relaunch() is not usable here: it returns nothing and only schedules a
-   * re-exec for exit time, so when the bundle is pruned between the probe
-   * above and that re-exec the app exits into nothing and no code is left to
-   * notice. Spawning the successor ourselves lets this process observe it, but
+   * re-exec for exit time, so when the bundle is pruned between the
+   * canRelaunchThisApp probe and that re-exec the app exits into nothing and
+   * no code is left to notice. Spawning the successor ourselves lets this
+   * process observe it, but
    * Node's "spawn" event only proves the exec succeeded: a bundle intact
    * enough to exec and broken enough to crash during initialization would
    * still take the app down. The handshake is therefore the successor's own
@@ -628,43 +664,6 @@ function createGatewaySupervisor({
     });
   }
 
-  // Ask the other channel app to quit through its normal lifecycle. Both app
-  // flavors share a bundle identifier, so AppleScript must target app NAME.
-  function quitOtherApp(appName) {
-    return new Promise((resolve) => {
-      if (processObj.platform !== "darwin") { resolve(false); return; }
-      execFile(
-        "osascript",
-        ["-e", `quit app "${appName}"`],
-        { timeout: 10000 },
-        (err) => resolve(!err),
-      );
-    });
-  }
-
-  const windowsRealpath = (candidate) => fs.realpathSync.native(candidate);
-
-  function isTrustedWindowsGatewayCommand(command) {
-    const gatewayBin = findKirocrewBin(
-      fs,
-      os,
-      path,
-      processObj.resourcesPath,
-      dirname,
-    );
-    return isKirocrewCommand(command, {
-      trustedExecutablePaths: [
-        ...windowsGatewayExecutablePaths(gatewayBin, { realpathSync: windowsRealpath }),
-        ...spawnedExecutablePaths,
-      ],
-      canonicalizePath: (candidate) => canonicalWindowsPath(candidate, windowsRealpath),
-    });
-  }
-
-  // The Windows OS probes take the factory's injected execFile, exactly as the
-  // POSIX ones do; production passes the real child_process.execFile.
-  const winListenPids = (p) => windowsListenPids(p, { execFileFn: execFile });
-
   function probeGatewayPortOwner(probePort) {
     if (IS_WIN) {
       return classifyPortOwner(probePort, {
@@ -701,42 +700,6 @@ function createGatewaySupervisor({
     return probeGatewayPortOwner(PORT);
   }
 
-  // Signal 0 probes without delivering on POSIX. EPERM still means the process
-  // is alive and may be holding gateway.lock.
-  function pidAlive(pid) {
-    try { processObj.kill(pid, 0); return true; }
-    catch (error) { return !!(error && error.code === "EPERM"); }
-  }
-
-  // Capture the listener while the socket is still bound. Once it clears,
-  // neither lsof nor netstat can name the process still holding gateway.lock.
-  function snapshotGatewayPortPids(probePort) {
-    return snapshotPortPids({
-      port: probePort,
-      isWindows: IS_WIN,
-      getWindowsPids: winListenPids,
-      getPosixPids: lsofListenPids,
-    });
-  }
-
-  function unverifiedIncumbent(pids) {
-    return incumbentSnapshotBlocksRespawn({ pids, isWindows: IS_WIN });
-  }
-
-  // Port free is not lock free. Wait for captured incumbent PIDs to die so the
-  // kernel has released gateway.lock before attempting the replacement spawn.
-  async function waitForIncumbentExit(pids, label) {
-    const verdict = await waitForProcessExit({
-      pids,
-      isAlive: pidAlive,
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    });
-    if (verdict === "timeout") {
-      glog(`${label}: incumbent gateway process still alive after the exit grace (port already free) — spawning anyway; a lock refusal will surface via the start-failure watcher`);
-    }
-    return verdict;
-  }
-
   // The LISTEN socket, not an HTTP answer, is the mutex. A wedged process or
   // dropped SSH tunnel can stop answering while it continues to hold the port.
   async function waitForPortFree(maxWaitMs = 30000) {
@@ -751,53 +714,6 @@ function createGatewaySupervisor({
       if (Date.now() - start > maxWaitMs) return false;
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-  }
-
-  // Only macOS can quit the other family's app for the user (quitOtherApp is
-  // AppleScript-only), so everywhere else this conflict was a dead end: an
-  // aborted launch, then a second launch after a manual quit. Offer that quit as
-  // a resumable step instead. It adds NO termination capability: the probes only
-  // observe, and the prompt is reachable only after a LOCAL owner is known.
-  const MANUAL_QUIT_ROUNDS = 3;
-
-  async function resolveConflictByManualQuit(other, otherVersion) {
-    // Port free is not lock free: an uncapturable listener must refuse, not read
-    // as "already exited" and race gateway.lock. Stricter than unverifiedIncumbent
-    // (Windows-only): reaching this prompt proved the probe names PIDs here.
-    const incumbentPids = await snapshotGatewayPortPids(PORT);
-    if (incumbentPids === null) {
-      glog(`takeover (manual): could not capture the incumbent PID on :${PORT} — refusing a respawn that could race gateway.lock`);
-      return "probe-failed";
-    }
-    for (let round = 1; round <= MANUAL_QUIT_ROUNDS; round += 1) {
-      const { response } = await dialog.showMessageBox({
-        type: "warning",
-        title: `${other.displayName} is running`,
-        message: `${other.displayName} (${otherVersion}) is already running with your Kiro Crew data.`,
-        detail: round === 1
-          ? `Quit ${other.displayName}, then choose “I quit it — Retry”.`
-          : `${other.displayName} was still running a moment ago. Quit it, then choose “I quit it — Retry”.`,
-        buttons: ["I quit it — Retry", "Cancel"],
-        defaultId: 0,
-        cancelId: 1,
-      });
-      if (response !== 0) return "abort";
-      sendStatus(`Waiting for ${other.displayName} to quit…`);
-      if (await waitForPortFree()) {
-        glog(`takeover (manual): ${other.appName} released :${PORT} — proceeding to spawn`);
-        await waitForIncumbentExit(incumbentPids, "takeover (manual)");
-        return "spawn";
-      }
-      glog(`takeover (manual): ${other.appName} still holds :${PORT} after retry ${round}/${MANUAL_QUIT_ROUNDS}`);
-    }
-    glog(`takeover (manual): ${other.appName} never released :${PORT} — aborting this launch`);
-    await dialog.showMessageBox({
-      type: "error",
-      message: `${other.displayName} is still running.`,
-      detail: `This launch was cancelled. Quit ${other.displayName}, then open this app again.`,
-      buttons: ["OK"],
-    });
-    return "abort";
   }
 
   async function resolveGatewayConflict(rebindDepth = 0) {
@@ -886,37 +802,7 @@ function createGatewaySupervisor({
       return "reuse";
     }
 
-    const other = FAMILY_META[decision.otherFamily];
-    glog(`gateway on :${PORT} is owned by ${other.appName} (${decision.otherVersion}) — prompting for takeover`);
-    const canTakeover = processObj.platform === "darwin";
-    if (!canTakeover) {
-      glog(`canTakeover=false on ${processObj.platform} — no supported way to quit ${other.appName} from here; offering a manual-quit retry`);
-      return resolveConflictByManualQuit(other, decision.otherVersion);
-    }
-    const { response } = await dialog.showMessageBox({
-      type: "warning",
-      title: `${other.displayName} is running`,
-      message: `${other.displayName} (${decision.otherVersion}) is already running with your Kiro Crew data.`,
-      detail: `Only one Kiro Crew app can use ~/.kiro/crew at a time. Quit ${other.displayName} and continue here?`,
-      buttons: [`Quit ${other.displayName} & Continue`, "Cancel"],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (response !== 0) return "abort";
-    sendStatus(`Waiting for ${other.displayName} to quit…`);
-    await quitOtherApp(other.appName);
-    if (!(await waitForPortFree())) {
-      glog(`takeover failed: ${other.appName} did not release :${PORT}`);
-      await dialog.showMessageBox({
-        type: "error",
-        message: `${other.displayName} did not quit.`,
-        detail: "Quit it manually, then relaunch this app.",
-        buttons: ["OK"],
-      });
-      return "abort";
-    }
-    glog(`takeover: ${other.appName} released :${PORT} — proceeding to spawn`);
-    return "spawn";
+    return resolveFamilyConflict(decision);
   }
 
   function startGateway() {
@@ -1029,26 +915,6 @@ function createGatewaySupervisor({
     });
   }
 
-  // Resolve the tree that ships agents/ and skills/. Packaged resources keep it
-  // beside electron/; source checkouts keep it at the repo root two levels up.
-  function resolveProjectDir() {
-    const candidates = [
-      path.resolve(dirname, ".."),
-      path.resolve(dirname, "..", ".."),
-    ];
-    for (const candidate of candidates) {
-      try {
-        if (
-          fs.existsSync(path.join(candidate, "agents"))
-          && fs.existsSync(path.join(candidate, "skills"))
-        ) {
-          return candidate;
-        }
-      } catch { /* try the next candidate */ }
-    }
-    return path.resolve(dirname, "..");
-  }
-
   // Every call probes the candidate list afresh (findKirocrewBin does live
   // access() checks), which is what lets a stale-bundle respawn pick up a
   // backend swapped in at the same path. resourcesPath itself is a launch-time
@@ -1065,15 +931,7 @@ function createGatewaySupervisor({
       userWarn(`WARN failed to create kirocrew dir ${kirocrewDir}: ${error.message}`);
     }
 
-    const bin = findKirocrewBin(
-      fs,
-      os,
-      path,
-      processObj.resourcesPath,
-      dirname,
-      processObj.arch,
-      IS_WIN,
-    );
+    const bin = resolveGatewayBin();
     const bundled = bin.includes("backend-dist");
     let execState = "executable";
     try { fs.accessSync(bin, fs.constants.X_OK); }
@@ -1102,40 +960,15 @@ function createGatewaySupervisor({
 
     sendStatus("Starting gateway…");
 
-    // AppImage processes receive no AppArmor profile automatically. Log the
-    // exact remedy before launch; a failure here is diagnostic-only and must not
-    // block the gateway.
-    try {
-      const need = describeSandboxProfileNeed({
-        platform: processObj.platform,
-        env: processObj.env,
-        readSysctl: (file) => fs.readFileSync(file, "utf8"),
-        cliBin: bin,
-      });
-      if (need) {
-        userWarn(`WARN agent sandbox will fail closed: ${need.reason}`);
-        userWarn(`HINT run this in a terminal (needs sudo), then restart the app: ${need.command}`);
-      }
-    } catch (error) {
-      userWarn(`WARN sandbox profile check failed: ${error.message}`);
-    }
+    warnSandboxProfileNeed(bin);
 
     // The explicit --port is the single source of truth. Inheriting
     // KIROCREW_PORT would let the child re-derive a port which differs from the
     // shell URL and from the gateway's own frame-ancestor claim.
     const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
 
-    // GUI-launched macOS apps receive launchd's minimal PATH. Append only the
-    // user's launchd-domain additions so an existing resolution can never be
-    // shadowed; other platforms and empty additions leave PATH untouched.
-    const gatewayPath = resolveGatewayPath({
-      execFileSync,
-      platform: processObj.platform,
-      basePath: cleanEnv.PATH || "",
-    });
-    if (gatewayPath) {
-      glog(`PATH recovered from launchd domain: +${gatewayPath.added.length} dir(s) appended`);
-    }
+    // A GUI-launched macOS app appends only the launchd domain's additions.
+    const gatewayPath = recoverLaunchdPath(cleanEnv.PATH || "");
 
     // Write child stdout/stderr directly to a file descriptor. A JS pipe could
     // backpressure a long-running gateway; the descriptor also preserves Python
@@ -1358,132 +1191,6 @@ function createGatewaySupervisor({
   function stopGatewayOnQuit() {
     stopGatewayGracefully()
       .catch((error) => console.error("Gateway stop failed:", error?.message));
-  }
-
-  function fetchRemoteToken(tokenPort) {
-    const config = getRemoteHostConfig(store, tokenPort || PORT);
-    if (!config || !config.host) return Promise.resolve({ token: "", error: null });
-    const { host: remoteHost, binPath, remotePort, remotePath } = config;
-    const validationError = validateRemoteSettings(
-      remoteHost,
-      binPath,
-      remotePort,
-      remotePath,
-    );
-    if (validationError) {
-      console.error(`Refusing SSH token fetch: ${validationError}`);
-      return Promise.resolve({ token: "", error: validationError });
-    }
-
-    const effectivePort = remotePort || tokenPort || PORT;
-    const remoteCommand = buildRemoteTokenCommand(binPath, {
-      port: effectivePort,
-      remotePath: remotePath || undefined,
-    });
-    const sshArgs = ["-o", "ConnectTimeout=10", remoteHost, remoteCommand];
-
-    return new Promise((resolve) => {
-      sendStatus("Fetching token from remote dev desktop…");
-      glog(`SSH token fetch: ssh ${remoteHost} for port ${effectivePort}`);
-      execFile(
-        "/usr/bin/ssh",
-        sshArgs,
-        { timeout: Math.max(store.get("sshTimeoutMs") || 20000, 5000) },
-        (error, stdout, stderr) => {
-          if (error) {
-            console.error("SSH token fetch failed:", error.message);
-            if (stderr) console.error("SSH stderr:", stderr.trim().slice(0, 500));
-            resolve({ token: "", error: stderr?.trim() || error.message });
-            return;
-          }
-          resolve({ token: parseTokenFromStdout(stdout), error: null });
-        },
-      );
-    });
-  }
-
-  async function fetchLocalToken(targetBackendUrl = BACKEND_URL) {
-    // The secret is the thing that must not leave this machine, so the check
-    // belongs here rather than on the adoption. `local-token.js` sends
-    // `X-Local-Secret` to whatever answers a literal loopback origin, and an
-    // `ssh -L` local end is one, so a gateway forwarded from another machine
-    // receives it -- and the header is on the wire before its 403 is read, so
-    // there is no recovering afterwards.
-    //
-    // The ONLY thing that authorises the send is first-hand knowledge: this
-    // process started that gateway and that child is still alive, on our own
-    // port. Nothing else is asked, and in particular the port's LISTEN owner is
-    // NOT asked, because the answer cannot be trusted for this decision --
-    // `isKirocrewCommand` matches the basename of the command line `ps` reports,
-    // so any process running as this user can present itself as ours with
-    // `exec -a kirocrew` and collect the secret. `gatewayOwnership`'s own
-    // `reused-local` and `reused-service` states are no substitute:
-    // `classifyAdoptedGateway` derives them from that same predicate.
-    //
-    // So silent authentication for a gateway this app merely adopted is not a
-    // capability being traded away for safety -- it never worked. Reimplementing
-    // it on an identity judgement that holds is its own design change, tracked
-    // separately; until then an adopted gateway asks for a token, which is the
-    // honest answer when this app cannot tell whose gateway it is.
-    //
-    // Refusing is not a dead end: the caller falls through to the remote-token
-    // path and then to the token prompt, which is what this file's own comment
-    // already says should happen for a gateway this machine cannot mint against.
-    const mintPort = Number(defaultedPort(targetBackendUrl)) || PORT;
-    // Reachable even for a gateway we spawned: the failure dialog's Add Remote
-    // Crew writes a crew for this very port, so the store can name one after the
-    // spawn. That port's holder is then a tunnel by construction.
-    if (getRemoteHostConfig(store, mintPort)?.host) {
-      glog(`not minting a local token for :${mintPort}: a remote crew is configured there`);
-      return "";
-    }
-    // The gateway must be this process's child AND still running. `gatewayProcess`
-    // is that child; `gatewayOwnership` is NOT, and reaching for it here was the
-    // bug. Ownership answers "may the recovery hook respawn?", and
-    // `stopGatewayGracefully`'s own docstring says it deliberately stays
-    // `"spawned"` after a stop so an aborted update can respawn -- the child's
-    // `exit` handler likewise clears `gatewayProcess` and leaves ownership alone.
-    // So ownership outlives the child, and between that death and the next spawn
-    // anything may bind the freed port: a token refresh would then hand the
-    // secret to whatever took it over.
-    //
-    // Liveness is the same test `stopGatewayGracefully` uses on the same field.
-    const liveChild = gatewayProcess && gatewayProcess.exitCode === null;
-    if (!liveChild || targetBackendUrl !== BACKEND_URL) {
-      glog(`not minting a local token for :${mintPort}: no live gateway of this process on that port`);
-      return "";
-    }
-    // Liveness says our child is RUNNING; it does not say our child is what
-    // ANSWERED. The pre-spawn probe established the port was free then, and our
-    // child binds only after its interpreter has imported -- seconds on a cold
-    // bundled tree -- so anything may bind inside that window. An `ssh -L`
-    // reconnect answers `/api/status` exactly as the gateway would, `waitForBackend`
-    // accepts it, and the secret would go to the far end of the tunnel.
-    //
-    // The kernel's own pid-to-port mapping settles it, and that is the whole
-    // reason to use it here: a pid cannot be presented the way a command line can,
-    // so this is not the argv0 judgement #13826 is about -- `snapshotGatewayPortPids`
-    // returns raw pids and `isKirocrewCommand` is not involved. The gateway binds
-    // in the process we spawned (`web.TCPSite` in the dashboard server, no fork),
-    // so our child's own pid is the one the kernel reports for this port.
-    //
-    // A null snapshot is "could not establish", whether the probe cannot run or
-    // nothing is listening, and both refuse: the port is confirmed ours or the
-    // secret stays put.
-    const holders = await snapshotGatewayPortPids(mintPort);
-    if (!holders || !holders.includes(gatewayProcess.pid)) {
-      glog(`not minting a local token for :${mintPort}: the kernel does not name our gateway (pid ${gatewayProcess.pid}) as its listener`);
-      return "";
-    }
-    // Re-resolve the home at call time so a KIROCREW_HOME change after Electron
-    // starts is honored. Mint only against the literal loopback endpoint.
-    return fetchTokenFromHome({
-      backendUrl: targetBackendUrl,
-      resolveHome,
-      path,
-      fs,
-      http,
-    });
   }
 
   // How long the BOOT poll waits for one answer. The poll runs every
@@ -1841,193 +1548,6 @@ function createGatewaySupervisor({
         resolve(action || "quit");
       });
       errorWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    });
-  }
-
-  /**
-   * Collect a remote crew's address for `promptPort`, opening on `initial`.
-   * Resolves with what the user saved, or null when the window was closed
-   * without saving.
-   */
-  function promptRemoteCrew(parentWindow, promptPort, initial = {}) {
-    return new Promise((resolve) => {
-      const dark = nativeTheme.shouldUseDarkColors;
-      const hasParent = parentWindow && !parentWindow.isDestroyed();
-      const opening = remoteCrewDraft(initial);
-      const promptWindow = new BrowserWindow({
-        width: 480,
-        // Four labelled fields, each with a defaults hint under it.
-        height: 470,
-        resizable: false,
-        useContentSize: true,
-        parent: hasParent ? parentWindow : undefined,
-        modal: !!hasParent,
-        backgroundColor: dark ? "#1e293b" : "#f8fafc",
-        webPreferences: { nodeIntegration: false, contextIsolation: true },
-      });
-      promptWindow.setMenu(null);
-
-      const escapeAttr = (value) => String(value || "")
-        .replace(/&/g, "&amp;")
-        .replace(/"/g, "&quot;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      const foreground = dark ? "#e2e8f0" : "#1e293b";
-      const muted = dark ? "#94a3b8" : "#64748b";
-      const html = `<!DOCTYPE html><html><head><style>
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family:-apple-system,sans-serif; padding:20px; background:${dark ? "#1e293b" : "#f8fafc"}; color:${foreground}; }
-        .title { font-size:15px; font-weight:700; margin-bottom:10px; }
-        label { display:block; font-size:12px; font-weight:600; margin:10px 0 4px; }
-        .hint { font-size:11px; color:${muted}; margin-top:4px; }
-        input { width:100%; padding:7px 8px; border-radius:6px; font-size:13px;
-          border:1px solid ${dark ? "#475569" : "#cbd5e1"};
-          background:${dark ? "#0f172a" : "#ffffff"}; color:${foreground}; }
-        .row { display:flex; gap:8px; margin-top:18px; }
-        button { flex:1; padding:9px; border-radius:6px; border:none; cursor:pointer; font-size:13px; font-weight:600; }
-        .ok { background:#f97316; color:#fff; } .ok:hover { background:#ea580c; }
-        .cancel { background:${dark ? "#334155" : "#e2e8f0"}; color:${dark ? "#94a3b8" : "#475569"}; }
-        .cancel:hover { background:${dark ? "#475569" : "#cbd5e1"}; }
-      </style></head><body>
-        <div class="title">Remote crew for port ${escapeAttr(promptPort)}</div>
-        <label>Host</label>
-        <input id="h" value="${escapeAttr(opening.host)}" placeholder="myhost.example.com" autofocus>
-        <div class="hint">An SSH host or a name from your SSH config.</div>
-        <label>kirocrew binary path</label>
-        <input id="b" value="${escapeAttr(opening.binPath)}" placeholder="${escapeAttr(DEFAULT_REMOTE_BIN)}">
-        <div class="hint">Leave blank for ${escapeAttr(DEFAULT_REMOTE_BIN)}.</div>
-        <label>Remote port</label>
-        <input id="rp" value="${escapeAttr(opening.remotePort)}" placeholder="${escapeAttr(promptPort)}">
-        <div class="hint">The port the crew serves on its own machine. Leave blank if it is also ${escapeAttr(promptPort)}.</div>
-        <label>Remote PATH</label>
-        <input id="pa" value="${escapeAttr(opening.remotePath)}" placeholder="${escapeAttr(DEFAULT_REMOTE_PATH)}">
-        <div class="hint">Leave blank for ${escapeAttr(DEFAULT_REMOTE_PATH)}.</div>
-        <div class="row">
-          <button class="ok" onclick="save()">Save &amp; Retry</button>
-          <button class="cancel" onclick="window.close()">Cancel</button>
-        </div>
-        <script>
-          function save() {
-            document.title = JSON.stringify({
-              host: document.getElementById('h').value.trim(),
-              binPath: document.getElementById('b').value.trim(),
-              remotePort: document.getElementById('rp').value.trim(),
-              remotePath: document.getElementById('pa').value.trim(),
-            });
-            window.close();
-          }
-          document.addEventListener('keydown', event => {
-            if (event.key === 'Enter') save();
-            if (event.key === 'Escape') window.close();
-          });
-        </script>
-      </body></html>`;
-
-      let savedTitle = null;
-      promptWindow.on("page-title-updated", (_event, updatedTitle) => {
-        savedTitle = updatedTitle;
-      });
-      promptWindow.on("closed", () => resolve(parseRemoteCrewFields(savedTitle)));
-      promptWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    });
-  }
-
-  /**
-   * Re-ask, without spawning anything, whether the launcher would refuse the
-   * bundled backend right now. Resolves the binary afresh the way spawnGateway
-   * does (findKirocrewBin probes live), so a launcher that only lands mid-way
-   * through extraction is picked up too. null = not resolvable to a bundled
-   * tree yet, which the dialog reads as "still installing, count unknown".
-   */
-  function probeLaunchBlockingParts() {
-    const bin = findKirocrewBin(
-      fs,
-      os,
-      path,
-      processObj.resourcesPath,
-      dirname,
-      processObj.arch,
-      IS_WIN,
-    );
-    return launchBlockingBundleParts(fs, path, bin);
-  }
-
-  // Packaged GUI apps inherit a minimal PATH. macOS and Linux install lsof in
-  // different absolute locations; probe both before falling back to PATH.
-  function resolveLsof() {
-    for (const candidate of LSOF_CANDIDATES) {
-      try { if (fs.existsSync(candidate)) return candidate; }
-      catch { /* unreadable candidate */ }
-    }
-    return "lsof";
-  }
-
-  function lsofListenPids(probePort) {
-    return new Promise((resolve, reject) => {
-      execFile(
-        resolveLsof(),
-        ["-nP", `-iTCP:${probePort}`, "-sTCP:LISTEN", "-t"],
-        { timeout: 5000 },
-        (error, stdout) => {
-          // lsof exits non-zero with empty output for no match. Only an EXECUTE
-          // failure is unknown; treating it as a free port permits blind kills.
-          if (error && (error.code === "ENOENT" || error.code === "EACCES")) {
-            reject(error);
-            return;
-          }
-          resolve(String(stdout || "").split(/\s+/)
-            .map((value) => parseInt(value, 10))
-            .filter((value) => Number.isInteger(value) && value > 1));
-        },
-      );
-    });
-  }
-
-  function psCommand(pid) {
-    return new Promise((resolve) => {
-      execFile(
-        "/bin/ps",
-        ["-p", String(pid), "-o", "command="],
-        { timeout: 5000 },
-        (_error, stdout) => resolve(String(stdout || "")),
-      );
-    });
-  }
-
-  // PPID 1 distinguishes service-managed gateways (and conservative orphans)
-  // which must never be evicted into a launchd/systemd respawn race.
-  function psPpid(pid) {
-    return new Promise((resolve) => {
-      execFile(
-        "/bin/ps",
-        ["-p", String(pid), "-o", "ppid="],
-        { timeout: 5000 },
-        (_error, stdout) => resolve(String(stdout || "")),
-      );
-    });
-  }
-
-  function forceStopGatewayPort(probePort) {
-    if (IS_WIN) {
-      return forceStopPort(probePort, {
-        getListenPids: windowsListenPids,
-        getCommand: windowsProcessCommand,
-        kill: (pid) => windowsTaskkill(pid, {
-          isTrustedCommand: isTrustedWindowsGatewayCommand,
-        }),
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        isKirocrew: isTrustedWindowsGatewayCommand,
-        failClosedOnProbeError: true,
-        log: glog,
-      });
-    }
-    return forceStopPort(probePort, {
-      getListenPids: lsofListenPids,
-      getCommand: psCommand,
-      getPpid: psPpid,
-      kill: (pid, signal) => processObj.kill(pid, signal),
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      log: glog,
     });
   }
 

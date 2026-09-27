@@ -70,6 +70,23 @@ The electron-builder configuration lives in
   `rpm.depends` needs no such thing but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+- `build.files` is an explicit per-file allowlist, not a glob: electron-builder
+  packs exactly those paths into `app.asar` at the same relative location, plus
+  `package.json` and the production `node_modules`. The four lifecycle facades
+  (`gateway-supervisor.js`, `window-lifecycle.js`, `auto-update.js`,
+  `crash-collector.js`) sit beside `main.js`, and the owners they compose sit
+  under `runtime/gateway/`, `runtime/window/`, `runtime/update/` and
+  `runtime/crash/`, each listed one by one. The packaging closure is the set of
+  files reachable from `main.js` through double-quoted relative `require()`s.
+  `website/electron/test/shell-contract.test.js` checks every shipped source's
+  relative requires against the allowlist and every stale entry, and
+  `website/electron/test/packaging.test.js` walks the closure from `main.js`
+  and fails on a single-quoted or template-literal relative require, which
+  those scans cannot read, or on a runtime owner no facade composes.
+  Runtime owners resolve no path from their own directory; the Electron directory
+  (`loading.html`, `preload.js`, the icons, the baked `EXTERNALLY-MANAGED`
+  marker) is always the facade's. Which facade owns which module is mapped in
+  [`website/electron/README.md`](../../website/electron/README.md#main-process-owners).
 
 ### macOS default — one universal DMG for both arches
 
@@ -805,6 +822,20 @@ The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
 unit-testable without mocking globals.
 
 ### `gateway-supervisor.js` — owning the gateway lifecycle
+
+The supervisor keeps every piece of gateway state in its own closure — the
+child, its ownership classification, the start-failure record, the liveness
+monitor and the update handoff — together with the spawn site, the port
+occupancy and identity decisions, the connect flow and recovery. It composes
+five owners under `runtime/gateway/` and hands each only the host modules and
+state getters it reads: `launch-preflight.js` (which backend binary to run,
+whether the bundle is complete, the project directory, the AppImage sandbox
+advice, the launchd `PATH`, and whether the app can relaunch itself),
+`port-holders.js` (the lsof/ps/netstat probes, trusted Windows gateway
+commands, the incumbent snapshot and exit wait, and force-stop),
+`family-takeover.js` (quitting the other release family's app),
+`token-sources.js` (the local-secret mint and the SSH token fetch), and
+`remote-crew-prompt.js` (the failure dialog's remote-crew form).
 
 - Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with
