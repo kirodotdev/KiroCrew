@@ -47,7 +47,7 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
-import { modelSupportsEffort } from '../lib/effort'
+import { effortPopoverLeft, modelSupportsEffort } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -2105,7 +2105,7 @@ export default function ChatPane({
             className="fixed z-[9999] animate-slide-up"
             style={{
               bottom: window.innerHeight - reasoningEffortBtnRect.top + 4,
-              left: Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - Math.min(240, window.innerWidth - 16) - 8)),
+              left: effortPopoverLeft(reasoningEffortBtnRect.left, window.innerWidth),
             }}
           >
             <ReasoningEffortDropdown
