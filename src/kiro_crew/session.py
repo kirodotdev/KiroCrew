@@ -217,9 +217,11 @@ from kiro_crew.session_lifecycle import (
 )
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_map import (
+    EXPLICIT_EFFORT_DEFAULT_FLAG,
     MIRROR_OPT_OUT_FLAG,
     SUPPRESS_REPLAY_FLAG,
     BindListener,
+    EffortDefaultRowRefused,
 )
 from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_map import (
@@ -1057,6 +1059,19 @@ class FirstTurnState(Enum):
     def resumed(self) -> bool:
         """The ``resumed`` boolean this state derives to at the return boundary."""
         return self is FirstTurnState.RESUMED
+
+
+@dataclass
+class _EffortIntentWrites:
+    """The effort intent writes in flight under one folded session key.
+
+    ``count`` is how many picks are between their in-memory write and the end
+    of their save; ``settled`` is set when the last of them exits, which is
+    what a cold start waiting to read the key's effort basis wakes on.
+    """
+
+    count: int = 0
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass
@@ -2482,6 +2497,14 @@ class SessionManager:
         """Delegate stale/dead provider filtering during claim."""
         return await self._pool._drain_and_claim(agent)
 
+    def _take_claim_spawn_time(self, provider: LLMProvider) -> float | None:
+        """Consume a warm claim's spawn timestamp before allocation awaits again."""
+        return self._pool._take_claim_spawn_time(provider)
+
+    def _may_predate_effort_overlay_rewrite(self, spawn_time: float) -> bool:
+        """Return whether a runtime spawned before the current effort rewrite settled."""
+        return self._pool._may_predate_effort_overlay_rewrite(spawn_time)
+
     def _schedule_replenish(self) -> None:
         """Delegate owned refill-task scheduling."""
         self._pool._schedule_replenish()
@@ -3022,6 +3045,116 @@ class SessionManager:
         """
         self._session_map.set_flag(self._fold_key(key), SUPPRESS_REPLAY_FLAG, True)
 
+    def set_explicit_effort_default(self, key: str, pending: bool) -> bool:
+        """Record whether *key* must replace an unowned effort overlay once."""
+        folded = self._fold_key(key)
+        target = folded
+        if (
+            pending
+            and folded != key
+            and self._session_map.explicit_effort_default_held(key)
+            and not self._session_map.explicit_effort_default_held(folded)
+        ):
+            # Armed again on the spelling whose row the hold kept counted.
+            target = key
+        try:
+            self._session_map.set_flag(target, EXPLICIT_EFFORT_DEFAULT_FLAG, pending)
+        except EffortDefaultRowRefused as exc:
+            logger.warning(
+                "Could not retain explicit effort Default for %s: %s",
+                exc.key,
+                exc.reason,
+            )
+            return False
+        if not pending and folded != key:
+            self._session_map.set_flag(key, EXPLICIT_EFFORT_DEFAULT_FLAG, False)
+        return True
+
+    def effort_basis_locked(self, key: str) -> bool:
+        """Whether an allocation is in flight under *key*.
+
+        A cold start reads the one-shot Default once and publishes a session
+        built on that read; its reservation is held from before that read until
+        the session is registered (and while a caller claims an already-live
+        session), so a pick landing meanwhile that would change that basis is
+        refused, not recorded. A pick that would leave it as it is has nothing
+        to record and passes.
+        """
+        return self._has_allocation_reservation(key)
+
+    def _effort_intent_writes_in_flight(self) -> dict[str, _EffortIntentWrites]:
+        # Lazy, so a manager built without ``__init__`` (as tests do) still has
+        # the dict on its first write or wait.
+        writes = getattr(self, "_effort_intent_writes", None)
+        if writes is None:
+            writes = {}
+            self._effort_intent_writes = writes
+        return writes
+
+    @contextmanager
+    def effort_intent_write(self, key: str) -> Iterator[None]:
+        """Count one write of *key*'s effort intent from its in-memory flag through its save.
+
+        The effort handler holds this around :meth:`set_explicit_effort_default`,
+        the ``aflush`` that saves it and the put-back a failed or cancelled save
+        makes, entered with no await after its :meth:`effort_basis_locked` check.
+        The count uses the flag's canonical key, so a pick and cold start using
+        different spellings of one Slack thread meet before the start reads its
+        basis. It then reads either the saved value or the one the failed save
+        put back, never an in-memory value no save will keep. The key's entry is
+        removed once its last write has exited, so nothing here outlives a write.
+        """
+        writes = self._effort_intent_writes_in_flight()
+        intent_key = canonical_key(key)
+        entry = writes.get(intent_key)
+        if entry is None:
+            entry = writes[intent_key] = _EffortIntentWrites()
+        entry.count += 1
+        try:
+            yield
+        finally:
+            entry.count -= 1
+            if entry.count == 0:
+                if writes.get(intent_key) is entry:
+                    del writes[intent_key]
+                entry.settled.set()
+
+    async def wait_for_effort_intent_writes(self, key: str) -> None:
+        """Return once no write of *key*'s effort intent is in flight.
+
+        Awaited by a cold start right before its single read of the key's effort
+        basis, with the key's allocation reservation already held: a later pick
+        that would change the basis is refused by :meth:`effort_basis_locked`,
+        and one that would not enters no write, so the count can only fall
+        while this waits. The count uses the flag's canonical key, so either
+        spelling of one Slack thread waits for the same write. Returns at once
+        when no write is in flight. Bounded by the pick's own save, one
+        worker-thread write of the session map. A cancellation while waiting
+        propagates; nothing was read or written.
+        """
+        writes = getattr(self, "_effort_intent_writes", None)
+        if not writes:
+            return
+        intent_key = canonical_key(key)
+        while (entry := writes.get(intent_key)) is not None:
+            await entry.settled.wait()
+
+    def hold_explicit_effort_default(self, key: str) -> AbstractContextManager[None]:
+        """Keep *key*'s explicit-Default row counted while a pick may clear it.
+
+        A pick holds both spellings read by
+        :meth:`explicit_effort_default_pending` until the request ends, so it
+        can put the flag back and no other pick can take the row meanwhile.
+        """
+        return self._session_map.hold_explicit_effort_default(self._fold_key(key), key)
+
+    def explicit_effort_default_pending(self, key: str) -> bool:
+        """Return whether either spelling of *key* carries the one-shot Default."""
+        folded = self._fold_key(key)
+        return self._session_map.get_flag(
+            folded, EXPLICIT_EFFORT_DEFAULT_FLAG
+        ) or self._session_map.get_flag(key, EXPLICIT_EFFORT_DEFAULT_FLAG)
+
     def set_child_teardown_handler(self, handler: Any) -> None:
         """Register the hook that ends a parent's sub-agent runs at parent end.
 
@@ -3181,6 +3314,10 @@ class SessionManager:
     def _mark_identity_epoch(self) -> None:
         """Disqualify already-pooled providers from claims after an account change."""
         self._pool.mark_identity_epoch()
+
+    def fence_effort_overlay_rewrite(self) -> AbstractContextManager[None]:
+        """Keep warm runtimes that may have read cli.json before an explicit Default's rewrite from claims."""
+        return self._pool.fence_effort_overlay_rewrite()
 
     async def _retire_kiro_subagent_runtimes(self, *, live: str = "") -> bool:
         """Retire idle companion runtimes that use Kiro's identity store.

@@ -32,6 +32,7 @@ each run with ``begin_batch()`` / ``end_batch()``. See ``backend/routes.py``.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -79,15 +80,37 @@ except ImportError:  # pragma: no cover - standalone / test fallback
     STOP_REASON_TOOL_STALL = "error: tool stall"  # type: ignore[assignment]
 
 try:
-    from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
+    from kiro_crew.workspace_cli_settings import (
+        EFFORT_OWNED_KEY,
+        effort_ownership_stamp_matches,
+        locked_workspace_cli_settings,
+        owned_document_unchanged,
+        stamp_effort_ownership,
+    )
 except ImportError:  # pragma: no cover - standalone app fallback
+    EFFORT_OWNED_KEY = "kirocrew.effortOwned"
 
     @contextmanager
-    def workspace_cli_settings_lock(
+    def locked_workspace_cli_settings(
         work_dir: Path, *, timeout: float = 0.0
-    ) -> Iterator[Path]:
+    ) -> Iterator[Any]:
         raise OSError("shared workspace CLI settings lock is unavailable")
         yield work_dir  # pragma: no cover - marks this function as a context manager
+
+    # Standalone mode keeps the module importable and nothing more: the lock
+    # above refuses, so no overlay is ever written here. Should that change,
+    # these refuse ownership (every record is void and nothing is stamped),
+    # which is the conservative side of the stamp rule.
+    def effort_ownership_stamp_matches(document: dict[str, Any], file_mtime: int | None) -> bool:
+        return False
+
+    def owned_document_unchanged(
+        document: dict[str, Any], read_document: dict[str, Any], file_mtime: int | None
+    ) -> bool:
+        return False
+
+    def stamp_effort_ownership(document: dict[str, Any]) -> int | None:
+        raise OSError("effort ownership stamping is unavailable")
 
 
 try:  # agents dir resolver — honors KIRO_HOME so a pod reads its own specs
@@ -383,11 +406,14 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
 
         {"chat.modelDefaults": {"<model>": {"output_config": {"effort": "<level>"}}}}
 
-    Inlined here (stdlib-only) so the app stays self-contained and the unit test is
-    hermetic. Merge-safe + idempotent; best-effort (logs and continues on error so a
-    bad overlay write never breaks a review)."""
+    The merge is inlined here so the app stays self-contained and the unit test is
+    hermetic; the ownership record's stamp rule comes from the one shared
+    implementation in ``kiro_crew.workspace_cli_settings``. Merge-safe + idempotent;
+    best-effort (logs and continues on error so a bad overlay write never breaks a
+    review)."""
     try:
-        with workspace_cli_settings_lock(Path(work_dir)) as cli_json:
+        with locked_workspace_cli_settings(Path(work_dir)) as settings:
+            cli_json = settings.cli_json
             # Through `read_json_nolink`, not `read_text`: `cli.json` sits under
             # the review worker's own `work_dir`, and the settings lock verifies
             # the LOCK file, never this one. A plain read dereferences a link
@@ -397,6 +423,25 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
             # Missing, a plant, oversize and a non-object all arrive as None and
             # mean "no overlay yet", which is what an empty file means here too.
             existing = store.read_json_nolink(cli_json, cli_json.parent) or {}
+            read_document = copy.deepcopy(existing)
+            file_mtime = (
+                int(cli_json.stat(follow_symlinks=False).st_mtime)
+                if cli_json.exists(follow_symlinks=False)
+                else None
+            )
+            raw_owned = existing.get(EFFORT_OWNED_KEY)
+            owned = (
+                {
+                    owned_model: owned_effort
+                    for owned_model, owned_effort in raw_owned.items()
+                    if isinstance(owned_model, str)
+                    and owned_model
+                    and isinstance(owned_effort, str)
+                    and owned_effort
+                }
+                if effort_ownership_stamp_matches(existing, file_mtime) and isinstance(raw_owned, dict)
+                else {}
+            )
             defaults = existing.get("chat.modelDefaults")
             if not isinstance(defaults, dict):
                 defaults = {}
@@ -418,7 +463,27 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
             # REPLACED by a real file rather than written through, and the file it
             # pointed at keeps its bytes. A reader never sees a half-written
             # overlay either, because the rename publishes it whole.
-            store.atomic_write_text(cli_json, json.dumps(existing, indent=2))
+            if effort:
+                owned[model] = effort
+            else:
+                owned.pop(model, None)
+            if owned:
+                existing[EFFORT_OWNED_KEY] = owned
+            else:
+                existing.pop(EFFORT_OWNED_KEY, None)
+            # A document equal to the owned file read, apart from the stamp, is
+            # not written: the file keeps its mtime and the record stays valid.
+            if owned_document_unchanged(existing, read_document, file_mtime):
+                return
+            # The stamp goes onto the staged inode before the rename, so the
+            # record and the file version that validates it appear together. A
+            # document with no record carries no stamp and takes a natural mtime.
+            stamp_ns = stamp_effort_ownership(existing)
+            store.atomic_write_text(
+                cli_json,
+                json.dumps(existing, indent=2),
+                mtime_ns=stamp_ns,
+            )
     except Exception:
         logger.debug("could not write review effort overlay (work_dir=%s)", work_dir, exc_info=True)
 
@@ -494,9 +559,12 @@ class _BatchRuntimeHolder:
         # default). Best-effort — a bad overlay never blocks the review.
         if self._work_dir:
             try:
-                _write_effort_overlay(
-                    self._work_dir, _reviewer_model(self._agent),
-                    _get_review_settings().get("effort", _DEFAULT_EFFORT))
+                await asyncio.to_thread(
+                    _write_effort_overlay,
+                    self._work_dir,
+                    _reviewer_model(self._agent),
+                    _get_review_settings().get("effort", _DEFAULT_EFFORT),
+                )
             except Exception:
                 logger.debug("could not write review effort overlay", exc_info=True)
         # work_dir + sandbox_mode="auto" mirror the old AcpClient worker: the

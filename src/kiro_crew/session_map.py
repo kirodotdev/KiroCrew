@@ -116,6 +116,20 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: Set on a conversation whose operator explicitly picked Default when the pick
+#: could not remove the model's workspace ``cli.json`` effort entry itself: no
+#: session was live, its turn was in flight, the live clear raised, or its model
+#: takes no effort. Only an explicit Default may remove an entry Kiro Crew did not
+#: write, so without this the next cold start keeps such an entry and runs its
+#: level while the slot shows Default. Persisted because the pick is often made
+#: while no session exists, and a gateway restart before the next start must not
+#: lose it. One-shot: cleared by the first cold start whose pre-spawn projection
+#: applies it.
+EXPLICIT_EFFORT_DEFAULT_FLAG = "explicit_effort_default"
+#: The maximum number of durable explicit-Default rows. The privacy-key bound
+#: applies too because both are persisted session keys.
+EXPLICIT_EFFORT_DEFAULT_ROW_CAP = 1_000
+
 # Highest explicit DM generation acknowledged before its first provider turn.
 # Stored on the stable bucket entry so repeated /new commands cost one integer,
 # not one immortal map row per empty generation.
@@ -132,9 +146,14 @@ GENERATION_FLOOR_FIELD = "generation_floor"
 # exists for — clear the pointer, restart the gateway, reinstall — so the flag would
 # be decorative. The forever-row cost does not apply to it either: the flag is
 # ONE-SHOT, so the row it keeps alive is collectable again as soon as the first
-# cold start consumes it. (The privacy flags below are retained on separate
-# grounds and bounded by a count; their own comment says why.)
-_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG})
+# cold start consumes it. ``EXPLICIT_EFFORT_DEFAULT_FLAG`` is durable on the same
+# grounds: it is written for the key's next cold start, often while no session
+# exists, and the first cold start that applies it clears it. Its retained rows are
+# bounded by ``EXPLICIT_EFFORT_DEFAULT_ROW_CAP``. (The privacy flags below are
+# retained on separate grounds and bounded by a count; their own comment says why.)
+_DURABLE_FLAGS = frozenset(
+    {MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG, EXPLICIT_EFFORT_DEFAULT_FLAG}
+)
 
 # The ``!temporary`` / ``!incognito`` privacy modes, spelled exactly as
 # ``messaging.privacy_mode`` names them (MODE_TEMPORARY / MODE_INCOGNITO; a test
@@ -196,6 +215,19 @@ class PrivacyRowRefused(ValueError):
         self.reason = reason
 
 
+class EffortDefaultRowRefused(ValueError):
+    """The map refused to retain an explicit-Default row for *key*.
+
+    ``reason`` is ``"limit"`` (``EXPLICIT_EFFORT_DEFAULT_ROW_CAP`` rows already
+    retained) or ``"key_too_long"`` (over ``PRIVACY_ROW_KEY_MAX``).
+    """
+
+    def __init__(self, key: str, reason: str) -> None:
+        super().__init__(f"explicit effort Default row refused for {key[:80]!r}: {reason}")
+        self.key = key
+        self.reason = reason
+
+
 # How long a deferred flush waits before serializing, so a burst of mutations
 # (a subagent wave calling ``set`` once per spawn) collapses into one write
 # instead of one write per mutation. Small on purpose: the window is also how
@@ -205,12 +237,24 @@ class PrivacyRowRefused(ValueError):
 _FLUSH_DEBOUNCE_SECS = 0.05
 
 
+def _explicit_effort_default_value_on(flags: dict) -> bool:
+    """True only when the persisted explicit-Default value is the boolean ``True``."""
+    return flags.get(EXPLICIT_EFFORT_DEFAULT_FLAG) is True
+
+
 def _has_durable_flag(entry: dict) -> bool:
     """True iff *entry* carries a durable SETTING (:data:`_DURABLE_FLAGS`)."""
     flags = entry.get("flags")
     if not isinstance(flags, dict):
         return False
-    return any(flags.get(name) for name in _DURABLE_FLAGS)
+    return any(
+        (
+            _explicit_effort_default_value_on(flags)
+            if name == EXPLICIT_EFFORT_DEFAULT_FLAG
+            else flags.get(name)
+        )
+        for name in _DURABLE_FLAGS
+    )
 
 
 def _privacy_flags_on(entry: dict) -> list[str]:
@@ -219,6 +263,12 @@ def _privacy_flags_on(entry: dict) -> list[str]:
     if not isinstance(flags, dict):
         return []
     return [name for name in _PRIVACY_STRICTNESS if flags.get(name)]
+
+
+def _explicit_effort_default_on(entry: dict) -> bool:
+    """True iff *entry* carries the one-shot :data:`EXPLICIT_EFFORT_DEFAULT_FLAG`."""
+    flags = entry.get("flags")
+    return isinstance(flags, dict) and _explicit_effort_default_value_on(flags)
 
 
 def _header_records_privacy_mode(key: str, flagged: list[str]) -> bool:
@@ -288,6 +338,11 @@ def _survives_prune(entry: dict) -> bool:
         or entry.get("slack_thread_ts")
         or entry.get("mirror")
     )
+
+
+def _blank_entry() -> dict:
+    """The entry :meth:`SessionMap._ensure_entry` creates for a key that has none."""
+    return {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
 
 
 def _keeps_entry(entry: dict) -> bool:
@@ -572,6 +627,12 @@ class SessionMap:
         self._snapshot_seq = 0
         self._written_seq = 0
         self._io_lock = threading.Lock()
+        # Keys whose explicit-Default row a pick in flight has cleared and may put
+        # back, with how many holds each carries (see
+        # ``hold_explicit_effort_default``). They stay counted against
+        # ``EXPLICIT_EFFORT_DEFAULT_ROW_CAP`` beside the flagged rows. In memory
+        # only: a hold lasts one pick request, and a restart ends it.
+        self._explicit_effort_default_holds: dict[str, int] = {}
         self._load()
 
     @contextmanager
@@ -2426,7 +2487,7 @@ class SessionMap:
         """Return the entry for *key*, creating a blank one if absent."""
         entry = self._data.get(key)
         if entry is None:
-            entry = {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
+            entry = _blank_entry()
             self._data[key] = entry
         return entry
 
@@ -2452,6 +2513,14 @@ class SessionMap:
         (``privacy_mode.reserve``) applies the flag ahead of that step and takes
         it back if the step fails, rather than pre-checking a count another
         writer can change under it.
+
+        Setting ``EXPLICIT_EFFORT_DEFAULT_FLAG`` likewise admits a durable row
+        only while its key and retained-row count fit their bounds. The count
+        includes every key :meth:`hold_explicit_effort_default` holds, and a held
+        key arms into the row its hold kept counted, so it skips the count but not
+        the key bound. Clearing or setting an already flagged row is never refused.
+        Clearing it on a row that holds nothing else removes the row, so the flag
+        never leaves behind a row its bound does not count.
         """
         key = canonical_key(key)
         if (
@@ -2464,6 +2533,19 @@ class SessionMap:
             retained = sum(1 for entry in self._data.values() if _privacy_flags_on(entry))
             if retained >= PRIVACY_ROW_CAP:
                 raise PrivacyRowRefused(key, "limit")
+        existing = self._data.get(key)
+        if (
+            value
+            and flag == EXPLICIT_EFFORT_DEFAULT_FLAG
+            and not (existing and _explicit_effort_default_on(existing))
+        ):
+            if len(key) > PRIVACY_ROW_KEY_MAX:
+                raise EffortDefaultRowRefused(key, "key_too_long")
+            if (
+                key not in self._explicit_effort_default_holds
+                and self._explicit_effort_default_rows_counted() >= EXPLICIT_EFFORT_DEFAULT_ROW_CAP
+            ):
+                raise EffortDefaultRowRefused(key, "limit")
         if value:
             entry = self._ensure_entry(key)
         else:
@@ -2473,7 +2555,9 @@ class SessionMap:
             if not existing:
                 return
             entry = existing
-        flags = entry.get("flags") or {}
+        flags = entry.get("flags")
+        if not isinstance(flags, dict):
+            flags = {}
         if value:
             flags[flag] = True
         else:
@@ -2482,7 +2566,69 @@ class SessionMap:
             entry["flags"] = flags
         else:
             entry.pop("flags", None)
+        if not value and flag == EXPLICIT_EFFORT_DEFAULT_FLAG and entry == _blank_entry():
+            # A row made only to carry the flag leaves with it: kept, it would
+            # be retained state that the explicit-Default bound does not count.
+            self._remove_entry(key)
+            return
         self._save()
+
+    @_guarded
+    def _explicit_effort_default_rows_counted(self) -> int:
+        """The rows ``EXPLICIT_EFFORT_DEFAULT_ROW_CAP`` bounds: flagged, and held but not flagged."""
+        flagged = sum(1 for entry in self._data.values() if _explicit_effort_default_on(entry))
+        held_unflagged = sum(
+            1
+            for key in self._explicit_effort_default_holds
+            if not _explicit_effort_default_on(self._data.get(key) or {})
+        )
+        return flagged + held_unflagged
+
+    def explicit_effort_default_held(self, key: str) -> bool:
+        """True while :meth:`hold_explicit_effort_default` holds *key*'s row."""
+        return canonical_key(key) in self._explicit_effort_default_holds
+
+    @contextmanager
+    def hold_explicit_effort_default(self, *keys: str) -> Iterator[None]:
+        """Keep each counted explicit-Default row among *keys* counted until the block exits.
+
+        A pick that clears a key's explicit Default takes this first, so the row
+        stays counted until the request ends. Putting the flag back is never
+        refused, and no other key's pick can take the row meanwhile. Only a key
+        already counted (flagged, or held by another block) is held, so a hold
+        never adds a row and the map never retains more rows than the bound. The
+        map lock is held while the holds change, never across the block, which
+        may await.
+        """
+        held = self._take_explicit_effort_default_holds(keys)
+        try:
+            yield
+        finally:
+            self._release_explicit_effort_default_holds(held)
+
+    @_guarded
+    def _take_explicit_effort_default_holds(self, keys: tuple[str, ...]) -> tuple[str, ...]:
+        """Hold each distinct counted key among *keys*; return the keys held."""
+        held = []
+        for key in dict.fromkeys(canonical_key(key) for key in keys):
+            if key in self._explicit_effort_default_holds or _explicit_effort_default_on(
+                self._data.get(key) or {}
+            ):
+                self._explicit_effort_default_holds[key] = (
+                    self._explicit_effort_default_holds.get(key, 0) + 1
+                )
+                held.append(key)
+        return tuple(held)
+
+    @_guarded
+    def _release_explicit_effort_default_holds(self, held: tuple[str, ...]) -> None:
+        """Release one hold on each key in *held*."""
+        for key in held:
+            remaining = self._explicit_effort_default_holds[key] - 1
+            if remaining:
+                self._explicit_effort_default_holds[key] = remaining
+            else:
+                del self._explicit_effort_default_holds[key]
 
     def get_flag(self, key: str, flag: str) -> bool:
         """Return the value of a per-conversation boolean *flag* (default False)."""
@@ -2490,7 +2636,11 @@ class SessionMap:
         if not entry:
             return False
         flags = entry.get("flags")
-        return bool(flags and flags.get(flag))
+        if not isinstance(flags, dict):
+            return False
+        if flag == EXPLICIT_EFFORT_DEFAULT_FLAG:
+            return _explicit_effort_default_value_on(flags)
+        return bool(flags.get(flag))
 
     @_guarded
     def set_agent_override(self, key: str, agent: str | None) -> None:

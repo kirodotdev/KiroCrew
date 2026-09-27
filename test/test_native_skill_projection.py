@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import errno
 import gc
 import hashlib
@@ -11,6 +12,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -22,9 +24,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.hooks import FileTooLargeError
+from kiro_crew.providers import acp as acp_provider
+from kiro_crew.workspace_cli_settings import (
+    CLI_SETTINGS_LOCK_NAME,
+    workspace_cli_settings_fence_key,
+)
 
 
 def _hold_the_prune_clock(monkeypatch):
@@ -752,6 +760,77 @@ def test_the_ceiling_fallback_still_prunes_so_the_backlog_can_drain(
     assert projection.prepare_native_skill_projection(project) is None
     reclaimed = [p for p in backlog if not p.exists()]
     assert reclaimed, "the ceiling fallback did not prune this home's backlog"
+
+
+@pytest.mark.parametrize("redirect", [".kiro", "settings"])
+def test_settings_link_outside_is_never_probed_by_any_prelock_path(
+    native_tree, tmp_path, monkeypatch, redirect
+):
+    _home, agents, _project = native_tree
+    work_dir = tmp_path / "linked-work"
+    work_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside_settings = outside / "settings"
+    outside_settings.mkdir(parents=True)
+    if redirect == ".kiro":
+        target = outside
+        link = work_dir / ".kiro"
+    else:
+        (work_dir / ".kiro").mkdir()
+        target = outside_settings
+        link = work_dir / ".kiro" / "settings"
+    platform_compat.symlink_or_junction(target, link)
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+
+    outside_root = os.path.normcase(os.path.abspath(outside))
+    calls = []
+
+    def record(name, original):
+        def wrapped(path, *args, **kwargs):
+            try:
+                raw = os.fspath(path)
+                text = os.fsdecode(raw)
+            except TypeError:
+                text = repr(path)
+            calls.append((name, text))
+            return original(path, *args, **kwargs)
+
+        return wrapped
+
+    with monkeypatch.context() as probes:
+        probes.setattr(os, "lstat", record("lstat", os.lstat))
+        probes.setattr(os, "stat", record("stat", os.stat))
+        probes.setattr(os, "open", record("open", os.open))
+        probes.setattr(os, "readlink", record("readlink", os.readlink))
+        probes.setattr(os, "scandir", record("scandir", os.scandir))
+        probes.setattr(os, "listdir", record("listdir", os.listdir))
+        probes.setattr(os.path, "realpath", record("realpath", os.path.realpath))
+
+        with pytest.raises(OSError, match="resolves outside"):
+            acp_provider._write_cli_overlay(work_dir, "claude-opus-4.7", "max")
+        with pytest.raises(OSError, match="resolves outside"):
+            acp_provider._write_tool_search_overlay(work_dir, True)
+        assert acp_provider._clear_cli_overlay_effort(work_dir, "claude-opus-4.7") is False
+        auto_provider = acp_provider.AcpProvider(work_dir=work_dir, model="auto")
+        default_provider = acp_provider.AcpProvider(work_dir=work_dir, model="claude-opus-4.7")
+        assert auto_provider._apply_effort_overlay() is False
+        assert default_provider._apply_effort_overlay() is False
+        assert workspace_cli_settings_fence_key(work_dir) == os.path.join(
+            os.path.realpath(work_dir), ".kiro", "settings"
+        )
+        probes.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+        assert projection.prepare_native_skill_projection(work_dir) is None
+        probes.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "1")
+        projection.prepare_native_skill_projection(work_dir)
+
+    traversed = []
+    for operation, raw in calls:
+        if not os.path.isabs(raw):
+            continue
+        candidate = os.path.normcase(os.path.abspath(raw))
+        if candidate == outside_root or candidate.startswith(outside_root + os.path.sep):
+            traversed.append((operation, raw))
+    assert traversed == []
 
 
 @pytest.mark.parametrize(
@@ -2699,6 +2778,58 @@ def test_workspace_settings_lock_refuses_a_planted_symlink(tmp_path):
     assert target.read_text(encoding="utf-8") == "unrelated"
 
 
+def test_recursive_workspace_settings_leave_projection_file_unchanged(
+    native_tree, cyclic_gc_quiesced
+):
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    depth = sys.getrecursionlimit() * 3 // 5
+    raw = b'{"deep":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+    parsed = json.loads(raw)
+    assert isinstance(parsed, dict), "the JSON reader must accept the recursive fixture"
+    with pytest.raises(RecursionError):
+        copy.deepcopy(parsed)
+
+    settings = project / ".kiro/settings/cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_bytes(raw)
+    before = settings.read_bytes()
+    before_mtime = settings.stat().st_mtime_ns
+
+    assert projection.prepare_native_skill_projection(project) is None
+    assert settings.read_bytes() == before
+    assert settings.stat().st_mtime_ns == before_mtime
+    assert not list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+
+
+def test_recursive_workspace_settings_rollback_leaves_file_unchanged(
+    native_tree, cyclic_gc_quiesced
+):
+    _home, _agents, project = native_tree
+    depth = sys.getrecursionlimit() * 2
+    raw = (
+        b'{"kirocrew.skillDiscovery.inheritFiles":true,'
+        b'"kirocrew.skillDiscovery.inheritSource":"local",'
+        b'"chat.disableInheritingDefaultResources":true,"deep":'
+        + b"[" * depth
+        + b"0"
+        + b"]" * depth
+        + b"}"
+    )
+    with pytest.raises(RecursionError):
+        json.dumps(json.loads(raw), indent=2)
+
+    settings = project / ".kiro/settings/cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_bytes(raw)
+    before = settings.read_bytes()
+    before_mtime = settings.stat().st_mtime_ns
+
+    assert projection.prepare_native_skill_projection(project, enabled=False) is None
+    assert settings.read_bytes() == before
+    assert settings.stat().st_mtime_ns == before_mtime
+
+
 def test_workspace_settings_lock_failure_publishes_no_alias(native_tree, monkeypatch):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
@@ -2713,6 +2844,60 @@ def test_workspace_settings_lock_failure_publishes_no_alias(native_tree, monkeyp
     assert projection.prepare_native_skill_projection(project) is None
     assert not list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
     assert not (project / ".kiro/settings/cli.json").exists()
+
+
+def test_kiro_link_inside_the_work_dir_projects_into_its_target(native_tree, monkeypatch):
+    """A ``.kiro`` link whose folder stays inside the work dir is followed, and rollback too."""
+    from kiro_crew import platform_compat
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    target_kiro = project / "shared" / ".kiro"
+    (target_kiro / "settings").mkdir(parents=True)
+    try:
+        platform_compat.symlink_or_junction(target_kiro, project / ".kiro")
+    except (OSError, NotImplementedError) as exc:
+        pytest.fail(f"symlink is unavailable: {exc}")
+    target_settings = target_kiro / "settings" / "cli.json"
+
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared is not None
+    assert list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    written = json.loads(target_settings.read_text(encoding="utf-8"))
+    assert written["chat.disableInheritingDefaultResources"] is True
+    assert (target_kiro / "settings" / CLI_SETTINGS_LOCK_NAME).is_file()
+    assert platform_compat.is_link_or_junction(project / ".kiro")
+
+    monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+    assert projection.prepare_native_skill_projection(project) is None
+    assert json.loads(target_settings.read_text(encoding="utf-8")) == {}
+
+
+def test_kiro_link_leaving_the_work_dir_skips_projection(native_tree, tmp_path, caplog):
+    """A ``.kiro`` link whose folder leaves the work dir is refused: no alias, nothing written."""
+    from kiro_crew import platform_compat
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    outside_kiro = tmp_path / "outside" / ".kiro"
+    (outside_kiro / "settings").mkdir(parents=True)
+    outside_settings = outside_kiro / "settings" / "cli.json"
+    before = b'{"token": "SECRET"}'
+    outside_settings.write_bytes(before)
+    try:
+        platform_compat.symlink_or_junction(outside_kiro, project / ".kiro")
+    except (OSError, NotImplementedError) as exc:
+        pytest.fail(f"symlink is unavailable: {exc}")
+
+    assert projection.prepare_native_skill_projection(project) is None
+    assert not list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    assert outside_settings.read_bytes() == before
+    assert not (outside_kiro / "settings" / CLI_SETTINGS_LOCK_NAME).exists()
+
+    with caplog.at_level(logging.WARNING):
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+    assert any("rollback" in record.getMessage() for record in caplog.records)
+    assert outside_settings.read_bytes() == before
 
 
 def test_census_counts_what_the_reclaim_would_keep_and_remove(native_tree, tmp_path, monkeypatch):
@@ -5020,3 +5205,137 @@ def test_the_churning_census_bounds_the_group_key_it_retains(native_tree):
     assert all(
         len(part) <= projection._CHURNING_LABEL_MAX_CHARS for key in churning for part in key
     )
+
+
+class TestTheProjectionWriteCarriesEffortOwnership:
+    """The settings republish keeps a valid effort record valid and a void one void.
+
+    ``prepare_native_skill_projection`` rewrites the whole workspace ``cli.json``
+    on every spawn and warm session start. Kiro Crew's effort record in that file
+    counts only while its stamp equals the file's mtime, so an unstamped republish
+    voided Kiro Crew's own record and the owned clear then left the level behind as
+    operator-written. An operator save that keeps the keys must stay void across
+    the same write: the projection may not re-validate what it cannot prove it wrote.
+    """
+
+    MODEL = "claude-opus-4.7"
+
+    @staticmethod
+    def _level(project, model):
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        model_cfg = data.get("chat.modelDefaults", {}).get(model, {})
+        return model_cfg.get("output_config", {}).get("effort")
+
+    @staticmethod
+    def _operator_rewrite_keeping_keys(project):
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        cli_json.write_text(json.dumps(data), encoding="utf-8")
+        assert data["kirocrew.effortOwnedStamp"] != int(cli_json.stat().st_mtime)
+
+    def test_the_projection_write_keeps_kiro_crews_record_valid(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        _write_cli_overlay(project, self.MODEL, "max")
+
+        assert projection.prepare_native_skill_projection(project) is not None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data[projection._INHERIT_SETTING] is True
+        assert data["kirocrew.effortOwned"] == {self.MODEL: "max"}
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) is None
+
+    def test_a_repeat_projection_write_leaves_the_owned_file_untouched(
+        self, native_tree, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        clock = [1_790_000_000.0]
+        monkeypatch.setattr(workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0]))
+        _write_cli_overlay(project, self.MODEL, "max")
+        assert projection.prepare_native_skill_projection(project) is not None
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        before = cli_json.read_bytes()
+        before_stat = cli_json.stat()
+        clock[0] += 10
+
+        assert projection.prepare_native_skill_projection(project) is not None
+
+        after_stat = cli_json.stat()
+        assert cli_json.read_bytes() == before
+        assert (after_stat.st_ino, after_stat.st_mtime_ns) == (
+            before_stat.st_ino,
+            before_stat.st_mtime_ns,
+        )
+        data = json.loads(before)
+        assert data[projection._INHERIT_SETTING] is True
+        assert data["kirocrew.effortOwned"] == {self.MODEL: "max"}
+        assert data["kirocrew.effortOwnedStamp"] == int(after_stat.st_mtime)
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) is None
+
+    def test_the_projection_write_does_not_revalidate_a_void_record(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        _write_cli_overlay(project, self.MODEL, "max")
+        self._operator_rewrite_keeping_keys(project)
+
+        assert projection.prepare_native_skill_projection(project) is not None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data[projection._INHERIT_SETTING] is True
+        assert "kirocrew.effortOwned" not in data
+        assert "kirocrew.effortOwnedStamp" not in data
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) == "max"
+
+    def test_the_rollback_write_keeps_kiro_crews_record_valid(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        assert projection.prepare_native_skill_projection(project) is not None
+        _write_cli_overlay(project, self.MODEL, "max")
+
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert projection._MANAGED_SETTING not in data
+        assert data["kirocrew.effortOwned"] == {self.MODEL: "max"}
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) is None
+
+    def test_the_rollback_write_does_not_revalidate_a_void_record(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        assert projection.prepare_native_skill_projection(project) is not None
+        _write_cli_overlay(project, self.MODEL, "max")
+        self._operator_rewrite_keeping_keys(project)
+
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert projection._MANAGED_SETTING not in data
+        assert "kirocrew.effortOwned" not in data
+        assert "kirocrew.effortOwnedStamp" not in data
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) == "max"

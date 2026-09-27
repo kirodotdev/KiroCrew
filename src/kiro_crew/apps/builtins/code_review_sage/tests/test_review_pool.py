@@ -166,6 +166,22 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(FakeRuntime.instances), 1)
         await pool.end_batch()
 
+    async def test_effort_overlay_write_runs_off_event_loop_thread(self):
+        _install_fake_runtime(self)
+        loop_thread = threading.current_thread()
+        writer_threads = []
+
+        def _record_writer_thread(*_args, **_kwargs):
+            writer_threads.append(threading.current_thread())
+
+        with unittest.mock.patch.object(rp, "_write_effort_overlay", _record_writer_thread):
+            pool = ReviewPool(work_dir=_work_dir(self))
+            await pool.begin_batch()
+            await pool.end_batch()
+
+        self.assertEqual(len(writer_threads), 1)
+        self.assertIsNot(writer_threads[0], loop_thread)
+
     async def test_end_batch_kills_runtime_only_when_drained(self):
         _install_fake_runtime(self)
         pool = ReviewPool(work_dir=_work_dir(self))
@@ -548,6 +564,60 @@ class TestReviewEffort(unittest.TestCase):
     def test_write_effort_overlay_never_raises(self):
         _write_effort_overlay("/proc/nonexistent/\x00bad", "claude-sonnet-4.6")
 
+    def test_a_repeat_write_leaves_the_owned_file_untouched(self):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(
+            workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0])
+        ):
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            cli = Path(tmp) / ".kiro" / "settings" / "cli.json"
+            before = cli.read_bytes()
+            before_stat = cli.stat()
+            clock[0] += 10
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+
+            after_stat = cli.stat()
+            self.assertEqual(cli.read_bytes(), before)
+            self.assertEqual(
+                (after_stat.st_ino, after_stat.st_mtime_ns),
+                (before_stat.st_ino, before_stat.st_mtime_ns),
+            )
+            data = json.loads(before)
+            self.assertEqual(data["kirocrew.effortOwned"], {"claude-sonnet-4.6": "high"})
+            self.assertEqual(data["kirocrew.effortOwnedStamp"], int(after_stat.st_mtime))
+
+    def test_a_level_change_writes_and_restamps(self):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(
+            workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0])
+        ):
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            cli = Path(tmp) / ".kiro" / "settings" / "cli.json"
+            before = json.loads(cli.read_text(encoding="utf-8"))
+            clock[0] += 10
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "low")
+
+            after = json.loads(cli.read_text(encoding="utf-8"))
+            self.assertEqual(
+                after["chat.modelDefaults"]["claude-sonnet-4.6"]["output_config"]["effort"],
+                "low",
+            )
+            self.assertEqual(after["kirocrew.effortOwned"], {"claude-sonnet-4.6": "low"})
+            self.assertEqual(after["kirocrew.effortOwnedStamp"], int(cli.stat().st_mtime))
+            self.assertEqual(
+                after["kirocrew.effortOwnedStamp"], before["kirocrew.effortOwnedStamp"] + 10
+            )
+
     def test_a_planted_link_at_the_overlay_name_takes_no_bytes(self):
         """`work_dir` is the review worker's OWN cwd, so it is plantable.
 
@@ -600,7 +670,14 @@ class TestReviewEffort(unittest.TestCase):
             published = json.loads(cli.read_text(encoding="utf-8"))
             self.assertNotIn("borrowed_key", published,
                              "the aliased document's keys were republished")
-            self.assertEqual(list(published), ["chat.modelDefaults"])
+            self.assertEqual(
+                list(published),
+                [
+                    "chat.modelDefaults",
+                    "kirocrew.effortOwned",
+                    "kirocrew.effortOwnedStamp",
+                ],
+            )
 
     def test_reviewer_model_falls_back_to_default(self):
         self.assertEqual(

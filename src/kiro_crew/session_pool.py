@@ -16,8 +16,9 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Executor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -122,6 +123,18 @@ class WarmPoolState:
     # disqualified from being claimed no matter when the retirement sweep gets
     # around to shutting it down. ``0.0`` means no sweep has run.
     identity_epoch: float = 0.0
+    # Monotonic instant the most recent explicit-Default rewrite of a workspace
+    # ``cli.json`` settled. A queued kiro-cli read that file at its own spawn, so
+    # one spawned at or before it may run the effort entry just removed. ``0.0``
+    # means no such rewrite has happened.
+    effort_overlay_epoch: float = 0.0
+    # Explicit-Default rewrites still in progress. The file can change at any
+    # point during one, so while any is, no queued kiro-cli is known to have
+    # read the file that results.
+    effort_overlay_rewrites: int = 0
+    # A successful claim is immediately consumed by allocation before it awaits
+    # again. Store only its timestamp, never the provider itself.
+    claimed_spawn_times: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +302,30 @@ class WarmSessionPool:
         if not epoch or spawn_time > epoch:
             return False
         return self._deps.get_identity_predicate()(provider)
+
+    @contextmanager
+    def fence_effort_overlay_rewrite(self) -> Iterator[None]:
+        """Refuse every claim while an explicit Default rewrites cli.json, then each one queued before.
+
+        Entered before the write starts and left once it has settled, so no claim
+        falls between the file changing and the fence knowing it did. After it,
+        an age check like the identity fence: claims take no lock this could
+        hold, and a fill whose start spans the rewrite is stamped with its start.
+        A write that changed nothing still moves the epoch, which costs at most
+        the queued runtimes' respawns.
+        """
+        self.state.effort_overlay_rewrites += 1
+        try:
+            yield
+        finally:
+            self.state.effort_overlay_rewrites -= 1
+            self.state.effort_overlay_epoch = time.monotonic()
+
+    def _may_predate_effort_overlay_rewrite(self, spawn_time: float) -> bool:
+        if self.state.effort_overlay_rewrites:
+            return True
+        epoch = self.state.effort_overlay_epoch
+        return bool(epoch) and spawn_time <= epoch
 
     async def start_pool(self, *, blocking: bool = True) -> None:
         """Start the background session and configured warm-pool workers.
@@ -606,6 +643,16 @@ class WarmSessionPool:
                 claimed = self._owner._claim_from_pool(agent)
                 continue
 
+            if self._may_predate_effort_overlay_rewrite(spawn_time):
+                self._deps.logger.info(
+                    "Warm pool: claimed provider may have read cli.json before an explicit "
+                    "effort Default rewrote it, discarding"
+                )
+                discarded = True
+                await self._owner._discard_pool_provider(provider, "Warm pool effort discard")
+                claimed = self._owner._claim_from_pool(agent)
+                continue
+
             age = time.monotonic() - spawn_time
             if self._pool_ttl_secs and age > self._pool_ttl_secs:
                 try:
@@ -634,11 +681,16 @@ class WarmSessionPool:
                 await self._owner._discard_pool_provider(provider, "Warm pool discard")
                 claimed = self._owner._claim_from_pool(agent)
                 continue
+            self.state.claimed_spawn_times[id(provider)] = spawn_time
             return provider
 
         if discarded:
             self._owner._schedule_replenish()
         return None
+
+    def _take_claim_spawn_time(self, provider: LLMProvider) -> float | None:
+        """Consume a successful claim's spawn time before allocation can await again."""
+        return self.state.claimed_spawn_times.pop(id(provider), None)
 
     def _schedule_replenish(self) -> None:
         """Schedule a refill task owned by the facade."""

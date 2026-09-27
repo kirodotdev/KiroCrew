@@ -2001,6 +2001,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # gate-side log line) and defers user-facing display to the routed
         # permission event, whose sinks are already registered.
         "acp/runtime.py",
+        # Redacts a model key read from a work directory's `cli.json` before it
+        # is bounded into the unowned-effort WARNING and the removal INFO line in
+        # the gateway log. A local log line, like the one above, not an egress
+        # boundary.
+        "providers/acp.py",
         "acp/session_handle.py",
         "platform/defaults.py",
         "platform/interfaces.py",

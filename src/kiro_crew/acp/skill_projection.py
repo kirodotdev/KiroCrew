@@ -42,7 +42,12 @@ from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, projec
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS
 from kiro_crew.validation import is_registered_agent_name
-from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
+from kiro_crew.workspace_cli_settings import (
+    admitted_workspace_cli_settings_dir,
+    carry_effort_ownership,
+    owned_document_unchanged,
+    workspace_cli_settings_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1480,6 +1485,21 @@ _settings_read_sleep = time.sleep
 def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
     """Read one Kiro ``cli.json`` through the credential gate; absence reads ``{}``.
 
+    See :func:`_settings_with_mtime` for the retry and pause rules.
+    """
+    return _settings_with_mtime(path, may_pause=may_pause)[0]
+
+
+def _settings_with_mtime(
+    path: Path, *, may_pause: bool = True
+) -> tuple[dict[str, Any], int | None]:
+    """Read one Kiro ``cli.json`` and the whole-second mtime of the file version read.
+
+    The mtime is what :func:`carry_effort_ownership` validates Kiro Crew's effort
+    ownership record against when the document is written back; it is taken by a
+    no-follow stat right after the read, and is ``None`` for an absent file or
+    when the stat fails, which voids the record (the conservative side).
+
     Off the event loop a refused read is retried on
     :data:`_SETTINGS_READ_RETRY_PAUSES`: one immediate re-check, then one pause
     and a final attempt. Every attempt re-runs the whole gate, so a path that
@@ -1492,10 +1512,17 @@ def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
     2 s: sleeping there would make a concurrent spawn lose its lock instead.
     """
 
-    def read_once() -> bytes | object | None:
+    def read_once() -> tuple[bytes, int | None] | object | None:
         if not path.exists():
             return _ABSENT_SETTINGS
-        return safe_read_file_bytes(str(path))
+        raw = safe_read_file_bytes(str(path))
+        if raw is None:
+            return None
+        try:
+            file_mtime: int | None = int(os.stat(path, follow_symlinks=False).st_mtime)
+        except OSError:
+            file_mtime = None
+        return raw, file_mtime
 
     raw = read_once()
     if raw is None and not on_event_loop():
@@ -1509,13 +1536,14 @@ def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
                 break
     if raw is None:
         raise ValueError(f"Cannot read Kiro settings at {path}")
-    if not isinstance(raw, bytes):
+    if not isinstance(raw, tuple):
         # The absence sentinel: the file does not exist.
-        return {}
-    data = json.loads(raw)
+        return {}, None
+    content, file_mtime = raw
+    data = json.loads(content)
     if not isinstance(data, dict):
         raise ValueError(f"Kiro settings must be an object: {path}")
-    return data
+    return data, file_mtime
 
 
 def _inheritance_preference(
@@ -1567,8 +1595,12 @@ def inherits_default_resources(work_dir: str | os.PathLike[str] | None) -> bool:
     return _inheritance_preference(local, global_settings)[0]
 
 
-def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
-    """Undo only our overlay; a changed or removed native setting wins."""
+def _restore_inheritance(path: Path, local: dict[str, Any], file_mtime: int | None) -> None:
+    """Undo only our overlay; a changed or removed native setting wins.
+
+    *file_mtime* is the mtime of the file version *local* was read from, so the
+    write carries Kiro Crew's effort ownership record exactly as it stood.
+    """
     inherited = local.get(_MANAGED_SETTING)
     source = local.get(_INHERIT_SOURCE)
     if not isinstance(inherited, bool) or source not in ("local", "global"):
@@ -1590,7 +1622,8 @@ def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
             local.pop(_INHERIT_SETTING, None)
     for key in (_MANAGED_SETTING, _INHERIT_SOURCE, _PREVIOUS_INHERITANCE):
         local.pop(key, None)
-    atomic_write(path, json.dumps(local, indent=2))
+    stamp_ns = carry_effort_ownership(local, file_mtime)
+    atomic_write(path, json.dumps(local, indent=2), mtime_ns=stamp_ns)
 
 
 def _managed_marker(spec: object) -> bool:
@@ -2944,7 +2977,10 @@ def prepare_native_skill_projection(
     """Prepare native views after spec freshness admission, before spawning.
 
     Uses the existing workspace CLI settings channel. No home, identity store,
-    session store or authored agent file is relocated or rewritten.
+    session store or authored agent file is relocated or rewritten. The disabled
+    rollback admits the settings folder before its lock-free existence probe. If
+    a link names an outside or remote target, that target is not inspected and
+    the existing locked rollback reports that the file could not be changed.
 
     ``per_session_element`` says how ``kirocrew-core`` reaches a search agent's
     sessions with this session's identity. ``True`` is the shared runtime: the
@@ -3024,11 +3060,19 @@ def prepare_native_skill_projection(
                     "skill projection: ceiling-fallback prune skipped; lock or I/O error",
                     exc_info=True,
                 )
-        if not (work_dir / ".kiro" / "settings" / "cli.json").exists():
+        admitted_settings_dir = admitted_workspace_cli_settings_dir(work_dir)
+        if admitted_settings_dir is not None and not (admitted_settings_dir / "cli.json").exists():
             return None
         try:
             with workspace_cli_settings_lock(work_dir) as locked_settings:
-                _restore_inheritance(locked_settings, _settings(locked_settings, may_pause=False))
+                _restore_inheritance(
+                    locked_settings, *_settings_with_mtime(locked_settings, may_pause=False)
+                )
+        except RecursionError:
+            logger.warning(
+                "skill projection: workspace settings document is too deeply nested during "
+                "rollback; rollback skipped and file left unchanged"
+            )
         except OSError:
             logger.warning(
                 "skill projection: workspace settings lock unavailable during rollback",
@@ -3198,7 +3242,8 @@ def prepare_native_skill_projection(
                 # the write below. Every in-product workspace cli.json writer uses
                 # the same sidecar lock, so no effort or Tool Search update can land
                 # between this read and commit.
-                local = _settings(locked_settings, may_pause=False)
+                local, local_mtime = _settings_with_mtime(locked_settings, may_pause=False)
+                read_local = copy.deepcopy(local)
                 inherited, preference_source, overlaid = _inheritance_preference(
                     local, global_settings
                 )
@@ -3295,7 +3340,18 @@ def prepare_native_skill_projection(
                     local[_MANAGED_SETTING] = inherited
                     local[_INHERIT_SOURCE] = preference_source
                     local[_INHERIT_SETTING] = True
-                    atomic_write(locked_settings, json.dumps(local, indent=2))
+                    # This republishes the whole document, effort keys included.
+                    # Kiro Crew's effort ownership record counts only while its
+                    # stamp equals the file's mtime, so the rewrite restamps a
+                    # record that was valid in the version read and drops one that
+                    # was not, instead of voiding the former or re-validating the latter.
+                    # A document equal to the owned file read, apart from the stamp,
+                    # is not written: the file keeps its mtime and the record stays valid.
+                    if not owned_document_unchanged(local, read_local, local_mtime):
+                        stamp_ns = carry_effort_ownership(local, local_mtime)
+                        atomic_write(
+                            locked_settings, json.dumps(local, indent=2), mtime_ns=stamp_ns
+                        )
                     prepared = NativeSkillProjection(
                         aliases,
                         specs,
@@ -3307,6 +3363,12 @@ def prepare_native_skill_projection(
                 except BaseException:
                     lease_stack.close()
                     raise
+        except RecursionError:
+            logger.warning(
+                "skill projection: workspace settings document is too deeply nested; left "
+                "unchanged, retaining aliases and using authored agents"
+            )
+            return None
         except OSError as exc:
             # Same routine contention as the alias-lock fallback above: the
             # OSError names the real wait, so one warning line suffices and a

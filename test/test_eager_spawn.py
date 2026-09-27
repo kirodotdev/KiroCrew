@@ -30,6 +30,17 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import default_timeout
+
+
+async def _await_test(awaitable, what: str):
+    try:
+        async with asyncio.timeout(default_timeout()) as deadline:
+            return await awaitable
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        raise AssertionError(f"timed out waiting for {what}") from exc
 
 
 @pytest.fixture(autouse=True)
@@ -542,6 +553,63 @@ class TestEagerSpawn:
         state.sessions.remove.assert_awaited_once_with(key)
         # Semaphore still released before teardown.
         state.sessions.release.assert_called_once_with(key)
+
+    @pytest.mark.asyncio
+    async def test_default_pick_cannot_overtake_prefetch_effort_capture(self):
+        """A newer Default intent cannot be spent against a stale eager override."""
+        slot = _ChatSlot("effort-race")
+        slot.reasoning_effort = "max"
+        state = _mock_state(slot)
+        allocation_entered = asyncio.Event()
+        release_allocation = asyncio.Event()
+        picker_started = asyncio.Event()
+        captured_overrides: list[str | None] = []
+        default_pending = False
+        stale_override_spent = False
+
+        async def allocate(*_args, **kwargs):
+            nonlocal default_pending, stale_override_spent
+            captured_override = kwargs.get("reasoning_effort_override")
+            captured_overrides.append(captured_override)
+            allocation_entered.set()
+            await _await_test(release_allocation.wait(), "release_allocation")
+            if default_pending and captured_override:
+                default_pending = False
+                stale_override_spent = True
+            return MagicMock(), True, False
+
+        async def pick_default() -> None:
+            nonlocal default_pending
+            picker_started.set()
+            async with chat_runner.slot_switch_session_lock(
+                chat_runner.effective_session_key(slot)
+            ):
+                slot.reasoning_effort = ""
+                default_pending = True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=allocate)
+        picker_task: asyncio.Task[None] | None = None
+        prefetch_task = asyncio.create_task(_eager_spawn(state, slot))
+        try:
+            await asyncio.wait_for(allocation_entered.wait(), timeout=2.0)
+            picker_task = asyncio.create_task(pick_default())
+            await asyncio.wait_for(picker_started.wait(), timeout=2.0)
+            release_allocation.set()
+            await asyncio.wait_for(prefetch_task, timeout=2.0)
+            await asyncio.wait_for(picker_task, timeout=2.0)
+        finally:
+            release_allocation.set()
+            tasks = [prefetch_task]
+            if picker_task is not None:
+                tasks.append(picker_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await _await_test(asyncio.gather(*tasks, return_exceptions=True), "task cleanup")
+
+        assert captured_overrides == ["max"]
+        assert stale_override_spent is False
+        assert default_pending is True
 
     @pytest.mark.asyncio
     async def test_unchanged_bindings_keep_the_session(self, tmp_path):

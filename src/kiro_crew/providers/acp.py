@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
 import json
 import logging
+import os
+import stat
 import time
+import weakref
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import AbstractContextManager, aclosing, asynccontextmanager, nullcontext, suppress
 from pathlib import Path
-from typing import Any, AsyncContextManager
+from typing import Any, AsyncContextManager, Literal
 
-from kiro_crew import model_scope
+from kiro_crew import atomic_write as atomic_write_module
+from kiro_crew import model_scope, pinned_fs, platform_compat
+from kiro_crew.acp._dispatch import redact_backend_text
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -94,6 +100,7 @@ from kiro_crew.effort import (
     model_supports_effort,
     resolve_effort_for_model,
 )
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
@@ -106,11 +113,20 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.recovery.ladder import InfraError
+from kiro_crew.security import canonical_path_refusal
 from kiro_crew.session_work_dir import mark_run_dir, reclaim_session_work_dir
 from kiro_crew.workspace_cli_settings import (
     CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
     CLI_SETTINGS_LOCK_TIMEOUT_SECS,
-    workspace_cli_settings_lock,
+    EFFORT_OWNED_KEY,
+    EFFORT_OWNED_STAMP_KEY,
+    LockedCliSettings,
+    admitted_workspace_cli_settings_dir,
+    effort_ownership_stamp_matches,
+    locked_workspace_cli_settings,
+    owned_document_unchanged,
+    stamp_effort_ownership,
+    workspace_cli_settings_fence_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,10 +134,307 @@ logger = logging.getLogger(__name__)
 
 #: Decoding for the workspace ``cli.json``. The file can be a person's own
 #: workspace settings, and Windows editors save UTF-8 with a byte-order mark,
-#: which ``json.loads`` refuses on decoded text. A refused file reads as empty
-#: here, and the overlay writers then replace it with only Kiro Crew's keys, so
-#: every reader drops one leading mark. Writers emit plain UTF-8.
+#: which ``json.loads`` refuses on decoded text. A file that does not parse is
+#: left unchanged and the overlay write fails, so the reader drops one leading
+#: mark and the overlay still applies. Writers emit plain UTF-8.
 _CLI_JSON_ENCODING = "utf-8-sig"
+
+
+_WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS = (
+    CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS + CLI_SETTINGS_LOCK_TIMEOUT_SECS
+)
+# The key names live in ``workspace_cli_settings`` so every writer of the file,
+# including the skill projection, carries the record under one rule.
+_KIROCREW_EFFORT_OWNED_KEY = EFFORT_OWNED_KEY
+_KIROCREW_EFFORT_OWNED_STAMP_KEY = EFFORT_OWNED_STAMP_KEY
+_WARN_UNOWNED_MAX_ITEMS = 10
+_WARN_UNOWNED_MAX_CHARS = 120
+# A settings file is kilobytes; past this Kiro Crew does not read it, so every
+# structure derived from it stays bounded.
+_CLI_JSON_MAX_BYTES = 1024 * 1024
+_OVERLAY_REFUSED = (
+    "is a link, a hardlink, not a regular file inside the settings directory, or cannot be "
+    "read; left unchanged"
+)
+_CliJsonVersion = tuple[int, int, int, int, int]
+_UNKNOWN_CLI_JSON_VERSION = object()
+
+
+class _OverlayTooLarge(ValueError):
+    """Raised when a workspace cli.json overlay exceeds the read ceiling."""
+
+
+class _OverlayParentNotAnObject(ValueError):
+    """Raised when an explicit Default would replace a non-object overlay parent."""
+
+
+def _log_atom(value: object) -> str:
+    """Render a cli.json value as one bounded, single-line log token."""
+    if isinstance(value, str):
+        rendered = json.dumps(value[:_WARN_UNOWNED_MAX_CHARS], ensure_ascii=True)
+    elif isinstance(value, (int, float, bool)) or value is None:
+        rendered = json.dumps(value, ensure_ascii=True)
+    elif isinstance(value, dict):
+        rendered = f"<object with {len(value)} keys>"
+    elif isinstance(value, list):
+        rendered = f"<array of {len(value)} items>"
+    else:
+        rendered = f"<{type(value).__name__}>"
+    if len(rendered) > _WARN_UNOWNED_MAX_CHARS:
+        return rendered[: _WARN_UNOWNED_MAX_CHARS - 4] + '..."'
+    return rendered
+
+
+def _log_effort_level(value: object) -> str:
+    """Render a cli.json effort leaf without exposing non-level file content."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=True) if value in EFFORT_LEVELS else "<unrecognized>"
+    if isinstance(value, dict):
+        return f"<object with {len(value)} keys>"
+    if isinstance(value, list):
+        return f"<array of {len(value)} items>"
+    return f"<{type(value).__name__}>"
+
+
+def _log_model_key(value: object) -> str:
+    """Render a cli.json model key after redacting the whole value before bounding it."""
+    if not isinstance(value, str):
+        return _log_atom(value)
+    rendered = json.dumps(redact_backend_text(value), ensure_ascii=True)
+    if len(rendered) > _WARN_UNOWNED_MAX_CHARS:
+        return rendered[: _WARN_UNOWNED_MAX_CHARS - 4] + '..."'
+    return rendered
+
+
+def _owned_cli_effort(settings: dict[str, Any], file_mtime: int | None) -> dict[str, str]:
+    """Return effort provenance only when it belongs to this file version."""
+    if not effort_ownership_stamp_matches(settings, file_mtime):
+        return {}
+    record = settings.get(_KIROCREW_EFFORT_OWNED_KEY)
+    if not isinstance(record, dict):
+        return {}
+    return {
+        model: level
+        for model, level in record.items()
+        if isinstance(model, str) and model and isinstance(level, str) and level
+    }
+
+
+def _cli_effort_is_owned(active: object, recorded: str | None) -> bool:
+    """Return whether a non-empty record names the identical active effort value."""
+    return isinstance(recorded, str) and bool(recorded) and active == recorded
+
+
+def _pinned_settings_fd(settings: LockedCliSettings) -> int | None:
+    """The lock's settings descriptor when both the read and the publish can go through it."""
+    if settings.settings_fd is None or not atomic_write_module.pinned_parent_replace_supported():
+        return None
+    return settings.settings_fd
+
+
+def _cli_json_version(metadata: os.stat_result) -> _CliJsonVersion:
+    """Return the fields that identify one observed version of ``cli.json``."""
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _current_cli_json_version(
+    settings: LockedCliSettings, settings_fd: int | None
+) -> _CliJsonVersion | None:
+    """Stat the current ``cli.json`` name through the writer's selected path."""
+    try:
+        if settings_fd is None:
+            metadata = os.stat(settings.cli_json, follow_symlinks=False)
+        else:
+            metadata = os.stat(
+                "cli.json",
+                dir_fd=settings_fd,
+                follow_symlinks=False,
+            )
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OSError(
+            f"workspace cli.json overlay {settings.cli_json} changed while the overlay "
+            "was written; left unchanged"
+        ) from exc
+    return _cli_json_version(metadata)
+
+
+def _publish_cli_overlay(
+    settings: LockedCliSettings,
+    document: dict[str, Any],
+    read_document: dict[str, Any],
+    file_mtime: int | None,
+    read_version: _CliJsonVersion | None | object,
+) -> None:
+    """Publish one overlay into the settings directory the lock opened, where supported.
+
+    *read_document* is a copy of the document :func:`_read_cli_overlay_document`
+    returned under this lock, and *file_mtime* the mtime it returned with it. A
+    document that equals the file read, apart from the stamp, while that file's
+    record is valid is not written: the file keeps its bytes and its mtime, so the
+    record stays valid and a same-level projection before every spawn leaves the
+    file alone.
+
+    A settings directory replaced or linked by name after the lock cannot receive the
+    write. A ``cli.json`` changed after the read is left unchanged and the writer raises.
+    A publish that would leave the file unchanged also refuses either change.
+    A writer that changes the file after the version check can still race the rename;
+    closing that window requires every writer to take the shared lock. Platforms without
+    descriptor-relative writes use the by-name write floor.
+    """
+    settings_fd = _pinned_settings_fd(settings)
+    if settings_fd is not None and not settings.holds_named_settings_dir():
+        raise OSError("workspace CLI settings directory changed before the overlay was written")
+    current_version = _current_cli_json_version(settings, settings_fd)
+    if read_version is _UNKNOWN_CLI_JSON_VERSION or current_version != read_version:
+        raise OSError(
+            f"workspace cli.json overlay {settings.cli_json} changed while the overlay "
+            "was written; left unchanged"
+        )
+    if owned_document_unchanged(document, read_document, file_mtime):
+        return
+    # The timestamp is applied to the staged inode before publication, so the
+    # ownership record and the inode carrying it become visible together. A
+    # document with no record carries no stamp and takes a natural mtime.
+    stamp_ns = stamp_effort_ownership(document)
+    content = json.dumps(document, indent=2)
+    if settings_fd is None:
+        atomic_write(settings.cli_json, content, mtime_ns=stamp_ns)
+    else:
+        atomic_write(
+            settings.cli_json,
+            content,
+            parent_dir_fd=settings_fd,
+            mtime_ns=stamp_ns,
+        )
+        if not settings.holds_named_settings_dir():
+            raise OSError("workspace CLI settings directory changed while the overlay was written")
+
+
+def _read_pinned_cli_json(
+    settings_fd: int, cli_json: Path
+) -> tuple[bytes, os.stat_result, os.stat_result] | None:
+    """Read ``cli.json`` through the pinned settings directory.
+
+    Returns the bytes with the opened file's metadata from before and after the read.
+    """
+    try:
+        fd = os.open(
+            "cli.json",
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=settings_fd,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OSError(f"workspace cli.json overlay {cli_json} {_OVERLAY_REFUSED}") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise OSError(f"workspace cli.json overlay {cli_json} {_OVERLAY_REFUSED}")
+        opened_path = pinned_fs.fd_real_path(fd)
+        if opened_path is None or canonical_path_refusal(opened_path) is not None:
+            raise OSError(f"workspace cli.json overlay {cli_json} {_OVERLAY_REFUSED}")
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as handle:
+        raw = handle.read(_CLI_JSON_MAX_BYTES + 1)
+        return raw, opened, os.fstat(handle.fileno())
+
+
+def _read_cli_overlay_document(
+    settings: LockedCliSettings,
+) -> tuple[dict[str, Any], int | None, _CliJsonVersion | None | object]:
+    """Return the settings object an overlay writer merges into.
+
+    The returned version is the file's metadata from before its bytes were read, so
+    the guarded publish refuses after any later change, even one during the read. A
+    missing file is an empty document. An existing file that cannot be read,
+    is a link, is hardlinked, is non-regular, or escapes the workspace settings
+    directory raises so the writer leaves its bytes untouched. An overlay past
+    the ceiling is left unchanged and the write raises, as an unparseable one does.
+    Where descriptor-relative writes are supported, the read and publish use
+    the settings directory the lock opened, so a folder replaced or linked after
+    the lock cannot receive the write and the writer raises. Elsewhere both go by
+    name; on Windows the lock holds ``.kiro`` and ``settings`` open meanwhile, so
+    neither can be renamed or deleted until the writer is done.
+    """
+    cli_json = settings.cli_json
+    settings_fd = _pinned_settings_fd(settings)
+    raw: bytes | None
+    file_mtime: int | None = None
+    file_version: _CliJsonVersion | None | object
+    if settings_fd is not None:
+        read_result = _read_pinned_cli_json(settings_fd, cli_json)
+        if read_result is None:
+            return {}, None, None
+        raw, before_read, after_read = read_result
+        file_mtime = int(after_read.st_mtime)
+        file_version = _cli_json_version(before_read)
+        if len(raw) > _CLI_JSON_MAX_BYTES:
+            raise _OverlayTooLarge(
+                f"workspace cli.json overlay {cli_json} is past the "
+                f"{_CLI_JSON_MAX_BYTES}-byte ceiling; left unchanged"
+            )
+    else:
+        if not os.path.lexists(cli_json):
+            return {}, None, None
+        if platform_compat.is_link_or_junction(cli_json):
+            raise OSError(f"workspace cli.json overlay {cli_json} is a link; left unchanged")
+
+        # The lock's folder is the one ``.kiro/settings`` resolved to inside the work dir,
+        # so an accepted link reads and writes the same folder.
+        settings_root = str(settings.settings_dir)
+        try:
+            file_version = _cli_json_version(os.stat(cli_json, follow_symlinks=False))
+        except OSError:
+            file_version = _UNKNOWN_CLI_JSON_VERSION
+        try:
+            raw = safe_read_file_bytes_nolink(
+                str(cli_json),
+                within_root=settings_root,
+                max_bytes=_CLI_JSON_MAX_BYTES,
+                within_root_is_canonical=True,
+            )
+        except FileTooLargeError as exc:
+            raise _OverlayTooLarge(
+                f"workspace cli.json overlay {cli_json} is past the "
+                f"{_CLI_JSON_MAX_BYTES}-byte ceiling; left unchanged"
+            ) from exc
+        if raw is None:
+            raise OSError(f"workspace cli.json overlay {cli_json} {_OVERLAY_REFUSED}")
+        try:
+            file_mtime = int(os.stat(cli_json, follow_symlinks=False).st_mtime)
+        except OSError:
+            # The read remains authoritative. A racing replacement or failed
+            # metadata lookup only voids ownership, the conservative side.
+            file_mtime = None
+
+    try:
+        existing = json.loads(raw.decode(_CLI_JSON_ENCODING))
+    except Exception as exc:
+        # Every failure to turn bytes into a settings object leaves the operator's
+        # file unchanged.
+        raise ValueError(
+            f"workspace cli.json overlay {cli_json} could not be parsed as a settings document; "
+            "left unchanged"
+        ) from exc
+    if not isinstance(existing, dict):
+        raise ValueError(
+            f"workspace cli.json overlay {cli_json} is not a JSON object; left unchanged"
+        )
+    return existing, file_mtime, file_version
 
 
 def _write_cli_overlay(
@@ -130,72 +443,138 @@ def _write_cli_overlay(
     effort: str,
     *,
     timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS,
+    replace_unowned: bool = False,
 ) -> None:
     """Write a workspace cli.json overlay so kiro-cli applies effort at spawn.
 
     Path: ``<work_dir>/.kiro/settings/cli.json``. Workspace settings override
     the global ``~/.kiro/settings/cli.json``, so nothing here touches the user's
     global kiro settings. The overlay's scope is that WORK DIRECTORY, not a
-    session: every session served by one runtime shares the work dir, so the
-    file is shared by all of them, and kiro-cli reads it only at spawn. A write
-    therefore reaches no session that is already running -- it lands on the next
-    respawn, and then for every session that respawn serves. Merge-safe and
-    idempotent — safe to call before every spawn.
+    session: every session served by one runtime shares the work dir. Kiro-cli
+    reads the file at spawn, while Kiro Crew reasserts a resolved level after
+    spawn and after each fresh session on a warm runtime. Merge-safe and
+    idempotent -- safe to call before every spawn.
 
-    Its unit of state is therefore ``(work_dir, model)`` and never
-    ``(session, model)``: two sessions on one runtime running the same model have
-    one entry between them, and the last write is the one a respawn reads.
-    Nothing reaches this writer except :class:`AcpProvider`, which is the object
-    that spawns the runtime and so always owns it, which is why a live effort
-    change is pushed to the running session separately
-    (:meth:`AcpProvider.change_effort`) rather than through this file. A session
-    that joins a runtime it did not spawn has no path here at all today; if one
-    is added, it needs to say that its write cannot reach the running process.
+    The effort value and Kiro Crew's exact-match ownership record live in the
+    same document and are published by one atomic write. An existing matching
+    value with no matching record is operator-owned and is never claimed. A
+    differing operator-authored active-key value, or a non-object value a
+    normal projection would replace, is kept. ``replace_unowned`` is reserved
+    for the explicit Default action: it replaces this model's effort values in
+    both family shapes while preserving their sibling keys, but refuses a
+    non-object ``chat.modelDefaults``, model entry, or effort object and leaves
+    the file unchanged. A stale or malformed record is dropped without changing
+    any other setting; when no record is stale or malformed the file is
+    untouched.
 
     The effort sub-key is family-specific (``effort_settings_key``): Claude
-    models use ``output_config``, GPT models use ``reasoning`` — kiro-cli
+    models use ``output_config``, GPT models use ``reasoning`` -- kiro-cli
     silently ignores the wrong key, so the shape must match the model.
 
-    Format::
-
-        {"chat.modelDefaults": {"<model>": {"<key>": {"effort": "<level>"}}}}
+    An existing overlay that cannot be read, is a link, is hardlinked, is
+    non-regular, escapes the workspace settings directory, exceeds the 1 MiB
+    read ceiling, or cannot be parsed into a settings object is left byte-for-byte
+    unchanged and the write raises: the caller reports a level as persisted only
+    when the file holds it, and an operator's file is never reset to make room
+    for one. A settings folder on a sensitive path, or one whose real path cannot
+    be verified, is refused by the lock before anything beneath it is read, and
+    the write raises. Where descriptor-relative writes are supported, the read and publish use
+    the settings directory the lock opened, so a folder replaced or linked after
+    the lock cannot receive the write and the writer raises. Elsewhere both go by
+    name; on Windows the lock holds ``.kiro`` and ``settings`` open meanwhile, so
+    neither can be renamed or deleted until the writer is done.
     """
-    with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
-        try:
-            existing = (
-                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-                if cli_json.exists()
-                else {}
-            )
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-        if not isinstance(existing, dict):
-            existing = {}
-        model_defaults = existing.get("chat.modelDefaults")
-        if not isinstance(model_defaults, dict):
-            model_defaults = {}
-        model_cfg = model_defaults.get(model)
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
+    with locked_workspace_cli_settings(work_dir, timeout=timeout) as settings:
+        existing, file_mtime, file_version = _read_cli_overlay_document(settings)
+        read_document = copy.deepcopy(existing)
+
         key = effort_settings_key(model)
-        effort_cfg = model_cfg.get(key)
-        if not isinstance(effort_cfg, dict):
-            effort_cfg = {}
+        model_defaults_present = "chat.modelDefaults" in existing
+        model_defaults_raw = existing.get("chat.modelDefaults")
+        model_defaults = model_defaults_raw if isinstance(model_defaults_raw, dict) else None
+        model_present = model_defaults is not None and model in model_defaults
+        model_cfg_raw = model_defaults.get(model) if model_defaults is not None else None
+        model_cfg = model_cfg_raw if isinstance(model_cfg_raw, dict) else None
+        active_key_present = model_cfg is not None and key in model_cfg
+        current_effort_cfg_raw = model_cfg.get(key) if model_cfg is not None else None
+        current_effort_cfg = (
+            current_effort_cfg_raw if isinstance(current_effort_cfg_raw, dict) else None
+        )
+        current_effort = (
+            current_effort_cfg.get("effort") if current_effort_cfg is not None else None
+        )
+        active_effort_present = current_effort_cfg is not None and "effort" in current_effort_cfg
+        if replace_unowned:
+            for path, present, value in (
+                ("chat.modelDefaults", model_defaults_present, model_defaults_raw),
+                (f"chat.modelDefaults.{model}", model_present, model_cfg_raw),
+                (f"chat.modelDefaults.{model}.{key}", active_key_present, current_effort_cfg_raw),
+            ):
+                if present and not isinstance(value, dict):
+                    raise _OverlayParentNotAnObject(
+                        f"workspace cli.json overlay {settings.cli_json} has non-object {path}; "
+                        "left unchanged"
+                    )
+        raw_owned = existing.get(_KIROCREW_EFFORT_OWNED_KEY)
+        owned = _owned_cli_effort(existing, file_mtime)
+        recorded_effort = owned.get(model)
+        ownership_needs_normalization = (
+            _KIROCREW_EFFORT_OWNED_KEY in existing and raw_owned != owned
+        )
+        replaces_operator_value = not replace_unowned and (
+            (model_defaults is None and model_defaults_present)
+            or (
+                (model_defaults is not None and model_cfg is None and model_present)
+                or (model_cfg is not None and current_effort_cfg is None and active_key_present)
+                or (
+                    active_effort_present
+                    and not _cli_effort_is_owned(current_effort, recorded_effort)
+                )
+            )
+        )
+        if replaces_operator_value:
+            if recorded_effort is not None or ownership_needs_normalization:
+                owned.pop(model, None)
+                if owned:
+                    existing[_KIROCREW_EFFORT_OWNED_KEY] = owned
+                else:
+                    existing.pop(_KIROCREW_EFFORT_OWNED_KEY, None)
+                _publish_cli_overlay(settings, existing, read_document, file_mtime, file_version)
+            logger.debug(
+                "ACP effort overlay kept operator-authored level: model=%s effort=%s",
+                model,
+                _log_effort_level(current_effort),
+            )
+            return
+
+        if model_defaults is None:
+            model_defaults = {}
+        if model_cfg is None:
+            model_cfg = {}
+        if replace_unowned:
+            for effort_key in ("output_config", "reasoning"):
+                prior_effort_cfg = model_cfg.get(effort_key)
+                if not isinstance(prior_effort_cfg, dict):
+                    continue
+                preserved_effort_cfg = dict(prior_effort_cfg)
+                preserved_effort_cfg.pop("effort", None)
+                if preserved_effort_cfg:
+                    model_cfg[effort_key] = preserved_effort_cfg
+                else:
+                    model_cfg.pop(effort_key, None)
+        current_effort_cfg = model_cfg.get(key)
+        effort_cfg = dict(current_effort_cfg) if isinstance(current_effort_cfg, dict) else {}
         effort_cfg["effort"] = effort
         model_cfg[key] = effort_cfg
-        # Recovery checks output_config first, so leaving effort under both family
-        # keys can resurrect a stale value after restart.
-        other_key = "reasoning" if key == "output_config" else "output_config"
-        other_effort_cfg = model_cfg.get(other_key)
-        if isinstance(other_effort_cfg, dict) and "effort" in other_effort_cfg:
-            other_effort_cfg.pop("effort")
-            if not other_effort_cfg:
-                model_cfg.pop(other_key, None)
         model_defaults[model] = model_cfg
         existing["chat.modelDefaults"] = model_defaults
-        atomic_write(
-            cli_json, json.dumps(existing, indent=2)
-        )  # atomic: readers never see a partial file
+        owned[model] = effort
+        if owned:
+            existing[_KIROCREW_EFFORT_OWNED_KEY] = owned
+        else:
+            existing.pop(_KIROCREW_EFFORT_OWNED_KEY, None)
+
+        _publish_cli_overlay(settings, existing, read_document, file_mtime, file_version)
 
 
 # The thresholds and their clamps live in ``agent_sdk.tool_search`` so the
@@ -249,18 +628,30 @@ def _write_tool_search_overlay(
     and any other settings already present. kiro cli.json uses flat dotted keys
     (e.g. ``"chat.modelDefaults"``), so the Tool Search keys are written flat to
     match.
+
+    An existing overlay that cannot be read, is a link, is hardlinked, is
+    non-regular, escapes the workspace settings directory, cannot be parsed
+    into a settings object, or exceeds the shared ceiling is left byte-for-byte
+    unchanged and the write raises, exactly as :func:`_write_cli_overlay` does:
+    the effort entries and operator settings in that file are never reset to
+    make room for this flag. Where descriptor-relative writes are supported,
+    the read and publish use the settings directory the lock opened, so a folder
+    replaced or linked after the lock cannot receive the write and the writer
+    raises. Elsewhere both go by name; on Windows the lock holds ``.kiro`` and
+    ``settings`` open meanwhile, so neither can be renamed or deleted until the
+    writer is done. The provider's caller logs the refused write and starts the
+    session anyway.
     """
-    with workspace_cli_settings_lock(work_dir) as cli_json:
-        try:
-            existing = (
-                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-                if cli_json.exists()
-                else {}
-            )
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-        if not isinstance(existing, dict):
-            existing = {}
+    with locked_workspace_cli_settings(work_dir) as settings:
+        existing, file_mtime, file_version = _read_cli_overlay_document(settings)
+        read_document = copy.deepcopy(existing)
+        raw_owned = existing.get(_KIROCREW_EFFORT_OWNED_KEY)
+        owned = _owned_cli_effort(existing, file_mtime)
+        if _KIROCREW_EFFORT_OWNED_KEY in existing and raw_owned != owned:
+            if owned:
+                existing[_KIROCREW_EFFORT_OWNED_KEY] = owned
+            else:
+                existing.pop(_KIROCREW_EFFORT_OWNED_KEY, None)
         existing["toolSearch.enabled"] = bool(enabled)
         if enabled:
             existing["toolSearch.minPct"] = _clamp_min_pct(min_pct)
@@ -270,108 +661,367 @@ def _write_tool_search_overlay(
             # would take effect if a later build flips the global default on.
             existing.pop("toolSearch.minPct", None)
             existing.pop("toolSearch.minTokens", None)
-        atomic_write(
-            cli_json, json.dumps(existing, indent=2)
-        )  # atomic: readers never see a partial file
+        _publish_cli_overlay(settings, existing, read_document, file_mtime, file_version)
 
 
-def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
-    """Remove the effort entry for *model* from the workspace cli.json overlay.
+class _BoundedCliEffortPairs:
+    """Retain a bounded sample of file-derived effort pairs for one log line."""
 
-    Merge-safe: leaves other models' settings intact and drops now-empty
-    containers. No-op when the file or entry is absent.
+    def __init__(self) -> None:
+        self._sample: list[str] = []
+        self._omitted = 0
 
-    Returns whether the overlay holds no effort for *model* once this returns.
-    False means the shared settings lock could not be taken, which with the
-    ACTION ceiling means a stuck holder rather than the routine contention the
-    startup ceiling sees -- projection's own critical section is sub-second. That
-    distinction is what keeps this answer two-valued: a failure mode that happens
-    by design would need a third state, and one that means "something is wrong"
-    does not. BLOCKING on the event loop for that ceiling would freeze every
-    session, so every caller must reach this off the loop.
+    @property
+    def sample_size(self) -> int:
+        """Number of retained, rendered pairs."""
+        return len(self._sample)
 
-    Every other exit is a success: an absent file, an absent entry, a removed
-    entry and a malformed file all leave the overlay naming no effort for *model*.
+    @property
+    def omitted(self) -> int:
+        """Number of pairs omitted after the retained sample."""
+        return self._omitted
+
+    def add(self, model: object, level: object) -> None:
+        """Retain one escaped pair or count it as omitted."""
+        rendered = f"{_log_model_key(model)}={_log_effort_level(level)}"
+        if len(self._sample) < _WARN_UNOWNED_MAX_ITEMS:
+            self._sample.append(rendered)
+        else:
+            self._omitted += 1
+
+    def __bool__(self) -> bool:
+        return bool(self._sample) or self._omitted > 0
+
+    def render(self) -> str:
+        """Render the retained sample and its omitted tail count."""
+        rendered = list(self._sample)
+        if self._omitted:
+            rendered.append(f"... {self._omitted} more")
+        return ", ".join(rendered)
+
+
+def _warn_unowned_cli_effort(
+    cli_json: Path, model_defaults: dict[str, Any], model: str | None
+) -> None:
+    """Log the active-key effort values a Default or ``auto`` spawn may run.
+
+    Called after the ownership sweep, so every value still under a model's
+    active key is one Kiro Crew did not write: an operator's entry, or a level
+    an older build projected without a record. ``None`` reads every model in
+    the document because the ``auto`` spawn's model is unknown. One warning
+    covers every remaining value; nothing is logged when none remains.
     """
+    candidates = list(model_defaults) if model is None else [model]
+    pairs = _BoundedCliEffortPairs()
+    for candidate in candidates:
+        model_cfg = model_defaults.get(candidate)
+        if not isinstance(model_cfg, dict):
+            continue
+        effort_cfg = model_cfg.get(effort_settings_key(candidate))
+        if not isinstance(effort_cfg, dict) or "effort" not in effort_cfg:
+            continue
+        pairs.add(candidate, effort_cfg["effort"])
+    if not pairs:
+        return
+    if model is None:
+        # The ``auto`` spawn: the picker clears an entry only for the model the
+        # slot has selected, so the listed model has to be selected first.
+        remedy = (
+            "Remove it by selecting the listed model, picking a level and then Default in "
+            "the effort picker, or by editing the file"
+        )
+    else:
+        remedy = (
+            "Remove it by picking a level and then Default in the effort picker, or by "
+            "editing the file"
+        )
+    logger.warning(
+        "ACP effort overlay %s holds an effort level Kiro Crew did not write (%s): "
+        "this session is on Default, so it may run that level instead of the model's "
+        "own default. %s",
+        cli_json,
+        pairs.render(),
+        remedy,
+    )
+
+
+def _clear_cli_overlay_effort(
+    work_dir: Path,
+    model: str | None,
+    *,
+    timeout: float = CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+    owned_only: bool = True,
+    warn_unowned: bool = False,
+) -> bool:
+    """Remove matching effort projections from the workspace overlay.
+
+    A normal clear removes only an active-key value that exactly matches Kiro
+    Crew's record in the same cli.json document. An absent, malformed, stale,
+    or mismatched record owns nothing. ``None`` applies that rule to every
+    recorded model. ``owned_only=False`` is the explicit operator clear and
+    removes either known effort-key shape for the requested model.
+
+    ``warn_unowned`` is the pre-spawn projection's flag: after the sweep it
+    logs the active-key values the document still holds for the model (every
+    model for ``None``), because the spawn that follows may run one of them
+    instead of the default. The values are read from the document already
+    parsed under the lock; nothing is stored.
+
+    Returns False only when the shared settings lock or an existing overlay
+    cannot be read or written, is a link, is hardlinked, is non-regular, or
+    escapes the workspace settings directory, when the settings folder is on a
+    sensitive path or its real path cannot be verified, or when the settings
+    folder is replaced during the write. The lock-free absence probe first admits the
+    settings folder from link text; when admission refuses, no target is probed
+    and the lock reports False whether or not that target contains ``cli.json``.
+    An overlay past the ceiling returns
+    False and is left unchanged. A missing file, or one that cannot be parsed
+    into a settings object, names no effort for anyone, so it is left unchanged
+    and is a successful no-op. Where descriptor-relative writes are supported,
+    the read and publish use the settings directory the lock opened, so a folder
+    replaced or linked after the lock cannot receive the write. Elsewhere both go
+    by name; on Windows the lock holds ``.kiro`` and ``settings`` open meanwhile,
+    so neither can be renamed or deleted until the writer is done.
+    """
+    admitted_settings_dir = admitted_workspace_cli_settings_dir(work_dir)
+    if admitted_settings_dir is not None and not os.path.lexists(
+        admitted_settings_dir / "cli.json"
+    ):
+        return True
+
     try:
-        with workspace_cli_settings_lock(
-            work_dir, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-        ) as cli_json:
-            if not cli_json.exists():
-                return True
+        with locked_workspace_cli_settings(work_dir, timeout=timeout) as settings:
+            cli_json = settings.cli_json
             try:
-                data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-            except json.JSONDecodeError:
-                # A malformed file names no effort for any model, and
-                # ``_read_cli_overlay`` reads it as ``{}`` too, so a respawn
-                # re-seeds nothing. The postcondition already holds.
-                return True
+                data, file_mtime, file_version = _read_cli_overlay_document(settings)
+            except _OverlayTooLarge:
+                logger.warning(
+                    "ACP effort overlay %s is past the %d-byte ceiling; left unchanged",
+                    cli_json,
+                    _CLI_JSON_MAX_BYTES,
+                )
+                return False
             except OSError:
-                # The file EXISTS and this call holds the lock, so a read that
-                # fails here is transient IO (a Windows sharing violation, say),
-                # NOT an absent entry: the level may well still be on disk.
-                # Reporting success would be the silent stale reload this
-                # function's own return value exists to prevent.
                 logger.debug("ACP effort overlay read failed", exc_info=True)
                 return False
-            if not isinstance(data, dict):
+            except ValueError:
+                # Every failure to turn bytes into a settings object names no
+                # effort to clear, so the operator's bytes stay unchanged.
                 return True
-            model_defaults = data.get("chat.modelDefaults")
-            if not isinstance(model_defaults, dict):
-                return True
-            model_cfg = model_defaults.get(model)
-            if isinstance(model_cfg, dict):
-                # Clear whichever sub-key holds effort. Sweep both known shapes so a
-                # model whose family key changed (or an overlay written by an older
-                # build) is fully cleaned up, not just the current-family key.
-                for key in ("output_config", "reasoning"):
+            read_document = copy.deepcopy(data)
+
+            raw_owned = data.get(_KIROCREW_EFFORT_OWNED_KEY)
+            owned = _owned_cli_effort(data, file_mtime)
+            ownership_changed = _KIROCREW_EFFORT_OWNED_KEY in data and raw_owned != owned
+            target_models = list(owned) if model is None else [model]
+            original_model_defaults = data.get("chat.modelDefaults")
+            if isinstance(original_model_defaults, dict):
+                model_defaults = original_model_defaults
+                model_defaults_was_dict = True
+            else:
+                model_defaults = {}
+                model_defaults_was_dict = False
+            overlay_changed = False
+            removed_owned = _BoundedCliEffortPairs()
+
+            for target_model in target_models:
+                recorded_level = owned.pop(target_model, None)
+                if recorded_level is not None:
+                    ownership_changed = True
+                model_cfg = model_defaults.get(target_model)
+                if not isinstance(model_cfg, dict):
+                    continue
+
+                keys = (
+                    ("output_config", "reasoning")
+                    if not owned_only
+                    else (effort_settings_key(target_model),)
+                )
+                for key in keys:
                     effort_cfg = model_cfg.get(key)
-                    if isinstance(effort_cfg, dict):
-                        effort_cfg.pop("effort", None)
-                        if not effort_cfg:
-                            model_cfg.pop(key, None)
+                    if not isinstance(effort_cfg, dict) or "effort" not in effort_cfg:
+                        continue
+                    if owned_only and not _cli_effort_is_owned(
+                        effort_cfg.get("effort"), recorded_level
+                    ):
+                        continue
+                    if owned_only:
+                        removed_owned.add(target_model, effort_cfg["effort"])
+                    effort_cfg.pop("effort")
+                    overlay_changed = True
+                    if not effort_cfg:
+                        model_cfg.pop(key, None)
                 if not model_cfg:
-                    model_defaults.pop(model, None)
-            atomic_write(cli_json, json.dumps(data, indent=2))  # atomic
-    except OSError:
+                    model_defaults.pop(target_model, None)
+
+            if warn_unowned:
+                _warn_unowned_cli_effort(cli_json, model_defaults, model)
+            if not overlay_changed and not ownership_changed:
+                return True
+            if model_defaults:
+                data["chat.modelDefaults"] = model_defaults
+            elif model_defaults_was_dict:
+                data.pop("chat.modelDefaults", None)
+            if owned:
+                data[_KIROCREW_EFFORT_OWNED_KEY] = owned
+            else:
+                data.pop(_KIROCREW_EFFORT_OWNED_KEY, None)
+            _publish_cli_overlay(settings, data, read_document, file_mtime, file_version)
+            if removed_owned:
+                logger.info(
+                    "ACP effort overlay %s removed Kiro Crew-owned level(s): %s; if you set a "
+                    "level by hand to the same value, set it again",
+                    cli_json,
+                    removed_owned.render(),
+                )
+    except (OSError, RecursionError):
         logger.debug("ACP effort overlay clear failed", exc_info=True)
         return False
     return True
 
 
-def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
-    """Recover ``{model: level}`` from an existing workspace cli.json overlay.
+async def _await_overlay_write(write: Callable[[], object]) -> object:
+    """Run a ``cli.json`` overlay write in a worker thread and wait for it even when cancelled.
 
-    Called on provider init so a server restart (which loses in-memory slot
-    state) still reflects the effort kiro-cli will actually use. Returns ``{}``
-    when the file is missing, malformed, or has no effort entries.
+    A cancelled caller re-raises only once the worker is done, however many times
+    it is cancelled while it waits, so a teardown that follows (the shutdown
+    reclaim of a disposable work dir) or a successor's projection never races a
+    write still in progress. A worker that fails after the cancellation leaves
+    only the cancellation to raise.
     """
-    cli_json = work_dir / ".kiro" / "settings" / "cli.json"
-    if not cli_json.exists():
-        return {}
+    write_task = asyncio.ensure_future(asyncio.to_thread(write))
     try:
-        data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    model_defaults = data.get("chat.modelDefaults")
-    if not isinstance(model_defaults, dict):
-        return {}
-    out: dict[str, str] = {}
-    for model, cfg in model_defaults.items():
-        if not isinstance(cfg, dict):
-            continue
-        # Effort lives under output_config (Claude) or reasoning (GPT); read
-        # whichever is present so recovery works for both families.
-        for key in ("output_config", "reasoning"):
-            eff_cfg = cfg.get(key)
-            if isinstance(eff_cfg, dict):
-                eff = eff_cfg.get("effort")
-                if isinstance(eff, str) and eff:
-                    out[model] = eff
-                    break
-    return out
+        return await asyncio.shield(write_task)
+    except asyncio.CancelledError:
+        # Each further cancellation lands on a fresh shield, never on the worker.
+        while not write_task.done():
+            with suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(write_task)
+        if not write_task.cancelled():
+            write_task.exception()
+        raise
+
+
+_EFFORT_OVERLAY_AUTO_CLEAR_WARNING = (
+    "ACP effort overlay could not be checked or cleared for the auto "
+    "model: this spawn may run a level another session projected "
+    "instead of the default"
+)
+_EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING = (
+    "ACP effort overlay could not be checked or cleared for %s: this "
+    "spawn may run a level another session projected instead of the "
+    "default"
+)
+
+
+class _WorkspaceEffortOverlayFence:
+    """Keep Default-branch spawn reads free of gateway-written levels.
+
+    Windows share because each clears effort entries. A waiting window blocks new
+    writes, so it waits only for the write already holding the fence and no level
+    reaches the file before a Default runtime start returns.
+    """
+
+    def __init__(self) -> None:
+        self._windows = 0
+        self._pending_windows = 0
+        self._write_held = False
+        self._write_released = asyncio.Event()
+        self._write_released.set()
+        self._windows_released = asyncio.Event()
+        self._windows_released.set()
+
+    async def acquire(self, mode: Literal["window", "write"], timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        if mode == "window":
+            if not self._windows and not self._pending_windows:
+                self._windows_released.clear()
+            self._pending_windows += 1
+            pending = True
+            try:
+                while self._write_held:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        return False
+                    try:
+                        await asyncio.wait_for(self._write_released.wait(), remaining)
+                    except asyncio.TimeoutError:
+                        return False
+                self._pending_windows -= 1
+                pending = False
+                self._windows += 1
+                return True
+            finally:
+                if pending:
+                    self._pending_windows -= 1
+                    if not self._windows and not self._pending_windows:
+                        self._windows_released.set()
+        while self._write_held or self._windows or self._pending_windows:
+            event = self._write_released if self._write_held else self._windows_released
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(event.wait(), remaining)
+            except asyncio.TimeoutError:
+                return False
+        self._write_held = True
+        self._write_released.clear()
+        return True
+
+    def release(self, mode: Literal["window", "write"]) -> None:
+        if mode == "window":
+            self._windows -= 1
+            if not self._windows and not self._pending_windows:
+                self._windows_released.set()
+        else:
+            self._write_held = False
+            self._write_released.set()
+
+
+_WORKSPACE_EFFORT_FENCES: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, weakref.WeakValueDictionary[str, _WorkspaceEffortOverlayFence]
+] = weakref.WeakKeyDictionary()
+
+
+def _workspace_effort_overlay_fence(real_settings_dir: str) -> _WorkspaceEffortOverlayFence:
+    """Get or create this loop's fence for an already-resolved settings directory.
+
+    The key is the settings folder, not the work dir: the settings lock follows a
+    ``.kiro`` or ``settings`` link that stays inside the work dir, so two work
+    dirs can share one settings folder, and their windows and writes must then
+    exclude each other.
+
+    This stays synchronous and await-free because the get and create form one
+    critical section on the loop. An await between them could give two coroutines
+    separate fences for one directory, which would exclude nothing.
+    """
+    loop = asyncio.get_running_loop()
+    fences = _WORKSPACE_EFFORT_FENCES.setdefault(loop, weakref.WeakValueDictionary())
+    fence = fences.get(real_settings_dir)
+    if fence is None:
+        fence = _WorkspaceEffortOverlayFence()
+        fences[real_settings_dir] = fence
+    return fence
+
+
+@asynccontextmanager
+async def _hold_workspace_effort_overlay_fence(
+    work_dir: Path, mode: Literal["window", "write"], timeout: float
+) -> AsyncIterator[bool]:
+    # Off the loop: even trusted work-directory resolution can pause on a slow mount.
+    # The helper admits each settings link from lstat/readlink text before keying it.
+    # Admission refusal uses the resolved work dir plus literal names; failure to
+    # resolve the work dir still fails the start.
+    real_settings_dir = await asyncio.to_thread(workspace_cli_settings_fence_key, work_dir)
+    fence = _workspace_effort_overlay_fence(real_settings_dir)
+    acquired = await fence.acquire(mode, timeout)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            fence.release(mode)
 
 
 # ── F2 load-recovery: session/load retry past a stale native session lock ──
@@ -562,6 +1212,11 @@ class AcpProvider(LLMProvider):
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
+        self._explicit_effort_default_pending = False
+        self._explicit_effort_default_applied = False
+        self._fence_explicit_effort_default_rewrite: Callable[
+            [], AbstractContextManager[object]
+        ] = nullcontext
         # MCP Tool Search toggle (kiro-cli backend only). None = caller did not
         # specify (e.g. claude_code factory), so leave the overlay untouched.
         # True/False = write the kiro settings overlay deterministically so the
@@ -577,21 +1232,11 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-            # Recover overlay-persisted levels (server-restart resilience) and
-            # write the overlay BEFORE the first spawn so kiro-cli reads it on
-            # session/new. Caller-provided overrides win — only fill gaps.
-            #
-            # The overlay set, not the transport set: the file belongs to the kiro
-            # family, and a harness that shares the runtime without reading it
-            # would seed its effort map out of another harness's file.
-            try:
-                for m, lvl in _read_cli_overlay(self._client._work_dir).items():
-                    self._effort_per_model.setdefault(m, lvl)
-            except Exception:
-                logger.debug("ACP effort overlay recovery failed", exc_info=True)
-            self._apply_effort_overlay()
-            self._apply_tool_search_overlay()
+        # Construction does no file I/O. start() writes both overlays off the
+        # event loop before every spawn -- this session's effort projection and
+        # the Tool Search setting -- so allocating a provider cannot stall other
+        # chats, and nothing rewrites the file under a live process that will not
+        # re-read it.
 
     @property
     def client(self) -> AcpClient:
@@ -1829,15 +2474,35 @@ class AcpProvider(LLMProvider):
             normalize=functools.partial(effort_config_option_value, self._client.backend),
         )
 
-    def _apply_effort_overlay(self, *, timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS) -> bool:
-        """Write the kiro workspace cli.json overlay for (current model, effort).
+    def _apply_effort_overlay(
+        self,
+        *,
+        timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS,
+        replace_unowned: bool = False,
+    ) -> bool:
+        """Project this session's effort for the current model into the kiro overlay.
 
         Written only for the harnesses that READ it
         (``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` — the kiro family takes effort from
         this file at spawn); adapter harnesses use a live set_config_option push
-        instead. Also a no-op when the model is not effort-capable or no level
-        resolves. Called before every (re)spawn so resume/restart keeps the same
-        level.
+        instead. A no-op when a concrete model is not effort-capable. Called
+        before every (re)spawn so resume/restart keeps the same level.
+
+        A resolved level and its exact-match ownership record are written in one
+        atomic cli.json update unless an operator-authored active-key value or
+        non-object shape would be replaced. Those values stay in the file, and
+        the session receives its own resolved level through the post-spawn
+        ``/effort`` push. ``replace_unowned``, passed only by the explicit
+        Default, replaces them instead (see ``_write_cli_overlay``). When none
+        resolves for a concrete model, that model's entry is removed only when
+        the in-file record names the exact active-key value still present. For
+        ``auto``, the same rule is applied to every recorded model because the
+        concrete model is unknowable until after kiro-cli reads the overlay.
+        Operator-authored entries and values edited after projection are
+        preserved, and stale records are dropped. The removal admits the settings
+        folder from link text before its lock-free ``cli.json`` probe, so an
+        outside or remote target is not inspected; Default then reports that it
+        could not change the file through the existing lock-failure path.
 
         Membership rather than "not claude": the companion clear
         (``_clear_cli_overlay_effort`` in :meth:`change_effort`) is already
@@ -1847,18 +2512,72 @@ class AcpProvider(LLMProvider):
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
             return True
         model = self._client._model
+        work_dir = self._client._work_dir
+        admitted_settings_dir = admitted_workspace_cli_settings_dir(work_dir)
+        cli_json = admitted_settings_dir / "cli.json" if admitted_settings_dir is not None else None
+        if model == DEFAULT_MODEL:
+            if cli_json is not None and not os.path.lexists(cli_json):
+                return True
+            if not _clear_cli_overlay_effort(work_dir, None, timeout=timeout, warn_unowned=True):
+                logger.warning(_EFFORT_OVERLAY_AUTO_CLEAR_WARNING)
+                return False
+            logger.debug("ACP effort ownership checked for the auto model")
+            return True
+        if not model or not self.supports_effort():
+            return True
         level = self._resolve_effort()
-        if not model or not level:
+        if not level:
+            if cli_json is not None and not os.path.lexists(cli_json):
+                return True
+            if not _clear_cli_overlay_effort(
+                work_dir,
+                model,
+                timeout=timeout,
+                owned_only=not replace_unowned,
+                warn_unowned=not replace_unowned,
+            ):
+                logger.warning(_EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING, model)
+                return False
+            logger.debug("ACP effort ownership checked at the default: model=%s", model)
             return True
         try:
-            _write_cli_overlay(self._client._work_dir, model, level, timeout=timeout)
+            _write_cli_overlay(
+                work_dir,
+                model,
+                level,
+                timeout=timeout,
+                replace_unowned=replace_unowned,
+            )
         except Exception:
-            # The FILE is what a respawn reads, so a caller that reports a live
-            # change on a failed write promises a level the next reset undoes.
+            # A respawn reads the FILE, unless an operator-authored entry was
+            # kept and the post-spawn push carries this session's level. A failed
+            # write otherwise must not promise a level the next reset undoes.
             logger.warning("ACP effort overlay write failed", exc_info=True)
             return False
         logger.debug("ACP effort overlay applied: model=%s effort=%s", model, level)
         return True
+
+    def arm_explicit_effort_default(
+        self, fence_rewrite: Callable[[], AbstractContextManager[object]]
+    ) -> None:
+        """Make the next start's projection replace this model's entry, once, inside ``fence_rewrite``."""
+        self._explicit_effort_default_pending = True
+        self._fence_explicit_effort_default_rewrite = fence_rewrite
+
+    def _project_explicit_effort_default(self) -> None:
+        """Replace this model's entry whoever wrote it, and disarm once that succeeds.
+
+        Runs in the overlay worker and records the outcome with the write, so a
+        start cancelled while it waits still knows the file changed.
+        """
+        if self._apply_effort_overlay(replace_unowned=True):
+            self._explicit_effort_default_applied = True
+            self._explicit_effort_default_pending = False
+
+    @property
+    def explicit_effort_default_applied(self) -> bool:
+        """Whether this provider replaced its pending Default overlay successfully."""
+        return self._explicit_effort_default_applied
 
     @property
     def tool_search_settings(self) -> ToolSearchSettings | None:
@@ -2022,12 +2741,45 @@ class AcpProvider(LLMProvider):
         if last_exc is not None:
             raise last_exc
 
+    def _effort_overlay_fence_mode(self) -> Literal["window", "write"] | None:
+        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            return None
+        model = self._client._model
+        if model == DEFAULT_MODEL:
+            return "window"
+        if model and self.supports_effort():
+            return "write" if self._resolve_effort() else "window"
+        return None
+
+    def _log_effort_overlay_projection_skipped(self, mode: Literal["write"]) -> None:
+        model = self._client._model
+        if model == DEFAULT_MODEL:
+            logger.warning(_EFFORT_OVERLAY_AUTO_CLEAR_WARNING)
+        else:
+            logger.warning(
+                "ACP effort overlay write was skipped for %s; post-spawn effort "
+                "reassertion will apply its resolved level",
+                model,
+            )
+
+    async def _write_effort_overlay(
+        self, write: Callable[[], object], timeout: float
+    ) -> object | bool:
+        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            return await _await_overlay_write(write)
+        async with _hold_workspace_effort_overlay_fence(
+            self._client._work_dir, "write", timeout
+        ) as acquired:
+            if not acquired:
+                return False
+            return await _await_overlay_write(write)
+
     async def change_effort(self, level: str) -> bool:
         """Change effort live for the current model. Returns True on success.
 
-        Persists the slot override and (kiro family) rewrites the overlay so a
-        later respawn keeps the level, then pushes the change to the running
-        session: the ``/effort`` slash command for
+        Persists the slot override and (kiro family) projects the overlay for a
+        later respawn, then pushes the change to the running session: the
+        ``/effort`` slash command for
         ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option`` for
         ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
         model does not support effort, or when this harness is in neither set and
@@ -2089,8 +2841,9 @@ class AcpProvider(LLMProvider):
         # critical section makes losing the lock a stuck holder rather than
         # routine contention, and waiting it out on the loop would freeze every
         # session.
-        if not await asyncio.to_thread(
-            self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+        if not await self._write_effort_overlay(
+            lambda: self._apply_effort_overlay(timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS),
+            CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
         ):
             if _prev is None:
                 self._effort_per_model.pop(model, None)
@@ -2098,7 +2851,9 @@ class AcpProvider(LLMProvider):
                 self._effort_per_model[model] = _prev
             raise RuntimeError(
                 f"could not persist effort {level!r} for {model!r}: the workspace "
-                "overlay is locked by another writer; try again"
+                "overlay is locked, a link or in a folder outside the work dir or on a "
+                "sensitive path, unreadable, not a JSON object, or past the 1 MiB read "
+                "ceiling; see the log"
             )
         try:
             if via_config_option:
@@ -2110,30 +2865,49 @@ class AcpProvider(LLMProvider):
             if _prev is None:
                 self._effort_per_model.pop(model, None)
                 if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-                    if not await asyncio.to_thread(
-                        _clear_cli_overlay_effort, self._client._work_dir, model
+                    if not await self._write_effort_overlay(
+                        lambda: _clear_cli_overlay_effort(self._client._work_dir, model),
+                        CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
                     ):
-                        # The overlay keeps a level the live push never applied,
-                        # and construction re-seeds from it, so the next spawn
-                        # adopts a level this rollback reports as undone.
+                        # The overlay keeps the level the live push never applied.
+                        # Keep it in the map too: it is the level this session was
+                        # asked to run, so the next spawn projects it back rather
+                        # than this rollback reporting an undo the file does not
+                        # show.
                         self._effort_per_model[model] = level
                         logger.warning(
                             "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                            "the workspace overlay lock was busy, so a respawn adopts it",
+                            "the workspace overlay could not be rewritten because it is locked, "
+                            "a link or in a folder outside the work dir or on a sensitive path, "
+                            "unreadable, not a JSON object, or past the 1 MiB read ceiling; "
+                            "a respawn adopts it",
                             model,
                             level,
                         )
             else:
                 self._effort_per_model[model] = _prev
-                if not await asyncio.to_thread(self._apply_effort_overlay):
-                    # Same divergence the branch above guards: the file keeps the
-                    # level the live push never applied and construction re-seeds
-                    # from it, so the map follows the file rather than reporting
-                    # an undo the next spawn contradicts.
+                # The ACTION ceiling, as the write being undone took: the
+                # method's own default is the startup ceiling, under which a
+                # holder of the settings lock that outlasts a launch's wait
+                # keeps the level the live push never applied in the file.
+                if not await self._write_effort_overlay(
+                    lambda: self._apply_effort_overlay(
+                        timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+                    ),
+                    CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+                ):
+                    # Same case as the branch above: the file keeps the level the
+                    # live push never applied, and it is the level this session
+                    # was asked to run, so the map follows the file and the next
+                    # spawn projects it rather than this rollback reporting an
+                    # undo the file does not show.
                     self._effort_per_model[model] = level
                     logger.warning(
                         "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                        "the workspace overlay lock was busy, so a respawn adopts it",
+                        "the workspace overlay could not be rewritten because it is locked, "
+                        "a link or in a folder outside the work dir or on a sensitive path, "
+                        "unreadable, not a JSON object, or past the 1 MiB read ceiling; "
+                        "a respawn adopts it",
                         model,
                         level,
                     )
@@ -2171,6 +2945,8 @@ class AcpProvider(LLMProvider):
             return bool(await self.change_effort(level))
         # No override: re-resolve so a workspace default reaches the new model. A
         # False here only means there was no default to push, so nothing is stale.
+        # An automatic clear: the ownership guard stays on, so an entry the
+        # operator wrote for the model switched to is left where it is.
         await self.clear_effort()
         return True
 
@@ -2198,11 +2974,29 @@ class AcpProvider(LLMProvider):
             # The model DID switch; failing here would make a fallback walk skip it.
             logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
 
-    async def clear_effort(self) -> bool | None:
+    async def clear_effort(
+        self,
+        *,
+        owned_only: bool = True,
+        fence_rewrite: Callable[[], AbstractContextManager[object]] = nullcontext,
+    ) -> bool | None:
         """Clear the slot's effort override for the current model.
 
-        Drops the per-model override (and the kiro overlay entry) so the model
-        falls back to its own default.
+        Drops the per-model override. A clear without a workspace default falls
+        back to the model's own default after reset. With a workspace default,
+        the projected file value or the live post-spawn push carries that default.
+
+        ``owned_only`` decides whose overlay entry may go. The default removes
+        only a value Kiro Crew recorded in the same cli.json document, so an
+        operator-authored entry survives every automatic clear: a live model
+        switch on a Default slot reaches here through ``reapply_live_effort``
+        with nothing asked of that model's entry. Only the explicit dashboard
+        clear passes ``owned_only=False``, because there the operator has
+        directly asked for this model's entry to be removed, whoever wrote it.
+        That clear also passes the session manager's fence as ``fence_rewrite``:
+        the file is rewritten inside it, and a cancelled clear waits for its
+        write to settle, so no warm runtime that may have read the removed entry
+        is claimed after it.
 
         Returns True ONLY when a concrete default was applied LIVE to the
         running session (kiro family with a resolvable workspace default).
@@ -2212,11 +3006,17 @@ class AcpProvider(LLMProvider):
         - the config-option channel has no "reset to default" value (there is no
           level to push; only a respawn drops the override), and
         - kiro with no workspace default (the model's built-in default is only
-          re-applied on respawn once the overlay is cleared).
+          re-applied on respawn once the overlay is cleared), and
+        - the explicit clear with a workspace default whose live ``/effort`` push
+          fails after the rewrite (the file holds the default; only a respawn
+          applies it). An automatic clear re-raises that failure instead, because
+          its callers read a raise as the live re-apply failing.
         Without this, the running session would silently keep its prior effort
         while the UI shows "default".
-        Returns None when NOTHING changed because the workspace overlay was busy:
-        neither the file nor this map, so the caller commits no slot value and
+        Returns None when NOTHING changed because the workspace overlay cannot be
+        rewritten: it is locked, a link or in a folder outside the work dir or on a
+        sensitive path, unreadable, not a JSON object, or past the 1 MiB read ceiling.
+        Neither the file nor this map changes, so the caller commits no slot value and
         resets nothing.
         """
         model = self._client._model
@@ -2236,40 +3036,80 @@ class AcpProvider(LLMProvider):
         # kiro family: clear/rewrite the overlay so a respawn doesn't re-apply it.
         level = self._resolve_effort()  # workspace default, or None
         if level:
-            # Persist before pushing live, as change_effort does: the FILE is what
-            # a respawn reads, so pushing over a write that did not persist reports
-            # a default the next spawn replaces with the level just cleared.
-            if not await asyncio.to_thread(
-                self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-            ):
+            # Explicit Default replaces the model's effort entries and projects
+            # the workspace default in one locked atomic write. Automatic clears
+            # retain the ownership guard and carry the resolved default live.
+            async with _hold_workspace_effort_overlay_fence(
+                self._client._work_dir, "write", CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+            ) as acquired:
+                if acquired:
+                    with fence_rewrite():
+                        rewritten = await _await_overlay_write(
+                            lambda: self._apply_effort_overlay(
+                                timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+                                replace_unowned=not owned_only,
+                            )
+                        )
+                else:
+                    rewritten = False
+            if not rewritten:
                 if cleared is not None:
                     self._effort_per_model[model] = cleared
                 logger.warning(
                     "ACP effort NOT cleared to workspace default %s (model=%s): the "
-                    "workspace overlay was busy, so nothing was pushed live; clear "
-                    "again once the concurrent writer finishes",
+                    "workspace overlay cannot be rewritten because it is locked, a link or "
+                    "in a folder outside the work dir or on a sensitive path, unreadable, "
+                    "not a JSON object, or past the 1 MiB read ceiling; nothing was pushed live",
                     level,
                     model,
                 )
                 return None
-            await self._client.send_command("/effort", args={"level": level})
+            try:
+                await self._client.send_command("/effort", args={"level": level})
+            except Exception:
+                if owned_only:
+                    raise
+                # The explicit clear's rewrite has landed, so a reset carries the
+                # default to the session. Raising would make its caller carry a
+                # removal that the file already holds.
+                logger.warning(
+                    "ACP effort cleared to workspace default %s (kiro), but the live push "
+                    "failed; session reset needed",
+                    level,
+                    exc_info=True,
+                )
+                return False
             logger.info("ACP effort cleared to workspace default %s (kiro)", level)
             return True
         # No default to push live — clear the overlay and let the caller reset
         # so kiro respawns at the model's built-in default.
-        if not await asyncio.to_thread(_clear_cli_overlay_effort, self._client._work_dir, model):
+        async with _hold_workspace_effort_overlay_fence(
+            self._client._work_dir, "write", CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+        ) as acquired:
+            if acquired:
+                with fence_rewrite():
+                    rewritten = await _await_overlay_write(
+                        lambda: _clear_cli_overlay_effort(
+                            self._client._work_dir, model, owned_only=owned_only
+                        )
+                    )
+            else:
+                rewritten = False
+        if not rewritten:
             # NOTHING changed: not the file, and not this map once the entry
-            # goes back. Neither bool can say that -- False resets (and the reset
-            # re-reads the same level), True reports a live update, and BOTH make
+            # goes back. Neither bool can say that -- False resets (and the
+            # respawn meets the same held lock, so it spawns into the same
+            # level), True reports a live update, and BOTH make
             # the handler commit the cleared slot value, so the UI would read
             # "default" over an overlay that still holds the level. None is the
             # third outcome, which the handler answers with a retryable 409.
             if cleared is not None:
                 self._effort_per_model[model] = cleared
             logger.warning(
-                "ACP effort NOT cleared (model=%s): the workspace overlay was busy or "
-                "unreadable, so the file still holds it and the running session keeps "
-                "it; clear again once the concurrent writer finishes",
+                "ACP effort NOT cleared (model=%s): the workspace overlay cannot be rewritten "
+                "because it is locked, a link or in a folder outside the work dir or on a "
+                "sensitive path, unreadable, or past the 1 MiB read ceiling; the file still "
+                "holds it and the running session keeps it",
                 model,
             )
             return None
@@ -2292,30 +3132,84 @@ class AcpProvider(LLMProvider):
             await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
         # Re-apply the overlay on every (re)start to cover resume / model swap.
         # (no-op for claude backend — that path applies effort live below.)
-        # Off the loop: the cli.json lock is shared with sibling threads and
-        # processes, and an acquire on the loop thread makes one attempt and
-        # never waits, so a brief overlap would refuse the write.
-        await asyncio.to_thread(self._apply_effort_overlay)
-        await asyncio.to_thread(self._apply_tool_search_overlay)
+        # Off the loop: on the loop thread the settings lock is single-shot, so
+        # a start that met another chat's change_effort mid-write gave up at once
+        # and spawned into the level that chat left. Off-loop the startup
+        # ceiling (the method's default) is a real wait, short enough for a
+        # launch to pay.
+        # An armed explicit Default (see ``arm_explicit_effort_default``) removes
+        # this model's entry whoever wrote it, as ``clear_effort(owned_only=False)``
+        # does live. It is disarmed only when that projection succeeds, so a
+        # later spawn of this provider (a resume, a model swap) projects with the
+        # ownership guard again. The rewrite runs inside the owner's fence and
+        # the worker records its outcome, so neither a warm-runtime claim nor a
+        # cancellation of this start falls between the file changing and that
+        # being known.
+        fence_mode = self._effort_overlay_fence_mode()
 
-        if self.is_acp_runtime_backend:
-            # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
-            # Spawn a runtime, create/resume a session, wrap in
-            # AcpSessionProvider. One process hosts parent + all subagent
-            # sessions (session sharing).
-            await self._start_kiro_runtime()
-            if self.is_kiro_backend:
-                await self._note_zero_tool_servers()
+        async def project_overlay() -> None:
+            if self._explicit_effort_default_pending:
+                with self._fence_explicit_effort_default_rewrite():
+                    await _await_overlay_write(self._project_explicit_effort_default)
+            else:
+                await _await_overlay_write(self._apply_effort_overlay)
+
+        async def start_runtime() -> None:
+            if self.is_acp_runtime_backend:
+                # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
+                # Spawn a runtime, create/resume a session, wrap in
+                # AcpSessionProvider. One process hosts parent + all subagent
+                # sessions (session sharing).
+                await self._start_kiro_runtime()
+            else:
+                # ── CC path: legacy AcpClient (unchanged) ──
+                await self._client.ensure_ready()
+                # Startup records the advertised spelling of the pin, or the backend
+                # default when every spelling was refused; the level follows a pin.
+                running = self._client._model
+                if running != DEFAULT_MODEL and self._configured_model in self._effort_per_model:
+                    level = self._effort_per_model.pop(self._configured_model)
+                    self._effort_per_model.setdefault(running, level)
+
+        if fence_mode == "window":
+            async with _hold_workspace_effort_overlay_fence(
+                self._client._work_dir,
+                "window",
+                _WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS,
+            ) as acquired:
+                if not acquired:
+                    logger.error(
+                        "ACP Default effort overlay fence wait timed out for work directory %s; "
+                        "refusing to start before a gateway write can finish",
+                        self._client._work_dir,
+                    )
+                    raise RuntimeError(
+                        "Default effort overlay fence wait timed out for work directory "
+                        f"{self._client._work_dir}"
+                    )
+                await project_overlay()
+                await _await_overlay_write(self._apply_tool_search_overlay)
+                await start_runtime()
         else:
-            # ── CC path: legacy AcpClient (unchanged) ──
-            await self._client.ensure_ready()
-            # Startup records the advertised spelling of the pin, or the backend
-            # default when every spelling was refused; the level follows a pin.
-            running = self._client._model
-            if running != DEFAULT_MODEL and self._configured_model in self._effort_per_model:
-                level = self._effort_per_model.pop(self._configured_model)
-                self._effort_per_model.setdefault(running, level)
+            if fence_mode == "write":
+                async with _hold_workspace_effort_overlay_fence(
+                    self._client._work_dir, "write", CLI_SETTINGS_LOCK_TIMEOUT_SECS
+                ) as acquired:
+                    if acquired:
+                        await project_overlay()
+                    else:
+                        self._log_effort_overlay_projection_skipped("write")
+            else:
+                await project_overlay()
+            await _await_overlay_write(self._apply_tool_search_overlay)
+            await start_runtime()
 
+        if self.is_acp_runtime_backend and self.is_kiro_backend:
+            # After the window fence, not under it: every overlay write to this
+            # settings folder waits for open windows and gives up when its wait
+            # runs out, so these reads must not lengthen the hold.
+            await self._note_zero_tool_servers()
+        await self._reassert_projected_effort()
         await self._apply_initial_effort()
 
     async def _note_zero_tool_servers(self) -> None:
@@ -2373,6 +3267,48 @@ class AcpProvider(LLMProvider):
                 f" (+{report.no_tools_omitted} not listed)" if report.no_tools_omitted else "",
             )
 
+    async def _reassert_projected_effort(self) -> None:
+        """Push this session's level live after spawn and each fresh warm-runtime session.
+
+        Only the harnesses that read the overlay (``ACP_BACKENDS_KIRO_SLASH_COMMANDS``)
+        need this. The overlay is one file per work dir, projected before the
+        spawn and read by kiro-cli at the spawn. Between the two, another session
+        in the same work dir can project its own Default and remove this
+        session's entry: an unpinned session removes every Kiro Crew entry, a
+        session on the same model removes this model's, and the warm pool
+        constructs such a session in the dashboard's own work dir on every fill
+        and every replenish. This session cannot stop a peer from projecting, so
+        it pushes its level through the same ``/effort`` channel a live change
+        uses, and what it runs is its pick whatever the file said at the read.
+
+        A session that resolves no level pushes nothing. This includes a Default
+        session without a workspace default, ``auto``, or a harness that does not
+        support effort. A Default session that inherits a workspace default pushes
+        that level like a pick. Kiro-cli has no live "model default" to push to,
+        so the Default side of that same race stays with the overlay. Best-effort
+        like :meth:`_apply_initial_effort`: a rejected push must not break session
+        start.
+        """
+        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            return
+        model = self._client._model
+        if not model or model == DEFAULT_MODEL or not self.supports_effort():
+            return
+        level = self._resolve_effort()
+        if not level:
+            return
+        try:
+            await self._client.send_command("/effort", args={"level": level})
+            logger.debug("ACP effort reasserted after spawn: model=%s effort=%s", model, level)
+        except Exception:
+            logger.warning(
+                "ACP effort reassert after spawn failed (model=%s effort=%s): the session "
+                "runs whatever level kiro-cli read from the overlay at spawn",
+                model,
+                level,
+                exc_info=True,
+            )
+
     async def _apply_initial_effort(self) -> None:
         """Apply the resolved effort to a fresh session on the config-option channel.
 
@@ -2389,7 +3325,9 @@ class AcpProvider(LLMProvider):
         ``session/set_config_option`` is a fact the table already holds, and
         "runs on the shared runtime" is a different fact. The kiro family is
         outside the channel set because it reads effort from the spawn-time
-        cli.json overlay instead, so it still skips the push; opencode is
+        cli.json overlay instead, so it still skips the push here; its own
+        post-spawn push is :meth:`_reassert_projected_effort`, on the
+        ``/effort`` channel. opencode is
         outside it because its ``session/new`` advertises no ``effort`` option at
         all. Reading the runtime answer here instead drops a codex session's
         configured effort as soon as the preview switch puts codex on the
@@ -2868,11 +3806,14 @@ class AcpProvider(LLMProvider):
         ``start()``), which issues a fresh ``session/new`` on the already-running
         process, skipping subprocess spawn + the ``initialize`` handshake. This is
         the primitive a warm session pool uses to reuse one worker across
-        independent tasks without leaking context between them. The claude backend
-        would delegate to its own client-side reset the same way (its ``AcpClient``
-        does not ship one — hence the type ignore).
+        independent tasks without leaking context between them. After the fresh
+        session exists, it reasserts a resolved kiro effort because the warm
+        process may have read an operator or peer projection at its own spawn.
+        The claude backend would delegate to its own client-side reset the same
+        way (its ``AcpClient`` does not ship one — hence the type ignore).
         """
         await self._client.new_conversation()  # type: ignore[attr-defined]
+        await self._reassert_projected_effort()
 
     def is_alive(self) -> bool:
         """Whether the shared client is responsive.
