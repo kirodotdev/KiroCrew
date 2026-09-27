@@ -15,11 +15,24 @@ import inspect
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError, read_config_for_update
+
+
+class _OwnerRequest(dict):
+    """The dashboard owner's request claims, for the owner-gated ``POST /api/update/auto``.
+
+    ``app == ""`` marks a dashboard-user token; with no ``owner_id`` configured the
+    signed local bootstrap subject ``local-app`` is the owner.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(app="", user="local-app")
+        self.app = {"state": SimpleNamespace(owner_id="")}
 
 
 def _inline_on_the_loop(fn, /, *args, **kwargs):
@@ -586,7 +599,7 @@ class TestAutoUpdateToggleKeepsSettings:
         path.write_text(json.dumps(_REAL_SETTINGS, indent=2), encoding="utf-8")
         monkeypatch.setattr(updates, "config_path", lambda: path)
 
-        class _Req:
+        class _Req(_OwnerRequest):
             async def json(self):
                 return {"enabled": False}
 
@@ -608,7 +621,7 @@ class TestAutoUpdateToggleKeepsSettings:
         path.write_text(torn, encoding="utf-8")
         monkeypatch.setattr(updates, "config_path", lambda: path)
 
-        class _Req:
+        class _Req(_OwnerRequest):
             async def json(self):
                 return {"enabled": False}
 
@@ -1015,7 +1028,7 @@ class TestAutoUpdateToggleHoldsBothConfigLocks:
     dispatch.
     """
 
-    class _Req:
+    class _Req(_OwnerRequest):
         async def json(self):
             return {"enabled": False}
 

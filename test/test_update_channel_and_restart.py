@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -46,7 +46,13 @@ def _request(body: object) -> web.Request:
     state = MagicMock()
     state._gateway_restart_task = None
     state._gateway_restart_in_progress = False
+    state.owner_id = ""  # no owner configured: the local bootstrap subject is the owner
     req.app = {"state": state}
+    # Both routes are owner-gated: model the dashboard owner's claims.
+    claims = {"app": "", "user": "local-app"}
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key] if key in claims else DEFAULT
+    req.get.side_effect = lambda key, *default: claims[key] if key in claims else DEFAULT
     return req
 
 

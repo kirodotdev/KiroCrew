@@ -1247,6 +1247,9 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
 
 async def api_update_auto(request: web.Request) -> web.Response:
     """POST /api/update/auto — toggle auto-update on/off."""
+    owner_denied = await require_owner_dashboard_request(request, "update.auto")
+    if owner_denied is not None:
+        return owner_denied
     try:
         body = await request.json()
     except Exception:
@@ -2306,6 +2309,9 @@ async def api_update_channel(request: web.Request) -> web.Response:
     own right — the profile parser fails closed on unknown keys, so a new key has
     to be rolled out before it can be set.
     """
+    owner_denied = await require_owner_dashboard_request(request, "update.channel")
+    if owner_denied is not None:
+        return owner_denied
     try:
         body = await request.json()
     except Exception:
@@ -2428,6 +2434,9 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     git checkout. Restart has no such precondition — it is valid on every
     layout, including a desktop bundle's embedded gateway.
     """
+    owner_denied = await require_owner_dashboard_request(request, "update.restart")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
 
     # Coalesce repeat clicks/requests BEFORE the response-flush sleep below.
