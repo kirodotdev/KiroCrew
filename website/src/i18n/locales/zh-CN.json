@@ -12621,7 +12621,12 @@
         "warm_pool": "预热池",
         "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
         "workspace": "工作区",
-        "workspaces": "工作区"
+        "workspaces": "工作区",
+        "new_workspace": "新建工作区",
+        "change_directory": "更改目录",
+        "delete_workspace_warning": "其记忆、经验、历史记录和知识库将不再使用。文件夹仍保留在磁盘上。",
+        "type_workspace_name_to_confirm": "输入“{{name}}”以确认",
+        "change_directory_hint": "工作区将从新文件夹读取其记忆、经验、历史记录和知识库。不会移动任何内容。"
       },
       "mcpTab": {
         "actions": "操作",

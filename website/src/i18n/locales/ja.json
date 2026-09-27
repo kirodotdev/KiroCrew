@@ -12621,7 +12621,12 @@
         "warm_pool": "ウォームプール",
         "warm_pool_description": "ACP CLI プロセスを事前起動し、セッションを即時に開始します。",
         "workspace": "ワークスペース",
-        "workspaces": "ワークスペース"
+        "workspaces": "ワークスペース",
+        "new_workspace": "新しいワークスペース",
+        "change_directory": "ディレクトリを変更",
+        "delete_workspace_warning": "メモリ、レッスン、履歴、ナレッジベースは使われなくなります。フォルダーはディスクに残ります。",
+        "type_workspace_name_to_confirm": "確認のため「{{name}}」と入力してください",
+        "change_directory_hint": "ワークスペースは新しいフォルダーからメモリ、レッスン、履歴、ナレッジベースを読み込みます。何も移動されません。"
       },
       "mcpTab": {
         "actions": "アクション",

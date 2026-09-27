@@ -12806,7 +12806,12 @@
         "warm_pool": "Warm-Pool",
         "warm_pool_description": "Startet ACP-CLI-Prozesse vorab, damit Sitzungen sofort beginnen.",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "new_workspace": "Neuer Workspace",
+        "change_directory": "Verzeichnis ändern",
+        "delete_workspace_warning": "Gedächtnis, Lektionen, Verlauf und Wissensdatenbank werden nicht mehr verwendet. Der Ordner bleibt auf der Festplatte.",
+        "type_workspace_name_to_confirm": "Zur Bestätigung „{{name}}“ eingeben",
+        "change_directory_hint": "Der Workspace liest Gedächtnis, Lektionen, Verlauf und Wissensdatenbank aus dem neuen Ordner. Nichts wird verschoben."
       },
       "mcpTab": {
         "actions": "Aktionen",

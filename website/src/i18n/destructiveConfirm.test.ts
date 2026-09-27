@@ -223,6 +223,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.settings.remoteCrewPanel.confirm_cancel_remove', // instance operand on the armed cancel, quoted per locale
   'settings.secrets.delete_confirm',
   'settings.secrets.delete_managed_confirm',
+  'pages.overview.kiroCrewCfgTab.type_workspace_name_to_confirm', // quoted in all catalogs at introduction
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
 ]

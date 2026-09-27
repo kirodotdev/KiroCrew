@@ -12621,7 +12621,12 @@
         "warm_pool": "웜 풀",
         "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
         "workspace": "워크스페이스",
-        "workspaces": "워크스페이스"
+        "workspaces": "워크스페이스",
+        "new_workspace": "새 워크스페이스",
+        "change_directory": "디렉터리 변경",
+        "delete_workspace_warning": "메모리, 레슨, 기록, 지식 베이스를 더 이상 사용하지 않습니다. 폴더는 디스크에 남습니다.",
+        "type_workspace_name_to_confirm": "확인하려면 ‘{{name}}’을(를) 입력하세요",
+        "change_directory_hint": "워크스페이스는 새 폴더에서 메모리, 레슨, 기록, 지식 베이스를 읽습니다. 아무것도 옮기지 않습니다."
       },
       "mcpTab": {
         "actions": "동작",

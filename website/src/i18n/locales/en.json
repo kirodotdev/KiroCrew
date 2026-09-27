@@ -7759,7 +7759,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Using legacy mode — agent.default_agent as agent template",
         "warm_pool": "Warm Pool",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "new_workspace": "New workspace",
+        "change_directory": "Change directory",
+        "delete_workspace_warning": "Its memory, lessons, history and knowledge base stop being used. The folder stays on disk.",
+        "type_workspace_name_to_confirm": "Type “{{name}}” to confirm",
+        "change_directory_hint": "The workspace will read its memory, lessons, history and knowledge base from the new folder. Nothing is moved."
       },
       "mcpTab": {
         "actions": "Actions",

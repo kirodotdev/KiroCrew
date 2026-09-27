@@ -12991,7 +12991,12 @@
         "warm_pool": "Pool caldo",
         "warm_pool_description": "Pre-avvia i processi ACP CLI per un avvio istantaneo della sessione.",
         "workspace": "Workspace",
-        "workspaces": "Workspace"
+        "workspaces": "Workspace",
+        "new_workspace": "Nuovo workspace",
+        "change_directory": "Cambia directory",
+        "delete_workspace_warning": "Memoria, lezioni, cronologia e knowledge base non vengono più usate. La cartella resta sul disco.",
+        "type_workspace_name_to_confirm": "Digita «{{name}}» per confermare",
+        "change_directory_hint": "Il workspace leggerà memoria, lezioni, cronologia e knowledge base dalla nuova cartella. Non viene spostato nulla."
       },
       "mcpTab": {
         "actions": "Azioni",
