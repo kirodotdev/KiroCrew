@@ -1524,10 +1524,31 @@ export function useWebSocket() {
           case 'slots': {
             // An identical repeat carries identical values for every arm below, but
             // only while no other writer (fetchSlots) has since replaced the list.
+            // Current history replies carry turn identity and cannot restore busy
+            // for this ended turn. Keep the bypass for an identity-less older
+            // reply, whose pre-existing behavior still relies on the next repeated
+            // idle frame to heal it; a pending local send remains protected.
             const raw = e.data as string
+            const chat = store.getState().chat
+            const activeKey = chat.activeSlot
+            const activeSlotEnded = !!activeKey && Array.isArray(data)
+              && (data as ChatSlot[]).some(s => s.key === activeKey && s.running === false)
+            const mustResettleActiveSlot = activeSlotEnded
+              && (chat.slotState !== 'idle' || chat.slotRunning)
+              && chat.pendingTurnSlot !== activeKey
             if (raw === lastSlotsRawRef.current
-                && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
+                && store.getState().dashboard.slots === lastSlotsArrayRef.current
+                && !mustResettleActiveSlot) break
             lastSlotsRawRef.current = raw
+            // The common server path clears the task and pushes this idle slots
+            // frame before broadcasting chat_done; leading/trailing coalescing can
+            // also make either frame observable first. In both orders, text already
+            // received for the slot must land before settlement. Otherwise a
+            // still-buffered tail would be dispatched afterwards and open a second,
+            // stranded streaming row.
+            if (activeKey && chunkBufRef.current.has(activeKey) && activeSlotEnded) {
+              flushChunks()
+            }
             dispatch(sseSlots(data as ChatSlot[]))
             lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {

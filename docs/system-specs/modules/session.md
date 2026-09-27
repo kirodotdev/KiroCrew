@@ -28,6 +28,29 @@ an error. Until #12042 removes the compatibility fallback, a non-slot object
 receives an ephemeral boundary and that swallowed assignment failure emits one
 unconditional WARNING naming the object's type.
 
+The dashboard reads a live `slots` row's `running`, which `slot_projection.py`
+projects from `turn_running`, and treats the first row reporting false as the
+end of that slot's turn (`settleEndedActiveTurn` in
+`website/src/store/chatSlice.ts`): the streaming row is frozen and the composer
+idles. The slots row, terminal `chat_done`, and slot-detail history reply all
+carry the slot's monotonic `_turn_generation` as `turn` together with the
+process-local `chunk_generation()` as `turn_gen`. The dashboard remembers the
+newest ended pair per slot, ignores a late duplicate `_done`, and refuses to let
+a stale history reply restore `running: true` for an ended turn; identity-less
+payloads retain older-gateway behavior. The one `chat_done` sent mid-turn, the
+deferred `/compact` acknowledgement, omits the pair (`ends_turn=False`), because
+the same turn keeps streaming after it. So a turn writer clears `slot.task` only
+after the turn's last content frame is out, hands off to a successor (queued
+turn, synthesis, next plan stage) without a `push_slots_update()` observing the
+gap, and lets nothing but the terminal `chat_done` follow the idle push. `_finish_queue_cycle` in
+`chat_runner.py` is the ordinary terminal step (content, `done`, clear, push,
+one `chat_done`), pinned by `test_finish_queue_cycle_terminal_order.py`. Plan
+stages stay `running` across their inter-stage gap because `turn_running` also
+reads the stage controller registered by `track_stage_controller`;
+`_stage_loop`'s exit broadcasts `chat_done` while that controller is still
+live, which the settlement tolerates because it shares `_done`'s idempotent
+finalize.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary

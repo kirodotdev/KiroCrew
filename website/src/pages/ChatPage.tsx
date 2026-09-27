@@ -2483,7 +2483,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     const s = slots.find(s => s.key === activeSlot)
     if (!s) return
-    dispatch(syncSlotRunningFromServer({ slot: s.key, running: s.running, stopping: s.stopping ?? false }))
+    dispatch(syncSlotRunningFromServer({ slot: s.key, running: s.running, stopping: s.stopping ?? false, turn: s.turn, turn_gen: s.turn_gen }))
   }, [slots, activeSlot, dispatch])
 
   // Raw send — sends pre-built text directly to the server

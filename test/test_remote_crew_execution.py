@@ -497,6 +497,22 @@ class TestRelayReplay:
         await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
+    @pytest.mark.asyncio
+    async def test_the_relay_chat_done_names_the_turn_it_ends(self, tmp_path):
+        """The dashboard matches a ``_done`` to the turn it ended by this pair."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        slot._turn_generation = 7
+        await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+        name, payload = state.broadcast_ws.call_args_list[-1].args
+        assert name == "chat_done"
+        assert payload == {
+            "slot": slot.key,
+            "turn": 7,
+            "turn_gen": remote_relay.chunk_generation(),
+        }
+
     @pytest.mark.parametrize(
         "chunks_factory",
         [

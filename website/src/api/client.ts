@@ -4,6 +4,7 @@ import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type {
   AppContributor,
+  ChatSlotDetailResponse,
   ChatSlot,
   CronJob,
   IssueSource,
@@ -4594,7 +4595,7 @@ export const api = {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
     if (before !== undefined) p.set('before', String(before))
-    return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
+    return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j) as Promise<ChatSlotDetailResponse>
   },
   /** Create a chat slot. `instance_id` binds the new session to a connected crew
    *  for EXECUTION: it lives in this machine's list and history, and its turns run

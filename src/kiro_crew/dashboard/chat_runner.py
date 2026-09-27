@@ -9201,6 +9201,10 @@ async def _finish_queue_cycle(
         return
 
     slot.append("done", "", "done")
+    # Frontend contract: the dashboard treats the first `slots` frame reporting
+    # `running: false` as the turn's end (chatSlice settleEndedActiveTurn), so all
+    # content is already out, `slot.task = None` precedes the push and the push
+    # precedes `chat_done`. Pinned by test/test_finish_queue_cycle_terminal_order.py.
     slot.task = None
     state.push_slots_update()
     state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
@@ -16440,7 +16444,10 @@ async def _run_chat(
             assistant_text = ""
             _wsred.reset()
             _produced_visible_output = True
-            state.broadcast_ws("chat_done", await chat_done_payload(state, slot, continuing=True))
+            state.broadcast_ws(
+                "chat_done",
+                await chat_done_payload(state, slot, continuing=True, ends_turn=False),
+            )
 
             # claude-agent-acp performs /compact synchronously inside session/prompt;
             # there is no out-of-band _kiro.dev/compaction/status notification, so

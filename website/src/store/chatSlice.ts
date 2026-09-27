@@ -14,7 +14,7 @@ import type { PhaseDetail, ToolPhaseDetail } from '../utils/toolStatusLabel'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
-import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, ToolPayloadCut, WorkflowRunSummary } from '../types'
+import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, ToolPayloadCut, TurnIdentityFields, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent, type SubagentQueuedReason } from '../pages/chat/subagentQueuedReason'
 import { mergePreservedPastes } from '../utils/pasteTokens'
@@ -427,6 +427,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
+  state.endedTurn,
   state.followups, state.folderSuggestions,
   state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
   state.automations,
@@ -521,6 +522,118 @@ const clearFiledFolderSuggestions = (
     delete state.folderSuggestions[s.key]
     delete state.folderSuggestions[safeKey(s.key)]
   }
+}
+
+type EndedTurn = { gen: string; turn: number }
+
+/** Parse the two-field wire identity. Both fields are required: the counter
+ *  restarts with the gateway, so either field alone is ambiguous. */
+const wireTurnIdentity = (payload: TurnIdentityFields): EndedTurn | null => {
+  const { turn, turn_gen: gen } = payload
+  return Number.isSafeInteger(turn) && (turn as number) >= 0 && typeof gen === 'string' && !!gen
+    ? { gen, turn: turn as number }
+    : null
+}
+
+/** Whether this tab already knows this turn (or a later turn in the same
+ *  gateway generation) ended. */
+const turnAlreadyEnded = (state: ChatState, slot: string, identity: EndedTurn): boolean => {
+  const known = state.endedTurn?.[safeKey(slot)]
+  return known?.gen === identity.gen && known.turn >= identity.turn
+}
+
+/** Remember the newest ended turn for a slot. A different gateway generation
+ *  replaces the old counter because counters are comparable only within gen. */
+const recordEndedTurn = (state: ChatState, slot: string, payload: TurnIdentityFields): void => {
+  if (isUnsafeKey(slot)) return
+  const identity = wireTurnIdentity(payload)
+  if (!identity) return
+  const turns = (state.endedTurn ??= {})
+  const key = safeKey(slot)
+  const known = turns[key]
+  if (!known || known.gen !== identity.gen || identity.turn > known.turn) turns[key] = identity
+}
+
+/** A history reply cannot restore busy for a turn a live idle row or `_done`
+ *  already ended. Identity-less replies retain the older-gateway behavior. */
+const historyReportsRunning = (
+  state: ChatState,
+  slot: string,
+  running: boolean,
+  payload: TurnIdentityFields,
+): boolean => {
+  const identity = wireTurnIdentity(payload)
+  return running && !(identity && turnAlreadyEnded(state, slot, identity))
+}
+
+/** The active slot's turn-end finalization after its caller has established
+ *  that the terminal signal belongs to a turn not already known ended: the LAST live
+ *  `streaming` row becomes `assistant` (rawText = content, placeholder or
+ *  not), and the stream state, running flags and chunk replay floor go idle.
+ *  Nothing else -- `pendingTurnSlot` is each caller's decision (see
+ *  settleEndedActiveTurn).
+ *
+ *  Shared by the `_done` branch of `sseChatMessage` and by
+ *  `settleEndedActiveTurn`, and it has to stay the ONE definition: on an
+ *  ordinary turn the settlement runs first and the real `_done` is rejected by
+ *  its matching server turn identity, so every TURN write here stays shared and
+ *  the settled transcript
+ *  must be the transcript `_done` alone would leave. Deliberately NOT
+ *  `finalizeTrailingStreaming`: that segment-boundary finalize drops a
+ *  placeholder row ("…", "---"), which `_done` has never done, so a
+ *  settlement built on it changed the final transcript versus `_done` alone
+ *  on every turn whose reply ended in one. */
+const finalizeActiveTurn = (state: ChatState): void => {
+  state.slotState = 'idle'
+  state.lastChunkSeq = undefined
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (state.messages[i].role === 'streaming') {
+      const msg = state.messages[i]
+      msg.role = 'assistant'
+      msg.rawText = msg.content
+      break
+    }
+  }
+  state.slotRunning = false
+  state.slotStopping = false
+}
+
+/** Idle the active slot when a live `slots` frame reports its turn ended.
+ *
+ * The server emits the idle row before `chat_done` on the ordinary path, and
+ * both carry the same `{turn, turn_gen}`. The row therefore records the ended
+ * turn and the later `_done` is a duplicate, even if a successor has already
+ * started or the slot moved into the background. The socket hook flushes this
+ * slot's buffered chunks before dispatching the row, so finalization cannot
+ * strand a text tail below the finished reply.
+ *
+ * A local send awaiting confirmation stays protected when the row carries no
+ * identity, belongs to another gateway generation, or is no newer than the
+ * turn already known ended. If the row is newer in the same generation, it is
+ * the pending send's own terminal row and may settle it. HTTP slot-list replies
+ * never call this helper because they have no ordering against live frames. */
+const settleEndedActiveTurn = (
+  state: ChatState,
+  payload: readonly (TurnIdentityFields & { key: string; running?: boolean })[],
+): void => {
+  const slot = state.activeSlot
+  if (!slot || isUnsafeKey(slot)) return
+  const row = payload.find(s => s.key === slot)
+  if (!row || row.running !== false) return
+  if (state.slotState === 'idle' && !state.slotRunning) return
+  const identity = wireTurnIdentity(row)
+  const known = state.endedTurn?.[safeKey(slot)]
+  // The pending send's turn is newer than the last turn this tab knows ended
+  // in the row's gateway generation. With none known (a new chat, or a
+  // restarted gateway whose counters begin again) the baseline is turn 0: the
+  // counter advances when a turn task is assigned, so no turn carries 0. The
+  // loop in `sseSlots` records the row after this, so refusing a row that
+  // ends the pending turn would fence that turn's own `_done`.
+  const baseline = identity && known?.gen === identity.gen ? known.turn : 0
+  const rowEndsPendingTurn = !!identity && identity.turn > baseline
+  if (state.pendingTurnSlot === slot && !rowEndsPendingTurn) return
+  finalizeActiveTurn(state)
+  if (state.pendingTurnSlot === slot) state.pendingTurnSlot = null
 }
 
 /** Read one slot's pending question card, or null.
@@ -1207,6 +1320,9 @@ interface ChatState {
    *  newest view. A same-value round trip (idle -> a turn ran -> idle) always
    *  counts a turn start, so the epoch tells it apart from "never moved". */
   activeRunEpochAtEntry: number
+  /** Newest server turn this tab knows ended, per slot. The gateway generation
+   *  makes the monotonic turn counter comparable across frames and history. */
+  endedTurn: Record<string, EndedTurn>
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
@@ -1337,6 +1453,7 @@ const initialState: ChatState = {
   stopPressedAt: {},
   runEpoch: {},
   activeRunEpochAtEntry: 0,
+  endedTurn: {},
   pendingTurnSlot: null,
 }
 
@@ -1472,7 +1589,7 @@ function loadSlotActivity(state: ChatState, key: string): void {
  */
 function applyNonActiveFrame(
   state: ChatState,
-  p: { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] },
+  p: TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] },
 ) {
   const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = p
   let content = p.content
@@ -1548,13 +1665,19 @@ function applyNonActiveFrame(
     if (seq !== undefined) run.lastChunkSeq = seq
     return
   }
+  // The same server-turn rule as the active path: a late duplicate `_done` can
+  // arrive after this slot was switched into the background. Leave a newer
+  // cached streaming row and busy run state intact.
   if (role === '_done') {
+    const identity = wireTurnIdentity(p)
+    if (identity && turnAlreadyEnded(state, slot, identity)) return
     setRunState(run, 'idle')
     run.lastChunkSeq = undefined
     syncOriginRun(state, slot, 'idle')
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'streaming') { msgs[i].role = 'assistant'; msgs[i].rawText = msgs[i].content; break }
     }
+    if (identity) recordEndedTurn(state, slot, p)
     return
   }
   if (role === 'compacting') { if (run.state === 'idle') bumpRunEpoch(state, slot); setRunState(run, 'compacting'); syncOriginRun(state, slot, 'compacting'); return }
@@ -2333,7 +2456,7 @@ async function fetchSlotDetail(key: string, limit?: number) {
   // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, turn: d.turn, turn_gen: d.turn_gen, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -4461,7 +4584,13 @@ const chatSlice = createSlice({
   initialState,
   reducers: {
     setActiveSlot(state, action: PayloadAction<string | null>) { enterActiveSlot(state, action.payload); state.slotState = 'idle'; state.pendingTurnSlot = null },
-    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
+    clearSlotState(state) {
+      state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
+      // This clears only the active mirror, not the slot's cached identity. Keep
+      // per-slot ended-turn identity so a late `_done` is still guarded if that
+      // slot remains live; `evictSlotState` owns removal when the slot is gone.
+      state.pendingTurnSlot = null
+    },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
@@ -4991,7 +5120,7 @@ const chatSlice = createSlice({
      *  running=true is always trusted (also catches Slack/cron-initiated turns);
      *  running=false is ignored while a local turn is pending confirmation, since
      *  the snapshot may predate the send. Turn end is owned by _done/refreshSlot. */
-    syncSlotRunningFromServer(state, action: PayloadAction<{ slot: string; running: boolean; stopping: boolean; epoch?: number }>) {
+    syncSlotRunningFromServer(state, action: PayloadAction<TurnIdentityFields & { slot: string; running: boolean; stopping: boolean; epoch?: number }>) {
       const { slot, running, stopping, epoch } = action.payload
       if (slot !== state.activeSlot) {
         // A BACKGROUND slot (a member DM thread, a split pane) keeps its run
@@ -5029,6 +5158,12 @@ const chatSlice = createSlice({
         return
       }
       if (running) {
+        // `dashboard.slots` is also written by the HTTP `fetchSlots` reply,
+        // which can land after the live idle row. A snapshot naming a turn this
+        // tab already knows ended cannot restore busy, the same rule the
+        // history replies follow (`historyReportsRunning`).
+        const identity = wireTurnIdentity(action.payload)
+        if (identity && turnAlreadyEnded(state, slot, identity)) return
         if (!state.slotRunning) bumpRunEpoch(state, slot)
         state.slotRunning = true
         state.slotStopping = stopping
@@ -6119,7 +6254,7 @@ const chatSlice = createSlice({
       if (open?.role === 'thinking') { open.content += content; return }
       state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
-    sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }>) {
+    sseChatMessage(state, action: PayloadAction<TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }>) {
       const { slot, role, ts, seq, gen, cls, meta, kind, batched, parts } = action.payload
       let content = action.payload.content
       if (slot !== state.activeSlot) { applyNonActiveFrame(state, action.payload); return }
@@ -6189,22 +6324,16 @@ const chatSlice = createSlice({
         if (seq !== undefined) state.lastChunkSeq = seq
         return
       }
-      // WS done — finalize streaming into assistant, rawText preserved for reparse
+      // WS done — finalize streaming into assistant, rawText preserved for reparse.
+      // The turn step is shared with settleEndedActiveTurn. On an ordinary turn
+      // the idle `slots` row already recorded this same server turn, so this
+      // `_done` is a duplicate and cannot finalize a successor turn.
       if (role === '_done') {
-        state.slotState = 'idle'
-        state.lastChunkSeq = undefined
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-          if (state.messages[i].role === 'streaming') {
-            const msg = state.messages[i]
-            msg.role = 'assistant'
-            msg.rawText = msg.content
-            break
-          }
-        }
-        state.slotRunning = false
-        state.slotStopping = false
-        state.slotState = 'idle'
+        const identity = wireTurnIdentity(action.payload)
+        if (identity && turnAlreadyEnded(state, slot, identity)) return
+        finalizeActiveTurn(state)
         state.pendingTurnSlot = null
+        if (identity) recordEndedTurn(state, slot, action.payload)
         return
       }
       // Compacting — block input, show footer indicator (no visible message)
@@ -6485,6 +6614,12 @@ const chatSlice = createSlice({
         if (action.payload.length === 0 && !seenSnapshot) return
         reconcileSlotResidue(state, action.payload)
         clearFiledFolderSuggestions(state, action.payload)
+        // Settle before recording this frame: a pending local send is released
+        // only when the row is newer than what the tab knew before this frame.
+        settleEndedActiveTurn(state, action.payload)
+        for (const row of action.payload) {
+          if (row.running === false) recordEndedTurn(state, row.key, row)
+        }
       })
       /** A `slot_patch` frame stands in for the full list after a metadata edit
        *  or a close, so it drives the same cleanup the list would, limited to
@@ -6643,9 +6778,12 @@ const chatSlice = createSlice({
         // Before the guards below, so an early return still ends this claim. Keyed
         // on requestId, which a hand-rolled dispatch may omit, so read it safely.
         if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
-        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+        const { key, messages, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
+        const reportedRunning = action.payload.running
+        const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+        if (!reportedRunning) recordEndedTurn(state, key, action.payload)
         // A payload carrying `comparableTotal` came from the coverage retry: its
         // own `total` is the raw unbounded count, the carried one is the settled
         // bounded count, and only the latter may become the baseline.
@@ -6890,9 +7028,12 @@ const chatSlice = createSlice({
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+        const { key, messages, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
+        const reportedRunning = action.payload.running
+        const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+        if (!reportedRunning) recordEndedTurn(state, key, action.payload)
         retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -7006,11 +7147,13 @@ const chatSlice = createSlice({
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, queue, hasMore, total, running, warmSeq } = action.payload
+        const { key, messages, queue, hasMore, total, warmSeq } = action.payload
         if (isUnsafeKey(key)) return
         // Slot became active between dispatch and fulfilment — switchSlot now
         // owns its messages, so leave the cache for it to manage.
         if (state.activeSlot === key) return
+        const reportedRunning = action.payload.running
+        const running = historyReportsRunning(state, key, reportedRunning, action.payload)
         if (!state.slotMessages) state.slotMessages = {}
         if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
         // Preserve permission flags resolved client-side but not yet reflected
@@ -7227,6 +7370,7 @@ const chatSlice = createSlice({
         const ordered = !olderThanApplied && (runAtFulfil?.tick ?? 0) === action.payload.runTickAtDispatch
         if (!running) {
           if (ordered) {
+            if (!reportedRunning) recordEndedTurn(state, key, action.payload)
             const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
             applyWarmRunState(run, 'idle', warmSeq)
             run.lastChunkSeq = undefined
