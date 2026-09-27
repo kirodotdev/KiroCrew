@@ -7,6 +7,7 @@ import time
 import uuid
 
 from kiro_crew.agent_discovery import _read_agent_spec, spec_str
+from kiro_crew.agent_sdk import context_provider_of
 from kiro_crew.agent_spec_format import is_agent_spec_name, is_markdown_spec, spec_stem
 from kiro_crew.config.loader import _session_work_dir
 from kiro_crew.config.paths import project_agents_dir
@@ -24,6 +25,22 @@ from .agent_runner import AgentResult, SessionAgentRunner
 async def _io(function, *args, **kwargs):
     """Finish owned disk work before cancellation can retire its session."""
     return await _await_owned(asyncio.create_task(asyncio.to_thread(function, *args, **kwargs)))
+
+
+def _spawned_harness(provider: object) -> str | None:
+    """The provider's own ``context_provider_type``, or ``None`` when it is not a provider.
+
+    Member essentials read ``chat.disableInheritingDefaultResources`` only under
+    the ``PROVIDER_ACP`` label, the one a kiro-cli session reports, so the runner
+    names the harness of the session ``get_or_create`` returned instead of
+    leaving it unknown to the builder. Only the label is handed over: passing
+    the provider itself would also move this runner onto provider-bound
+    essential delivery.
+    """
+    context_provider = context_provider_of(provider)
+    if context_provider is None:
+        return None
+    return context_provider.context_provider_type
 
 
 def _require_unshadowed_templates(cwd: str) -> None:
@@ -217,6 +234,7 @@ class MemberSessionRunner(SessionAgentRunner):
                 memory_store=execution.store.store_id,
                 member=name,
                 execution_context=execution,
+                provider_type=_spawned_harness(provider),
                 request_prefix_context=kwargs["append_system"],
             )
             logged_prompt = await _io(redact_via_context, prompt)

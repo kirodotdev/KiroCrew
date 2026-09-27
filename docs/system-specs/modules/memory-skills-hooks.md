@@ -1598,22 +1598,45 @@ resources explicitly declared by the template. The global `~/.kiro/steering`
 always documents, the root `AGENTS.md` and undeclared `.kiro/steering`
 documents are kiro-cli default resources: when kiro-cli serves the session and
 `chat.disableInheritingDefaultResources` opts the workspace out, the snapshot
-omits them and keeps the prompt, the declared resources and `SOUL.md`, which is
-Crew's own file rather than a kiro-cli default. The verdict is computed once
-per normal turn, where the harness is known, and handed to the snapshot and the
-folder-steering dedup; no consumer reads the setting itself, and on any other
-harness the member keeps inheriting because a kiro-cli setting changes nothing
-there. A profile validation pass does not read the setting and instead measures
-the inheriting envelope, which is the largest envelope any harness can build.
-The preference comes from the skill projection's decision (see
+omits them and keeps the prompt, explicitly declared resources and `SOUL.md`,
+which is Crew's own file rather than a kiro-cli default. The native skill
+projection keeps each template's declared resources unchanged. The verdict is
+computed once per normal turn, where the harness is known, and handed to the
+snapshot and the folder-steering dedup; no consumer reads the setting itself, and
+on any other harness the member keeps inheriting because a kiro-cli setting
+changes nothing there. The context builder's two entry points,
+`build_message` and `build_session_context`, hand the essentials builder a
+harness only when the caller or its context provider names one; a caller that
+names none reaches the essentials builder as an unknown harness, so the member
+keeps inheriting. One rule holds everywhere the value is read: a harness that
+is not named is not assumed to be kiro-cli, so a non-member turn's folder dedup
+skips nothing as delivered and the folder carries the trees whole. A profile
+validation pass does not read the setting and
+instead measures the inheriting envelope, which is the largest envelope any
+harness can build. The preference comes from the skill projection's decision (see
 [ACP client](acp-client.md)), so Crew's overlay on that key never reads as an
-opt-out; settings that cannot be read keep inheritance. A non-member kiro-cli
-chat follows the same decision: in an opted-out workspace a folder that
-declares the project's or the global `.kiro/steering` root carries those
-always documents itself, at session start and after a compaction, instead of
-skipping them as already delivered. Native `manual`, `auto` and
-`fileMatch` steering retain their trigger semantics. A custom template's
-declared prompt may be inline or a file source. Missing optional root files
+opt-out; settings that cannot be read keep inheritance. For a non-member
+kiro-cli chat in an opted-out workspace, the runtime records the paths of the
+accepted projected view's declared markdown documents at process launch, and
+reads no body. kiro-cli re-reads its declared resources for every request, so a
+recorded guide reaches the model through kiro-cli as the file reads at that
+request, edited or not. Nothing is recorded when the files the view declares
+total more than 128,000 bytes on disk, whatever their extension: kiro-cli drops
+whole files once its declared resources pass three bytes per token of the
+model's context window, and the model can change mid-session. The total is
+checked at launch and again each time the session's provider hands out the
+record, so a declared file that grows past the bound mid-session, or a new one a
+declared glob picks up, hands the folder every guide again from the next render
+on. A folder that declares a project or global `.kiro/steering` root skips a
+document in that launch record by path, at session start and after compaction,
+and collects every other document under the root as usual. The record applies
+only while the session activates the view it was taken from; on another view of
+the same agent the folder sends every guide. With no accepted view or launch
+record, the folder sends the tree whole, allowing a duplicate rather than a
+loss. A chat with no folder steering keeps the projected declaration for
+kiro-cli to load. Native
+`manual`, `auto` and `fileMatch` steering retain their trigger semantics. A custom
+template's declared prompt may be inline or a file source. Missing optional root files
 are allowed; an unreadable declared source or malformed/shadowed template
 fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;

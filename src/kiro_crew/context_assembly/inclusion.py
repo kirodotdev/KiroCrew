@@ -18,6 +18,7 @@ belong here.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -85,12 +86,25 @@ def _render_folder_steering_section(
     cap: int,
     *,
     skip_delivered_roots: bool = True,
+    delivered_sources: Collection[str] = (),
 ) -> str:
     """The folder-steering prompt section, capped like the steering section.
 
     One helper for the fresh-session path and the post-compaction reinjection
-    path so the two cannot drift in what they read or how they truncate. The
-    reader itself lives in :mod:`kiro_crew.folder_steering`; ``cap`` is
+    path so the two cannot drift in what they skip as already delivered or how
+    they truncate. The caller takes the provider-delivery verdict once:
+    :func:`_project_steering_delivered` says whether the provider delivers the
+    project and global ``.kiro/steering`` trees wholesale (then they are
+    skipped by root). A kiro-cli chat whose workspace opts out gets them
+    through the folder instead, minus *delivered_sources*: the paths of the
+    guides the serving process's launch record names, which kiro-cli loads
+    itself and re-reads for every request, so the collector skips each by path
+    and an edited guide reaches the model through kiro-cli. If no provider or
+    launch record exists, the caller supplies no delivered sources and the
+    folder carries the trees whole, preferring a duplicate over dropping a
+    document.
+
+    The reader itself lives in :mod:`kiro_crew.folder_steering`; ``cap`` is
     ``caps.steering`` ALWAYS, not only under ``skills.lazy_load``: the section
     is appended as required (protected from budget trims), so without its own
     finite bound an operator-pointed tree of up to 64 x 256 KB would be handed
@@ -110,11 +124,38 @@ def _render_folder_steering_section(
 
     return ctx.render_folder_steering(
         ctx.collect_folder_steering(
-            steering_dirs, project=project, skip_delivered_roots=skip_delivered_roots
+            steering_dirs,
+            project=project,
+            skip_delivered_roots=skip_delivered_roots,
+            delivered_sources=delivered_sources,
         ),
         max_chars=cap,
         scrub=ctx._neutralize_structural_markers,
     )
+
+
+def _folder_steering_delivery_snapshot(
+    *,
+    provider_type: str | None,
+    native_steering: bool,
+    project: str | None,
+    native_launch_sources: Collection[str],
+) -> tuple[bool, Collection[str]]:
+    """Resolve root dedup and the launch record the folder skips by path.
+
+    ``native_launch_sources`` names the documents in the serving process's
+    launch record, which kiro-cli loads and re-reads for every request.
+    ``provider_type`` is the harness as the caller named it. ``None`` is not
+    kiro-cli: unless the provider reports ``native_steering``, nothing is
+    skipped as delivered and no launch record applies, so the folder carries
+    the trees whole (a duplicate at worst, never a loss).
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    skip_delivered_roots = ctx._project_steering_delivered(provider_type, native_steering, project)
+    if skip_delivered_roots or provider_type != ctx.PROVIDER_ACP:
+        return skip_delivered_roots, ()
+    return skip_delivered_roots, native_launch_sources
 
 
 def skill_parts(

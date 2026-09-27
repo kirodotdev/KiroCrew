@@ -31,7 +31,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
-from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
+from kiro_crew import (
+    acp_tool_gate,
+    agent_scratch,
+    member_essential_context,
+    platform_compat,
+    runtime_death,
+)
 from kiro_crew.acp import runtime_process_tree, runtime_start
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
@@ -158,6 +164,7 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent import ensure_agent_materialized, markdown_spec_for_agent
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     kas_client_meta_settings,
@@ -183,6 +190,7 @@ from kiro_crew.mcp_gateway.session_servers import (
     injection_server_names,
     pooled_session_servers,
 )
+from kiro_crew.member_essential_context import MemberEssentialContextError
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -1125,6 +1133,11 @@ class AcpRuntime:
             raise ValueError("Invalid session memory mode")
         self.recording_allowed = memory_mode == "persistent"
         self._native_launch_sources: dict[str, str] = {}
+        # Set only by the non-member launch record below: the projected view
+        # alias the record was taken from, and the view's declared resources,
+        # whose on-disk total bounds every read of the record.
+        self._native_launch_view_alias: str | None = None
+        self._native_launch_resources: list[Any] | None = None
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
@@ -1838,6 +1851,8 @@ class AcpRuntime:
             raise AcpRuntimeError(str(exc)) from exc
         self._kas_host_auth = plan.host_auth
         self._native_launch_sources = dict(plan.native_context_documents)
+        self._native_launch_view_alias = None
+        self._native_launch_resources = None
         return plan
 
     async def _initialize_handshake(self, client_capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -2036,19 +2051,19 @@ class AcpRuntime:
 
                 async with self._skill_projection_lock():
                     generation = self._issue_skill_projection_generation()
-                    spawned = await asyncio.to_thread(
+                    projection = await asyncio.to_thread(
                         prepare_native_skill_projection, self._work_dir
                     )
                     # Issued and adopted under the lock, so nothing newer exists.
-                    self._native_skill_projection = spawned
+                    self._native_skill_projection = projection
                     self._skill_projection_generation = generation
                 # Held for the process's life: the aliases kiro-cli listed at
                 # startup are ones it is guaranteed to have loaded, so later
                 # projections keep translating them in inbound frames
                 # (_activate_mode_bracketed), and holding the object keeps its
                 # lease -- and them -- out of the prune.
-                self._spawn_skill_projection = self._native_skill_projection
-                if self._native_skill_projection is not None:
+                self._spawn_skill_projection = projection
+                if projection is not None:
                     # Deliberately do NOT set spawn_agent_name here. The shared
                     # runtime activates the launched agent through
                     # _activate_mode_bracketed, which allows self._agent at every
@@ -2064,13 +2079,11 @@ class AcpRuntime:
                     # an activatable mode (frame reads advertised_launch_name, which
                     # the shared runtime DOES set -- advertising is safe for both
                     # runtimes; only request()'s mid-session tolerance is withheld).
-                    self._native_skill_projection.advertised_launch_name = self._agent
+                    projection.advertised_launch_name = self._agent
                     argv = list(argv)
                     agent_position = argv.index("--agent") + 1
                     try:
-                        argv[agent_position] = self._native_skill_projection.spawn_agent(
-                            self._agent
-                        )
+                        launch_view_alias = projection.spawn_agent(self._agent)
                     except ValueError as exc:
                         # The projection refused this agent's view -- a
                         # ``kirocrew-core`` restriction authored in its spec, a
@@ -2086,6 +2099,62 @@ class AcpRuntime:
                         # with no prepared view keeps its authored name and never
                         # lands here.
                         raise AcpRuntimeError(str(exc)) from exc
+                    argv[agent_position] = launch_view_alias
+                    if not self._member_context and not self._native_launch_sources:
+                        if not await asyncio.to_thread(
+                            acp_driver.inherits_default_resources, self._work_dir
+                        ):
+                            projected_view = projection.specs.get(self._agent)
+                            if projected_view is not None:
+                                # kiro-cli re-reads the view's declared guides for
+                                # every request, so the record holds their paths
+                                # only; the folder skips those paths and an edited
+                                # guide reaches the model through kiro-cli. A
+                                # record that cannot be taken degrades to an
+                                # empty one: the folder then carries every guide
+                                # itself, and the session still starts. The empty
+                                # record lasts for the process's life, so the
+                                # reason is logged once here. The path walk
+                                # translates only OSError/ValueError into its own
+                                # error; an undeterminable home or a pre-3.13
+                                # symlink loop surfaces as RuntimeError, and a
+                                # literal declaration under a directory that
+                                # denies search as a bare PermissionError from
+                                # ``Path.is_file()``.
+                                try:
+                                    launch_paths = await asyncio.to_thread(
+                                        member_essential_context.projected_launch_paths,
+                                        projected_view,
+                                        str(self._work_dir),
+                                    )
+                                except (
+                                    MemberEssentialContextError,
+                                    OSError,
+                                    RuntimeError,
+                                    RecursionError,
+                                ) as exc:
+                                    logger.warning(
+                                        "launch steering record for agent %r skipped "
+                                        "(%r); the folder sends every guide itself, "
+                                        "so a guide kiro-cli loaded can arrive twice",
+                                        self._agent,
+                                        exc,
+                                    )
+                                    self._native_launch_sources = {}
+                                    self._native_launch_view_alias = None
+                                    self._native_launch_resources = None
+                                else:
+                                    if launch_paths:
+                                        # Paths only: no consumer of this record
+                                        # reads a body (build_message reads native
+                                        # bodies on the member path alone).
+                                        self._native_launch_sources = dict.fromkeys(
+                                            launch_paths, ""
+                                        )
+                                        self._native_launch_view_alias = launch_view_alias
+                                        self._native_launch_resources = list(
+                                            projected_view.get("resources", [])
+                                        )
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # The handshake declaration is the harness's constant. A host that takes
@@ -5959,7 +6028,7 @@ class AcpRuntime:
         budget: float,
         payload_snapshot: Any,
         wire_registered: bool,
-    ) -> None:
+    ) -> str | None:
         """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
         ONE body for both session-start paths (create and resume), because the bracket
@@ -6203,6 +6272,7 @@ class AcpRuntime:
         except DerivedSpecStale as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
+        return sent_alias
 
     async def _handshake_client_capabilities(self) -> dict[str, Any]:
         """The ``clientCapabilities`` this spawn sends, with the settings channel filled.
@@ -6783,6 +6853,51 @@ class AcpRuntime:
         if source != agent:
             logger.info("skill view %s maps back to agent %s", agent, source)
         return source
+
+    def _copy_native_launch_sources(
+        self,
+        handle: AcpSessionHandle,
+        *,
+        set_mode_ran: bool = False,
+        activated_alias: str | None = None,
+    ) -> None:
+        """Copy the launch record to *handle*; the non-member record only on its view.
+
+        A member record (``plan.native_context_documents``) records no view alias
+        and is copied whole. The non-member record names the guides the projected
+        view it was taken from declares, so a session on another view of the same
+        agent gets none of it: that view may declare fewer guides, and the folder
+        would skip one kiro-cli never loads. When ``set_mode`` ran, the alias it
+        sent is the session's view; otherwise the session runs on the alias the
+        process was launched with, and the record applies while the projection
+        still names that alias for the agent.
+        """
+        launch_resources = self._native_launch_resources
+        work_dir = str(self._work_dir)
+        handle.native_context_documents_fit = (
+            functools.partial(
+                member_essential_context._declared_files_fit,
+                {"resources": launch_resources},
+                work_dir,
+            )
+            if launch_resources is not None
+            else None
+        )
+        recorded_alias = self._native_launch_view_alias
+        if recorded_alias is not None:
+            if set_mode_ran:
+                current_alias = activated_alias
+            else:
+                projection = getattr(self, "_native_skill_projection", None)
+                try:
+                    current_alias = (
+                        projection.agent(self._agent) if projection is not None else None
+                    )
+                except ValueError:
+                    current_alias = None
+            if current_alias != recorded_alias:
+                return
+        handle.native_context_documents.update(self._native_launch_sources)
 
     async def create_session(
         self,
@@ -7421,6 +7536,8 @@ class AcpRuntime:
 
         mode_switched = False
         staged_before_switch = 0
+        set_mode_ran = False
+        activated_alias: str | None = None
         # Set agent mode if specified. If set_mode raises, no handle is returned
         # to the caller, so terminate the session we just created above —
         # session/new already succeeded so the session exists in kiro-cli; a
@@ -7475,13 +7592,14 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            activated_alias = await self._activate_mode_bracketed(
                 session_id,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            set_mode_ran = True
             handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
@@ -7529,7 +7647,9 @@ class AcpRuntime:
             await handle.drain_init(no_report_ceiling=0.0)
 
         if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
-            handle.native_context_documents.update(self._native_launch_sources)
+            self._copy_native_launch_sources(
+                handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
+            )
         handle.native_context_documents.update(projected_sources)
         # Inline prompt bytes and file resources come from the same activated
         # wire definition. Conditional and indexed resources remain native.
@@ -8007,6 +8127,8 @@ class AcpRuntime:
 
         mode_switched = False
         staged_before_switch = 0
+        set_mode_ran = False
+        activated_alias: str | None = None
         # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
         # resumed session too, not just fresh ones). If set_mode raises, the
         # caller falls back to create_session() (a fresh sid + its own queue),
@@ -8038,13 +8160,14 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            activated_alias = await self._activate_mode_bracketed(
                 resume_sid,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            set_mode_ran = True
             handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
@@ -8086,6 +8209,11 @@ class AcpRuntime:
             )
         else:
             await handle.drain_init(no_report_ceiling=0.0)
+
+        if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
+            self._copy_native_launch_sources(
+                handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
+            )
 
         # A resume re-initializes the MCP servers and forks the same agent
         # processes a fresh session does, so it needs the same scan; without it

@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
+from kiro_crew.acp.types import PROVIDER_LABEL_KAS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
 from kiro_crew.apps.builtins.auto_improvement.backend import crew, store
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner, crew_runner
 from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
@@ -25,6 +28,7 @@ from kiro_crew.members import read_activity
 from kiro_crew.memory_stores import memory_stores_root
 from kiro_crew.platform.context import PlatformCompositionError, current_context, set_context
 from kiro_crew.platform.governance import parse_policy
+from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
 
@@ -235,6 +239,45 @@ class Context:
     def build_message(self, prompt, is_new, **kwargs):
         self.calls.append(kwargs)
         return f"{kwargs['execution_context'].member_id}\n{prompt}", None
+
+
+class KiroCliProvider(Provider, AcpProvider):
+    """A real ``AcpProvider`` fronting a kiro-cli client, as ``get_or_create`` hands out."""
+
+    backend = ACP_BACKEND_KIRO
+
+    def __init__(self):
+        Provider.__init__(self)
+        self._client = SimpleNamespace(backend=self.backend)
+
+
+class KasProvider(KiroCliProvider):
+    """The same provider fronting a KAS client, whose members keep inheriting."""
+
+    backend = ACP_BACKEND_KAS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("factory", "harness"),
+    [(KiroCliProvider, PROVIDER_ACP), (KasProvider, PROVIDER_LABEL_KAS), (Provider, None)],
+    ids=["kiro-cli", "kas", "not-a-provider"],
+)
+async def test_member_essentials_are_built_for_the_spawned_harness(tmp_path, factory, harness):
+    identities = await asyncio.to_thread(crew.ensure_team)
+    sessions = Sessions(factory)
+    context = Context()
+    runtime = crew.GatewayRuntime(sessions, context, asyncio.get_running_loop())
+    runner = CrewRunner(runtime, identities).for_role("implementation")
+
+    result = await asyncio.wait_for(
+        asyncio.to_thread(runner.run, "Inspect candidate", cwd=str(tmp_path), timeout_s=5),
+        timeout=10,
+    )
+
+    assert result.ok
+    assert [call["provider_type"] for call in context.calls] == [harness]
+    assert "context_provider" not in context.calls[0]
 
 
 @pytest.mark.asyncio

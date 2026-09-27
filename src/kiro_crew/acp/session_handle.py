@@ -1076,6 +1076,7 @@ class AcpSessionHandle:
         # the prompt about to go out, so no steer is sent until it is set.
         self._prompt_written: bool = False
         self.native_context_documents: dict[str, str] = {}
+        self.native_context_documents_fit: Callable[[], bool] | None = None
         # Whether THIS session's array carries the member session-control entry.
         # Set by the composer that decided it (create and load alike), and read
         # by the context builder so the member operating-mode block is injected

@@ -31,7 +31,7 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict, defaultdict, deque  # noqa: F401 - kept bound
-from collections.abc import Awaitable, Callable, Iterator  # noqa: F401 - kept bound
+from collections.abc import Awaitable, Callable, Collection, Iterator  # noqa: F401 - kept bound
 from collections.abc import Set as AbstractSet  # noqa: F401 - kept bound on the facade
 from contextlib import contextmanager  # noqa: F401 - kept bound on the facade
 from dataclasses import dataclass  # noqa: F401 - kept bound on the facade
@@ -1161,22 +1161,26 @@ def _load_steering_resources() -> str:
 
 
 def _project_steering_delivered(
-    provider_type: str, native_steering: bool, project: str | None
+    provider_type: str | None, native_steering: bool, project: str | None
 ) -> bool:
     """Whether the project/global ``.kiro/steering`` trees already reach the model.
 
     Three paths exist and this names all of them, so the folder-steering dedup
     skips those trees ONLY where one of them is in effect: kiro-cli (the ACP
-    default label) loads an agent's ``resources`` natively when spawned with
-    ``--agent``, but only while *project* inherits kiro-cli's default resources
-    (a workspace that sets ``chat.disableInheritingDefaultResources`` gets
-    those trees from nobody, so the folder must carry them); the Claude Code
-    seam receives the explicit ``[Steering resources]`` load in
-    ``build_message`` (gated on ``is_cc``); KAS reports ``native_steering`` on
+    label) loads an agent's declared ``resources`` under either
+    setting, and while *project* inherits kiro-cli's default resources the
+    project and global ``.kiro/steering`` trees arrive wholesale too (a
+    workspace that sets ``chat.disableInheritingDefaultResources`` gets only
+    the declared resources, so the folder carries the trees minus the
+    documents in the launch record); the Claude Code
+    seam receives the explicit ``[Steering resources]`` load in ``build_message`` (gated on
+    ``is_cc``); KAS reports ``native_steering`` on
     its session provider. Every other harness -- Codex, OpenCode, Pi, Goose,
     DeepSeek -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
-    delivered" with nothing arriving in their place. The opt-out is read only
+    delivered" with nothing arriving in their place. A harness that is not
+    named (``None``) is not assumed to be kiro-cli: it matches no path here, so
+    the folder carries the trees whole. The opt-out is read only
     on the kiro-cli disjunct: a kiro-cli setting changes nothing on another
     harness. The driver is asked directly, with no admission check on
     *project*: this path also serves non-member sessions and must not raise.
@@ -2495,7 +2499,7 @@ class ContextBuilder:
         trigger_text: str = "",
         steering_dirs: tuple[str, ...] = (),
         desk_withheld: bool = False,
-        provider_type: str = PROVIDER_ACP,
+        provider_type: str | None = None,
     ) -> str:
         """Refresh complete member essentials without opening learned memory.
 
@@ -2532,7 +2536,7 @@ class ContextBuilder:
         compressed_history: str | None = None,
         mode: str = "",
         blocks_reads: bool = False,
-        provider_type: str = "acp",
+        provider_type: str | None = None,
         minimal_context: bool = False,
         *,
         runtime_source: str | None = None,
@@ -2567,7 +2571,12 @@ class ContextBuilder:
         blocks, OPTIONS buttons, file links) and prior conversation context
         behave identically across providers.
 
-        *provider_type* is consumed again for the steering gate only: the
+        *provider_type* names the harness serving the session, when the caller
+        knows it. It reaches :meth:`_build_v2_essentials` as given, so a caller
+        that names none (``None``) hands the essentials builder an unknown
+        harness and a private member keeps inheriting kiro-cli's default
+        resources. A harness that is not named is not assumed to be kiro-cli.
+        Beyond the essentials it is consumed for the steering gate only: the
         steering block below is injected solely on the CC backend
         (``is_claude_code(provider_type)``). kiro-cli loads an agent's
         ``resources`` natively when spawned with ``--agent`` (acp/client.py
@@ -2598,6 +2607,9 @@ class ContextBuilder:
             )
         )
         is_custom = agent and agent != "kirocrew"
+        # A harness that is not named is not assumed to be kiro-cli: the
+        # essentials builder, the folder dedup and the ``is_cc`` gate all read
+        # the value as given.
         is_cc = is_claude_code(provider_type)
         caps = _resolve_caps(model_window)
         blocks = _budgets.ContextParts()
@@ -3136,7 +3148,7 @@ class ContextBuilder:
         action_context: str | None = None,
         thread_parent_text: str | None = None,
         thread_meta: str | None = None,
-        provider_type: str = "acp",
+        provider_type: str | None = None,
         minimal_context: bool = False,
         *,
         runtime_source: str | None = None,
@@ -3189,6 +3201,16 @@ class ContextBuilder:
         the prompt changes. The heartbeat does this, because a session key would
         also change the rest of its prompt. It defaults to *session_key*.
 
+        *provider_type* names the harness serving the session. A context
+        provider that carries an :class:`EssentialDelivery` names it in place of
+        the caller. The essentials builder (and :meth:`build_session_context`,
+        which forwards to it) receives the named value as given, ``None`` when
+        neither the caller nor its context provider named a harness, so a
+        private member keeps inheriting kiro-cli's default resources under an
+        unknown harness. A harness that is not named is not assumed to be
+        kiro-cli anywhere else either: the folder-steering dedup skips nothing
+        as delivered and the folder carries the trees whole.
+
         Returns:
             (full_message, hook_result) — hook_result may be a reply/modify/inject.
         """
@@ -3209,6 +3231,7 @@ class ContextBuilder:
             blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
         )
         native_documents: dict[str, str] = {}
+        native_launch_sources: Collection[str] = ()
         # None = no session evidence; build_session_context then falls back to
         # the configured member backend's capability.
         member_dispatch_mounted: bool | None = None
@@ -3221,8 +3244,11 @@ class ContextBuilder:
                 provider_type = context_provider.context_provider_type
                 if project is None:
                     project = context_provider.cwd or None
-                if is_new_session and not resumed and not needs_reinjection:
-                    native_documents = context_provider.native_context_documents
+                if is_new_session or needs_reinjection:
+                    provider_native_documents = context_provider.native_context_documents
+                    native_launch_sources = tuple(provider_native_documents)
+                    if is_new_session and not resumed and not needs_reinjection:
+                        native_documents = provider_native_documents
         is_custom = agent and agent != "kirocrew"
         hook_result = self.hooks.on_message(text)
 
@@ -3230,6 +3256,9 @@ class ContextBuilder:
         # Set together with the user's text part when user_text_range is given.
         _user_bounds: tuple[int, int] | None = None
         _user_part_index: int | None = None
+        # A harness that is not named is not assumed to be kiro-cli: the
+        # essentials builder, the folder dedup and the ``is_cc`` gate all read
+        # the value as given.
         is_cc = is_claude_code(provider_type)
 
         # Layer-3 rules gate + section delivery, per session-lifecycle branch.
@@ -3487,15 +3516,21 @@ class ContextBuilder:
                 and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
             ):
                 _caps_fs = _resolve_caps(model_window)
+                _skip_folder_roots, _declared_sources = (
+                    _inclusion._folder_steering_delivery_snapshot(
+                        provider_type=provider_type,
+                        native_steering=context_provider is not None
+                        and context_provider.native_steering,
+                        project=project,
+                        native_launch_sources=native_launch_sources,
+                    )
+                )
                 _folder_ctx = _render_folder_steering_section(
                     steering_dirs,
                     project,
                     _caps_fs.steering,
-                    skip_delivered_roots=_project_steering_delivered(
-                        provider_type,
-                        context_provider is not None and context_provider.native_steering,
-                        project,
-                    ),
+                    skip_delivered_roots=_skip_folder_roots,
+                    delivered_sources=_declared_sources,
                 )
                 if _folder_ctx:
                     parts.append(_folder_ctx + "\n\n")
@@ -3552,6 +3587,7 @@ class ContextBuilder:
                     essentials=_essentials,
                     provider_type=provider_type,
                     context_provider=context_provider,
+                    native_launch_sources=native_launch_sources,
                 )
             )
             # Member identity is session-start context too, so a compaction

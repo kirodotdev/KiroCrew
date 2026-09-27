@@ -157,18 +157,20 @@ a guarantee that a silent trim recovers on the next turn.
 
 `context_provider_type` reports the actual backend label, independent of the
 installation's `agent.provider` setting. `native_context_documents` defaults to
-empty. Kiro's launch plan captures admitted selected-template sources after
+empty. Kiro member launches capture admitted selected-template sources after
 materialization and governance checks. Successful activation of that same agent
 in the same cwd transfers source responsibility to the handle. This relies on
 Kiro's supported `--agent` prompt/resources contract, not a per-file model receipt.
 Changes to a launch-version source receive a complete manual replacement.
 Kiro's implicit workspace-root AGENTS and default/always steering in project and
-global steering directories also belong to that launch contract, even when no
-resource glob declares them, while the workspace inherits kiro-cli's default
-resources; an opted-out workspace's contract is its declared sources alone. The
-opt-out is kiro-cli's own setting, so it applies only when kiro-cli serves the
-session: every other harness keeps the inheriting contract, and the non-member
-folder-steering dedup follows the same decision.
+global steering directories also belong to that launch contract while the
+workspace inherits kiro-cli's default resources. In an opted-out workspace, the
+native skill projection keeps the authored projected view unchanged. For a
+non-member Kiro runtime, successful selection of that view records the paths of
+the markdown files its declared `file://` resources match, from the exact
+`NativeSkillProjection.specs` entry the child will load; no file body is read.
+A rejected view aborts startup. A missing projection, missing view, or a path
+walk error records no launch documents and does not stop the spawn.
 SOUL is native-owned only when explicitly declared.
 The mirrored steering reference records engine/version differences for conditional
 modes, so Kiro uses the fallback selector instead of claiming full native support.
@@ -188,7 +190,38 @@ inherits kiro-cli's default resources, the Claude Code seam receives the explici
 steering load, KAS reports `native_steering` -- so they are not sent twice; on a
 harness with no such path (Codex, OpenCode, Pi, Goose, DeepSeek) the folder
 delivers them like any other document rather than skipping rules nothing else
-would carry. Documents honor the steering
+would carry. The context builder's entry points (`build_message`,
+`build_session_context`) pass a harness to the member essentials builder only
+when the caller or its context provider names one, so an unnamed harness keeps a
+private member inheriting. One rule holds everywhere the value is read: a harness
+that is not named is not assumed to be kiro-cli, so the folder dedup on that
+same turn skips nothing as delivered and the folder carries the trees whole. For an
+opted-out non-member kiro-cli chat, fresh folder rendering and compaction
+reinjection skip only the canonical document paths recorded from the projected
+view when the process launched. kiro-cli re-reads its declared resources for
+every request, so the record holds paths alone: a recorded guide reaches the
+model through kiro-cli's own read, as the file reads at that request, and the
+folder never sends it in any version. A guide the record does not name, one
+created after launch among them, is collected as usual. Nothing is recorded when
+the files the view declares total more than 128,000 bytes on disk
+(`_LAUNCH_RECORD_MAX_BYTES`), whatever their extension: kiro-cli drops whole
+files once they pass three bytes per token of the model's context window
+(kiro-cli 2.27.0 kept 490,000 bytes and dropped a file at 494,000 on the
+164,000-token window, the smallest it lists), and the model can change
+mid-session. The total is checked at launch and again each time the session's
+provider hands out the record, so a declared file that grows past the bound
+mid-session, or a new one a declared glob picks up, hands the folder every guide
+again from the next render on. The record applies only while the session
+activates the same projected agent view it was read from: when `set_mode` ran,
+the alias it sent must be the launch alias; otherwise the projection must still
+name the launch alias for the agent. After the agent's declared resources
+change, the folder sends every guide. The projected view itself is unchanged, so
+a chat with no folder steering keeps kiro-cli's declared project tree. A missing
+provider, projection, view, or launch record makes the folder carry its trees
+whole, preferring a duplicate over losing a guide; a launch record that cannot
+be taken is logged as a warning naming the agent and the error, and leaves the
+record empty. A view the projection rejects stops the session from starting, so
+no context is delivered at all. Documents honor the steering
 `inclusion` frontmatter (`always`, or absent, is included; `manual`, `auto` and
 `fileMatch` are skipped and left to their native trigger), and each file is
 admitted against its own declared directory as the trust base, so a symlink can

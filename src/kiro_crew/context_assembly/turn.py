@@ -18,6 +18,7 @@ New per-turn blocks belong here.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
@@ -49,8 +50,9 @@ def post_compaction_parts(
     runtime_source: str | None,
     steering_dirs: tuple[str, ...],
     essentials: str,
-    provider_type: str,
+    provider_type: str | None,
     context_provider: Any,
+    native_launch_sources: Collection[str],
 ) -> list[str]:
     """What a turn re-injects after a confirmed compaction dropped session start.
 
@@ -150,15 +152,18 @@ def post_compaction_parts(
     # labels before minting the genuine frame.
     if steering_dirs and not _essentials:
         _caps_fs = ctx._resolve_caps(model_window)
+        _skip_folder_roots, _declared_sources = _inclusion._folder_steering_delivery_snapshot(
+            provider_type=provider_type,
+            native_steering=context_provider is not None and context_provider.native_steering,
+            project=project,
+            native_launch_sources=native_launch_sources,
+        )
         _folder_ctx = _inclusion._render_folder_steering_section(
             steering_dirs,
             project,
             _caps_fs.steering,
-            skip_delivered_roots=ctx._project_steering_delivered(
-                provider_type,
-                context_provider is not None and context_provider.native_steering,
-                project,
-            ),
+            skip_delivered_roots=_skip_folder_roots,
+            delivered_sources=_declared_sources,
         )
         if _folder_ctx:
             # Bodies were scrubbed inside the renderer; the frame it

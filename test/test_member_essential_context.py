@@ -1952,6 +1952,173 @@ def test_document_cap_ignores_on_demand_resource_schemes(env):
     assert list(projected.values()) == ["Declared guide: examples must be reproducible."]
 
 
+def test_declared_file_size_does_not_stat_a_rejected_path(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    stat_calls = []
+    real_stat = os.stat
+
+    def recording_stat(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == guide:
+            stat_calls.append(path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "validate_file_path", lambda _path: None)
+    monkeypatch.setattr(module.os, "stat", recording_stat)
+
+    with pytest.raises(MemberEssentialContextError, match="outside admitted path screen"):
+        module._declared_file_size(guide)
+
+    assert stat_calls == []
+
+
+def test_declared_file_size_stats_the_admitted_path(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    admitted = env.project / "admitted-guide.md"
+    admitted.write_text("admitted", encoding="utf-8")
+    stat_calls = []
+    real_stat = os.stat
+
+    def recording_stat(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) in (guide, admitted):
+            stat_calls.append((path, kwargs))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "validate_file_path", lambda _path: str(admitted))
+    monkeypatch.setattr(module.os, "stat", recording_stat)
+
+    size = module._declared_file_size(guide)
+
+    assert size == real_stat(admitted, follow_symlinks=False).st_size
+    assert stat_calls == [(str(admitted), {"follow_symlinks": False})]
+
+
+def test_projected_launch_paths_name_the_declared_guides_without_reading_them(env, monkeypatch):
+    """kiro-cli re-reads a declared guide for every request, so the launch record
+    needs its path only; the body is never read."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    read = Mock(side_effect=AssertionError("the launch record must not read a guide"))
+    monkeypatch.setattr(module, "_read", read)
+
+    paths = module.projected_launch_paths(definition, str(env.project))
+
+    assert paths == [str(guide)]
+    read.assert_not_called()
+
+
+def test_projected_launch_paths_match_the_documents_the_launch_reader_reads(env):
+    """The folder skips the record by path, so the record must spell each guide
+    exactly as the launch reader does."""
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+
+    paths = module.projected_launch_paths(definition, str(env.project))
+
+    assert paths == list(module.projected_resource_documents(definition, str(env.project)))
+
+
+def test_projected_launch_paths_record_nothing_past_the_size_bound(env, monkeypatch):
+    """kiro-cli drops whole resources past its budget, so a launch whose declared
+    files exceed the bound records nothing and the folder sends every guide."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", guide.stat().st_size)
+    assert module.projected_launch_paths(definition, str(env.project)) == [str(guide)]
+
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", guide.stat().st_size - 1)
+    assert module.projected_launch_paths(definition, str(env.project)) == []
+
+
+def test_projected_launch_size_bound_counts_every_declared_file(env, monkeypatch):
+    """kiro-cli budgets every declared file it loads, so a declared file the
+    launch record never names counts, and so does the sum of files that each
+    fit the bound alone."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    reference = env.project / "reference.json"
+    reference.write_text("r" * 480, encoding="utf-8")
+    assert reference.stat().st_size < 500 < guide.stat().st_size + reference.stat().st_size
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", 500)
+
+    guide_only = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    assert module.projected_launch_paths(guide_only, str(env.project)) == [str(guide)]
+    with_reference = {
+        "id": "writer-template",
+        "resources": ["file://declared-guide.md", "file://reference.json"],
+    }
+    assert module.projected_launch_paths(with_reference, str(env.project)) == []
+
+
+@pytest.mark.parametrize(
+    "extra_resources",
+    [
+        pytest.param(["file://missing.json"], id="missing-literal-file"),
+        pytest.param(["file://data-a/*.json", "file://data-b/*.json"], id="many-non-markdown"),
+    ],
+)
+def test_projected_launch_size_check_refuses_no_view_the_record_names(
+    env, monkeypatch, extra_resources
+):
+    """A declared file that does not exist adds no bytes, and non-markdown
+    matches do not count against the reader's document limit."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    for directory in ("data-a", "data-b"):
+        (env.project / directory).mkdir()
+        for index in range(40):
+            (env.project / directory / f"{index}.json").write_text("d", encoding="utf-8")
+    definition = {
+        "id": "writer-template",
+        "resources": ["file://declared-guide.md", *extra_resources],
+    }
+
+    assert module.projected_launch_paths(definition, str(env.project)) == [str(guide)]
+
+
+def test_projected_launch_paths_stat_failure_is_a_record_failure(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    real_stat = os.stat
+
+    def failing_stat(path, *args, **kwargs):
+        if Path(path).name == "declared-guide.md":
+            raise PermissionError("stat denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "stat", failing_stat)
+
+    with pytest.raises(MemberEssentialContextError, match="declared-guide.md: .*stat denied"):
+        module.projected_launch_paths(definition, str(env.project))
+
+
+def test_declared_files_fit_counts_an_unmeasurable_file_as_too_large(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    assert module._declared_files_fit(definition, str(env.project)) is True
+
+    def denied(path):
+        raise MemberEssentialContextError(f"Essential source {path}: stat denied") from (
+            PermissionError("stat denied")
+        )
+
+    monkeypatch.setattr(module, "_declared_file_size", denied)
+    assert module._declared_files_fit(definition, str(env.project)) is False
+
+
 def test_document_cap_still_bounds_declared_file_resources(env):
     from kiro_crew.member_essential_context import (
         documents_for_member,
@@ -2141,8 +2308,9 @@ def _snapshot_bodies(env, provider_type: str = PROVIDER_ACP) -> str:
 
     The builder is where the harness is known, so it is the builder that decides
     whether kiro-cli's opt-out applies; :func:`documents_for_member` only takes
-    that verdict. kiro-cli is the default because it is the harness the setting
-    belongs to.
+    that verdict. This helper names kiro-cli explicitly because it is the harness
+    the setting belongs to; the builder's own default is "harness not known to
+    be kiro-cli", which never reads the opt-out.
     """
     return env.builder._build_v2_essentials(
         env.store, member=env.member, project=str(env.project), provider_type=provider_type
@@ -2178,6 +2346,84 @@ def test_opt_out_still_loads_steering_the_template_declares(operator_steering):
     bodies = _snapshot_bodies(env)
     assert "Always guide: explain assumptions." in bodies
     assert _OPERATOR_RULE not in bodies
+
+
+def test_a_caller_that_names_no_harness_keeps_inheriting_under_the_opt_out(
+    operator_steering, monkeypatch
+):
+    """The opt-out is kiro-cli's; a build that does not say kiro-cli serves the
+    session never reads it, so the global steering stays in the snapshot. A
+    future caller that omits ``provider_type`` on another harness therefore
+    cannot drop rules nothing else would deliver."""
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    bodies = env.builder._build_v2_essentials(
+        env.store, member=env.member, project=str(env.project)
+    )
+
+    assert _OPERATOR_RULE in bodies
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide in bodies
+    assert reads == []
+    assert _OPERATOR_RULE not in _snapshot_bodies(env), "the kiro-cli build still opts out"
+
+
+def _entry_point_prompt(env, entry_point: str, **kwargs) -> str:
+    """A member's session start built through one of the two prompt entry points.
+
+    ``provider_type`` is forwarded only when the test names it, so an omitted
+    harness exercises each entry point's own default.
+    """
+    common = dict(memory_store=env.store, member=env.member, project=str(env.project))
+    if entry_point == "build_message":
+        message, _ = env.builder.build_message(
+            "Continue", True, "dashboard:member", **common, **kwargs
+        )
+        return message
+    return env.builder.build_session_context(**common, **kwargs)
+
+
+_ENTRY_POINTS = pytest.mark.parametrize("entry_point", ["build_message", "build_session_context"])
+
+
+@_ENTRY_POINTS
+def test_an_entry_point_given_no_harness_keeps_inheriting_under_the_opt_out(
+    operator_steering, monkeypatch, entry_point
+):
+    """``build_message`` and ``build_session_context`` hand the essentials builder
+    only the harness their caller (or its context provider) named. A caller that
+    names none reaches the builder as an unknown harness, so the opt-out is not
+    read and the operator's global steering stays in the envelope."""
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    prompt = _entry_point_prompt(env, entry_point)
+
+    assert _OPERATOR_RULE in prompt
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide in prompt
+    assert reads == []
+    env.forbidden.assert_not_called()
+
+
+@_ENTRY_POINTS
+def test_an_entry_point_naming_kiro_cli_reads_the_opt_out(
+    operator_steering, monkeypatch, entry_point
+):
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    prompt = _entry_point_prompt(env, entry_point, provider_type=PROVIDER_ACP)
+
+    assert _OPERATOR_RULE not in prompt
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide not in prompt
+    assert "Declared guide: examples must be reproducible." in prompt
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize(
@@ -2271,8 +2517,16 @@ def test_launch_documents_follow_the_workspace_opt_out(operator_steering):
     assert "Declared guide: examples must be reproducible." in bodies
 
 
-def _envelope_with_folder_steering_trees(env, provider_type: str = PROVIDER_ACP) -> str:
-    """A member turn in a folder that declares both ``.kiro/steering`` trees."""
+_OMIT_HARNESS = object()
+
+
+def _envelope_with_folder_steering_trees(env, provider_type: object = PROVIDER_ACP) -> str:
+    """A member turn in a folder that declares both ``.kiro/steering`` trees.
+
+    ``provider_type=_OMIT_HARNESS`` leaves the argument out so the turn runs on
+    :meth:`ContextBuilder.build_message`'s own default.
+    """
+    harness = {} if provider_type is _OMIT_HARNESS else {"provider_type": provider_type}
     message, _ = env.builder.build_message(
         "Continue",
         True,
@@ -2280,7 +2534,7 @@ def _envelope_with_folder_steering_trees(env, provider_type: str = PROVIDER_ACP)
         memory_store=env.store,
         member=env.member,
         project=str(env.project),
-        provider_type=provider_type,
+        **harness,
         steering_dirs=(
             str(env.project / ".kiro" / "steering"),
             str(Path.home() / ".kiro" / "steering"),
@@ -2340,6 +2594,7 @@ def test_profile_validation_measures_inheriting_envelope_without_reading_setting
         member=env.member,
         project=str(env.project),
         profile_overrides={"preferences.md": "Candidate preference."},
+        provider_type=PROVIDER_ACP,
     )
 
     assert "Candidate preference." in validation
@@ -2506,6 +2761,21 @@ def test_folder_declared_steering_trees_reach_an_inheriting_member_once(operator
     env = operator_steering
     _declare_project_steering_in_template(env)
     message = _envelope_with_folder_steering_trees(env)
+    assert message.count(_OPERATOR_RULE) == 1
+    assert message.count("Always guide: explain assumptions.") == 1
+    assert message.count("Project rules: run the review checks.") == 1
+
+
+@_needs_pinned_walk
+def test_folder_declared_trees_reach_an_inheriting_member_once_when_no_harness_is_named(
+    operator_steering,
+):
+    """An unnamed harness leaves a private member inheriting, so its essentials
+    envelope carries both trees; the folder section is not rendered on a member
+    turn, and each guide arrives exactly once."""
+    env = operator_steering
+    _declare_project_steering_in_template(env)
+    message = _envelope_with_folder_steering_trees(env, provider_type=_OMIT_HARNESS)
     assert message.count(_OPERATOR_RULE) == 1
     assert message.count("Always guide: explain assumptions.") == 1
     assert message.count("Project rules: run the review checks.") == 1

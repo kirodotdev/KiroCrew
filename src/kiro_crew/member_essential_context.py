@@ -33,6 +33,16 @@ ESSENTIAL_MISSING_SKIP_SOURCE = "essential-context#missing-skipped"
 _MAX_SKIPPED_LISTED = 10
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
+# kiro-cli re-reads its declared resources for every request and drops whole
+# files once they total more than three bytes per token of the model's context
+# window: about 492,000 bytes for deepseek-3.2's 164,000 tokens, the smallest
+# window kiro-cli 2.27.0 lists. The model can change mid-session and a later
+# kiro-cli may list a smaller window, so the launch record is kept only while the
+# declared files total at most about a quarter of that, checked at launch and
+# again on every read of the record; otherwise the folder sends every guide
+# rather than skip one kiro-cli may have dropped.
+_LAUNCH_RECORD_MAX_BYTES = 128_000
+
 
 # A resources entry is a URI string this reader may open, or an object whose
 # keys are kiro-cli's schema. The alias records the shape, not those keys.
@@ -895,6 +905,8 @@ def _resource_paths(
     absolute_root: Path,
     skipped: list[Path] | None = None,
     missing: list[Path] | None = None,
+    *,
+    markdown_only: bool = True,
 ) -> list[tuple[Path, Path]]:
     """Declared ``file://`` matches; an absent literal one goes to *missing* instead."""
     paths: list[tuple[Path, Path]] = []
@@ -913,13 +925,81 @@ def _resource_paths(
         else:
             pattern = str(path)
         for match in _matches(root, pattern, skipped, missing=absent):
-            if match.suffix.lower() == ".md" and (match, root) not in paths:
+            wanted = not markdown_only or match.suffix.lower() == ".md"
+            if wanted and (match, root) not in paths:
                 paths.append((match, root))
-                if len(paths) > _MAX_DOCUMENTS:
+                if markdown_only and len(paths) > _MAX_DOCUMENTS:
                     raise MemberEssentialContextError(
                         "Essential resources exceed the document limit"
                     )
     return paths
+
+
+def _declared_file_size(path: Path) -> int:
+    """On-disk size of one declared file, through the same path screen as a read."""
+    admitted = validate_file_path(str(path))
+    if admitted is None:
+        raise MemberEssentialContextError(f"Essential source {path}: outside admitted path screen")
+    try:
+        return os.stat(admitted, follow_symlinks=False).st_size
+    except OSError as exc:
+        raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
+
+
+def _projected_resource_paths(
+    definition: dict, cwd: str, *, markdown_only: bool = True
+) -> list[tuple[Path, Path]]:
+    resources = definition.get("resources", [])
+    if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
+        raise MemberEssentialContextError("Projected resources must be a list of declarations")
+    return _resource_paths(resources, Path(cwd), Path.home(), markdown_only=markdown_only)
+
+
+def _declared_file_bytes(definition: dict, cwd: str) -> int:
+    """On-disk size of every file the definition's ``file://`` resources match.
+
+    kiro-cli budgets what it loads by these raw sizes, so every match counts,
+    whatever its extension or ``inclusion`` mode. A declared file that does not
+    exist adds nothing, since kiro-cli cannot load it either.
+    """
+    total = 0
+    for path, _root in _projected_resource_paths(definition, cwd, markdown_only=False):
+        try:
+            total += _declared_file_size(path)
+        except MemberEssentialContextError as exc:
+            if not isinstance(exc.__cause__, FileNotFoundError):
+                raise
+    return total
+
+
+def _declared_files_fit(definition: dict, cwd: str) -> bool:
+    """Whether the declared files fit ``_LAUNCH_RECORD_MAX_BYTES`` today.
+
+    kiro-cli re-reads them for every request, so the launch check is repeated
+    on every read of the launch record. A declared file that cannot be measured
+    counts as too large.
+    """
+    try:
+        return _declared_file_bytes(definition, cwd) <= _LAUNCH_RECORD_MAX_BYTES
+    except (MemberEssentialContextError, OSError, RuntimeError, RecursionError):
+        return False
+
+
+def projected_launch_paths(definition: dict, cwd: str) -> list[str]:
+    """Paths of the markdown documents the definition's ``file://`` resources match.
+
+    These are the guides kiro-cli loads for an agent launched with this
+    definition. kiro-cli re-reads them for every request, so a folder that also
+    lists one skips it by path and an edited guide reaches the model through
+    kiro-cli's own re-read. No body is read here. Nothing is returned when the
+    declared files total more than ``_LAUNCH_RECORD_MAX_BYTES`` on disk
+    (:func:`_declared_file_bytes`), since kiro-cli may then drop any of them from
+    its context.
+    """
+    if _declared_file_bytes(definition, cwd) > _LAUNCH_RECORD_MAX_BYTES:
+        return []
+    paths = (str(path) for path, _root in _projected_resource_paths(definition, cwd))
+    return list(dict.fromkeys(paths))
 
 
 def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
@@ -931,11 +1011,8 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     and object-form ``knowledgeBase`` declarations keep their on-demand
     behavior and are never treated as full text.
     """
-    resources = definition.get("resources", [])
-    if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
-        raise MemberEssentialContextError("Projected resources must be a list of declarations")
     documents: dict[str, str] = {}
-    for path, root in _resource_paths(resources, Path(cwd), Path.home()):
+    for path, root in _projected_resource_paths(definition, cwd):
         if str(path) in documents:
             continue
         body = _read(path, root)

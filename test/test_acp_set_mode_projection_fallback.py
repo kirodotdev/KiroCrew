@@ -134,7 +134,7 @@ async def _with_reader(rt: AcpRuntime, coro):
             pass
 
 
-async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> None:
+async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> str | None:
     """Run the real bracket with the re-preparation returning *projection*."""
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
     with (
@@ -144,7 +144,7 @@ async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) ->
         ),
         patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
     ):
-        await rt._activate_mode_bracketed(
+        return await rt._activate_mode_bracketed(
             "s1", "ops", budget=5.0, payload_snapshot=None, wire_registered=True
         )
 
@@ -190,8 +190,11 @@ async def test_an_alias_the_host_loads_after_its_reload_is_used(no_retry_wait, c
     kiro.reload_after_misses = 1
     caplog.set_level(logging.WARNING, logger="kiro_crew.acp.runtime")
 
-    await _with_reader(rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS})))
+    activated_alias = await _with_reader(
+        rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}))
+    )
 
+    assert activated_alias == FRESH_ALIAS
     rt.terminate_session.assert_not_awaited()
     assert kiro.set_modes == [FRESH_ALIAS, FRESH_ALIAS]
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
