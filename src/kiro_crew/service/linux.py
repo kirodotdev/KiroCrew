@@ -76,6 +76,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE
 from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service import apparmor, selinux
 from kiro_crew.service.common import (
@@ -318,6 +319,18 @@ def render_unit(*, user_scope: bool = False) -> str:
         # exempt from Restart=), and StartLimit* above caps a tight loop.
         "Restart=always\n"
         "RestartSec=10\n"
+        # ...but never against a home another gateway already serves. The lock
+        # refusal for a LIVE holder (kiro_crew.gateway_lock) is a standing
+        # condition for this unit: the incumbent keeps serving, and every
+        # relaunch boots the stack only to meet the identical refusal, until
+        # StartLimit* parks the unit `failed` -- or forever, on a unit without
+        # them. That refusal exits LIVE_HOLDER_EXIT_CODE, and this line makes it
+        # terminal: the unit goes `failed` once, with the refusal line visible in
+        # the journal. Every other exit -- 1 for a lock failure a retry may find
+        # cleared, the watchdog's and listener guard's own relaunch requests --
+        # is still restarted. Value comes from kiro_crew.gateway_lock, the
+        # module that decides the refusal, so the two cannot drift.
+        f"RestartPreventExitStatus={LIVE_HOLDER_EXIT_CODE}\n"
         f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
         # Operator-editable overrides. systemd applies EnvironmentFile= AFTER —
         # and overriding — the baked Environment= lines below (systemd.exec(5)),

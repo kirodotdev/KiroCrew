@@ -45,6 +45,19 @@ pytestmark = pytest.mark.skipif(
 
 _STRICT_ENV = "KIROCREW_LOCK_OWNER_STRICT"
 
+
+def _listeners(*pids, address="127.0.0.1", family="4"):
+    """LISTEN sockets on the probed port for *pids*, bound where the probe reaches them.
+
+    The diagnosis reads ``platform_compat.find_port_listeners`` (pid AND bound
+    address), so a stand-in must supply both; the default binds each pid at
+    IPv4 loopback, the address an unconfigured gateway probes.
+    """
+    from kiro_crew.platform_compat import PortListener
+
+    return [PortListener(pid, address, family) for pid in pids]
+
+
 # Parent takes the lock, forks a child that wedges BEFORE exec while holding the
 # inherited fd, publishes the child's pid, then holds at a bounded handshake so
 # the test can read the LIVE acquirer's kernel record first. Once the release
@@ -596,7 +609,7 @@ def test_refusal_names_the_live_acquirer_from_proc_locks(monkeypatch, refused_lo
     monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
     monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: _listeners(16968))
     monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: True)
 
     err = _refusal(refused_lock, port=5477)
@@ -605,6 +618,138 @@ def test_refusal_names_the_live_acquirer_from_proc_locks(monkeypatch, refused_lo
     assert "118 threads" in text and "port 5477, answering HTTP" in text
     assert "records pid 4242 -- stale" in text
     assert "kill" not in text.lower()  # never offer up a live gateway
+    # Running AND holding the port this gateway would bind: the one verdict a
+    # supervised relaunch cannot out-wait, so the refusal is terminal.
+    assert err.live_holder is True
+
+
+def test_a_live_acquirer_without_the_port_is_not_a_live_holder(monkeypatch, refused_lock):
+    """Alive but not on the port: a sibling still starting, or one shutting down
+    that has closed its listener and will release the lock next. Either way the
+    next attempt resolves it, so this refusal must stay the restartable kind."""
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: False)
+
+    err = _refusal(refused_lock, port=5477)
+    assert err.holder_pid == 16968
+    assert "does not hold port 5477" in str(err)
+    assert err.live_holder is False
+    # With no port to weigh at all (`--port auto`, `--slack-only`), the verdict
+    # cannot be reached and the refusal likewise stays restartable.
+    assert _refusal(refused_lock).live_holder is False
+
+
+def test_a_live_acquirer_listening_but_not_answering_http_is_not_a_live_holder(
+    monkeypatch, refused_lock
+):
+    """Identified, alive, on the port -- and silent: a wedged gateway, not a serving one.
+
+    A hung process keeps its listening socket bound, so port ownership alone
+    cannot tell a sibling that serves the home from one that is stuck. Only the
+    HTTP answer does. Exiting 78 here would park a supervised unit `failed` for
+    good while the wedged incumbent dies on its own (or is killed) -- the home
+    would then sit unserved with nothing left to relaunch. So the refusal names
+    the silence, calls the shape what it is, and stays restartable; the HTTP
+    probe that already words the message is the one measurement the verdict
+    reads, so no second probe is made.
+    """
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: _listeners(16968))
+    probes: list[int] = []
+
+    def _silent(port, *_a, **_k):
+        probes.append(port)
+        return False
+
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", _silent)
+
+    err = _refusal(refused_lock, port=5477)
+    text = str(err)
+    assert err.holder_pid == 16968
+    assert "holds port 5477, not answering HTTP at 127.0.0.1" in text  # what was measured
+    assert "wedged" in text and "not treated as permanent" in text
+    assert "kirocrew stop" in text
+    assert "kill" not in text.lower()  # a live acquirer is never offered up
+    assert err.live_holder is False
+    assert probes == [5477]  # one probe feeds both the message and the verdict
+
+
+@pytest.mark.parametrize(
+    "bind, host",
+    [
+        (None, "127.0.0.1"),
+        ("", "127.0.0.1"),
+        ("0.0.0.0", "127.0.0.1"),
+        ("::", "::1"),
+        ("[::]", "::1"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "::1"),
+        ("[::1]", "::1"),
+        (" 10.20.30.40 ", "10.20.30.40"),
+    ],
+)
+def test_the_predicate_probes_the_configured_bind_with_wildcards_mapped_by_family(bind, host):
+    """The serving-holder predicate asks at the address THIS gateway would bind.
+
+    An absent configuration or the IPv4 wildcard is probed at ``127.0.0.1``; the
+    IPv6 wildcard at ``::1`` -- the dashboard binds ``::`` with ``IPV6_V6ONLY``,
+    so a v4 probe would call a healthy IPv6 sibling silent; a specific address
+    is probed as given. A holder bound somewhere else is the residual row the
+    predicate leaves unasserted on purpose.
+    """
+    from kiro_crew.gateway_lock import GatewayLock, probe_host_for_bind
+
+    assert probe_host_for_bind(bind) == host
+    assert GatewayLock(Path("/nonexistent-home"), port=5477, bind_address=bind)._probe_host == host
+
+
+@pytest.mark.parametrize(
+    "address, family, host, reaches",
+    [
+        ("127.0.0.1", "4", "127.0.0.1", True),
+        ("::ffff:127.0.0.1", "6", "127.0.0.1", True),  # v4-mapped spelling of the v4 address
+        ("0.0.0.0", "4", "127.0.0.1", True),  # the v4 wildcard reaches every v4 host
+        ("0.0.0.0", "4", "::1", False),
+        ("::", "6", "::1", True),  # the v6 wildcard reaches every v6 host ...
+        ("::", "6", "127.0.0.1", False),  # ... and not a v4 one: IPV6_V6ONLY is enforced
+        ("*", "4", "127.0.0.1", True),  # lsof's spelling, family decides
+        ("*", "6", "::1", True),
+        ("*", "6", "127.0.0.1", False),
+        ("*", "", "127.0.0.1", False),  # family unreported: unknowable, never asserted
+        ("", "4", "127.0.0.1", False),  # no address reported: unknowable
+        ("::1", "6", "::1", True),
+        ("::1", "6", "127.0.0.1", False),  # the residual row: bound elsewhere
+        ("10.20.30.40", "4", "127.0.0.1", False),
+        ("10.20.30.40", "4", "10.20.30.40", True),
+        ("garbage", "4", "127.0.0.1", False),
+    ],
+)
+def test_a_listener_reaches_the_probe_host_only_when_its_bind_covers_it(
+    address, family, host, reaches
+):
+    """The address-bound half of the port conjunct, row by row.
+
+    Port ownership is address-agnostic; the HTTP probe is not. Tying the two to
+    ONE socket is what stops a stranger's answer at the probe address from
+    being credited to a lock owner bound elsewhere. Anything the platform did
+    not report -- no address, a wildcard with no family -- is unknowable and
+    therefore False: the conjunct is never asserted on a fact nobody supplied.
+    """
+    from kiro_crew.gateway_lock import _listener_reaches
+    from kiro_crew.platform_compat import PortListener
+
+    assert _listener_reaches(PortListener(1, address, family), host) is reaches
 
 
 def test_refusal_names_the_dead_acquirer_and_the_single_inheritor(monkeypatch, refused_lock):
@@ -616,7 +761,7 @@ def test_refusal_names_the_dead_acquirer_and_the_single_inheritor(monkeypatch, r
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [23185])
     monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
     monkeypatch.setattr(platform_compat, "parent_pid", lambda _p: 1)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [23185])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: _listeners(23185))
     monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: False)
 
     err = _refusal(refused_lock, port=5477)
@@ -625,6 +770,9 @@ def test_refusal_names_the_dead_acquirer_and_the_single_inheritor(monkeypatch, r
     assert "pid 23184) no longer exists" in text
     assert "inherited that descriptor" in text
     assert "parent (pid 1) is gone" in text and "kill -9 23185" in text
+    # Not a live holder: the inheritor may exit on its own, and a relaunch is
+    # what brings the gateway back when it does, so the exit stays restartable.
+    assert err.live_holder is False
 
 
 def test_refusal_withholds_kill_when_the_candidates_parent_is_alive(monkeypatch, refused_lock):
@@ -640,7 +788,7 @@ def test_refusal_withholds_kill_when_the_candidates_parent_is_alive(monkeypatch,
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [23185])
     monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
     monkeypatch.setattr(platform_compat, "parent_pid", lambda _p: 9001)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
     monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: False)
 
     text = str(_refusal(refused_lock, port=5477))
@@ -658,7 +806,7 @@ def test_refusal_withholds_kill_from_a_candidate_that_is_serving_http(monkeypatc
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [23185])
     monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
     monkeypatch.setattr(platform_compat, "parent_pid", lambda _p: 1)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [23185])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: _listeners(23185))
     monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: True)
 
     text = str(_refusal(refused_lock, port=5477))
@@ -674,7 +822,7 @@ def test_refusal_refuses_to_guess_between_multiple_openers(monkeypatch, refused_
     monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: False)
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [23185, 30001])
     monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
 
     text = str(_refusal(refused_lock, port=5477))
     assert "pid 23185" in text and "pid 30001" in text
@@ -711,25 +859,45 @@ def test_refusal_keeps_the_hedge_when_there_is_no_port_to_weigh(monkeypatch, ref
     assert "could not be identified" in text
     assert "may be stale" in text
     assert "kill" not in text.lower()  # we cannot name anyone -- do not guess
+    assert err.live_holder is False  # a hedge is not a verdict
 
 
-def test_refusal_names_a_live_port_holding_pid_without_an_owner_surface(monkeypatch, refused_lock):
-    """Running and holding the dashboard port: that is the gateway, so say so."""
+def test_refusal_hedges_when_a_live_port_holding_pid_has_no_owner_surface(
+    monkeypatch, refused_lock
+):
+    """Running and holding the dashboard port, but nothing shows it ACQUIRED the lock.
+
+    This is the shape without ``/proc/locks`` (macOS, Windows, an unreadable
+    ``/proc``) and on a Linux home whose filesystem reports a device the lock
+    table never matches (btrfs subvolumes, overlayfs). The recorded pid is the
+    only thing on file, and a pid number is reused: a process that happens to
+    listen on the port is what a serving gateway looks like, not proof of one.
+    So the message tells the operator what to do first, says plainly that the
+    holder cannot be confirmed, and the verdict stays restartable -- exit 78
+    would stand the unit down with no evidence anyone holds the lock.
+    """
     from kiro_crew import platform_compat
 
     monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [4242])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: _listeners(4242))
 
     err = _refusal(refused_lock, port=5477)
     text = str(err)
     assert err.holder_pid == 4242
-    assert "held by pid 4242" in text
     assert "running and holds port 5477" in text
-    assert "may be stale" not in text  # sending the operator after a phantom
+    assert "held by pid" not in text  # identity unknowable: never assert it
+    assert "cannot confirm" in text and "not treated as permanent" in text  # the hedge
+    # This branch is the NON-Linux path too (no /proc/locks there), so the hedge
+    # must not promise a systemd relaunch macOS (launchd) and Windows never make.
+    assert "systemd" not in text
+    assert "may be stale" not in text  # the pid is alive; what is unknown is the lock
     assert "kirocrew stop" in text
     assert "kill" not in text.lower()
+    # Only a POSITIVELY identified acquirer (``/proc/locks``) that is running and
+    # on the port is a live holder; the recorded pid alone never is.
+    assert err.live_holder is False
 
 
 def test_refusal_hedges_when_the_recorded_pid_holds_no_port(monkeypatch, refused_lock):
@@ -739,12 +907,14 @@ def test_refusal_hedges_when_the_recorded_pid_holds_no_port(monkeypatch, refused
     monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
-    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [])
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
 
-    text = str(_refusal(refused_lock, port=5477))
+    err = _refusal(refused_lock, port=5477)
+    text = str(err)
     assert "does not hold port 5477" in text
     assert "reused the number" in text
     assert "kill" not in text.lower()
+    assert err.live_holder is False
 
 
 def test_refusal_reports_an_inherited_lock_when_the_recorded_pid_is_gone(monkeypatch, refused_lock):
@@ -755,9 +925,11 @@ def test_refusal_reports_an_inherited_lock_when_the_recorded_pid_is_gone(monkeyp
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: False)
 
-    text = str(_refusal(refused_lock, port=5477))
+    err = _refusal(refused_lock, port=5477)
+    text = str(err)
     assert "no longer exists" in text
     assert "inherited that descriptor" in text
     assert "may be stale" not in text
     assert "lsof " in text
     assert "kill" not in text.lower()
+    assert err.live_holder is False

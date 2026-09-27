@@ -1481,6 +1481,75 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
   - Boot survival via `WantedBy=multi-user.target` (no linger needed —
     that's a user-service concept; this is system-level).
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
+  - **A home another gateway already serves is not retried.** `kirocrew
+    gateway` takes `<home>/gateway.lock` before it binds anything. One
+    predicate decides whether a refusal is the kind a restart cannot heal:
+    `GatewayLock._serving_verdict` in `gateway_lock.py`, the serving-holder
+    predicate, asked about the process `/proc/locks` positively identifies as
+    the lock's acquirer (of the lock file, or of the home directory when the
+    file has been deleted or replaced) and never about the pid the lock file
+    merely records. It carries four conjuncts, each measured once: that
+    acquirer is alive; it holds the configured dashboard port (one listener
+    enumeration, `platform_compat.find_port_listeners`, filtered to the
+    owner's own sockets); it holds it AT the address the probe reaches — the
+    address this gateway is configured to bind (`KIROCREW_BIND` when it parses
+    as an IP address; an absent override or the IPv4 wildcard `0.0.0.0` is
+    probed at `127.0.0.1`, the IPv6 wildcard `::` at `::1` because the
+    dashboard binds it `IPV6_V6ONLY` and a v4 connect never reaches it) — with
+    the owner's wildcard binds covering that address by family only
+    (`0.0.0.0` covers any v4 host, `::` covers v6 hosts and not v4 ones), and
+    an unreported address or family counting as unknowable, never as covering;
+    and it answers HTTP there. The address conjunct is what ties port ownership
+    and HTTP health to ONE process: port ownership alone is address-agnostic,
+    so without it a stranger answering at the probe address on the same port
+    would be credited to a lock owner bound elsewhere. Only all four make
+    `GatewayLockError.live_holder` True — a sibling gateway serving the home,
+    which this one can displace on neither front while it lives — and then the
+    process exits `gateway_lock.LIVE_HOLDER_EXIT_CODE` (78, `EX_CONFIG`: two
+    supervisors pointed at one home is a host configuration, and the remedy is
+    to change it); the unit's `RestartPreventExitStatus=` names that code, so
+    a `Restart=always` unit goes `failed` once with the refusal line in the
+    journal instead of relaunching every `RestartSec` against a refusal the
+    sibling keeps permanent (bounded by StartLimit* on the shipped unit,
+    unbounded on a unit without them). Every other refusal exits 1, which the
+    unit's `Restart=always` relaunches, because a later attempt can find it
+    cleared or because the evidence for standing down is missing: a lock file
+    replaced faster than it can be locked, a home that cannot be opened or
+    measured for directory locks, an flock whose acquirer is gone (a wedged
+    inheritor holds it until that process dies), a live acquirer that does not
+    hold the port (a sibling still starting, or one shutting down that has
+    closed its listener and releases the lock next), a live acquirer on the
+    port but silent at the probed address — a wedged gateway (a hung process
+    keeps its listening socket bound, and a terminal exit would leave the unit
+    `failed` with nothing left to relaunch once that process dies) or, the
+    **residual row** the predicate leaves unasserted by design, a gateway that
+    holds the port only at another address than this one would bind, or whose
+    socket addresses the platform could not report (probing the holder's own
+    listener address instead is the follow-up tracked in the PR's
+    deferred-finding issue, not a guess made here); the message names what was
+    measured (`holds port N, not answering HTTP at 127.0.0.1`, or `holds port
+    N at ::1, not at 127.0.0.1`) and says the refusal is not treated as
+    permanent — and a holder no surface could identify — no `/proc/locks`
+    (macOS, Windows), or a Linux filesystem whose device numbers never match
+    the lock table (btrfs subvolumes, overlayfs) — where the pid the lock file
+    records may be alive and on the port and still be a reused number rather
+    than the process that holds the lock; the predicate is never asked about
+    it, and that refusal's message says the holder cannot be confirmed and that
+    a supervisor, if one manages the gateway, will retry it (the same message
+    on every platform, since macOS and Windows reach this branch on every
+    refusal). On the identified-acquirer paths one listener enumeration and at
+    most one HTTP probe (its own 1.5 s budget) feed both the message and the
+    exit status, so they cannot disagree; the orphaned-lock path (a dead
+    acquirer, candidate openers) keeps its own per-candidate facts. With no
+    port to weigh (`--port auto`, `--slack-only`) the verdict cannot be reached
+    and every refusal stays restartable. The constant is defined once, beside the
+    refusal in `gateway_lock.py`, and both `cli.py` (the exit) and
+    `render_unit()` (the exemption) import it; `test_service.py` pins the
+    rendered directive to the constant and the constant to 78, because the
+    value is baked into installed units, which `service install` writes once
+    and no upgrade re-renders — a unit written by an earlier build keeps
+    relaunching on this refusal until it is re-rendered. An existing install
+    picks the directive up by re-running `kirocrew service install`.
   - **Two scopes, both visible.** `install` writes the system unit only, but
     the SELinux refusal hands the operator a per-user unit
     (`render_unit(user_scope=True)`, managed with `systemctl --user`), so

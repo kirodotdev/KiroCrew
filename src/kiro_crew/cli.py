@@ -54,7 +54,7 @@ from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
-from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
+from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
@@ -601,6 +601,29 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
         return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
     except Exception:
         # Diagnosis only — never let it break the refusal path it decorates.
+        return None
+
+
+def _diagnostic_bind_address() -> str | None:
+    """The address this gateway is configured to bind, for lock-refusal diagnosis.
+
+    The lock's serving-holder predicate (``gateway_lock.GatewayLock._serving_verdict``)
+    probes a holder of the port for HTTP at THIS address, never at one it
+    guesses. Resolved by the gateway's own resolver,
+    ``dashboard.urls.bind_address_for``: a valid ``KIROCREW_BIND`` is the bind
+    whatever ``local_only`` says, and the two fallbacks that flag chooses between
+    (loopback, the v4 wildcard) are probed at the same loopback address, so
+    ``local_only=True`` loses nothing. ``None`` only when the resolver itself
+    cannot be reached -- diagnosis only, never a reason to break the refusal
+    path it decorates; the lock then probes loopback.
+    """
+    try:
+        # Deferred import, for the same reason as ``_diagnostic_port``: importing
+        # ``dashboard.urls`` executes ``dashboard/__init__``.
+        from kiro_crew.dashboard.urls import bind_address_for
+
+        return bind_address_for(local_only=True)
+    except Exception:
         return None
 
 
@@ -3239,10 +3262,19 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # passed for diagnosis only: on refusal it lets the error say whether the
         # holder is answering on that port or is a wedged orphan squatting on it.
         try:
-            _gw_lock = GatewayLock(config_dir(), port=_diagnostic_port(gw_kwargs)).acquire()
+            _gw_lock = GatewayLock(
+                config_dir(),
+                port=_diagnostic_port(gw_kwargs),
+                bind_address=_diagnostic_bind_address(),
+            ).acquire()
         except GatewayLockError as exc:
             print(f"👻 {exc}", file=sys.stderr)
-            sys.exit(1)
+            # A live holder is a sibling gateway already serving this home, so
+            # retrying can only meet the same refusal: exit the code the systemd
+            # unit's RestartPreventExitStatus= names (service/linux.py) and let
+            # the supervisor stand down. Every other refusal is one a later
+            # attempt may find cleared, so it keeps the restartable exit 1.
+            sys.exit(LIVE_HOLDER_EXIT_CODE if exc.live_holder else 1)
         try:
             asyncio.run(_gateway(**gw_kwargs))
         finally:

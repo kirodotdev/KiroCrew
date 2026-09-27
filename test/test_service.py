@@ -402,6 +402,55 @@ class TestLinuxUnitRendering:
         # by `systemctl --user`).
         assert "WantedBy=multi-user.target" in unit
 
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_render_unit_exempts_the_live_holder_refusal_from_restart(
+        self, monkeypatch, user_scope
+    ):
+        """``Restart=always`` relaunches every exit -- including the lock refusal
+        for a home a live sibling gateway already serves. That refusal stands
+        for as long as the incumbent runs, so each relaunch boots the stack only
+        to meet it again until StartLimit* parks the unit ``failed`` (or forever
+        on a unit without them). ``RestartPreventExitStatus`` names that ONE
+        status so the unit stands down instead, and it names the constant the
+        CLI exits with, so the exit and the exemption cannot drift apart.
+        """
+        from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/home/u/.toolbox/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ):
+            unit = svc_linux.render_unit(user_scope=user_scope)
+
+        directives = [
+            ln for ln in unit.splitlines() if ln.startswith("RestartPreventExitStatus=")
+        ]
+        assert len(directives) == 1, unit
+        exempt = {int(tok) for tok in directives[0].split("=", 1)[1].split()}
+        assert exempt == {LIVE_HOLDER_EXIT_CODE}
+        # Pinned: the value is baked into every installed unit, which is not
+        # re-rendered on upgrade, so changing it is a deliberate act that must
+        # also re-render those units -- not a drive-by. 78 is EX_CONFIG.
+        assert LIVE_HOLDER_EXIT_CODE == 78
+        # The exemption must not widen: a transient lock failure exits 1 and
+        # the running gateway's own relaunch requests (69 listener lost, 75
+        # stale assets) rely on being restarted.
+        assert not exempt & {0, 1, 69, 75}
+        # The restart policy itself is untouched: `always` (a clean self-exit
+        # still relaunches) and the StartLimit* cap on a tight loop stay.
+        assert "Restart=always" in unit
+        assert "RestartSec=10" in unit
+        assert "StartLimitBurst=3" in unit
+        assert "StartLimitIntervalSec=300" in unit
+        # The directive belongs to [Service], not [Unit] or [Install].
+        service_block = unit.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        assert directives[0] in service_block.splitlines()
+
     def test_render_unit_carries_the_session_bus_environment(self, monkeypatch):
         """A system unit inherits no login-session env, so pods (systemd --user
         units) were unreachable from the service-installed gateway. The unit must

@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.cli_commands import _cron
 from kiro_crew.cli_doctor import _doctor
 from kiro_crew.cli_server import _update
@@ -6150,6 +6152,382 @@ class TestSeedDispatch:
         mock_seed.assert_called_once()
         mock_gateway.assert_called_once()
         mock_run.assert_called_once_with(gateway_call)
+
+
+class TestGatewayLockRefusalExit:
+    """How ``kirocrew gateway`` exits when the home's lock refuses it.
+
+    A supervisor reads nothing but the exit status, so the status has to say
+    whether relaunching can help. A live holder is a sibling gateway that keeps
+    serving the home for as long as it runs, so a relaunch meets the identical
+    refusal every time; every other refusal is one a later attempt may find
+    cleared. The systemd unit exempts exactly the first status from
+    ``Restart=always`` (see ``test_service.py``), so the mapping here and the
+    rendered unit must agree on one constant.
+    """
+
+    def _refused_exit_code(self, monkeypatch, error):
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        lock_cls = MagicMock()
+        lock_cls.return_value.acquire.side_effect = error
+        with (
+            patch("kiro_crew.cli.GatewayLock", lock_cls),
+            patch("kiro_crew.cli_server._gateway") as mock_gateway,
+            patch("kiro_crew.cli.asyncio.run") as mock_run,
+            # The gateway path arms faulthandler on the real stderr descriptor,
+            # which a capsys-replaced stream does not have.
+            patch("kiro_crew.cli.faulthandler.enable"),
+        ):
+            from kiro_crew.cli import main
+
+            with pytest.raises(SystemExit) as excinfo:
+                main()
+        # A refused lock must never reach the gateway body.
+        mock_gateway.assert_not_called()
+        mock_run.assert_not_called()
+        return excinfo.value.code
+
+    def test_a_live_holder_refusal_exits_the_terminal_code(self, monkeypatch, tmp_path, capsys):
+        from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLockError
+
+        error = GatewayLockError(
+            tmp_path,
+            4242,
+            f"{tmp_path} is held by pid 4242 (holds port 5476, answering HTTP) -- another "
+            f"gateway already owns {tmp_path}",
+            live_holder=True,
+        )
+        assert self._refused_exit_code(monkeypatch, error) == LIVE_HOLDER_EXIT_CODE
+        # The whole point: not the restartable status a supervisor retries.
+        assert LIVE_HOLDER_EXIT_CODE not in (0, 1)
+        assert "another gateway already owns" in capsys.readouterr().err
+
+    def test_every_other_lock_refusal_keeps_the_restartable_exit(self, monkeypatch, tmp_path):
+        from kiro_crew.gateway_lock import GatewayLockError
+
+        error = GatewayLockError(
+            tmp_path,
+            None,
+            f"{tmp_path} is being replaced faster than it can be locked",
+        )
+        assert error.live_holder is False
+        assert self._refused_exit_code(monkeypatch, error) == 1
+
+    def test_an_unidentified_owner_on_the_port_keeps_the_restartable_exit(
+        self, monkeypatch, tmp_path
+    ):
+        """The recorded pid is alive and on the port, but no surface names the acquirer.
+
+        Built from the REAL diagnosis rather than a hand-made error: without
+        ``/proc/locks`` (or on a filesystem it never matches) the lock file's pid
+        is the only fact, and a reused pid number that happens to listen on the
+        port must not stand the unit down. The refusal keeps exit 1 so systemd
+        retries; only a positively identified acquirer earns the terminal code.
+        """
+        from kiro_crew import gateway_lock, platform_compat
+
+        (tmp_path / gateway_lock.LOCK_FILENAME).write_text("4242\n", encoding="utf-8")
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", lambda *a, **k: False)
+        monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
+        monkeypatch.setattr(
+            platform_compat,
+            "find_port_listeners",
+            lambda _p: [platform_compat.PortListener(4242, "127.0.0.1", "4")],
+        )
+        with pytest.raises(gateway_lock.GatewayLockError) as excinfo:
+            gateway_lock.GatewayLock(tmp_path, port=5477).acquire()
+        error = excinfo.value
+        assert error.holder_pid == 4242 and "holds port 5477" in str(error)
+        assert error.live_holder is False
+        assert self._refused_exit_code(monkeypatch, error) == 1
+
+    @pytest.mark.parametrize("answers_http", [True, False])
+    def test_an_identified_owner_on_the_port_is_terminal_only_when_it_answers_http(
+        self, monkeypatch, tmp_path, answers_http
+    ):
+        """Built from the REAL diagnosis: ``/proc/locks`` names a live acquirer on the port.
+
+        Answering HTTP is what makes it a gateway serving this home, and only
+        then does the process exit the terminal code. A holder that listens
+        without answering is a wedged gateway: a hung process keeps its socket
+        bound, and a terminal exit here would park the unit `failed` with nothing
+        left to relaunch once that process dies -- so the exit stays 1.
+        """
+        from kiro_crew import gateway_lock, platform_compat
+
+        (tmp_path / gateway_lock.LOCK_FILENAME).write_text("16968\n", encoding="utf-8")
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", lambda *a, **k: False)
+        monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+        monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+        monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
+        monkeypatch.setattr(
+            platform_compat,
+            "find_port_listeners",
+            lambda _p: [platform_compat.PortListener(16968, "127.0.0.1", "4")],
+        )
+        monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: answers_http)
+        with pytest.raises(gateway_lock.GatewayLockError) as excinfo:
+            gateway_lock.GatewayLock(tmp_path, port=5477).acquire()
+        error = excinfo.value
+        assert error.holder_pid == 16968
+        assert error.live_holder is answers_http
+        expected = gateway_lock.LIVE_HOLDER_EXIT_CODE if answers_http else 1
+        assert self._refused_exit_code(monkeypatch, error) == expected
+
+    # The serving-holder predicate's truth table (``GatewayLock._serving_verdict``),
+    # one row per shape a refusal can take. ``owner`` is what ``/proc/locks`` names
+    # (None = no owner surface: macOS, Windows, a filesystem the lock table never
+    # matches); ``recorded`` is the pid stamped in the lock file; ``listeners`` are
+    # the LISTEN sockets the enumeration finds on the configured port, as
+    # ``(pid, address, family)``; ``answers_at`` is the set of addresses at which
+    # the port answers HTTP; ``bind`` is what this gateway is configured to bind
+    # (``KIROCREW_BIND``); ``replaced`` reaches the lock through the
+    # deleted-lock-file path (the home anchor's acquirer). Expectation:
+    # ``live_holder`` and the exit code ``kirocrew gateway`` takes.
+    _OWN = (16968, "127.0.0.1", "4")
+    _TRUTH_TABLE = [
+        # -- identified acquirer (the /proc/locks owner), lock-file path -------------
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[_OWN], answers_at={"127.0.0.1"}),
+            True,
+            id="identified-alive-port-answering",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[_OWN], answers_at=set()),
+            False,
+            id="identified-alive-port-silent",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[], answers_at={"127.0.0.1"}),
+            False,
+            id="identified-alive-no-port",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=False, listeners=[_OWN], answers_at={"127.0.0.1"}),
+            False,
+            id="identified-dead-acquirer",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[_OWN], answers_at={"127.0.0.1"}, port=None),
+            False,
+            id="identified-alive-no-port-configured",
+        ),
+        # -- the ADDRESS conjunct: the owner's own socket must be the one the probe reaches
+        pytest.param(
+            dict(
+                owner=16968,
+                alive=True,
+                listeners=[(16968, "10.20.30.40", "4"), (999, "127.0.0.1", "4")],
+                answers_at={"127.0.0.1"},
+            ),
+            False,
+            id="stranger-answers-at-probe-address-owner-bound-elsewhere",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[(16968, "*", "")], answers_at={"127.0.0.1"}),
+            False,
+            id="owner-address-unknowable",
+        ),
+        # -- configured bind: the predicate probes THIS gateway's bind, wildcards by family
+        pytest.param(
+            dict(
+                owner=16968,
+                alive=True,
+                listeners=[(16968, "0.0.0.0", "4")],
+                answers_at={"127.0.0.1"},
+                bind="0.0.0.0",
+            ),
+            True,
+            id="configured-bind-v4-wildcard-probes-loopback",
+        ),
+        pytest.param(
+            dict(
+                owner=16968,
+                alive=True,
+                listeners=[(16968, "::", "6")],
+                answers_at={"::1"},
+                bind="::",
+            ),
+            True,
+            id="configured-bind-v6-wildcard-probes-v6-loopback",
+        ),
+        pytest.param(
+            dict(
+                owner=16968,
+                alive=True,
+                listeners=[(16968, "::1", "6")],
+                answers_at={"::1"},
+                bind="::1",
+            ),
+            True,
+            id="configured-bind-v6-loopback-probed-there",
+        ),
+        # -- the RESIDUAL row, unasserted by design: the owner holds the port only elsewhere
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[(16968, "::1", "6")], answers_at={"::1"}),
+            False,
+            id="residual-holder-bound-to-another-address",
+        ),
+        # -- no owner surface: the predicate is never asked, the recorded pid decides nothing
+        pytest.param(
+            dict(
+                owner=None,
+                alive=True,
+                listeners=[(4242, "127.0.0.1", "4")],
+                answers_at={"127.0.0.1"},
+            ),
+            False,
+            id="unidentified-recorded-alive-port-answering",
+        ),
+        pytest.param(
+            dict(owner=None, alive=True, listeners=[], answers_at={"127.0.0.1"}),
+            False,
+            id="unidentified-recorded-alive-no-port",
+        ),
+        pytest.param(
+            dict(
+                owner=None,
+                alive=False,
+                listeners=[(4242, "127.0.0.1", "4")],
+                answers_at={"127.0.0.1"},
+            ),
+            False,
+            id="unidentified-recorded-dead",
+        ),
+        # -- lock file deleted or replaced: the home anchor's acquirer, same predicate
+        pytest.param(
+            dict(
+                owner=16968, alive=True, listeners=[_OWN], answers_at={"127.0.0.1"}, replaced=True
+            ),
+            True,
+            id="replaced-lock-file-answering",
+        ),
+        pytest.param(
+            dict(owner=16968, alive=True, listeners=[_OWN], answers_at=set(), replaced=True),
+            False,
+            id="replaced-lock-file-silent",
+        ),
+        pytest.param(
+            dict(
+                owner=16968,
+                alive=True,
+                listeners=[(16968, "10.20.30.40", "4"), (999, "127.0.0.1", "4")],
+                answers_at={"127.0.0.1"},
+                replaced=True,
+            ),
+            False,
+            id="replaced-lock-file-stranger-at-probe-address",
+        ),
+        pytest.param(
+            dict(
+                owner=None,
+                alive=True,
+                listeners=[(4242, "127.0.0.1", "4")],
+                answers_at={"127.0.0.1"},
+                replaced=True,
+            ),
+            False,
+            id="replaced-lock-file-unidentified",
+        ),
+    ]
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="the home anchor rows need POSIX flock")
+    @pytest.mark.parametrize("row, live", _TRUTH_TABLE)
+    def test_live_holder_truth_table(self, monkeypatch, tmp_path, row, live):
+        """Every row of the serving-holder predicate, judged by the REAL diagnosis and exit.
+
+        The lock is forced to read as held; the owner surface, liveness, the
+        listener enumeration (pid and bound address) and the HTTP probe are the
+        parameters. Exactly one shape is terminal -- an identified acquirer,
+        alive, whose OWN socket on the configured port is the one the probe
+        reaches at the address this gateway is configured to bind, answering
+        HTTP there -- and every other row keeps the restartable exit 1: the
+        residual "bound elsewhere" row, a stranger answering at the probe
+        address on the same port, and an owner whose socket address the
+        platform did not report included.
+        """
+        from kiro_crew import gateway_lock, platform_compat
+
+        owner = row["owner"]
+        recorded = 4242
+        port = row.get("port", 5477)
+        answers_at = row["answers_at"]
+        listeners = [platform_compat.PortListener(*entry) for entry in row["listeners"]]
+        probes: list[str] = []
+
+        (tmp_path / gateway_lock.LOCK_FILENAME).write_text(f"{recorded}\n", encoding="utf-8")
+        if row.get("replaced"):
+            # The lock FILE locks fine (it was re-created), the home DIRECTORY is held.
+            monkeypatch.setattr(
+                platform_compat,
+                "try_acquire_lock",
+                lambda fd, exclusive=True: not stat.S_ISDIR(os.fstat(fd).st_mode),
+            )
+            monkeypatch.setattr(
+                gateway_lock,
+                "_directory_locks_supported",
+                lambda _home: (gateway_lock._DirectoryLockSupport.SUPPORTED, None),
+            )
+        else:
+            monkeypatch.setattr(platform_compat, "try_acquire_lock", lambda *a, **k: False)
+        monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: owner)
+        monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "parent_pid", lambda _p: 1)
+        monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 3)
+        monkeypatch.setattr(
+            platform_compat, "pid_exists", lambda pid: row["alive"] and pid in (owner, recorded)
+        )
+        monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: listeners)
+
+        def _answers(probed_port, *_a, host="127.0.0.1", **_k):
+            probes.append(host)
+            return probed_port == port and host in answers_at
+
+        monkeypatch.setattr(gateway_lock, "_port_answers_http", _answers)
+
+        with pytest.raises(gateway_lock.GatewayLockError) as excinfo:
+            gateway_lock.GatewayLock(tmp_path, port=port, bind_address=row.get("bind")).acquire()
+        error = excinfo.value
+        assert error.live_holder is live
+        if owner is None:
+            # No identified owner: the predicate is never asked, so nothing is probed.
+            assert probes == []
+        elif live is False and row["alive"] and row["listeners"]:
+            own = [e for e in listeners if e.pid == owner]
+            if own and not any(
+                gateway_lock._listener_reaches(e, gateway_lock.probe_host_for_bind(row.get("bind")))
+                for e in own
+            ):
+                # Bound elsewhere (or unknowable): the probe is never made, so a
+                # stranger's answer at the probe address cannot be credited to the owner.
+                assert probes == []
+        expected_exit = gateway_lock.LIVE_HOLDER_EXIT_CODE if live else 1
+        assert self._refused_exit_code(monkeypatch, error) == expected_exit
+
+    @pytest.mark.parametrize(
+        "override",
+        ["", "   ", "127.0.0.1", "0.0.0.0", "::", "::1", "10.20.30.40", "not-an-ip", "[::1]"],
+    )
+    def test_diagnostic_bind_address_is_the_bind_the_gateway_resolves(self, monkeypatch, override):
+        """The lock probes the bind the gateway itself resolves -- one resolver, not a copy.
+
+        ``_diagnostic_bind_address`` calls ``dashboard.urls.bind_address_for`` with
+        ``local_only=True``: a valid ``KIROCREW_BIND`` is the bind either way, and
+        the two fallbacks that flag can produce (loopback, the v4 wildcard) are
+        probed at the same loopback address, so the flag cannot change the answer.
+        """
+        from kiro_crew.cli import _diagnostic_bind_address
+        from kiro_crew.dashboard.urls import bind_address_for
+        from kiro_crew.gateway_lock import probe_host_for_bind
+
+        monkeypatch.setenv("KIROCREW_BIND", override)
+        assert _diagnostic_bind_address() == bind_address_for(local_only=True)
+        assert probe_host_for_bind(bind_address_for(local_only=False)) == probe_host_for_bind(
+            bind_address_for(local_only=True)
+        )
 
 
 class TestDoctorEmbeddings:
