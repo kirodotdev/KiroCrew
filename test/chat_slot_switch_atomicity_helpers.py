@@ -7,6 +7,7 @@ aliases the switch tests pick between.
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
@@ -56,6 +57,13 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # The effort switch saves its explicit-Default intent through the map.
+    state.sessions.aflush = AsyncMock()
+    state.sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    state.sessions.effort_basis_locked = MagicMock(return_value=False)
+    state.sessions.effort_intent_write = MagicMock(
+        side_effect=lambda _key: contextlib.nullcontext()
+    )
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
     # Not a channel-resumed session by default, so a mid-turn pick on a pure

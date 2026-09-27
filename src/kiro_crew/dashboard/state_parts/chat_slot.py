@@ -207,6 +207,8 @@ class _ChatSlot:
         "_transient_5xx_retries",
         "_transient_ladder_started",
         "_turn_retries",
+        "_effort_intent_owed",
+        "_session_effort_intent_gen",
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
@@ -536,6 +538,8 @@ class _ChatSlot:
     _transient_5xx_retries: int
     _transient_ladder_started: float
     _turn_retries: dict[str, int]
+    _effort_intent_owed: bool
+    _session_effort_intent_gen: int
     _infra_retries: int
     _fallback_candidate_idx: int
     _fallback_walked: list[str]

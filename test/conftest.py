@@ -262,6 +262,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     isolate_mcp_host_paths,
     make_escaping_link,
     named_cron_caller,
+    no_zero_tool_check,
     opened,
     plant_day_link,
     short_sock_dir,

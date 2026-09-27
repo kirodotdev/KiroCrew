@@ -167,6 +167,22 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(FakeRuntime.instances), 1)
         await pool.end_batch()
 
+    async def test_effort_overlay_write_runs_off_event_loop_thread(self):
+        _install_fake_runtime(self)
+        loop_thread = threading.current_thread()
+        writer_threads = []
+
+        def _record_writer_thread(*_args, **_kwargs):
+            writer_threads.append(threading.current_thread())
+
+        with unittest.mock.patch.object(rp, "_write_effort_overlay", _record_writer_thread):
+            pool = ReviewPool(work_dir=_work_dir(self))
+            await pool.begin_batch()
+            await pool.end_batch()
+
+        self.assertEqual(len(writer_threads), 1)
+        self.assertIsNot(writer_threads[0], loop_thread)
+
     async def test_end_batch_kills_runtime_only_when_drained(self):
         _install_fake_runtime(self)
         pool = ReviewPool(work_dir=_work_dir(self))
@@ -590,6 +606,113 @@ class TestReviewEffort(unittest.TestCase):
     def test_write_effort_overlay_never_raises(self):
         _write_effort_overlay("/proc/nonexistent/\x00bad", "claude-sonnet-4.6")
 
+    def test_write_effort_overlay_keeps_non_ascii_text_unescaped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".kiro" / "settings"
+            settings.mkdir(parents=True)
+            (settings / "cli.json").write_text(
+                json.dumps({"operator.note": "界"}, ensure_ascii=False), encoding="utf-8"
+            )
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            raw = (settings / "cli.json").read_bytes()
+            self.assertIn("界".encode("utf-8"), raw)
+            self.assertNotIn(b"\\u754c", raw)
+
+    def test_write_effort_overlay_keeps_an_unpaired_surrogate_escaped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / ".kiro" / "settings"
+            settings.mkdir(parents=True)
+            (settings / "cli.json").write_text('{"operator.note": "\\ud800"}', encoding="utf-8")
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            data = json.loads((settings / "cli.json").read_bytes())
+            self.assertEqual(data["operator.note"], "\ud800")
+            self.assertEqual(
+                data["chat.modelDefaults"]["claude-sonnet-4.6"]["output_config"]["effort"],
+                "high")
+
+    def test_a_repeat_write_leaves_the_owned_file_untouched(self):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(
+            workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0])
+        ):
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            cli = Path(tmp) / ".kiro" / "settings" / "cli.json"
+            before = cli.read_bytes()
+            before_stat = cli.stat()
+            clock[0] += 10
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+
+            after_stat = cli.stat()
+            self.assertEqual(cli.read_bytes(), before)
+            self.assertEqual(
+                (after_stat.st_ino, after_stat.st_mtime_ns),
+                (before_stat.st_ino, before_stat.st_mtime_ns),
+            )
+            data = json.loads(before)
+            self.assertEqual(data["kirocrew.effortOwned"], {"claude-sonnet-4.6": "high"})
+            self.assertEqual(data["kirocrew.effortOwnedStamp"], int(after_stat.st_mtime))
+
+    def test_a_level_change_writes_and_restamps(self):
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(
+            workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0])
+        ):
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+            cli = Path(tmp) / ".kiro" / "settings" / "cli.json"
+            before = json.loads(cli.read_text(encoding="utf-8"))
+            clock[0] += 10
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "low")
+
+            after = json.loads(cli.read_text(encoding="utf-8"))
+            self.assertEqual(
+                after["chat.modelDefaults"]["claude-sonnet-4.6"]["output_config"]["effort"],
+                "low",
+            )
+            self.assertEqual(after["kirocrew.effortOwned"], {"claude-sonnet-4.6": "low"})
+            self.assertEqual(after["kirocrew.effortOwnedStamp"], int(cli.stat().st_mtime))
+            self.assertEqual(
+                after["kirocrew.effortOwnedStamp"], before["kirocrew.effortOwnedStamp"] + 10
+            )
+
+    def test_a_settings_link_leaving_the_work_dir_gets_no_write(self):
+        """A `.kiro` or `settings` link naming a folder outside the review
+        worker's work dir is refused by the settings lock every writer shares,
+        so the write is logged and skipped and the named folder gains nothing.
+        """
+        from kiro_crew import platform_compat
+
+        for redirect in (".kiro", "settings"):
+            with self.subTest(redirect=redirect), tempfile.TemporaryDirectory() as tmp:
+                work_dir = Path(tmp) / "work"
+                work_dir.mkdir()
+                outside = Path(tmp) / "outside"
+                (outside / "settings").mkdir(parents=True)
+                if redirect == ".kiro":
+                    link, target = work_dir / ".kiro", outside
+                else:
+                    (work_dir / ".kiro").mkdir()
+                    link, target = work_dir / ".kiro" / "settings", outside / "settings"
+                try:
+                    platform_compat.symlink_or_junction(target, link)
+                except (OSError, NotImplementedError):
+                    self.skipTest("planting the link needs symlink or junction creation")
+
+                with self.assertLogs(rp.logger, level="DEBUG") as logs:
+                    _write_effort_overlay(str(work_dir), "claude-sonnet-4.6", "high")
+
+                self.assertEqual([p.name for p in outside.rglob("*")], ["settings"])
+                self.assertIn("could not write review effort overlay", "\n".join(logs.output))
+
     def test_a_planted_link_at_the_overlay_name_takes_no_bytes(self):
         """`work_dir` is the review worker's OWN cwd, so it is plantable.
 
@@ -642,7 +765,14 @@ class TestReviewEffort(unittest.TestCase):
             published = json.loads(cli.read_text(encoding="utf-8"))
             self.assertNotIn("borrowed_key", published,
                              "the aliased document's keys were republished")
-            self.assertEqual(list(published), ["chat.modelDefaults"])
+            self.assertEqual(
+                list(published),
+                [
+                    "chat.modelDefaults",
+                    "kirocrew.effortOwned",
+                    "kirocrew.effortOwnedStamp",
+                ],
+            )
 
     def test_reviewer_model_falls_back_to_default(self):
         self.assertEqual(

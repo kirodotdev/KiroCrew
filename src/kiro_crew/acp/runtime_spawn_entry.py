@@ -19,8 +19,11 @@ Instance fields read: ``_acp_backend``, ``_answer_tasks``, ``_initialized``, ``_
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import runtime_death
@@ -33,6 +36,99 @@ if TYPE_CHECKING:
 
 #: The runtime's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.runtime")
+
+
+class ColdStartPermit:
+    """One cold-start admission permit, released once by whichever owner ends it.
+
+    The Default-branch lifecycle takes a start's permit BEFORE it opens the
+    work-directory overlay window, so a start that is still only queued holds no
+    window and a level pick in that directory is not held off by it. While it
+    queues it registers nothing on that fence either, so a write in the directory
+    waits for no part of the queue wait. The permit is then handed to the first
+    ``spawn`` of that start, which must not queue for a second one.
+
+    One flag decides the single release, so a double release is impossible by
+    construction: the spawn that consumed the permit releases it when it
+    finishes and the lifecycle's own release is then a no-op, while a start that
+    failed before any spawn consumed it is released by the lifecycle.
+
+    Only the task that created it may claim it. A task started under the window,
+    by a runtime start or by anything it calls, inherits the ContextVar's context
+    and would otherwise find this permit: it would spawn on another start's
+    admission, or on one already released, and so skip admission control
+    altogether.
+    """
+
+    def __init__(
+        self,
+        admission: runtime_start._ColdStartAdmission,
+        start_priority: StartPriority,
+        wait_ms: float,
+    ) -> None:
+        self.admission = admission
+        self.wait_ms = wait_ms
+        self._start_priority = start_priority
+        self._released = False
+        self._owner_task = asyncio.current_task()
+
+    def claimable(self) -> bool:
+        """Is this permit still live, and is the caller the task that took it?"""
+        return not self._released and self._owner_task is asyncio.current_task()
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self.admission.release(self._start_priority)
+
+
+_handed_down_cold_start_permit: contextvars.ContextVar[ColdStartPermit | None] = (
+    contextvars.ContextVar("kiro_crew_handed_down_cold_start_permit", default=None)
+)
+
+
+def _consume_handed_down_cold_start_permit() -> ColdStartPermit | None:
+    permit = _handed_down_cold_start_permit.get()
+    if permit is None or not permit.claimable():
+        # Not this task's permit, or already released: queue for its own permit
+        # rather than run on one this spawn does not own. The ContextVar is left
+        # alone, because a child task's set would not reach the owner anyway.
+        return None
+    # Cleared as it is consumed, so the respawn of a runtime that died during
+    # resume queues for its own permit rather than running on this one.
+    _handed_down_cold_start_permit.set(None)
+    return permit
+
+
+@asynccontextmanager
+async def handed_down_cold_start_admission(
+    start_priority: StartPriority,
+    *,
+    on_gate_queued: Callable[..., None] | None = None,
+    on_gate_acquired: Callable[..., None] | None = None,
+) -> AsyncIterator[ColdStartPermit]:
+    """Hold this start's admission permit for the first ``spawn`` beneath it.
+
+    A ContextVar and not a ``spawn`` keyword, because the lifecycle does not call
+    ``spawn``: it awaits a zero-argument ``start_runtime`` closure that reaches it
+    through ``_start_kiro_runtime``, which twenty of the provider's test files
+    stub. A keyword would have to be threaded through that stubbed seam and every
+    stub would have to accept and forward it, while the ContextVar travels the
+    same task with no signature in between, and a stub that never spawns simply
+    leaves the permit for this manager to release.
+    """
+    admission = runtime_start._cold_start_admission()
+    notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
+    wait_ms = await admission.acquire(start_priority)
+    permit = ColdStartPermit(admission, start_priority, wait_ms)
+    token = _handed_down_cold_start_permit.set(permit)
+    try:
+        notify_start_queue(logger, on_gate_acquired, wait_ms, START_QUEUE_ADMISSION)
+        yield permit
+    finally:
+        _handed_down_cold_start_permit.reset(token)
+        permit.release()
 
 
 async def spawn(
@@ -55,13 +151,22 @@ async def spawn(
     self._process_tree_confirmed_dead = False
 
     admission = runtime_start._cold_start_admission()
-    notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
-    wait_ms = await admission.acquire(start_priority)
+    handed_down = _consume_handed_down_cold_start_permit()
+    if handed_down is None:
+        notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
+        wait_ms = await admission.acquire(start_priority)
+    else:
+        # The lifecycle queued for this start's permit and is holding it, so it
+        # already reported the queue wait. Acquiring again would queue behind a
+        # permit this start itself holds.
+        admission = handed_down.admission
+        wait_ms = handed_down.wait_ms
     started = time.monotonic()
     outcome = "error"
     try:
-        # Inside the try: the permit is released below whatever the callback does.
-        notify_start_queue(logger, on_gate_acquired, wait_ms, START_QUEUE_ADMISSION)
+        # Inside the try: an owned permit is released below whatever the callback does.
+        if handed_down is None:
+            notify_start_queue(logger, on_gate_acquired, wait_ms, START_QUEUE_ADMISSION)
         logger.info(
             "acp_cold_start stage=queue_wait outcome=admitted priority=%s wait_ms=%.1f "
             "active_starts=%d queued_starts=%d %s",
@@ -94,7 +199,10 @@ async def spawn(
             admission.queued,
             process_state,
         )
-        admission.release(start_priority)
+        if handed_down is None:
+            admission.release(start_priority)
+        else:
+            handed_down.release()
 
 
 async def _spawn_admitted_rederiving_once(self: AcpRuntime) -> None:

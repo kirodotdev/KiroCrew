@@ -6,13 +6,15 @@ that sizes the pool, and the sessions (resumed, stateless, side read-only, or on
 disabled pool) that never claim. How a provider leaves the pool and its process dies
 lives in ``test_session_pool_reaping.py``; how the pool refills after a factory reload
 or a defaults refresh, in which workspace, and around the fill lock in
-``test_session_pool_refill.py``; the shared fixture and stand-ins in
+``test_session_pool_refill.py``; how a pending explicit effort Default reaches a cold
+start in ``test_session_pool_explicit_default.py``; the shared fixture and stand-ins in
 ``session_pool_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +29,18 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import async_wait_until, default_timeout
+
+
+async def _await_test(awaitable, what: str):
+    try:
+        async with asyncio.timeout(default_timeout()) as deadline:
+            return await awaitable
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        raise AssertionError(f"timed out waiting for {what}") from exc
+
 
 # ---------------------------------------------------------------------------
 # _fill_warm_pool
@@ -176,6 +190,60 @@ class TestFillWarmPool:
 
 
 class TestLivenessDrainLoop:
+    @pytest.mark.asyncio
+    async def test_a_provider_queued_before_an_explicit_default_rewrite_is_discarded(self):
+        """It read cli.json at its own spawn, so it would run the entry just removed."""
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        stale = _make_provider()
+        mgr._warm_pool.put_nowait((stale, time.monotonic()))
+
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+
+        assert await mgr._drain_and_claim("kirocrew") is None
+        stale.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_provider_is_claimed_while_an_explicit_default_rewrite_is_in_progress(self):
+        """The file can change at any point in the write, so no queued runtime is known fresh."""
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        queued = _make_provider()
+        mgr._warm_pool.put_nowait((queued, time.monotonic() + 3600))
+
+        with mgr.fence_effort_overlay_rewrite():
+            assert await mgr._drain_and_claim("kirocrew") is None
+
+        queued.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_spawned_during_an_explicit_default_rewrite_is_discarded(
+        self, manual_clock, monkeypatch
+    ):
+        """Its kiro-cli may have read the file before the write landed."""
+        from kiro_crew import session_pool
+
+        manual_clock.install(monkeypatch, session_pool)
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        spawned_during = _make_provider()
+
+        with mgr.fence_effort_overlay_rewrite():
+            spawned_after_the_rewrite_began = manual_clock.advance(0.01)
+            mgr._warm_pool.put_nowait((spawned_during, spawned_after_the_rewrite_began))
+
+        assert await mgr._drain_and_claim("kirocrew") is None
+        spawned_during.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_spawned_after_an_explicit_default_rewrite_is_claimed(self):
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        fresh = _make_provider()
+        mgr._warm_pool.put_nowait((fresh, mgr._pool.state.effort_overlay_epoch + 0.001))
+
+        assert await mgr._drain_and_claim("kirocrew") is fresh
+        fresh.shutdown.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_dead_provider_discarded_healthy_used(self):
         """Dead providers are drained; first healthy one is used."""
@@ -454,6 +522,155 @@ class TestGetOrCreatePoolIntegration:
         assert kwargs["crew_agent"] == ""
         assert isinstance(kwargs["watchdog"], WatchdogSettings)
         mgr._schedule_replenish.assert_called_once()
+        factory.assert_not_called()
+
+    @staticmethod
+    def _warm_acp_provider():
+        from kiro_crew.providers.acp import AcpProvider
+
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        return pooled
+
+    async def _claim_waiting_at_model_resolution(self, mgr, monkeypatch):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def resolve_pool_model(_agent):
+            entered.set()
+            assert release.wait(timeout=5), "the test did not release model resolution"
+            return "custom-model"
+
+        monkeypatch.setattr(mgr, "_resolve_agent_model", resolve_pool_model)
+        task = asyncio.create_task(
+            mgr.get_or_create("test-key", agent="kirocrew", model="custom-model")
+        )
+        await async_wait_until(
+            entered.is_set, describe=lambda: "the warm claim never reached model resolution"
+        )
+        return task, release
+
+    @pytest.mark.asyncio
+    async def test_completed_effort_rewrite_after_claim_discards_before_registration(
+        self, monkeypatch
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard = AsyncMock()
+        mgr._discard_pool_provider = discard
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        release.set()
+        provider, is_new, _ = await _await_test(task, "the warm claim")
+
+        assert provider is not pooled and is_new
+        discard.assert_awaited_once_with(pooled, "Warm pool effort registration discard")
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_cancelled_effort_rewrite_discard_releases_reservation(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard_entered = asyncio.Event()
+
+        async def discard(provider, context):
+            assert provider is pooled
+            assert context == "Warm pool effort registration discard"
+            discard_entered.set()
+            await asyncio.Event().wait()
+
+        mgr._discard_pool_provider = AsyncMock(side_effect=discard)
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        release.set()
+        await _await_test(discard_entered.wait(), "the warm-pool discard entering")
+        assert mgr.effort_basis_locked("test-key") is True
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await _await_test(task, "task")
+
+        mgr._discard_pool_provider.assert_awaited_once_with(
+            pooled, "Warm pool effort registration discard"
+        )
+        # This is the picker's turn_in_flight gate. A leaked reservation leaves it true.
+        assert mgr.effort_basis_locked("test-key") is False
+        assert mgr._allocation_boundary()._allocation_reservations == {}
+
+        provider, is_new, _ = await mgr.get_or_create("test-key", agent="kirocrew")
+        assert provider is not pooled and is_new
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_in_progress_effort_rewrite_after_claim_discards_before_registration(
+        self, monkeypatch
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard = AsyncMock()
+        mgr._discard_pool_provider = discard
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            release.set()
+            provider, is_new, _ = await _await_test(task, "the warm claim")
+
+        assert provider is not pooled and is_new
+        discard.assert_awaited_once_with(pooled, "Warm pool effort registration discard")
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_warm_claim_without_effort_rewrite_still_registers(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        release.set()
+        provider, is_new, _ = await _await_test(task, "the warm claim")
+
+        assert provider is pooled and is_new
+        pooled.shutdown.assert_not_awaited()
+        factory.assert_not_called()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_claim_model_resolution_failure_removes_claimed_spawn_time(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(
+                mgr,
+                "_resolve_agent_model",
+                MagicMock(side_effect=RuntimeError("model resolution failed")),
+            )
+            with pytest.raises(RuntimeError, match="model resolution failed"):
+                await mgr.get_or_create("test-key", agent="kirocrew", model="custom-model")
+
+        assert mgr._pool.state.claimed_spawn_times == {}
         factory.assert_not_called()
 
     @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib  # noqa: F401
 import functools  # noqa: F401
 import hashlib
@@ -485,6 +486,57 @@ _PROJECT_CHANGED_OTHER_TEXT = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _apply_pending_model_pick_at_turn_start(
+    state: Any, slot: Any, apply_pending_model_pick: Callable[[Any, Any], bool]
+) -> bool:
+    """Commit a pending pick only when its explicit-Default clear is durable.
+
+    A failed or cancelled save restores the pick, the slot's values and the flag;
+    this turn keeps its prior values and the next turn tries the pick again.
+    """
+    if slot._pending_model_pick is None:
+        return False
+    session_key = effective_session_key(slot)
+    explicit_default_was_pending = state.sessions.explicit_effort_default_pending(session_key)
+    if not explicit_default_was_pending:
+        return apply_pending_model_pick(state, slot)
+
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        capture_pending_model_pick_commit,
+        restore_pending_model_pick_commit,
+    )
+
+    snapshot = capture_pending_model_pick_commit(slot)
+    with (
+        state.sessions.effort_intent_write(session_key),
+        state.sessions.hold_explicit_effort_default(session_key),
+    ):
+        reset_needed = apply_pending_model_pick(state, slot)
+        if state.sessions.explicit_effort_default_pending(session_key):
+            return reset_needed
+        try:
+            await state.sessions.aflush()
+        except asyncio.CancelledError:
+            restore_pending_model_pick_commit(slot, snapshot)
+            state.sessions.set_explicit_effort_default(session_key, True)
+            with contextlib.suppress(Exception):
+                await state.sessions.aflush()
+            raise
+        except Exception:
+            restore_pending_model_pick_commit(slot, snapshot)
+            state.sessions.set_explicit_effort_default(session_key, True)
+            logger.warning(
+                "Could not save the explicit effort Default clear for %s; "
+                "the pending pick waits for the next turn",
+                session_key,
+                exc_info=True,
+            )
+            return False
+    return reset_needed
+
 
 #: Shown once when a live backend lost this chat's session and a fresh
 #: runtime re-loads it; the turn is retried once behind it.

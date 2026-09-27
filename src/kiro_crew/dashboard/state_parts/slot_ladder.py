@@ -9,7 +9,7 @@ Instance fields of ``_ChatSlot`` this module reads and writes:
 Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_rejected``,
 ``_batch_rejected_cause``, ``_carried_ttft_clock``, ``_compaction_continue_retries``,
 ``_compaction_fail_cooldown_until``, ``_compaction_fail_streak``,
-``_compaction_failed_retries``, ``_empty_episode_productive``,
+``_compaction_failed_retries``, ``_effort_intent_owed``, ``_empty_episode_productive``,
 ``_empty_response_retries``, ``_end_wait_by``, ``_end_wait_request``,
 ``_fallback_candidate_idx``, ``_fallback_client_pick_epoch``, ``_fallback_pick_gen``,
 ``_fallback_primary_model``, ``_fallback_slot_model``, ``_fallback_walked``,
@@ -22,7 +22,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_prestream_exhausted_cycles``, ``_promise_only_retries``, ``_prompt_busy_retries``,
 ``_refusal_client_pick_epoch``, ``_refusal_fallback_attempted``,
 ``_refusal_fallback_candidate``, ``_refusal_fallback_primary``,
-``_refusal_fallback_session_key``, ``_refusal_pick_gen``,
+``_refusal_fallback_session_key``, ``_refusal_pick_gen``, ``_session_effort_intent_gen``,
 ``_session_not_found_retry_used``, ``_stale_recovery_exhausted_emitted``,
 ``_stale_recovery_retries``, ``_steer_act_now``, ``_steer_admissions``,
 ``_steer_attachment_meta``, ``_steer_audience_fence_holders``,
@@ -121,6 +121,15 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # not. Read by the landed turn's footer stats and recovery telemetry;
     # emptied when a top-level turn that is not a recovery starts.
     self._turn_retries = {}
+    # Set while this chat's pick is live but its explicit-Default intent was
+    # not saved, so the same pick again is a retry rather than a no-op; it is
+    # never persisted and goes with the slot.
+    self._effort_intent_owed = False
+    # Bumped on every open slot of this slot's session when the effort
+    # picker saves a change to the session's explicit-Default flag, so a
+    # pending session_set_model effort can tell a newer choice landed. Other
+    # writes of the flag do not bump it. Never persisted; goes with the slot.
+    self._session_effort_intent_gen = 0
     # L1 gateway-capacity retries: how many times THIS cycle waited out an
     # infrastructure refusal of a tool call (the ladder owns the budget; this
     # is the slot-visible count the health panel classifies as recovering).
