@@ -1041,6 +1041,7 @@ make this tool possible:
 <a href="https://github.com/zander8807" title="zander8807"><img src="https://github.com/zander8807.png?size=64" width="64" height="64" alt="zander8807" /></a>
 <a href="https://github.com/Zedmor" title="Akim Akimov"><img src="https://github.com/Zedmor.png?size=64" width="64" height="64" alt="Akim Akimov" /></a>
 <a href="https://github.com/zeiadzaf" title="Zeiad"><img src="https://github.com/zeiadzaf.png?size=64" width="64" height="64" alt="Zeiad" /></a>
+<a href="https://github.com/zerovulnlabs" title="glit3h from ZeroVuln Labs"><img src="https://github.com/zerovulnlabs.png?size=64" width="64" height="64" alt="glit3h from ZeroVuln Labs" /></a>
 <a href="https://github.com/Zhang-Zhaolong" title="Zhaolong Zhang"><img src="https://github.com/Zhang-Zhaolong.png?size=64" width="64" height="64" alt="Zhaolong Zhang" /></a>
 <a href="https://github.com/ZheLyu" title="Zhe Lyu"><img src="https://github.com/ZheLyu.png?size=64" width="64" height="64" alt="Zhe Lyu" /></a>
 <a href="https://github.com/ZhengfeiJi" title="Ji"><img src="https://github.com/ZhengfeiJi.png?size=64" width="64" height="64" alt="Ji" /></a>
