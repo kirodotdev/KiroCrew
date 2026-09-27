@@ -20,6 +20,7 @@ import asyncio
 import difflib
 import functools
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -51,7 +52,7 @@ from kiro_crew.atomic_write import (  # noqa: F401
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
-from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.frontmatter import SKILL_LOADER, SKILL_UPDATE, frontmatter_value, parse_frontmatter
 from kiro_crew.hooks import (  # noqa: F401
     FileTooLargeError,
     safe_read_file,
@@ -140,6 +141,21 @@ def _warn_html_skill(path: str) -> bool:
 def _html_skill_refused(meta: dict, path: object) -> bool:
     # The key holds a colon, so no front-matter line can set it.
     return bool(meta.get("_html:body")) and _warn_html_skill(str(path))
+
+
+def _skill_version(meta: dict) -> int:
+    """A skill's ``version`` frontmatter, or 1 when absent, unparseable or below 1."""
+    try:
+        version = int(meta.get("version", ""))
+    except (TypeError, ValueError):
+        return 1
+    return version if version >= 1 else 1
+
+
+def _live_body_digest(body: str) -> str:
+    """SHA-256 of a live ``SKILL.md`` body with canonical newlines."""
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 # One script-entry population budget for the pending verdict and API reports.
@@ -412,6 +428,42 @@ class SkillContextCapacityError(ValueError):
     """Required instructions cannot fit; never silently cut a required skill."""
 
 
+def merge_skill_triggers(live: str, candidate: str, *, cap: int | None = 12) -> str:
+    """Union two comma-separated trigger lists, live first and case-insensitively."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in (live or "").split(",") + (candidate or "").split(","):
+        trigger = re.sub(r"\s+", " ", raw).strip()
+        if not trigger:
+            continue
+        key = trigger.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(trigger)
+        if cap is not None and len(merged) >= cap:
+            break
+    return ", ".join(merged)
+
+
+def merge_skill_update_metadata(
+    live_body: str | None,
+    candidate_description: str,
+    candidate_triggers: str,
+) -> tuple[str, str]:
+    """Keep the live description and union triggers without cutting metadata."""
+    live_description = frontmatter_value(live_body or "", "description", SKILL_UPDATE)
+    live_triggers = frontmatter_value(live_body or "", "triggers", SKILL_UPDATE)
+    fields = (live_description, live_triggers, candidate_description, candidate_triggers)
+    if any(len(value) > _AUDIT_MAX_TEXT_CHARS for value in fields):
+        raise RestageRefused("restage_field_too_long")
+    description = live_description or candidate_description
+    triggers = merge_skill_triggers(live_triggers, candidate_triggers, cap=None)
+    if len(description) > _AUDIT_MAX_TEXT_CHARS or len(triggers) > _AUDIT_MAX_TEXT_CHARS:
+        raise RestageRefused("restage_field_too_long")
+    return description, triggers
+
+
 # The "[Skills:]" opener and "[End of skills]" closer wrapping the whole block.
 _MAPPED_BLOCK_OVERHEAD_BYTES = 64
 
@@ -565,6 +617,31 @@ _AUTO_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 
 # Bundled fallback — inside the kiro_crew package
 _BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin_skills"
+
+# ``SkillsLoader.audit()`` uses ``skills.auto_similarity_threshold`` for the
+# duplicate cutoff. OVERLAP is the lower symmetric relationship boundary;
+# COVERAGE is the share of a pending candidate's description words a live skill
+# must contain before the candidate counts as covered by it (``subsumed``).
+_AUDIT_OVERLAP_THRESHOLD = 0.5
+_AUDIT_COVERAGE_THRESHOLD = 0.85
+# Bounds for SkillsLoader.audit(): the pairwise pass is O(n²), so both the
+# skills admitted and the matching pairs retained are capped inside audit()
+# itself, before any caller-side payload truncation.
+_AUDIT_MAX_ENTRIES = 400
+_AUDIT_MAX_RELATIONS = 2000
+# Bound untrusted frontmatter before tokenization. The audit retains word sets,
+# so capping only the response would still let one field consume unbounded RAM.
+_AUDIT_MAX_TEXT_CHARS = 4096
+# A live skill name longer than this is omitted and counted, not truncated: a
+# cut name would not resolve to its row or to an update target.
+_AUDIT_MAX_NAME_CHARS = 256
+# Longest provenance value (session key, timestamp, source) a restage copies
+# from a candidate; a longer one is replaced with its default.
+_RESTAGE_MAX_PROVENANCE_CHARS = 256
+# Largest pending ``.meta.json`` the audit reads; a larger one is audited as
+# having no description or triggers. Also the largest live ``SKILL.md`` the
+# audit reads; a larger one is omitted and counted.
+_AUDIT_MAX_META_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -2329,6 +2406,14 @@ class PendingApprovalRefused(Exception):
         self.report = report
 
 
+class RestageRefused(Exception):
+    """A restage request was refused with a machine-readable reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class SkillsLoader:
     """Load skill markdown files from ~/.kiro/crew/skills/.
 
@@ -2882,7 +2967,19 @@ class SkillsLoader:
             #
             # A direct read also keeps the failure policy intact for free: an
             # unreadable file raises OSError here, which writers must hear.
-            return path.read_bytes()
+            if max_bytes is None:
+                return path.read_bytes()
+            # A bounded caller gets the cap on the read itself: a size taken
+            # earlier (a stat) says nothing about the file this open reaches, so
+            # at most one byte past the cap is ever read.
+            with path.open("rb") as handle:
+                bounded = handle.read(max_bytes + 1)
+            if len(bounded) > max_bytes:
+                if refusal_reasons is not None:
+                    refusal_reasons.append("size_cap")
+                logger.warning("Skipping oversized skill file: %s", path)
+                return None
+            return bounded
         try:
             confined_max = (
                 hooks_module.MAX_FILE_BYTES
@@ -3345,6 +3442,17 @@ class SkillsLoader:
         """
         return _auto_skills.is_auto_generated(self, name)
 
+    @staticmethod
+    def _description_words(description: str) -> set[str]:
+        """Tokenize a skill description for every lexical similarity check."""
+        return set(re.findall(r"\w+", (description or "").lower()))
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        """Return word-set Jaccard similarity, or zero for two empty sets."""
+        union = left | right
+        return len(left & right) / len(union) if union else 0.0
+
     def find_similar(
         self,
         description: str,
@@ -3357,6 +3465,255 @@ class SkillsLoader:
         Contract and rationale: ``skill_runtime.auto_skills.find_similar``.
         """
         return _auto_skills.find_similar(self, description, threshold, exclude=exclude)
+
+    @staticmethod
+    def _audit_trigger_words(triggers: str) -> set[str]:
+        """Return positive trigger words for symmetric audit comparisons."""
+        words: set[str] = set()
+        for raw in (triggers or "").split(","):
+            phrase = raw.strip()
+            if phrase and not phrase.startswith("!"):
+                words.update(words_of(phrase))
+        return words
+
+    @staticmethod
+    def _audit_is_builtin(skill_file: Path) -> bool:
+        """True for a package-owned builtin skill (shipped tree or provenance-marked copy)."""
+        try:
+            skill_file.resolve().relative_to(_BUILTIN_SKILLS_DIR.resolve())
+            return True
+        except (OSError, ValueError):
+            pass
+        return os.path.lexists(skill_file.parent / _PROVENANCE_MARKER)
+
+    def _pending_slugs_bounded(self, limit: int) -> tuple[list[str], int]:
+        """Return the first ``limit`` pending slugs in order, and how many exist.
+
+        Only ``limit`` names are kept while the directory is scanned, so a large
+        queue costs a scan, never retained state.
+        """
+        root = self._pending_root()
+        if limit <= 0 or not root.is_dir():
+            return [], 0
+        seen = 0
+
+        def slugs() -> Iterator[str]:
+            nonlocal seen
+            with os.scandir(root) as it:
+                for item in it:
+                    if not _AUTO_NAME_PATTERN.match(item.name):
+                        continue
+                    child = root / item.name
+                    if child.is_dir() and (child / "SKILL.md").exists():
+                        seen += 1
+                        yield item.name
+
+        kept = heapq.nsmallest(limit, slugs())
+        return kept, seen
+
+    def _audit_pending_meta(self, slug: str) -> dict:
+        """Read one candidate's metadata, refusing a file over the audit's byte cap."""
+        return self._read_pending_meta(slug, max_bytes=_AUDIT_MAX_META_BYTES)
+
+    def audit(self) -> dict[str, object]:
+        """Audit pending and live skills pairwise and return bounded overlap data.
+
+        Untrusted description and trigger text is capped before word sets are
+        built. Pending skills are admitted first, and entry and relation limits
+        are enforced while admitting results rather than trimming retained state
+        afterwards. Omission counts let callers tell a complete audit from a
+        bounded one.
+        """
+        duplicate_threshold = KiroCrewConfig.load().skills.auto_similarity_threshold
+        overlap_threshold = _AUDIT_OVERLAP_THRESHOLD
+
+        entries: list[dict] = []
+        pending_slugs, pending_seen = self._pending_slugs_bounded(_AUDIT_MAX_ENTRIES)
+        omitted_entries = pending_seen - len(pending_slugs)
+        for slug in pending_slugs:
+            meta = self._audit_pending_meta(slug)
+            description = str(meta.get("description", ""))[:_AUDIT_MAX_TEXT_CHARS]
+            triggers = str(meta.get("triggers", ""))[:_AUDIT_MAX_TEXT_CHARS]
+            entries.append(
+                {
+                    "id": f"pending:{slug}",
+                    "kind": "pending",
+                    # Built from the slug, never read from ``.meta.json``: the slug
+                    # already passed the 64-character slug grammar, while the stored
+                    # name is untrusted and unbounded.
+                    "name": f"{AUTO_SKILL_NAMESPACE}/{slug}",
+                    "slug": slug,
+                    "description_words": self._description_words(description),
+                    "trigger_words": self._audit_trigger_words(triggers),
+                }
+            )
+        for name, skill_file, within in self._iter():
+            if len(entries) >= _AUDIT_MAX_ENTRIES or len(name) > _AUDIT_MAX_NAME_CHARS:
+                omitted_entries += 1
+                continue
+            # Cap the live SKILL.md on the read itself, and parse without
+            # caching, so nothing the audit reads lands in the long-lived
+            # frontmatter cache. A file over the cap is refused before its
+            # bytes are retained, however it changed after enumeration.
+            try:
+                raw = self._read_enumerated_skill_bytes(
+                    skill_file, within, max_bytes=_AUDIT_MAX_META_BYTES
+                )
+            except OSError:
+                raw = None
+            if raw is None:
+                omitted_entries += 1
+                continue
+            meta = self._parse_frontmatter_text(_decode_skill_text(raw, strict=False))
+            description = str(meta.get("description", ""))[:_AUDIT_MAX_TEXT_CHARS]
+            triggers = str(meta.get("triggers", ""))[:_AUDIT_MAX_TEXT_CHARS]
+            entries.append(
+                {
+                    "id": f"live:{name}",
+                    "kind": "live",
+                    "name": name,
+                    "builtin": self._audit_is_builtin(skill_file),
+                    "description_words": self._description_words(description),
+                    "trigger_words": self._audit_trigger_words(triggers),
+                }
+            )
+
+        by_id = {entry["id"]: entry for entry in entries}
+        relations: list[dict] = []
+        omitted_relations = 0
+        adjacency: dict[int, set[int]] = {index: set() for index in range(len(entries))}
+        for left_index in range(len(entries)):
+            for right_index in range(left_index + 1, len(entries)):
+                left = entries[left_index]
+                right = entries[right_index]
+                if (
+                    left["kind"] == "live"
+                    and right["kind"] == "live"
+                    and (left.get("builtin") or right.get("builtin"))
+                ):
+                    continue
+                description_score = self._jaccard(
+                    left["description_words"], right["description_words"]
+                )
+                trigger_score_value = self._jaccard(left["trigger_words"], right["trigger_words"])
+                score = max(description_score, trigger_score_value)
+                pending_live = left["kind"] != right["kind"]
+                covered = False
+                if pending_live:
+                    pending = left if left["kind"] == "pending" else right
+                    live = left if left["kind"] == "live" else right
+                    trigger_subset = bool(pending["trigger_words"]) and (
+                        pending["trigger_words"] <= live["trigger_words"]
+                    )
+                    candidate_words = pending["description_words"]
+                    coverage = (
+                        len(candidate_words & live["description_words"]) / len(candidate_words)
+                        if candidate_words
+                        else 0.0
+                    )
+                    covered = trigger_subset or coverage >= _AUDIT_COVERAGE_THRESHOLD
+                if score >= duplicate_threshold:
+                    classification = "duplicate"
+                elif covered:
+                    classification = "subsumed"
+                elif score >= overlap_threshold:
+                    classification = "overlapping"
+                else:
+                    continue
+                if len(relations) >= _AUDIT_MAX_RELATIONS:
+                    omitted_relations += 1
+                    continue
+                adjacency[left_index].add(right_index)
+                adjacency[right_index].add(left_index)
+                relations.append(
+                    {
+                        "classification": classification,
+                        "score": round(score, 4),
+                        "members": [left["id"], right["id"]],
+                    }
+                )
+
+        rank = {"overlapping": 0, "subsumed": 1, "duplicate": 2}
+        clusters: list[dict] = []
+        visited: set[int] = set()
+        for start_index in range(len(entries)):
+            if start_index in visited or not adjacency[start_index]:
+                continue
+            stack = [start_index]
+            component: set[int] = set()
+            while stack:
+                current = stack.pop()
+                if current in component:
+                    continue
+                component.add(current)
+                stack.extend(adjacency[current] - component)
+            visited.update(component)
+            member_ids = {entries[index]["id"] for index in component}
+            component_relations = [
+                relation for relation in relations if set(relation["members"]) <= member_ids
+            ]
+            classification = max(
+                (relation["classification"] for relation in component_relations),
+                key=rank.__getitem__,
+            )
+            members = []
+            for index in sorted(component, key=lambda item: entries[item]["id"]):
+                entry = entries[index]
+                member = {
+                    "id": entry["id"],
+                    "kind": entry["kind"],
+                    "name": entry["name"],
+                }
+                if entry["kind"] == "pending":
+                    member["slug"] = entry["slug"]
+                members.append(member)
+            update_targets: list[tuple[float, dict[str, str]]] = []
+            for relation in component_relations:
+                pair = [by_id[member_id] for member_id in relation["members"]]
+                if {entry["kind"] for entry in pair} != {"pending", "live"}:
+                    continue
+                pending_entry = next(entry for entry in pair if entry["kind"] == "pending")
+                live_entry = next(entry for entry in pair if entry["kind"] == "live")
+                if relation["classification"] not in ("duplicate", "subsumed") or not live_entry[
+                    "name"
+                ].startswith(f"{AUTO_SKILL_NAMESPACE}/"):
+                    continue
+                update_targets.append(
+                    (
+                        relation["score"],
+                        {
+                            "pending_slug": pending_entry["slug"],
+                            "target": live_entry["name"],
+                        },
+                    )
+                )
+            clusters.append(
+                {
+                    "classification": classification,
+                    "score": max(relation["score"] for relation in component_relations),
+                    "members": members,
+                    "relations": component_relations,
+                    "update_targets": [
+                        target
+                        for _score, target in sorted(
+                            update_targets,
+                            key=lambda item: (-item[0], item[1]["target"]),
+                        )
+                    ],
+                }
+            )
+        clusters.sort(
+            key=lambda cluster: (
+                -rank[cluster["classification"]],
+                -cluster["score"],
+                tuple(member["id"] for member in cluster["members"]),
+            )
+        )
+        return {
+            "clusters": clusters,
+            "omitted_entries": omitted_entries,
+            "omitted_relations": omitted_relations,
+        }
 
     def create_auto_skill(
         self,
@@ -3505,6 +3862,12 @@ class SkillsLoader:
         """
         return _auto_skills.list_archived_auto_skills(self)
 
+    @contextmanager
+    def _auto_skill_mutation_lock(self, name: str) -> Iterator[None]:
+        """Serialize one live auto-skill mutation across loader instances."""
+        with _auto_skills._auto_skill_mutation_lock(self, name):
+            yield
+
     def run_skill_lifecycle(
         self,
         *,
@@ -3562,6 +3925,8 @@ class SkillsLoader:
         target: str | None = None,
         base_version: int | None = None,
         refusal: ClaimRefusal | None = None,
+        restaged_from: str | None = None,
+        base_digest: str | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -3582,15 +3947,27 @@ class SkillsLoader:
             target=target,
             base_version=base_version,
             refusal=refusal,
+            restaged_from=restaged_from,
+            base_digest=base_digest,
         )
 
-    def _read_pending_meta(self, slug: str) -> dict:
+    def _read_pending_meta(self, slug: str, *, max_bytes: int | None = None) -> dict:
         mf = self._pending_root() / slug / ".meta.json"
         # Never follow an LLM-planted symlink (could point at a sensitive file).
         if mf.is_symlink():
             return {}
         try:
-            data = json.loads(mf.read_text(encoding="utf-8"))
+            if max_bytes is None:
+                text = mf.read_text(encoding="utf-8")
+            else:
+                # The cap is applied to the read, not to an earlier stat, so a
+                # file that grew or was swapped since is refused unretained.
+                with mf.open("rb") as handle:
+                    raw = handle.read(max_bytes + 1)
+                if len(raw) > max_bytes:
+                    return {}
+                text = raw.decode("utf-8")
+            data = json.loads(text)
         except (OSError, ValueError):
             return {}
         if not isinstance(data, dict):
@@ -4289,6 +4666,116 @@ class SkillsLoader:
             }
         return detail
 
+    def _existing_restage(
+        self, stem: str, source_slug: str, target_name: str, base_digest: str
+    ) -> str | None:
+        """Return the update already proposed from this candidate against this target body."""
+        for slug in (stem, *(f"{stem}-{n}" for n in range(2, 51))):
+            if not (self._pending_root() / slug / "SKILL.md").is_file():
+                continue
+            meta = self._audit_pending_meta(slug)
+            if (
+                meta.get("kind") == "update"
+                and meta.get("restaged_from") == source_slug
+                and meta.get("target") == target_name
+                and meta.get("base_digest") == base_digest
+            ):
+                return f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        return None
+
+    def restage_as_update(self, pending_slug: str, target_live_name: str) -> str | None:
+        """Stage an update proposal while leaving the original candidate pending."""
+        if not self._is_pending_slug_safe(pending_slug):
+            return None
+        target_slug = self._auto_slug_from_name(target_live_name)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        if target_live_name not in (target_slug, target_name):
+            return None
+        # Bounded like the audit that offered this target: a live SKILL.md over
+        # the audit's byte cap is refused, not loaded whole. The base version is
+        # read from this same bounded body, so it identifies exactly the text the
+        # proposal was built against and no unbounded frontmatter read runs; a
+        # live skill that advances afterwards leaves approval an old base, which
+        # refuses the stale update instead of overwriting new work.
+        live_body = self.read_auto_skill_body(target_name, max_bytes=_AUDIT_MAX_META_BYTES)
+        if live_body is None:
+            return None
+        base_version = _skill_version(self._parse_frontmatter_text(live_body))
+        # A dashboard edit rewrites the body but keeps ``version``, so the
+        # version alone cannot tell approval the base moved; the digest can.
+        base_digest = _live_body_digest(live_body)
+        candidate_meta = self._audit_pending_meta(pending_slug)
+        description, triggers = merge_skill_update_metadata(
+            live_body,
+            str(candidate_meta.get("description", "")),
+            str(candidate_meta.get("triggers", "")),
+        )
+        suffix = "-update"
+        # stage_skill_candidate may append a "-N" collision suffix (N <= 50), so
+        # reserve three characters: the claimed name must still fit the grammar.
+        stem = f"{pending_slug[: 63 - len(suffix) - 3].rstrip('-')}{suffix}"
+        # A repeat request for the same candidate, target and target body
+        # returns the proposal already pending instead of staging a sibling.
+        existing = self._existing_restage(stem, pending_slug, target_name, base_digest)
+        if existing is not None:
+            return existing
+        # The pinned detail read enumerates lazily against the entry cap and
+        # refuses a file over MAX_SCRIPT_BYTES, a link or a non-regular entry,
+        # so an oversized helper tree is refused before it is materialised.
+        detail = self.get_pending_skill(pending_slug)
+        if detail is None:
+            return None
+        raw_meta = detail.get("meta")
+        meta: dict = raw_meta if isinstance(raw_meta, dict) else {}
+        parsed = self._parse_frontmatter_text(str(detail.get("content", "")))
+        raw_scripts = detail.get("scripts")
+        scripts: list[dict] = raw_scripts if isinstance(raw_scripts, list) else []
+        if any(
+            not isinstance(script, dict)
+            or not isinstance(script.get("filename"), str)
+            or "/" in script["filename"]
+            or "\\" in script["filename"]
+            or ".." in script["filename"]
+            for script in scripts
+        ):
+            return None
+        raw_reuse_count = parsed.get("reuse_count", "0")
+        try:
+            reuse_count = max(0, int(raw_reuse_count))
+        except (TypeError, ValueError):
+            reuse_count = 0
+
+        def _bounded(value: object, fallback: str = "") -> str:
+            # Provenance values are identifiers and timestamps: an oversized one
+            # is invalid, so it is replaced rather than cut into a false value.
+            text = str(value or "")
+            return text if len(text) <= _RESTAGE_MAX_PROVENANCE_CHARS else fallback
+
+        provenance = AutoSkillProvenance(
+            session_key=_bounded(parsed.get("session_key", "")),
+            created_at=_bounded(parsed.get("created_at", "")) or AutoSkillProvenance.now_iso(),
+            refined_at=_bounded(parsed.get("refined_at", "")),
+            reuse_count=reuse_count,
+            pinned=parsed.get("pinned", "").strip().lower() in ("true", "1", "yes"),
+        )
+        replacement_name = self.stage_skill_candidate(
+            stem,
+            description=description,
+            triggers=triggers,
+            procedure_md=self.strip_frontmatter(str(detail.get("content", ""))),
+            provenance=provenance,
+            scripts=scripts,
+            source=_bounded(meta.get("source", "consolidation"), "consolidation"),
+            kind="update",
+            target=target_name,
+            base_version=base_version,
+            restaged_from=pending_slug,
+            base_digest=base_digest,
+        )
+        return replacement_name
+
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
 
@@ -4441,12 +4928,12 @@ class SkillsLoader:
         """
         return _versions.get_auto_skill_version(self, name)
 
-    def read_auto_skill_body(self, name: str) -> str | None:
+    def read_auto_skill_body(self, name: str, *, max_bytes: int | None = None) -> str | None:
         """Return the full live ``SKILL.md`` text for an auto-skill, or ``None``.
 
         Contract and rationale: ``skill_runtime.versions.read_auto_skill_body``.
         """
-        return _versions.read_auto_skill_body(self, name)
+        return _versions.read_auto_skill_body(self, name, max_bytes=max_bytes)
 
     @staticmethod
     def _rewrite_update_frontmatter(
@@ -4542,6 +5029,7 @@ class SkillsLoader:
             )
         )
         raw_base = meta.get("base_version")
+        raw_digest = meta.get("base_digest")
         return {
             "live_body": live_safe,
             "proposed_body": proposed_safe,
@@ -4549,7 +5037,10 @@ class SkillsLoader:
             "from_version": current_version,
             "to_version": current_version + 1,
             "base_version": raw_base,
-            "stale_base": isinstance(raw_base, int) and raw_base != current_version,
+            # Same test approval applies: a moved version OR, for a restaged
+            # update, a live body whose digest differs from the recorded one.
+            "stale_base": (isinstance(raw_base, int) and raw_base != current_version)
+            or (isinstance(raw_digest, str) and _live_body_digest(live_body) != raw_digest),
         }
 
     def _resolve_snapshot_version(self, versions_dir: Path, fm_version: int) -> int:
@@ -4568,6 +5059,7 @@ class SkillsLoader:
         except PendingApprovalRefused:
             return None
 
+    @_auto_skills.with_pending_update_target_lock
     def approve_pending_update_checked(self, slug: str) -> str:
         """Promote a pending UPDATE candidate over its live target auto-skill.
 
@@ -4677,7 +5169,16 @@ class SkillsLoader:
         # one. The candidate stays pending so it can be dismissed (a fresh
         # proposal will be merged against the new base).
         raw_base = meta.get("base_version")
-        if isinstance(raw_base, int) and raw_base != current_version:
+        raw_digest = meta.get("base_digest")
+        # A restaged update also records the live body's digest: a dashboard
+        # edit rewrites the body without bumping ``version``, and approving over
+        # it would silently discard that edit. An unreadable live body with a
+        # recorded digest cannot be shown unchanged, so it refuses too.
+        digest_moved = isinstance(raw_digest, str) and (
+            (live_now := self.read_auto_skill_body(target_name)) is None
+            or _live_body_digest(live_now) != raw_digest
+        )
+        if (isinstance(raw_base, int) and raw_base != current_version) or digest_moved:
             # The candidate stays pending so the reviewer can dismiss it, which
             # means it stays VISIBLE — so it must also stay byte-identical to what
             # was staged. Redaction already ran in place above; undo it, or the
@@ -4685,10 +5186,12 @@ class SkillsLoader:
             # re-opens is not the one they staged.
             _restore_redacted()
             logger.warning(
-                "Refusing to approve stale update for %s: candidate based on v%s, live is v%d",
+                "Refusing to approve stale update for %s: candidate based on v%s, live is v%d"
+                " (live body changed: %s)",
                 target_name,
                 raw_base,
                 current_version,
+                digest_moved,
             )
             sel().log_tool_invocation(
                 session_key="skills",
@@ -4699,6 +5202,7 @@ class SkillsLoader:
                     "target": target_name,
                     "base_version": raw_base,
                     "live_version": current_version,
+                    "live_body_changed": digest_moved,
                     "reason": "stale_base",
                 },
             )
