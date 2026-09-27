@@ -22,7 +22,7 @@ export default function MeetingWorkspace({ hasAgentPanels, agentPanels, transcri
 
   return (
     <motion.div
-      layout
+      layout="size"
       data-testid="meeting-workspace"
       data-transcript-layout={hasAgentPanels ? 'split' : 'primary'}
       className="flex-1 min-h-0 overflow-hidden flex flex-col lg:flex-row gap-3 p-6"

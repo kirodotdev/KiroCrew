@@ -2,10 +2,9 @@
 // sidebar, and (once it has ended) the task-review gate.
 
 import { useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
 import {
-  AlertTriangle,
   ArrowLeft,
+  CircleCheck,
   Languages,
   ListChecks,
   MoreHorizontal,
@@ -13,6 +12,7 @@ import {
   Play,
   RefreshCw,
   Square,
+  X,
 } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
@@ -72,11 +72,16 @@ export default function MeetingView({
     partialTranscript,
     transcriptFull,
     caption,
+    live,
     chatViewAgents,
     selectedPreset,
     loading,
     error,
     agentsPaused,
+    recoveryError,
+    recoverySuccess,
+    dismissRecoveryError,
+    dismissRecoverySuccess,
     syncing,
     actions,
     pending,
@@ -98,24 +103,77 @@ export default function MeetingView({
     )
   }
 
+  const recoveryNoticeMessage = recoveryError
+    || (agentsPaused ? i18nT('apps.meetings.meeting.agentsPaused') : '')
+  const recoveryNotice = recoveryNoticeMessage
+    ? (
+        <ErrorNotice
+          message={recoveryNoticeMessage}
+          /* No hand-off: the meeting minutes and broadcast message drafts below
+             are unsaved local state that navigation would discard. */
+          footer={agentsPaused
+            ? (
+                <Btn onClick={actions.resetAgents} disabled={pending.resettingAgents}>
+                  {pending.resettingAgents && (
+                    <RefreshCw className="lucide-inline animate-spin" />
+                  )}
+                  {pending.resettingAgents
+                    ? i18nT('apps.meetings.meeting.retryingAgents')
+                    : i18nT('apps.meetings.meeting.retryAgents')}
+                </Btn>
+              )
+            : undefined}
+          onDismiss={agentsPaused ? undefined : dismissRecoveryError}
+          testId="meetings-recovery-error"
+          className="flex-none mx-4 md:mx-6 mt-3"
+        />
+      )
+    : null
+
+  const recoverySuccessNotice = recoverySuccess
+    ? (
+        <div
+          role="status"
+          data-testid="meetings-recovery-success"
+          className="flex-none mx-4 md:mx-6 mt-3 px-3 py-2 rounded-lg bg-ok/10 border border-ok/20 flex items-center gap-2 text-[13px] text-ok font-medium"
+        >
+          <CircleCheck className="lucide-inline shrink-0" aria-hidden="true" />
+          <span className="flex-1">{recoverySuccess}</span>
+          <button
+            type="button"
+            onClick={dismissRecoverySuccess}
+            aria-label={i18nT('components.errorNotice.dismiss')}
+            title={i18nT('components.errorNotice.dismiss')}
+            className="inline-flex items-center justify-center rounded p-1 text-ok hover:bg-ok/10 cursor-pointer"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )
+    : null
+
   if (status === 'reviewing') {
     return (
-      <TaskReviewView
-        tasks={tasks}
-        transcript={transcript}
-        partialTranscript={partialTranscript}
-        transcriptFull={transcriptFull}
-        provider={config?.task_provider ?? ''}
-        filing={pending.filing}
-        onBack={actions.backToMeeting}
-        onClose={() => {
-          actions.stop()
-          onBack()
-        }}
-        onFile={actions.fileTask}
-        onArchive={actions.archiveTask}
-        onUnarchive={actions.unarchiveTask}
-      />
+      <div className="h-full min-h-0 flex flex-col overflow-hidden">
+        {recoveryNotice}
+        {recoverySuccessNotice}
+        <div className="flex-1 min-h-0">
+          <TaskReviewView
+            tasks={tasks}
+            transcript={transcript}
+            partialTranscript={partialTranscript}
+            transcriptFull={transcriptFull}
+            provider={config?.task_provider ?? ''}
+            filing={pending.filing}
+            closing={pending.stopping}
+            onBack={actions.backToMeeting}
+            onClose={() => actions.stop(onBack)}
+            onFile={actions.fileTask}
+            onArchive={actions.archiveTask}
+            onUnarchive={actions.unarchiveTask}
+          />
+        </div>
+      </div>
     )
   }
 
@@ -153,6 +211,7 @@ export default function MeetingView({
               {meta?.title || i18nT('apps.meetings.session.untitled')}
             </h2>
             {status === 'active'
+              && !agentsPaused
               && pending.settingStatus !== 'paused'
               && pending.settingStatus !== 'reviewing' && (
               <Badge variant="ok">{i18nT('apps.meetings.meeting.live')}</Badge>
@@ -217,7 +276,7 @@ export default function MeetingView({
             {status === 'paused' && (
               <Btn
                 onClick={actions.resume}
-                disabled={pending.settingStatus !== null}
+                disabled={pending.settingStatus !== null || agentsPaused}
                 aria-label={
                   pending.settingStatus === 'active'
                     ? i18nT('apps.meetings.meeting.resuming')
@@ -302,6 +361,9 @@ export default function MeetingView({
           </div>
         </div>
 
+        {recoveryNotice}
+        {recoverySuccessNotice}
+
         <AgentPillBar
           agents={agents}
           enabledIds={enabledIds}
@@ -320,25 +382,6 @@ export default function MeetingView({
           onRemoveAttachment={actions.removeAttachment}
         />
 
-        <AnimatePresence>
-          {agentsPaused && (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="flex-none mx-6 mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 flex items-center justify-between gap-3"
-            >
-              <span className="text-[13px] text-danger font-medium inline-flex items-center gap-1.5">
-                <AlertTriangle className="lucide-inline" />
-                {i18nT('apps.meetings.meeting.agentsPaused')}
-              </span>
-              <Btn onClick={actions.resetAgents}>
-                {i18nT('apps.meetings.meeting.retryAgents')}
-              </Btn>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         <MeetingWorkspace
           hasAgentPanels={enabledAgents.length > 0}
           agentPanels={(
@@ -348,7 +391,11 @@ export default function MeetingView({
                   key={agent.id}
                   agent={agent}
                   output={outputs[agent.id] ?? ''}
-                  listening={!mutedAgents.includes(agent.id)}
+                  listening={
+                    !live?.agents?.[agent.id]?.paused
+                    && !mutedAgents.includes(agent.id)
+                  }
+                  listeningUnavailable={Boolean(live?.agents?.[agent.id]?.paused)}
                   chatView={chatViewAgents.includes(agent.id)}
                   edit={outputEdits[agent.id]}
                   editSaving={editingOutput}
@@ -399,6 +446,10 @@ export default function MeetingView({
                   ? i18nT('apps.meetings.broadcastBar.resumingPlaceholder')
                   : pending.settingStatus === 'reviewing'
                     ? i18nT('apps.meetings.meeting.endingReview')
+                    : agentsPaused
+                      ? i18nT('apps.meetings.session.statusDrainIncomplete', {
+                          retry: i18nT('apps.meetings.meeting.retryAgents'),
+                        })
                     : status === 'paused'
                       ? i18nT('apps.meetings.broadcastBar.pausedPlaceholder')
                       : undefined

@@ -5,7 +5,15 @@
 // anything is still pending — that is the whole point of the step, and it is why
 // upstream called this view the task review.
 
-import { Archive, ArchiveRestore, CheckCheck, CircleCheck, ExternalLink, Send } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  CheckCheck,
+  CircleCheck,
+  ExternalLink,
+  LoaderCircle,
+  Send,
+} from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { Badge, Btn, Card, CardTitle, EmptyState, SendBtn, StatCard } from '../../components/ui'
@@ -33,6 +41,7 @@ interface Props {
   transcriptFull: boolean
   provider: string
   filing: string | null
+  closing: boolean
   onBack: () => void
   onClose: () => void
   onFile: (taskId: string) => void
@@ -47,6 +56,7 @@ export default function TaskReviewView({
   transcriptFull,
   provider,
   filing,
+  closing,
   onBack,
   onClose,
   onFile,
@@ -211,12 +221,20 @@ export default function TaskReviewView({
         <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex justify-center">
           <SendBtn
             onClick={onClose}
-            disabled={!canClose}
-            aria-label={i18nT('apps.meetings.review.closeMeeting')}
+            disabled={!canClose || closing}
+            aria-label={i18nT(
+              closing
+                ? 'apps.meetings.review.closingMeeting'
+                : 'apps.meetings.review.closeMeeting',
+            )}
           >
-            <CheckCheck className="lucide-inline" />
-            {canClose
-              ? i18nT('apps.meetings.review.closeMeeting')
+            {closing
+              ? <LoaderCircle className="lucide-inline animate-spin" />
+              : <CheckCheck className="lucide-inline" />}
+            {closing
+              ? i18nT('apps.meetings.review.closingMeeting')
+              : canClose
+                ? i18nT('apps.meetings.review.closeMeeting')
               : i18nT('apps.meetings.review.closeBlocked', { count: pending.length })}
           </SendBtn>
         </div>

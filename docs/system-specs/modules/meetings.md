@@ -255,6 +255,23 @@ transcript a `source=system` marker naming the loss; the user's transcript remai
 complete because every held line was appended before it entered the buffer.
 Meetings created by an older version have no file and read as an empty transcript.
 
+Each kickoff message tells the agent to acknowledge readiness and end that turn;
+transcription arrives only in later messages. The independent agent slots are
+acquired concurrently. Once acquired, every kickoff has a bounded turn budget, so
+a harness that calls a wait tool or otherwise keeps that turn open is cancelled
+when the budget expires while the remaining agents continue. The stream consumer
+stays alive during native cancellation so it can observe the acknowledgement or
+terminal response; only then is any remaining consumer retired and its turn lease
+released. Session acquisition is outside this budget: cancelling a cold start
+before the kickoff arrives would leave later transcript batches in a session that
+never received its output-file contract. If speech accumulated during
+initialization, each queue schedules that
+opening for the next event-loop turn instead of waiting through the ordinary
+30-second batch interval. If another turn is already live, the queue remembers
+that request and skips the next delay after the live turn rather than treating
+`flush_soon()` as a no-op. The start handler does not await those ordinary agent
+turns while it owns the lifecycle lock.
+
 A flush takes **whole lines up to `MAX_BATCH_CHARS` (60k)** and deletes exactly
 the lines it dispatched, so a queue that grew past the cap — a long pause, or a
 backed-off agent resuming — carries its tail into the next flush. Truncating the
@@ -272,6 +289,83 @@ lost that batch and the finalization notice, at the one moment a meeting's notes
 matter most. `busy` is the discriminator. Pinned by
 `::test_flush_now_waits_for_an_in_flight_dispatch` and
 `::test_flush_now_still_cancels_a_sleeping_timer`.
+If a drain arrives while a timer is dispatching, it marks that timer to return
+after the live turn. The lifecycle caller then owns the rest of the immediate
+drain instead of leaving the timer to sleep between batches. Pinned by
+`::test_flush_now_skips_the_next_timer_after_an_in_flight_turn`.
+
+Concurrent immediate drains join one queue-owned drain task. In particular, the
+direct agent-message endpoint's turn does not run in the batching timer; Stop must
+still await that complete drain and the finalization notice queued behind it before
+teardown clears the session. Pinned by
+`::test_stop_joins_a_direct_message_drain_before_completing`.
+If a bounded Stop waiter times out and cancels that shared task, every other joiner
+receives the same incomplete-drain result; cancelling only one caller still leaves
+the shielded shared drain running. When the drain is awaiting a pre-existing timer
+already inside an agent turn, task cancellation propagates into that timer and its
+dispatch cancellation path before the retained batch is reported incomplete.
+
+Ordinary transcript turns have no arbitrary wall-clock budget: there is no
+measured duration at which a healthy mid-meeting update becomes disposable.
+The explicit Stop drain carries a bounded work window instead, and independent
+agent queues drain concurrently so it bounds Stop rather than accumulating once
+per agent. Cooperative cancellation then has its own bounded acknowledgement
+window before the retained batch is reported incomplete. Other lifecycle drains —
+pause/review/ended status, expiry, shutdown, and replacement — retain their
+unbounded behavior because they do not have Stop's recoverable error response.
+If Stop's bound expires while a turn is live, the dispatcher requests native ACP
+cancellation while its stream consumer is still alive, retains the undelivered
+batch, and pauses that queue immediately instead of repeating the same wait for
+each circuit-breaker attempt. A provider that fails
+enough ordinary dispatches to trip the circuit breaker is the same incomplete Stop
+outcome: a non-empty paused queue is never reported as drained. Either path
+installs the Reset recovery guard. Stop then answers
+`503 meeting_drain_incomplete`, leaves the live session and metadata installed,
+and keeps ingress closed; Reset remains reachable, retries the preserved transcript
+with a longer recovery budget, and clears the recovery guard only after that retry
+finishes before the user retries Stop. When persisted meeting status is still
+`active`, successful Reset reopens transcript ingress; paused and reviewing states
+stay closed. A failed Reset keeps the batch and returns
+the same `503 meeting_drain_incomplete`. The dashboard surfaces the Stop recovery
+instruction only for the Stop action; a failed Stop leaves action-item review open
+where Retry is visible, while refused Start and Resume keep their own action-specific
+error copy. Stop and Reset failures remain through `ErrorNotice` after their toasts
+expire. They omit the agent hand-off because leaving the meeting would discard
+unsaved minutes and broadcast-message drafts. A queue halted by another dispatch
+failure uses the same `ErrorNotice` and Retry action rather than a hand-written banner.
+That notice cannot be dismissed while the agents remain halted. The Retry
+button disables and shows a spinner and pending label for the bounded Reset. The
+error toast states only that Stop failed and agents halted; the persistent recovery
+copy confirms that action-item review remains open before the Retry → Close path.
+After Retry succeeds, a dismissible persistent success notice keeps the remaining
+Close path visible. If the user returns to the meeting workspace, failure and success
+copy instead names More actions → End and review, where Close becomes available.
+A retained-batch guard also disables Resume and replaces the paused compose
+placeholder with the Retry instruction, so the workspace does not suggest an
+action the backend must refuse.
+A status action refused by the retained-batch guard names Retry as its required next
+step. A non-drain Stop failure keeps the surface-appropriate retry path in the
+persistent notice. It removes the Live indicator while any agent queue is paused,
+marks
+only each affected agent's Listening control unavailable with a visible
+agent-specific halted label and tooltip, and leaves healthy agents' controls
+accurate. It does not replace the Stop cause with the generic failure notice.
+While Close waits for that bounded drain, its review button is disabled and shows
+a progress label; Retry failures say that agents are still paused rather than
+reusing the broadcast failure copy. Repeating Stop, resuming through the active
+status transition, and the alternative reviewing-to-ended status transition all
+refuse with the same error until Reset clears the incomplete-drain state. Starting
+or restarting a meeting is refused in that state too: replacing the installed
+session would otherwise discard
+the retained transcript and finalize notice. A refused Stop, status transition, or
+Start neither enqueues another finalize notice nor drains or replaces the paused
+queues, so none can bypass recovery and discard the retained batch.
+It never clears a retained batch
+merely to complete teardown. Pinned by
+`::test_ordinary_batch_has_no_arbitrary_turn_timeout`,
+`::test_non_stop_drain_has_no_default_turn_timeout`,
+`::test_a_timed_out_batch_cancels_once_and_pauses_the_queue`, and
+`test_meetings_routes.py::test_stop_timeout_keeps_retained_batch_recoverable`.
 
 **A drain is a loop, not one flush.** `flush()` deliberately sends exactly ONE
 batch, so an over-cap queue needs several — and `flush()` cannot reschedule itself,
@@ -574,7 +668,10 @@ action-item review. With at least one enabled note or diagram agent,
 scrolling agent grid (stacked on narrower screens). When the roster becomes empty,
 the agent plane exits and the transcript expands to the primary content surface;
 enabling an agent restores the split layout through a Framer Motion layout
-transition that honors reduced-motion preferences. The panel follows new speech
+transition that honors reduced-motion preferences. The outer workspace animates
+size only, so an inserted recovery notice reserves its vertical space immediately
+instead of overlapping an agent panel during layout projection. The panel follows
+new speech
 until the reader scrolls up, then offers a localized “jump to latest” control
 rather than pulling the reading position away. Lists above 200 durable segments
 are virtualized so polling does not keep thousands of transcript rows mounted.

@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -50,6 +50,20 @@ _BATCH_SEP = "\n\n"
 #: keeps failing cannot spin the loop. Generous: at MAX_BATCH_CHARS each, this
 #: is far more transcript than a real meeting produces.
 _MAX_DRAIN_BATCHES = 50
+
+# Once its session has been acquired, one kickoff turn must only establish the
+# agent's output contract. A harness that interprets "wait for transcription"
+# as an instruction to hold the turn can otherwise keep the meeting in its
+# bounded initialization hold forever.
+_AGENT_INIT_TIMEOUT_SECS = 120.0
+# Stop may wait on an ordinary transcript turn already in flight, so that explicit
+# teardown needs a ceiling. Ordinary batching and other lifecycle drains stay
+# unbounded: there is no measured duration that makes a healthy turn disposable,
+# and those paths have no recovery response that can direct the user to Reset.
+_AGENT_DRAIN_TIMEOUT_SECS = 120.0
+# Give ACP a short cooperative-cancel window after any turn budget expires. The
+# meeting continues even if the harness does not acknowledge cancellation.
+_AGENT_CANCEL_ACK_SECS = 5.0
 
 # The process-wide dictionary, reloaded whenever the user edits it.
 _dictionary = DomainDictionary()
@@ -158,7 +172,13 @@ def is_noise(text: str) -> bool:
 
 
 async def dispatch_to_agent(
-    sessions: Any, key: str, text: str, agent: str = "", *, hooks: Any = None
+    sessions: Any,
+    key: str,
+    text: str,
+    agent: str = "",
+    *,
+    hooks: Any = None,
+    timeout_secs: float | None = None,
 ) -> None:
     """Send one batch to an agent's background session.
 
@@ -166,8 +186,13 @@ async def dispatch_to_agent(
     """
     if sessions is None:
         raise RuntimeError("session manager unavailable")
+    # Session acquisition is deliberately outside the kickoff turn timeout. If a
+    # cold start were cancelled here, the later transcript batches would inherit a
+    # session that never received its OUTPUT_FILE contract. The timeout begins only
+    # once there is a provider that can receive the kickoff.
     provider, _is_new, _resumed = await sessions.get_or_create(key, agent=agent or None)
-    try:
+
+    async def _run_turn() -> None:
         # Identity is threaded so the PreToolUse gate resolves ceiling ∩ PROFILE,
         # not the ceiling alone. The gate can only look up a profile whose name it
         # was given, and with these empty an operator profile narrowing this app —
@@ -184,7 +209,51 @@ async def dispatch_to_agent(
             agent=agent,
             app=k.APP_NAME,
         )
+
+    turn_task = asyncio.create_task(_run_turn())
+    try:
+        if timeout_secs is None:
+            await asyncio.shield(turn_task)
+        else:
+            # Keep consuming ACP's terminal response while cancel() waits for it.
+            # Unwinding the consumer first marks the turn done and makes cancel()
+            # return no_turn without sending the native session/cancel.
+            await asyncio.wait_for(asyncio.shield(turn_task), timeout=timeout_secs)
+    except asyncio.TimeoutError:
+        if timeout_secs is None:
+            # A provider-originated TimeoutError on an ordinary turn is a regular
+            # dispatch failure. Only our explicit lifecycle clock gets the
+            # pause-after-one teardown treatment below.
+            raise
+        try:
+            await provider.cancel(wait_ack_timeout=_AGENT_CANCEL_ACK_SECS)
+        except Exception:
+            logger.debug(
+                "meetings: timed-out agent cancellation failed for %s",
+                key,
+                exc_info=True,
+            )
+        raise asyncio.TimeoutError from None
+    except asyncio.CancelledError:
+        # A lifecycle drain can cancel an ordinary, otherwise-unbounded turn after
+        # its own wait budget. Keep the consumer alive until native cancellation is
+        # requested, just like the explicit timeout path above.
+        try:
+            await provider.cancel(wait_ack_timeout=_AGENT_CANCEL_ACK_SECS)
+        except Exception:
+            logger.debug(
+                "meetings: cancelled agent turn cleanup failed for %s",
+                key,
+                exc_info=True,
+            )
+        raise
     finally:
+        # After cooperative cancellation's acknowledgement window, retire any
+        # remaining consumer before releasing its turn lease. Also clean up the
+        # shielded task if the caller itself was cancelled.
+        if not turn_task.done():
+            turn_task.cancel()
+        await asyncio.gather(turn_task, return_exceptions=True)
         # The session is long-lived for the meeting's duration (each batch adds to
         # the same conversation), so release the turn semaphore but never destroy.
         try:
@@ -206,6 +275,10 @@ class AgentQueue:
     busy: bool = False
     batch_interval: float = k.BATCH_INTERVAL_SECS
     _flush_task: asyncio.Task | None = field(default=None, repr=False)
+    _drain_task: asyncio.Task | None = field(default=None, repr=False)
+    _drain_requested: bool = field(default=False, repr=False)
+    _flush_soon_requested: bool = field(default=False, repr=False)
+    _drain_incomplete: bool = field(default=False, repr=False)
     _fail_count: int = 0
     _backoff: float = 0.0
 
@@ -217,6 +290,11 @@ class AgentQueue:
     def paused(self) -> bool:
         """True when repeated dispatch failures tripped the breaker."""
         return self._fail_count >= k.MAX_DISPATCH_FAILURES
+
+    @property
+    def drain_incomplete(self) -> bool:
+        """Whether an explicit Stop drain left queued agent work behind."""
+        return self._drain_incomplete
 
     def enqueue(self, text: str) -> None:
         self.queue.append(text)
@@ -232,7 +310,31 @@ class AgentQueue:
             # enqueue on-loop, or an explicit flush_now(), does the work.
             self._flush_task = None
 
-    async def _delayed_flush(self) -> None:
+    def flush_soon(self) -> None:
+        """Schedule queued speech for the next event-loop turn.
+
+        Used after initialization so a meeting's opening does not wait through
+        the ordinary batch interval. This stays synchronous: lifecycle callers
+        can release their locks without awaiting an unbounded agent turn.
+        """
+        task = self._flush_task
+        if task is not None and not task.done():
+            if self.busy:
+                # The timer is already inside a live turn, so it cannot be
+                # replaced. Remember the request and skip the NEXT batch delay
+                # after that turn completes; otherwise opening speech enqueued
+                # during initialization can still wait the ordinary 30 seconds.
+                self._flush_soon_requested = True
+                return
+            task.cancel()  # replace the sleeping batch timer
+        try:
+            self._flush_task = asyncio.get_running_loop().create_task(
+                self._delayed_flush(first_delay=0.0)
+            )
+        except RuntimeError:
+            self._flush_task = None
+
+    async def _delayed_flush(self, first_delay: float | None = None) -> None:
         """The batching timer: sleep, flush, and keep going while work remains.
 
         The loop lives HERE rather than as a ``_schedule_flush()`` call inside
@@ -246,13 +348,68 @@ class AgentQueue:
         persistently failing dispatch can keep one task alive indefinitely; the
         circuit breaker (``paused``) is the other exit.
         """
+        delay = first_delay
         for _ in range(_MAX_DRAIN_BATCHES):
-            await asyncio.sleep(self.batch_interval + self._backoff)
+            await asyncio.sleep((self.batch_interval if delay is None else delay) + self._backoff)
+            delay = None
             if not await self.flush():
                 return
+            if self._drain_requested:
+                # Let flush_now() own the rest of the immediate drain after the live
+                # turn it was waiting for completes.
+                return
+            if self._flush_soon_requested:
+                self._flush_soon_requested = False
+                delay = 0.0
 
-    async def flush_now(self) -> None:
+    async def flush_now(self, timeout_secs: float | None = None) -> bool:
         """Force an immediate flush (meeting end / pause).
+
+        Return ``False`` when queued work remains after the drain.  An explicit
+        ``timeout_secs`` caller also installs the Reset recovery guard, whether
+        the bounded drain ran out of time or the circuit breaker paused it first.
+
+        Every caller joins one queue-owned drain task. This matters for the direct
+        agent-message endpoint: its drain is not ``_flush_task``, so ``busy`` alone
+        cannot identify the coroutine that Stop must await. Sharing the complete
+        drain makes Stop wait for that direct turn and any lines queued behind it
+        before teardown can clear the session.
+
+        The timeout wraps the complete shared drain. Cancelling that task reaches
+        ``dispatch_to_agent`` while its stream consumer is still alive, so its
+        native ACP cancellation path runs and the undispatched batch stays queued.
+        """
+        task = self._drain_task
+        if task is None or task.done():
+            task = asyncio.get_running_loop().create_task(self._drain())
+            self._drain_task = task
+        try:
+            if timeout_secs is None:
+                return await asyncio.shield(task)
+            drained = await asyncio.wait_for(asyncio.shield(task), timeout=timeout_secs)
+            if not drained:
+                self._pause_after_incomplete_drain("the circuit breaker paused")
+            return drained
+        except asyncio.CancelledError:
+            # Another waiter with an explicit lifecycle budget can cancel the
+            # shared drain. Its unbounded peers must observe the same incomplete
+            # result instead of leaking CancelledError through an unrelated HTTP
+            # request. A cancellation of THIS caller leaves the shielded drain
+            # running, so the inner task is not cancelled and we propagate it.
+            if task.cancelled():
+                return False
+            raise
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._pause_after_incomplete_drain("the turn budget expired")
+            return False
+        finally:
+            if self._drain_task is task and task.done():
+                self._drain_task = None
+
+    async def _drain(self) -> bool:
+        """Drain this queue once for all concurrent ``flush_now`` callers.
 
         A pending ``_flush_task`` is in one of two states, and they must be treated
         differently. Still SLEEPING on its batch interval: cancelling it is the
@@ -273,46 +430,52 @@ class AgentQueue:
                 # Mid-dispatch: let it finish. Its own `finally` clears `busy`, and a
                 # failure inside it is already handled by `flush()`'s except-branch,
                 # so nothing needs to propagate out of the drain.
+                self._drain_requested = True
                 try:
                     await task
                 except Exception:
                     logger.debug(
-                        "meetings: in-flight flush for %s ended in error", self.name,
+                        "meetings: in-flight flush for %s ended in error",
+                        self.name,
                         exc_info=True,
                     )
+                finally:
+                    self._drain_requested = False
             else:
                 task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         # Drain, not flush-once. A queue over MAX_BATCH_CHARS takes several batches,
         # and at pause/stop there is no later timer to finish the job — whatever is
         # still queued when this returns is discarded by teardown. Bounded by
-        # _MAX_DRAIN_BATCHES so a dispatch that keeps failing (or a producer still
-        # enqueuing) cannot spin here forever, and by the progress check so a flush
-        # that consumed nothing ends the loop rather than repeating.
-        # The no-progress check keys on the FAILURE COUNT, not on the queue length.
-        # A failed dispatch leaves the queue untouched and still returns True
-        # (`more_queued = not self.paused`), so a length comparison read a transient
-        # failure as "nothing left to consume" and ended the drain with transcript
-        # still queued — which teardown then discards. That is the same silent loss
-        # the drain exists to prevent, reached through the guard meant to bound it.
-        #
-        # Retrying while the failure count RISES is what lets a transient error
-        # (a gateway hiccup, a momentarily busy agent) resolve; the count is reset
-        # to 0 by a successful dispatch. Two independent bounds still apply, so a
-        # genuinely stuck dispatch cannot spin: `_MAX_DRAIN_BATCHES` caps the
-        # iterations, and the circuit breaker pauses the queue after
-        # `MAX_DISPATCH_FAILURES`, at which point `flush()` returns False.
+        # _MAX_DRAIN_BATCHES so a producer that keeps enqueuing cannot spin here
+        # forever. Dispatch failures have the independent circuit-breaker bound:
+        # `flush()` returns False once it pauses the queue. Queue length is not a
+        # progress signal because a line can arrive while one same-sized batch is
+        # consumed, leaving the length unchanged even though the drain advanced.
         for _ in range(_MAX_DRAIN_BATCHES):
-            before = len(self.queue)
-            failures_before = self._fail_count
+            if not self.queue:
+                break
             if not await self.flush():
                 break
-            if len(self.queue) == before and self._fail_count == failures_before:
-                break  # consumed nothing AND did not fail — genuinely idle
         if self.queue:
             logger.warning(
                 "meetings: %s still has %d queued line(s) after a full drain",
-                self.name, len(self.queue),
+                self.name,
+                len(self.queue),
             )
+        return not self.queue
+
+    def _pause_after_incomplete_drain(self, reason: str) -> None:
+        self._drain_incomplete = True
+        self._fail_count = k.MAX_DISPATCH_FAILURES
+        self._backoff = k.BACKOFF_CAP_SECS
+        logger.error(
+            "meetings: teardown drain for %s did not finish because %s; "
+            "queue paused with %d line(s)",
+            self.name,
+            reason,
+            len(self.queue),
+        )
 
     def resume(self) -> None:
         """Reset the breaker and retry whatever is queued."""
@@ -320,6 +483,22 @@ class AgentQueue:
         self._backoff = 0.0
         if self.queue:
             self._schedule_flush()
+
+    async def recover_incomplete_drain(self, timeout_secs: float) -> bool:
+        """Retry a retained Stop batch before clearing its recovery guard.
+
+        ``resume()`` resets the circuit breaker, but an incomplete drain remains a
+        data-retention boundary until the queued transcript is actually delivered.
+        Clearing the marker when Reset merely SCHEDULED a retry let an immediate
+        Stop tear the session down while that retry was still pending.
+        """
+        if not self._drain_incomplete:
+            return True
+        drained = await self.flush_now(timeout_secs=timeout_secs)
+        recovered = drained and not self.queue
+        if recovered:
+            self._drain_incomplete = False
+        return recovered
 
     def _take_batch(self) -> tuple[str, int]:
         """The next batch and HOW MANY queued lines it consumed.
@@ -359,7 +538,11 @@ class AgentQueue:
         more_queued = False
         try:
             await dispatch_to_agent(
-                self.sessions, self.key, batch, self.agent, hooks=self.hooks
+                self.sessions,
+                self.key,
+                batch,
+                self.agent,
+                hooks=self.hooks,
             )
             del self.queue[:size]
             self._fail_count = 0
@@ -372,7 +555,11 @@ class AgentQueue:
             self._backoff = min(k.BACKOFF_STEP_SECS * self._fail_count, k.BACKOFF_CAP_SECS)
             logger.error(
                 "meetings: dispatch to %s failed (%d/%d), backoff %.0fs: %s",
-                self.name, self._fail_count, k.MAX_DISPATCH_FAILURES, self._backoff, exc,
+                self.name,
+                self._fail_count,
+                k.MAX_DISPATCH_FAILURES,
+                self._backoff,
+                exc,
             )
             more_queued = not self.paused
         finally:
@@ -384,6 +571,9 @@ class AgentQueue:
         if self._flush_task is not None and not self._flush_task.done():
             self._flush_task.cancel()
         self._flush_task = None
+        if self._drain_task is not None and not self._drain_task.done():
+            self._drain_task.cancel()
+        self._drain_task = None
 
 
 # ── config helpers ──────────────────────────────────────────────────────────
@@ -681,6 +871,10 @@ class MeetingSession:
     def agents_paused(self) -> bool:
         return any(queue.paused for queue in self.agents.values())
 
+    @property
+    def agent_drain_incomplete(self) -> bool:
+        return any(queue.drain_incomplete for queue in self.agents.values())
+
     def status(self) -> dict[str, Any]:
         return {
             "active_meeting": self.meeting_id,
@@ -698,9 +892,12 @@ class MeetingSession:
             "expired": self.expired,
         }
 
-    async def flush_all(self) -> None:
-        for queue in self.agents.values():
-            await queue.flush_now()
+    async def flush_all(self, *, timeout_secs: float | None = None) -> bool:
+        """Drain every agent, sharing one optional wall-clock budget per queue."""
+        results = await asyncio.gather(
+            *(queue.flush_now(timeout_secs=timeout_secs) for queue in self.agents.values())
+        )
+        return all(results)
 
     def cancel_translations(self) -> None:
         """Drop pending translation work.
@@ -730,6 +927,16 @@ class MeetingSession:
                 queue.resume()
                 resumed.append(name)
         return resumed
+
+    async def recover_incomplete_agents(self, timeout_secs: float) -> bool:
+        """Retry every incomplete Stop queue and retain protection on failure."""
+        queues = [queue for queue in self.agents.values() if queue.drain_incomplete]
+        if not queues:
+            return True
+        results = await asyncio.gather(
+            *(queue.recover_incomplete_drain(timeout_secs) for queue in queues)
+        )
+        return all(results)
 
 
 # ── lifecycle (metadata side) ───────────────────────────────────────────────
@@ -853,7 +1060,10 @@ def build_init_message(
         "a context limit.\n\n"
         f"Meeting context:\n{build_meeting_context(meta)}\n\n"
         f"{cross_ref}\n\n"
-        "Read any attached documents now for context, then wait for transcription."
+        "Read any attached documents now for context. Do not call a wait, sleep, "
+        "polling, or monitoring tool, and do not keep this turn open. Reply with a "
+        "brief ready acknowledgment and end this turn. Transcription will arrive in "
+        "later messages."
     )
 
 
@@ -867,9 +1077,7 @@ TASK_EXTRACTOR_PROMPT = (
 )
 
 
-def build_cross_reference(
-    meeting_dir: str, enabled: list[dict[str, Any]]
-) -> str:
+def build_cross_reference(meeting_dir: str, enabled: list[dict[str, Any]]) -> str:
     """The "here is where the other agents write" block each agent receives."""
     lines: list[str] = []
     for agent_def in enabled:
@@ -906,13 +1114,16 @@ def _init_agents_plan(
 async def init_agents(
     session: MeetingSession, meta: dict[str, Any], root: Path | None = None
 ) -> None:
-    """Kick off each enabled agent's session with its instructions.
+    """Kick off every enabled agent's session concurrently with its instructions.
 
     Failures are logged, not raised: one agent that cannot start must not abort
-    the meeting for the others.
+    the meeting for the others. Each agent owns a distinct session slot, so making
+    the independent kickoff turns concurrent bounds startup by the slowest agent
+    instead of the sum of all agents' turn times.
     """
     enabled, mdir, cross_ref = await asyncio.to_thread(_init_agents_plan, session, meta, root)
 
+    dispatches: list[Awaitable[None]] = []
     for agent_def in enabled:
         try:
             fname = store.agent_output_filename(agent_def)
@@ -922,7 +1133,7 @@ async def init_agents(
             continue
         agent_id = str(agent_def["id"])
         message = build_init_message(agent_def, meta, f"{mdir}/{fname}", cross_ref)
-        await _safe_dispatch(session, agent_id, message, agent_def.get("agent") or "")
+        dispatches.append(_safe_dispatch(session, agent_id, message, agent_def.get("agent") or ""))
 
     task_message = build_init_message(
         {"id": k.TASK_EXTRACTOR_ID, "name": "Task Extractor", "prompt": TASK_EXTRACTOR_PROMPT},
@@ -930,14 +1141,13 @@ async def init_agents(
         f"{mdir}/{k.TASKS_FILE}",
         cross_ref,
     )
-    await _safe_dispatch(
-        session, k.TASK_EXTRACTOR_ID, task_message, k.TASK_EXTRACTOR_AGENT
+    dispatches.append(
+        _safe_dispatch(session, k.TASK_EXTRACTOR_ID, task_message, k.TASK_EXTRACTOR_AGENT)
     )
+    await asyncio.gather(*dispatches)
 
 
-async def _safe_dispatch(
-    session: MeetingSession, agent_id: str, message: str, agent: str
-) -> None:
+async def _safe_dispatch(session: MeetingSession, agent_id: str, message: str, agent: str) -> None:
     try:
         await dispatch_to_agent(
             session.sessions,
@@ -945,7 +1155,16 @@ async def _safe_dispatch(
             message,
             agent,
             hooks=session.hooks,
+            timeout_secs=_AGENT_INIT_TIMEOUT_SECS,
         )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "meetings: agent %s initialization exceeded %.1fs; continuing",
+            agent_id,
+            _AGENT_INIT_TIMEOUT_SECS,
+        )
+        _audit_dispatch(agent_id, outcome="timeout")
+        return
     except Exception:
         logger.warning("meetings: could not initialize agent %s", agent_id, exc_info=True)
         _audit_dispatch(agent_id, outcome="error")
@@ -967,8 +1186,10 @@ def _audit_dispatch(agent_id: str, *, outcome: str) -> None:
         logger.debug("meetings: SEL audit failed for agent init", exc_info=True)
 
 
-async def broadcast_system(session: MeetingSession, message: str) -> None:
+async def broadcast_system(
+    session: MeetingSession, message: str, *, timeout_secs: float | None = None
+) -> bool:
     """Send a lifecycle notice to every agent, flushing immediately."""
     for queue in session.agents.values():
         queue.enqueue(message)
-    await session.flush_all()
+    return await session.flush_all(timeout_secs=timeout_secs)

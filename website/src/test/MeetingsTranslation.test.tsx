@@ -16,6 +16,7 @@ import EN_CATALOG from '../i18n/locales/en.json'
 
 const SessionSource = readFileSync('src/apps/meetings/hooks/useMeetingSession.ts', 'utf-8')
 const ViewSource = readFileSync('src/apps/meetings/MeetingView.tsx', 'utf-8')
+const ReviewSource = readFileSync('src/apps/meetings/TaskReviewView.tsx', 'utf-8')
 const ApiSource = readFileSync('src/apps/meetings/api.ts', 'utf-8')
 
 const line = (n: number, source: string, text: string): TranslationLine => ({ n, source, text })
@@ -159,6 +160,42 @@ describe('the incremental poll', () => {
 })
 
 describe('MeetingView wiring', () => {
+  it('closes action review only after Stop succeeds', () => {
+    expect(ViewSource).toContain('onClose={() => actions.stop(onBack)}')
+    expect(ViewSource).not.toMatch(/actions\.stop\(\)\s*onBack\(\)/)
+  })
+
+  it('shows and latches the final Stop while Close is pending', () => {
+    expect(ViewSource).toContain('closing={pending.stopping}')
+    expect(ReviewSource).toContain('disabled={!canClose || closing}')
+    expect(ReviewSource).toContain("i18nT('apps.meetings.review.closingMeeting')")
+  })
+
+  it('keeps Stop and Retry failures in an ErrorNotice without unsafe hand-off', () => {
+    expect(ViewSource).toContain('testId="meetings-recovery-error"')
+    expect(ViewSource).toMatch(
+      /<ErrorNotice[\s\S]*?message=\{recoveryNoticeMessage\}[\s\S]*?No hand-off:[\s\S]*?unsaved local state/,
+    )
+    expect(ViewSource).not.toMatch(/message=\{recoveryNoticeMessage\}[\s\S]{0,300}?askAgent/)
+    expect(ViewSource).toMatch(/footer=\{agentsPaused[\s\S]*?actions\.resetAgents/)
+    expect(ViewSource).toContain("agentsPaused ? i18nT('apps.meetings.meeting.agentsPaused')")
+    expect(ViewSource).not.toContain('agentsPaused && !recoveryError')
+    expect(ViewSource).toContain('disabled={pending.settingStatus !== null || agentsPaused}')
+    expect(ViewSource).toMatch(
+      /: agentsPaused\s*\? i18nT\('apps\.meetings\.session\.statusDrainIncomplete'/,
+    )
+  })
+
+  it('does not present a timed-out agent as listening while healthy agents continue', () => {
+    expect(ViewSource).toMatch(/status === 'active'\s*&& !agentsPaused/)
+    expect(ViewSource).toMatch(
+      /listening=\{\s*!live\?\.agents\?\.\[agent\.id\]\?\.paused\s*&& !mutedAgents\.includes\(agent\.id\)/,
+    )
+    expect(ViewSource).toContain(
+      'listeningUnavailable={Boolean(live?.agents?.[agent.id]?.paused)}',
+    )
+  })
+
   it('offers the toggle only when a language is configured', () => {
     // With translation off the item would open a panel that can never fill.
     expect(ViewSource).toMatch(/\{translation\.language && \(\s*<DropdownMenuItem/)

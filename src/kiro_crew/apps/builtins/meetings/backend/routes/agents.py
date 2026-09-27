@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from http import HTTPStatus
 from typing import Any
 
 from aiohttp import web
@@ -174,7 +175,7 @@ async def _toggle_agent_locked(
                             mdir, sess.get_enabled_agents(config, enabled_list)
                         ),
                     )
-                    + "\n\nYou are joining mid-meeting. Wait for transcription."
+                    + "\n\nYou are joining mid-meeting."
                 )
                 await sess._safe_dispatch(session, agent_id, message, agent_def.get("agent") or "")
     else:
@@ -341,12 +342,34 @@ async def handle_dispatch_text(request: web.Request) -> web.Response:
 async def handle_reset_agents(request: web.Request) -> web.Response:
     """Reset failed agents' circuit breakers and retry their queues."""
     meeting_id = _meeting_id(request)
-    session = ACTIVE.get(meeting_id)
-    if session is None:
-        return web.json_response(
-            {"error": "no active meeting", "code": "no_active_meeting"}, status=409
-        )
-    resumed = session.resume_all()
+    root = data_root(request)
+    # Serialize the retry with Stop, status transitions, and replacement. Reset is
+    # successful only after a retained Stop batch has actually drained; merely
+    # scheduling it would remove the protection before delivery completed.
+    async with START_LOCK:
+        session = ACTIVE.get(meeting_id)
+        if session is None:
+            return web.json_response(
+                {"error": "no active meeting", "code": "no_active_meeting"}, status=409
+            )
+        resumed = session.resume_all()
+        # Stop owns the short interactive bound. An explicit Retry gets twice that
+        # window so a healthy but unusually slow final rewrite has a way out of the
+        # recovery loop without discarding the retained transcript.
+        recovered = await session.recover_incomplete_agents(sess._AGENT_DRAIN_TIMEOUT_SECS * 2.0)
+        if not recovered:
+            raise BadRequest(
+                "meeting agents still did not finish; retry the paused agent",
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                code="meeting_drain_incomplete",
+            )
+        meta = await asyncio.to_thread(store.read_meeting_meta, meeting_id, root)
+        if meta is not None and meta.get("status") == k.STATUS_ACTIVE:
+            # Stop closes ingress before draining. If its best-effort request to
+            # persist Paused never landed, successful recovery must reopen the
+            # still-active meeting or the UI says Live while new speech is refused.
+            async with DISPATCH_LOCK:
+                ACTIVE.resume_dispatches(session)
     audit("meetings.reset_agents", meeting_id, outcome="ok")
     return web.json_response(
         {

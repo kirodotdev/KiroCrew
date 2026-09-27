@@ -65,6 +65,7 @@ interface Props {
   /** The EFFECTIVE output: the user's edit when one exists, otherwise the agent's. */
   output: string
   listening: boolean
+  listeningUnavailable?: boolean
   chatView: boolean
   /**
    * Set when the user has edited this agent's output. Its `content` is not carried —
@@ -85,6 +86,7 @@ export default function AgentPanel({
   agent,
   output,
   listening,
+  listeningUnavailable = false,
   chatView,
   edit,
   editSaving = false,
@@ -224,13 +226,18 @@ export default function AgentPanel({
         )}
         <Btn
           onClick={onToggleListening}
+          disabled={listeningUnavailable}
           aria-label={
-            listening
+            listeningUnavailable
+              ? i18nT('apps.meetings.agentPanel.pausedHint', { name: agent.name })
+              : listening
               ? i18nT('apps.meetings.agentPanel.mute', { name: agent.name })
               : i18nT('apps.meetings.agentPanel.unmute', { name: agent.name })
           }
           title={
-            listening
+            listeningUnavailable
+              ? i18nT('apps.meetings.agentPanel.pausedHint', { name: agent.name })
+              : listening
               ? i18nT('apps.meetings.agentPanel.listeningHint')
               : i18nT('apps.meetings.agentPanel.mutedHint')
           }
@@ -239,6 +246,11 @@ export default function AgentPanel({
             <Volume2 className="lucide-inline" />
           ) : (
             <VolumeX className="lucide-inline" />
+          )}
+          {listeningUnavailable && (
+            <span className="text-[11px] font-medium">
+              {i18nT('apps.meetings.agentPanel.paused')}
+            </span>
           )}
         </Btn>
       </div>

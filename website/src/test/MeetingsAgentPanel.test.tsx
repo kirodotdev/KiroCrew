@@ -192,6 +192,13 @@ describe('AgentPanel — markdown output', () => {
     mount(MARKDOWN, { listening: false })
     expect(screen.getByLabelText('Unmute Note Taker')).toBeTruthy()
   })
+
+  it('does not show a halted agent as listening or let the muted toggle imply recovery', () => {
+    mount(MARKDOWN, { listening: false, listeningUnavailable: true })
+    const control = screen.getByLabelText('Note Taker halted after an error.')
+    expect(control).toBeDisabled()
+    expect(control).toHaveTextContent('Agent halted')
+  })
 })
 
 describe('AgentPanel — chat mode', () => {

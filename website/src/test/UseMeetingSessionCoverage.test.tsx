@@ -15,6 +15,48 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18nT } from '../i18n/t'
 
+function expectedStopDrainIncomplete(inReview = false): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopDrainIncomplete', {
+        retry: i18nT('apps.meetings.meeting.retryAgents'),
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopDrainIncompleteWorkspace', {
+        retry: i18nT('apps.meetings.meeting.retryAgents'),
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+      })
+}
+
+function expectedStopDrainRecovered(inReview = false): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopDrainRecovered', {
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopDrainRecoveredWorkspace', {
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+      })
+}
+
+function expectedStatusDrainIncomplete(): string {
+  return i18nT('apps.meetings.session.statusDrainIncomplete', {
+    retry: i18nT('apps.meetings.meeting.retryAgents'),
+  })
+}
+
+function expectedStopFailedRetry(inReview = false): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopFailedRetry', {
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopFailedRetryWorkspace', {
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+}
+
 const apiMocks = vi.hoisted(() => ({
   init: vi.fn(),
   meeting: vi.fn(),
@@ -720,6 +762,20 @@ describe('useMeetingSession lifecycle actions', () => {
     )
   })
 
+  it('reports Reset as pending until every paused agent resumes', async () => {
+    let release!: () => void
+    apiMocks.resetAgents.mockImplementation(
+      () => new Promise(resolve => { release = () => resolve({}) }),
+    )
+    const view = await mountLoaded()
+
+    act(() => view.result.current.actions.resetAgents())
+
+    await waitFor(() => expect(view.result.current.pending.resettingAgents).toBe(true))
+    await act(async () => release())
+    await waitFor(() => expect(view.result.current.pending.resettingAgents).toBe(false))
+  })
+
   it('adds and removes an attachment', async () => {
     const view = await mountLoaded()
 
@@ -868,6 +924,147 @@ describe('useMeetingSession failure reporting', () => {
       i18nT('apps.meetings.session.startFailed'),
       { type: 'error' },
     ))
+  })
+
+  it('localizes the recovery instruction when a stop drain times out', async () => {
+    apiMocks.stop.mockRejectedValue(
+      new MeetingsApiError('untrusted backend detail', 503, 'meeting_drain_incomplete'),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => {
+      view.result.current.actions.stop()
+    })
+
+    await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.stopDrainIncompleteToast'),
+      { type: 'error' },
+    ))
+    expect(view.result.current.recoveryError).toBe(
+      expectedStopDrainIncomplete(),
+    )
+    expect(apiMocks.setStatus).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['start', 'start', 'apps.meetings.session.startFailed'],
+  ] as const)(
+    'does not prescribe the Stop recovery flow for a failed %s',
+    async (action, mockName, key) => {
+      apiMocks[mockName].mockRejectedValue(
+        new MeetingsApiError('retained drain', 503, 'meeting_drain_incomplete'),
+      )
+      const view = await mountLoaded()
+
+      await act(async () => {
+        view.result.current.actions[action]()
+      })
+
+      await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+        i18nT(key),
+        { type: 'error' },
+      ))
+      expect(view.notify).not.toHaveBeenCalledWith(
+        expectedStopDrainIncomplete(),
+        { type: 'error' },
+      )
+    },
+  )
+
+  it('names Retry when a status change is blocked by retained agent work', async () => {
+    apiMocks.setStatus.mockRejectedValue(
+      new MeetingsApiError('retained drain', 503, 'meeting_drain_incomplete'),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => {
+      view.result.current.actions.resume()
+    })
+
+    await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+      expectedStatusDrainIncomplete(),
+      { type: 'error' },
+    ))
+  })
+
+  it('keeps a retry instruction visible after a non-drain Stop failure', async () => {
+    apiMocks.stop.mockRejectedValue(new Error('boom'))
+    const view = await mountLoaded()
+
+    await act(async () => {
+      view.result.current.actions.stop()
+    })
+
+    await waitFor(() => expect(view.result.current.recoveryError).toBe(
+      expectedStopFailedRetry(),
+    ))
+    expect(view.notify).toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.stopFailed'),
+      { type: 'error' },
+    )
+  })
+
+  it('reports a failed retained-batch retry without claiming agents resumed', async () => {
+    apiMocks.resetAgents.mockRejectedValue(
+      new MeetingsApiError('retained drain', 503, 'meeting_drain_incomplete'),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => {
+      view.result.current.actions.resetAgents()
+    })
+
+    await waitFor(() => expect(view.notify).toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.resetAgentsFailed'),
+      { type: 'error' },
+    ))
+    expect(view.result.current.recoveryError).toBe(
+      i18nT('apps.meetings.session.resetAgentsFailed'),
+    )
+    expect(view.notify).not.toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.agentsResumed'),
+      { type: 'info' },
+    )
+  })
+
+  it('clears the persistent Stop failure after Reset recovers the agents', async () => {
+    const reviewingMeta = meta({ status: 'reviewing' })
+    apiMocks.init.mockResolvedValue({ meeting_id: 'weekly_sync', meta: reviewingMeta })
+    apiMocks.meeting.mockResolvedValue({ meta: reviewingMeta, live: null })
+    apiMocks.stop.mockRejectedValue(
+      new MeetingsApiError('retained drain', 503, 'meeting_drain_incomplete'),
+    )
+    const view = await mountLoaded()
+
+    await act(async () => {
+      view.result.current.actions.stop()
+    })
+    await waitFor(() => expect(view.result.current.recoveryError).toBe(
+      expectedStopDrainIncomplete(true),
+    ))
+
+    await act(async () => {
+      view.result.current.actions.resetAgents()
+    })
+    await waitFor(() => expect(view.result.current.recoveryError).toBeNull())
+    expect(view.result.current.recoverySuccess).toBe(expectedStopDrainRecovered(true))
+    expect(view.notify).not.toHaveBeenCalledWith(
+      expectedStopDrainRecovered(true),
+      { type: 'info' },
+    )
+    apiMocks.meeting.mockResolvedValue({
+      meta: meta({ status: 'paused' }),
+      live: null,
+    })
+    await act(async () => {
+      await view.queryClient.invalidateQueries({
+        queryKey: ['meetings', 'weekly_sync', 'meta'],
+      })
+    })
+    await waitFor(() => expect(view.result.current.status).toBe('paused'))
+    expect(view.result.current.recoverySuccess).toBe(expectedStopDrainRecovered())
+    act(() => view.result.current.dismissRecoverySuccess())
+    expect(view.result.current.recoverySuccess).toBe('')
   })
 })
 

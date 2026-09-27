@@ -257,7 +257,26 @@
       "meeting": {
         "endingReview": "Ending — preparing review…",
         "pausing": "Pausing…",
-        "resuming": "Resuming…"
+        "resuming": "Resuming…",
+        "retryingAgents": "Retrying…"
+      },
+      "agentPanel": {
+        "paused": "Agent halted",
+        "pausedHint": "{{name}} halted after an error."
+      },
+      "session": {
+        "statusDrainIncomplete": "Agents halted after an error — select {{retry}} first.",
+        "stopDrainIncomplete": "The meeting didn't end — agents halted after an error. You're still in action-item review. Select {{retry}}, then select {{close}}.",
+        "stopDrainIncompleteWorkspace": "The meeting didn't end — agents halted after an error. Select {{retry}}, then open {{moreActions}} and select {{review}}.",
+        "stopDrainIncompleteToast": "The meeting didn't end — agents halted after an error.",
+        "stopDrainRecovered": "Agents resumed. Select {{close}}.",
+        "stopDrainRecoveredWorkspace": "Agents resumed. Open {{moreActions}} and select {{review}}.",
+        "resetAgentsFailed": "Could not resume the agents — they are still halted.",
+        "stopFailedRetry": "The meeting didn't end. Select {{close}} to try again.",
+        "stopFailedRetryWorkspace": "The meeting didn't end. Open {{moreActions}} and select {{review}}, then select {{close}} to try again."
+      },
+      "review": {
+        "closingMeeting": "Closing the meeting…"
       },
       "broadcastBar": {
         "pausedPlaceholder": "Agents paused — resume to send",
