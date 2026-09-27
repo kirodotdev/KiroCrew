@@ -1848,13 +1848,27 @@ def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
 
     Asserted on the GRANDCHILD, because a parent-only kill is the bug -- the parent
     dies either way.
+
+    The grandchild is known here only as a NUMBER the driver printed, and by the
+    time this process reads it the driver's group has been SIGKILLed: on the
+    passing path init has already collected the grandchild and the kernel is free
+    to hand its number to a stranger. So the driver reports the grandchild's
+    start-time identity alongside the pid, read through the repo's own helper at
+    the one moment the pid is provably ours, and "gone" below means "no process
+    with THAT identity" -- a reissued number is a stranger, neither a leak nor a
+    kill target. The failure-path kill is pinned to the same identity.
     """
-    parent = r"""
-import subprocess, sys, time
-g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-print(g.pid, flush=True)
-time.sleep(300)
-"""
+    from kiro_crew import platform_compat
+
+    src_root = Path(platform_compat.__file__).resolve().parents[1]
+    parent = (
+        "import subprocess, sys, time\n"
+        f"sys.path.insert(0, {str(src_root)!r})\n"
+        "from kiro_crew.platform_compat import get_process_start_id\n"
+        'g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])\n'
+        "print(g.pid, get_process_start_id(g.pid) or '', flush=True)\n"
+        "time.sleep(300)\n"
+    )
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         script = Path(w) / "parent.py"
         script.write_text(parent, encoding="utf-8")
@@ -1862,18 +1876,30 @@ time.sleep(300)
         result = _run_driver_reaping_group([sys.executable, str(script)], timeout=5, cwd=w)
         # The bound is the control here, and the reap must not add a long second wait.
         assert time.monotonic() - started < 90
-        grandchild = int((result.stdout or "").strip().splitlines()[0])
+        reported = (result.stdout or "").strip().splitlines()[0].split()
+        grandchild = int(reported[0])
+        assert len(reported) == 2, (
+            f"the driver could not read the start-time identity of grandchild "
+            f"{grandchild}, so neither the liveness check nor the failure-path kill "
+            "below could be pinned to the process it spawned"
+        )
+        grandchild_identity = reported[1]
 
+    # Liveness through the repo's own identity helper (AGENTS.md "Cross-platform"):
+    # a raw ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on
+    # Windows, the sweep's caller filter recognises only the sanctioned helpers,
+    # and a bare existence probe cannot tell our reaped grandchild's reissued
+    # number from the grandchild itself.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(grandchild, 0)
-        except OSError:
+        if platform_compat.get_process_start_id(grandchild) != grandchild_identity:
             break
         time.sleep(0.2)
     else:  # pragma: no cover - the failure this test exists to catch
         try:
-            os.kill(grandchild, 9)
+            platform_compat.kill_pid_pinned(
+                grandchild, grandchild_identity, platform_compat.SIGKILL
+            )
         except OSError:
             pass
         pytest.fail(

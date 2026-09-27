@@ -124,6 +124,54 @@ def test_a_capture_leaves_every_resolver_cache_as_it_found_it(tmp_path) -> None:
     )
 
 
+def test_the_deepseek_capture_writes_its_scratch_windows_only_under_tmp_path(
+    monkeypatch, tmp_path
+) -> None:
+    """Every filesystem write the DeepSeek arm makes lands under the test's temp dir.
+
+    The arm is the one harness whose spawn path WRITES into the scratch window it is
+    handed rather than only naming it: ``record_owner`` installs the child's pid as
+    ``.owner`` in the session window, and the gate probe's throwaway window is
+    ``rmtree``'d in the arm's ``finally`` -- both from an executor thread, so neither
+    is attributable to this test by frame. When the capture answered
+    ``allocate_scratch`` with a fixed synthetic ``/opt/scratch/...`` path, both became
+    writes at a real absolute path on the recording host, outside every sandbox.
+
+    The two writers are wrapped at the names the arm looks up, so a stub that ever
+    again answers a path outside ``tmp_path`` fails here with the path named, instead
+    of leaving an ``unlink`` and an ``rmtree`` aimed at someone's disk. And the owner
+    write must be RECORDED, not merely attempted: an absent directory answers
+    ``"unwritable"``, which is exactly what the host path did.
+    """
+    touched: list[Path] = []
+    outcomes: list[str] = []
+    real_record_owner = client_mod.agent_scratch.record_owner
+    real_rmtree = client_mod.shutil.rmtree
+
+    def _record_owner(path, pid):
+        touched.append(Path(path))
+        outcome = real_record_owner(path, pid)
+        outcomes.append(outcome)
+        return outcome
+
+    def _rmtree(path, *args, **kwargs):
+        touched.append(Path(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(client_mod.agent_scratch, "record_owner", _record_owner)
+    monkeypatch.setattr(client_mod.shutil, "rmtree", _rmtree)
+
+    capture_mod.capture(ACP_BACKEND_DEEPSEEK, tmp_path)
+
+    assert len(touched) >= 2, (
+        "the DeepSeek arm neither recorded a scratch owner nor removed its probe "
+        f"window, so this test measured nothing: {touched}"
+    )
+    outside = [path for path in touched if not path.is_relative_to(tmp_path)]
+    assert not outside, f"the capture wrote outside its own tmp_path: {outside}"
+    assert outcomes == ["recorded"], outcomes
+
+
 def test_the_env_delta_does_not_depend_on_the_recording_environment(monkeypatch, tmp_path) -> None:
     """The fixture must record what _spawn CONTRIBUTES, not what this host lacked.
 

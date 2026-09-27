@@ -36,6 +36,18 @@ pytestmark = pytest.mark.skipif(
     reason="_build_launcher_script uses POSIX-only os.getuid; Windows skips the wrap",
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The protected-name populations read out of the launcher do not depend on that
+    answer, and a real ssh spawned from the test process is a host dependency this
+    module is not about. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
 TIERS = ("standard", "cc", "strict")
 
 #: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired

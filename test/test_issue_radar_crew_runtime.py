@@ -236,26 +236,31 @@ def _crew(root, name="Andromeda", **spec) -> dict[str, Any]:
 _UNITS: dict[str, str] = {}
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _isolated_crew_log():
-    """One crew log data home for the module, crew log on.
+@pytest.fixture(autouse=True)
+def _isolated_crew_log(monkeypatch):
+    """Crew log on, in this test's own data home, and no warm state carried over.
 
-    Module-scoped because the seeding helper below is called from unittest classes
-    that manage their own store roots; crews are minted with unique ids, so their
-    units never collide, and the fold cache is keyed by crew.
+    FUNCTION-scoped: the data home is the rootdir conftest's per-test
+    ``KIROCREW_HOME`` pin, so the crew log a test writes lands in a directory that
+    test alone owns, and ``KIROCREW_CREW_LOG`` is set through ``monkeypatch`` so it
+    is gone the moment the test is. A module-scoped ``patch.dict`` here set both
+    keys for the whole worker between tests: every other suite the worker ran
+    after this file's first test saw a crew log switched on that none of them
+    asked for, and a data home none of them pinned. The seeding helpers below are
+    called from unittest classes that manage their own store roots; a crew's id is
+    minted fresh per test, so ``_UNITS`` is cleared with the rest.
     """
-    with tempfile.TemporaryDirectory() as home:
-        with mock.patch.dict(os.environ, {"KIROCREW_HOME": home, "KIROCREW_CREW_LOG": "1"}):
-            from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
 
-            crew_log_emit.reset_caches()
-            crew_log_projection.forget_slot_folds()
-            _UNITS.clear()
-            yield
-            crew_log_emit.drain_for_shutdown(timeout=2.0)
-            crew_log_emit.reset_caches()
-            crew_log_projection.forget_slot_folds()
-            _UNITS.clear()
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    crew_log_emit.reset_caches()
+    crew_log_projection.forget_slot_folds()
+    _UNITS.clear()
+    yield
+    crew_log_emit.drain_for_shutdown(timeout=2.0)
+    crew_log_emit.reset_caches()
+    crew_log_projection.forget_slot_folds()
+    _UNITS.clear()
 
 
 def _unit_for(crew_id: str) -> str:

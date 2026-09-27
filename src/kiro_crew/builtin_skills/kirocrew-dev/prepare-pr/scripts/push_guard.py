@@ -52,8 +52,12 @@ REPLAY_HISTORY_WINDOW = 500
 _GIT_CMD: list[str] | None = None
 
 
-def run(args):
+def run(args, input=None):
     """Run a command; return (returncode, stdout, stderr) as stripped text.
+
+    Every git command this script issues goes through this ONE runner --
+    including the ``patch-id`` calls, which hand their diff over ``input`` --
+    so the injection point below covers all of them.
 
     When the module-level _GIT_CMD is set (test monkeypatch), "git" is
     replaced with the specified command list — no PATH/shell wrappers or
@@ -69,7 +73,14 @@ def run(args):
                 resolved = shutil.which("git")
                 if resolved:
                     args = [resolved] + list(args[1:])
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(
+            args,
+            input=input,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -319,33 +330,19 @@ def _check_pre_squash(base, max_ahead):
         if not diff_out:
             # diff-tree SUCCEEDED with empty output — empty commit, skip.
             continue
-        # Feed the diff to git patch-id --stable via stdin.
-        try:
-            pid_proc = subprocess.run(
-                ["git", "patch-id", "--stable"],
-                input=diff_out,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if pid_proc.returncode != 0:
-                err(
-                    "REFUSED: git patch-id --stable failed (exit {}) for"
-                    " commit {}. Cannot verify replay safety —"
-                    " failing closed.".format(pid_proc.returncode, commit_sha[:12])
-                )
-                return 40
-            if pid_proc.stdout.strip():
-                patch_id = pid_proc.stdout.strip().split()[0]
-                ahead_patch_ids[patch_id] = commit_sha
-        except OSError as exc:
+        # Feed the diff to git patch-id --stable via stdin. run() reports an
+        # OSError as exit 127, so one branch covers both failure shapes.
+        pid_rc, pid_out, _ = run(["git", "patch-id", "--stable"], input=diff_out)
+        if pid_rc != 0:
             err(
-                "REFUSED: git patch-id --stable raised OSError for commit"
-                " {}: {}. Cannot verify replay safety —"
-                " failing closed.".format(commit_sha[:12], exc)
+                "REFUSED: git patch-id --stable failed (exit {}) for"
+                " commit {}. Cannot verify replay safety —"
+                " failing closed.".format(pid_rc, commit_sha[:12])
             )
             return 40
+        if pid_out:
+            patch_id = pid_out.split()[0]
+            ahead_patch_ids[patch_id] = commit_sha
 
     if not ahead_patch_ids:
         print("STATUS: SAFE TO PUSH")
@@ -383,32 +380,17 @@ def _check_pre_squash(base, max_ahead):
         if not diff_out:
             # diff-tree SUCCEEDED with empty output — empty commit, skip.
             continue
-        try:
-            pid_proc = subprocess.run(
-                ["git", "patch-id", "--stable"],
-                input=diff_out,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if pid_proc.returncode != 0:
-                err(
-                    "REFUSED: git patch-id --stable failed (exit {}) for"
-                    " base commit {}. Cannot verify replay safety —"
-                    " failing closed.".format(pid_proc.returncode, commit_sha[:12])
-                )
-                return 40
-            if pid_proc.stdout.strip():
-                patch_id = pid_proc.stdout.strip().split()[0]
-                base_patch_ids[patch_id] = commit_sha
-        except OSError as exc:
+        pid_rc, pid_out, _ = run(["git", "patch-id", "--stable"], input=diff_out)
+        if pid_rc != 0:
             err(
-                "REFUSED: git patch-id --stable raised OSError for base"
-                " commit {}: {}. Cannot verify replay safety —"
-                " failing closed.".format(commit_sha[:12], exc)
+                "REFUSED: git patch-id --stable failed (exit {}) for"
+                " base commit {}. Cannot verify replay safety —"
+                " failing closed.".format(pid_rc, commit_sha[:12])
             )
             return 40
+        if pid_out:
+            patch_id = pid_out.split()[0]
+            base_patch_ids[patch_id] = commit_sha
 
     # Step 3: find matches.
     replayed_pairs: list[tuple[str, str]] = []  # (ahead-sha, base-sha)

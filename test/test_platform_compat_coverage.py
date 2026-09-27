@@ -2029,15 +2029,20 @@ class TestProcRss:
         # Sampled a moment apart, so allow drift rather than demanding equality.
         assert abs(measured - vm_rss_kb * 1024) < 4 * 1024 * 1024
 
-    def test_linux_fallback_scales_the_peak_from_kib_to_bytes(self, monkeypatch):
-        # Unit handling is the trap: ru_maxrss is KiB on Linux and bytes on
-        # macOS, with nothing in the value to tell them apart.
+    def test_linux_fallback_scales_the_peak_from_kib_to_bytes(self, monkeypatch, tmp_path):
+        # Unit handling is the trap: the kernel prints VmHWM in kB with nothing
+        # in the value to say so. The Linux peak is the process's OWN VmHWM, not
+        # ru_maxrss, which execve seeds with the parent's peak.
         monkeypatch.setattr(pc, "IS_POSIX", True)
         monkeypatch.setattr(pc.sys, "platform", "linux")
         _fake_resource(
             monkeypatch,
-            getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=2048),
+            getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=999_999_999),
         )
+        status = tmp_path / "status"
+        status.write_text("VmHWM:\t    2048 kB\n", encoding="utf-8")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
         monkeypatch.setattr(pc, "_linux_current_rss_bytes", lambda: None)
         assert pc.proc_rss_bytes() == 2048 * 1024
 
@@ -2078,12 +2083,13 @@ class TestProcRss:
         monkeypatch.setattr(pc.ctypes, "CDLL", _no_libsystem)
         assert pc.proc_rss_bytes() == 555
 
-    def test_a_total_posix_failure_is_zero(self, monkeypatch):
+    def test_a_total_posix_failure_is_zero(self, monkeypatch, tmp_path):
         def _boom(_who: Any) -> Any:
             raise OSError("no rusage")
 
         monkeypatch.setattr(pc, "IS_POSIX", True)
         _fake_resource(monkeypatch, getrusage=_boom)
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", tmp_path / "no-proc")
         monkeypatch.setattr(pc, "_linux_current_rss_bytes", lambda: None)
         monkeypatch.setattr(pc, "_macos_current_rss_bytes", lambda: None)
         assert pc.proc_rss_bytes() == 0
@@ -2139,13 +2145,19 @@ class TestMachTaskBasicInfoLayout:
 class TestProcPeakRss:
     """The peak is still reported, but as its own clearly-named reading."""
 
-    def test_posix_scales_kib_to_bytes_on_linux(self, monkeypatch):
+    def test_posix_scales_kib_to_bytes_on_linux(self, monkeypatch, tmp_path):
+        # Linux reads its own VmHWM (kB); ru_maxrss there is the parent's
+        # inherited peak and must not be the source.
         monkeypatch.setattr(pc, "IS_POSIX", True)
         monkeypatch.setattr(pc.sys, "platform", "linux")
         _fake_resource(
             monkeypatch,
-            getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=2048),
+            getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=999_999_999),
         )
+        status = tmp_path / "status"
+        status.write_text("VmHWM:\t    2048 kB\n", encoding="utf-8")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
         assert pc.proc_peak_rss_bytes() == 2048 * 1024
 
     def test_posix_reports_bytes_directly_on_macos(self, monkeypatch):
@@ -2157,12 +2169,15 @@ class TestProcPeakRss:
         )
         assert pc.proc_peak_rss_bytes() == 999
 
-    def test_a_getrusage_failure_is_zero(self, monkeypatch):
+    def test_a_getrusage_failure_is_zero(self, monkeypatch, tmp_path):
+        # The single POSIX source failing (VmHWM on Linux, getrusage elsewhere)
+        # is 0: neither falls through to the other.
         def _boom(_who: Any) -> Any:
             raise OSError("no rusage")
 
         monkeypatch.setattr(pc, "IS_POSIX", True)
         _fake_resource(monkeypatch, getrusage=_boom)
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", tmp_path / "no-proc")
         assert pc.proc_peak_rss_bytes() == 0
 
     def test_windows_reads_the_peak_working_set(self, monkeypatch):

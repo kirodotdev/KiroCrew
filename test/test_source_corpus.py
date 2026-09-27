@@ -47,10 +47,11 @@ import test_sandbox_off_loop as sandbox
 import test_session_map_locking as session_map
 from source_corpus import (
     candidate_sources,
+    iter_candidate_sources,
+    iter_source_texts,
     repo_files,
     repo_files_named,
     repo_root,
-    source_texts,
     src_root,
     unreadable_files,
 )
@@ -340,19 +341,26 @@ def _unencodable_docstrings(sources: Sequence[tuple[Path, str]]) -> list[tuple[P
 
 
 class TestCorpusHealth:
-    """A stale or empty corpus is the one failure that makes every gate green."""
+    """A stale or empty corpus is the one failure that makes every gate green.
+
+    Streamed, not materialised. ``source_texts()`` holds ~130 MB of ``str`` for as
+    long as its tuple lives, and one comparison written as two of them at once
+    measured at +264 MiB of resident memory -- the very high-water mark the corpus
+    module exists to keep off every gate. So each pin below walks the iterator
+    the gates walk and keeps a count, a path set or two texts, never the tree.
+    """
 
     def test_the_corpus_is_not_empty_or_stale(self):
-        texts = source_texts()
-        assert len(texts) >= _MIN_FILES, (
-            f"source_corpus returned {len(texts)} files; every whole-tree ratchet "
+        count = sum(1 for _pair in iter_source_texts())
+        assert count >= _MIN_FILES, (
+            f"source_corpus returned {count} files; every whole-tree ratchet "
             "reads this, so a short corpus makes all of them pass while blind."
         )
 
     def test_every_file_is_python_under_the_package(self):
         root = src_root()
         assert (root / "security" / "__init__.py").is_file(), f"{root} is not the kiro_crew package"
-        for path, _text in source_texts():
+        for path, _text in iter_source_texts():
             assert path.suffix == ".py"
             assert path.is_relative_to(root)
 
@@ -385,18 +393,40 @@ class TestCorpusHealth:
 
     def test_sources_are_the_real_file_contents(self):
         """Pins the read, not just the count: a corpus of empty strings is worse."""
-        # One materialisation: ``source_texts()`` is not memoised, so two calls
-        # in one expression would hold the corpus twice.
-        texts = source_texts()
-        by_name = {path.name: text for path, text in texts}
-        by_rel = {path.relative_to(src_root()).as_posix(): text for path, text in texts}
-        assert "def redact" in by_rel["security/__init__.py"]
-        assert "def batched_save" in by_name["session_map.py"]
+        root = src_root()
+        wanted = {"security/__init__.py": "def redact", "session_map.py": "def batched_save"}
+        seen: dict[str, str] = {}
+        for path, text in iter_source_texts():
+            for key in (path.relative_to(root).as_posix(), path.name):
+                if key in wanted:
+                    seen[key] = text
+        assert set(seen) == set(wanted), f"corpus is missing {set(wanted) - set(seen)}"
+        for key, marker in wanted.items():
+            assert marker in seen[key], f"{key} did not read as the real file"
 
     def test_a_filter_returns_a_subset_and_no_filter_returns_everything(self):
-        everything = source_texts()
-        assert set(candidate_sources(blocking._REQUIRE_ALL)) <= set(everything)
-        assert candidate_sources() == everything
+        """The filter is a subset of the corpus; an empty filter is the corpus.
+
+        Both halves stream in lockstep with the corpus. A candidate's ``text`` is
+        checked against the file itself, so the subset claim covers the pair and
+        not only the path; ``strict`` makes a filter that drops or invents a file
+        fail on length, not just on content.
+        """
+        corpus_paths = set()
+        for path, _text in iter_source_texts():
+            corpus_paths.add(path)
+        kept = 0
+        for path, text in iter_candidate_sources(blocking._REQUIRE_ALL):
+            assert path in corpus_paths, f"{path} is not in the corpus"
+            assert text == path.read_text(encoding="utf-8"), f"{path} was not read verbatim"
+            kept += 1
+        assert 0 < kept < len(corpus_paths), "the filter admitted nothing, or everything"
+
+        everything = 0
+        for candidate, whole in zip(iter_candidate_sources(), iter_source_texts(), strict=True):
+            assert candidate == whole
+            everything += 1
+        assert everything == len(corpus_paths)
 
 
 class TestFilterLiteralsStillMatchWhatTheGatesReject:
@@ -479,11 +509,13 @@ class TestFiltersStillNarrowTheTree:
         ],
     )
     def test_the_filter_narrows_the_tree(self, label, require_all, require_any, ceiling):
-        kept = candidate_sources(require_all, require_any)
+        # Counted off the stream: the broad filters keep up to half the tree, and
+        # a tuple of those texts is most of the corpus resident again.
+        kept = sum(1 for _pair in iter_candidate_sources(require_all, require_any))
         assert kept, f"{label}: matched nothing, so that gate now scans an empty tree"
-        assert len(kept) < ceiling, (
-            f"{label}: kept {len(kept)} of {len(source_texts())} files, so the filter "
-            "is no longer buying anything -- either the tree or the literal moved."
+        assert kept < ceiling, (
+            f"{label}: kept {kept} of {sum(1 for _pair in iter_source_texts())} files, so "
+            "the filter is no longer buying anything -- either the tree or the literal moved."
         )
 
 

@@ -1551,6 +1551,37 @@ class TestReplayFailClosed:
             f"stdout: {stdout}\nstderr: {stderr}"
         )
 
+    def test_patchid_failure_refuses(self, repo_pair, tmp_path, monkeypatch):
+        """patch-id --stable failure → exit 40, and it is the INJECTED git that fails.
+
+        Both ``patch-id`` calls go through ``run()`` and so through ``_GIT_CMD``,
+        which is what lets this fake reach them: a bare ``git`` spawn of their
+        own would be untestable here and would cost every run of the class a
+        real host ``git``. Failing the fake on ``patch-id`` and getting the refusal proves
+        the calls now go through ``run()`` like every other command.
+        """
+        clone_dir, _ = repo_pair
+
+        _git(clone_dir, "checkout", "-b", "feature/patchid-fail-test")
+        Path(clone_dir, "change.py").write_text("# change\n")
+        _git(clone_dir, "add", "change.py")
+        _git(clone_dir, "commit", "-m", "feat: test commit")
+
+        fake_cmd = self._make_fake_git_cmd(tmp_path, "'patch-id' in args")
+
+        rc, stdout, stderr = self._run_push_guard_inprocess(monkeypatch, clone_dir, fake_cmd)
+        assert rc == 40, (
+            f"Expected refused (40), got {rc}. A failing "
+            f"patch-id must not produce SAFE TO PUSH.\n"
+            f"stdout: {stdout}\nstderr: {stderr}"
+        )
+        assert "SAFE TO PUSH" not in stdout
+        combined = (stdout + stderr).lower()
+        assert "refused" in combined and "patch-id" in combined, (
+            "Expected a REFUSED diagnostic mentioning patch-id.\n"
+            f"stdout: {stdout}\nstderr: {stderr}"
+        )
+
     def test_empty_ahead_set_on_success_is_still_safe(self, repo_pair):
         """rev-list SUCCEEDS with empty output (0 ahead commits) → still SAFE."""
         clone_dir, _ = repo_pair

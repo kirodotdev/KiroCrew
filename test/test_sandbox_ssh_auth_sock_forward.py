@@ -29,6 +29,18 @@ import pytest
 
 import kiro_crew.sandbox as sb
 
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The env scrub lists read out of the launcher do not depend on that answer, and a
+    real ssh spawned from the test process is a host dependency this module is not
+    about (it tests the SOCKET forward, never the client). Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sb, "_ssh_supports_accept_new", lambda: True)
+
+
 # --- _agent_scrub_prefixes: the shared prefix filter (takes an explicit bool) ---
 
 

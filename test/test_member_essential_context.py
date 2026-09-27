@@ -26,6 +26,11 @@ from kiro_crew.memory_stores import (
 from kiro_crew.skills import SkillsLoader
 
 
+@pytest.fixture(autouse=True)
+def _close_skills_loaders(close_skills_loaders):
+    """The ``env`` fixture builds a ``SkillsLoader`` it never closes: close it (rootdir conftest)."""
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     home = tmp_path / "host-home"

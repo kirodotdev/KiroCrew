@@ -21,10 +21,14 @@ from kiro_crew.knowledge.store import KnowledgeStore
 
 
 @pytest.fixture()
-def store(tmp_path):
-    s = KnowledgeStore(str(tmp_path / "test.db"))
-    yield s
-    s.close()
+def store(tmp_path, opened):
+    """A store closed on EVERY thread at teardown (rootdir conftest ``opened``).
+
+    ``add_source`` claims and ingests off the loop, so the handler opens a second
+    per-thread connection on a worker; ``close()`` releases only the calling
+    thread's and left that one to the cyclic collector.
+    """
+    return opened(KnowledgeStore(str(tmp_path / "test.db")))
 
 
 def _make_app(store, pipeline=None):

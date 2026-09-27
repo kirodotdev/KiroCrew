@@ -28,8 +28,32 @@ from typing import Any, Iterator
 import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
+from kiro_crew import code_fingerprint as cf
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import transport
+
+
+@pytest.fixture(autouse=True)
+def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """``code_fingerprint()`` without a git spawn, per test, cache isolated.
+
+    ``GatewayManager._start_locked`` and ``run_gatewayd`` both warm
+    ``code_fingerprint()`` before ``prepare_dir``, and the cached fingerprint is
+    of ``_PACKAGE_ROOT`` -- THIS checkout -- so a cold read runs
+    ``git -C <checkout> rev-parse HEAD`` and ``git diff HEAD`` on the developer's
+    own repository from a pool thread with the worker's cwd inherited; which test
+    pays depends on run order (whoever reads first after a ``cache_clear``).
+    Nothing in this module reads the value, so the trusted-git resolver is pinned
+    to "absent" -- the product's own no-spawn arm, the mtime rule -- exactly as
+    ``test_mcp_gateway_daemon_lifecycle.py`` does. The cache is cleared on both
+    sides so the pinned value neither reuses a real one nor leaks to a module
+    that must match a child daemon's real fingerprint.
+    """
+    monkeypatch.setattr(cf, "trusted_git_bin", lambda: None)
+    cf.code_fingerprint.cache_clear()
+    yield
+    cf.code_fingerprint.cache_clear()
+
 
 # --- Address resolution ------------------------------------------------------
 

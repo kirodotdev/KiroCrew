@@ -115,6 +115,16 @@ def pair(tmp_path: Path) -> Pair:
 
 
 def _run_main(mod: ModuleType, monkeypatch, pair: Pair, *argv: str) -> int:
+    """Run the script's ``main`` from inside the work clone.
+
+    ``green_age.run()`` is a CLI runner whose contract is "git in the invoking
+    cwd": it passes no ``cwd=`` of its own, so the PROCESS cwd is the repository
+    it measures. The ``chdir`` here is therefore the whole isolation: with it,
+    every ``git`` the script spawns runs under ``tmp_path``; without it, the same
+    spawns would run in the pytest worker's cwd -- this checkout -- and answer
+    about the wrong repository. The ``cwd=None`` descriptor itself is deliberate
+    and stays (test-hygiene class 7, "what not to re-derive").
+    """
     monkeypatch.chdir(pair.work)
     return mod.main(list(argv))
 

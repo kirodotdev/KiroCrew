@@ -644,3 +644,34 @@ The consequence for how you write a test:
       (`pool.spawn_shutdown`), never an inline `await shutdown()` in a handler's `finally`:
       teardown cancels the handler after the backend has left the map, and the child then
       belongs to nobody
+- [ ] A child that polices its OWN peak memory reads `/proc/self/status` `VmHWM` on Linux,
+      never `getrusage(RUSAGE_SELF).ru_maxrss`: `execve` seeds `ru_maxrss` with the parent's
+      high-water mark, so a child of a 2 GiB xdist worker (or gateway) reads over its ceiling
+      before it has parsed a byte -- green at `-n0`, red under the suite; the test that pins
+      it plants a BLOATED PARENT and asserts the child still finishes
+- [ ] A test that plants a fake executable under `tmp_path` and expects a guard LATER than
+      the working-tree fence to fire pins the fence root (`_WORKTREE_ROOT`) to a `tmp_path`
+      sibling that is not the fake's ancestor -- under a repo-internal `TMPDIR` the fence
+      wins first, and a patched `which()` that answers the fake for `git` too can hide it on CI
+- [ ] A module that boots the REAL `start_dashboard` pins
+      `hooks_integration._lifecycle_dispatcher` / `_route_registry` to `None` BEFORE the boot
+      (so `monkeypatch` restores them); a module whose assertions assume "never booted" says
+      so with an autouse pin. Attribute a flaky 409 by its BODY (`hooks disable failed: ...
+      MagicMock ... await`), not by the endpoint that answered
+- [ ] A PTY test that asserts a child receives a signal gates the send on
+      `os.tcgetpgrp` on the PTY's own descriptor leaving the shell's group -- the line-discipline ECHO of the
+      command is not proof the shell has read it (`VINTR` flushes unread input and the test
+      passes with no child ever born) -- and reaps the session group in a `finally`; a spawn
+      that hands a shell a terminal resets inherited `SIG_IGN` to `SIG_DFL` first, because a
+      backgrounded launcher's ignored SIGINT survives `exec` into every descendant
+- [ ] A module-scoped autouse fixture never wraps the module in
+      `mock.patch.dict(os.environ, {...})`: the keys are live between tests for every module
+      the worker runs meanwhile, while the function-scoped conftest floor already overrides the
+      home during each body -- set the feature flag per test with `monkeypatch.setenv`
+- [ ] A memoised per-file read on a tree scan (`lru_cache` on `_read_text`, a `tuple(...)`
+      corpus helper) keeps every file resident for the process; the seam streams, and the test
+      consumes the iterator (count, path set, `zip(strict=True)`) instead of materialising it
+- [ ] A test's own `kiro-cli --version` is never the HOST's: every agent-spec write reaches
+      `installed_kiro_cli_version()`, cached per process, so the module pins it to
+      `SPEC_PERMISSIONS_MIN_VERSION` (house fixture) or the host's install decides the
+      contract under test

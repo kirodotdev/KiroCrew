@@ -115,12 +115,48 @@ def _emit(payload: dict, *, flush: bool = False) -> None:
             sys.stdout.flush()
 
 
+#: Where Linux reports THIS process's peak resident size. ``ru_maxrss`` is not
+#: that on Linux: ``execve`` folds the pre-exec image's high-water mark into the
+#: new one (``fs/exec.c`` ``exec_mmap`` -> ``setmax_mm_hiwater_rss``), so a child
+#: forked from a large parent reads the PARENT's peak as its own for life. A
+#: gateway over ``--max-rss`` would then lose every child on the watchdog's first
+#: sample, before a byte of the document was parsed. ``VmHWM`` is the current
+#: ``mm``'s own high-water mark, which a fresh image starts from zero.
+_LINUX_STATUS_PATH = "/proc/self/status"
+_LINUX_PEAK_FIELD = "VmHWM:"
+
+
+def _peak_rss_from_status(status: str) -> int | None:
+    """Parse ``VmHWM`` out of a ``/proc/<pid>/status`` text, in bytes.
+
+    The kernel prints the field as ``VmHWM:\\t   11432 kB`` -- always kB, so
+    any other shape (a missing field, a unit that is not kB, a non-numeric
+    value) is unreadable rather than a guess.
+    """
+    for line in status.splitlines():
+        if not line.startswith(_LINUX_PEAK_FIELD):
+            continue
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == "kB" and parts[1].isdigit():
+            return int(parts[1]) * 1024
+        return None
+    return None
+
+
 def peak_rss_bytes() -> int | None:
     """This process's peak resident size in bytes, or ``None`` where unreadable.
 
-    ``ru_maxrss`` is KiB on Linux and BYTES on macOS -- the one place the two
+    Linux reads its own ``VmHWM`` (see :data:`_LINUX_STATUS_PATH` for why
+    ``ru_maxrss`` is the parent's number there); everywhere else ``ru_maxrss``,
+    which is KiB on the BSDs and BYTES on macOS -- the one place those two
     differ, and the reason this is not a bare ``getrusage`` call at the use site.
     """
+    if sys.platform.startswith("linux"):
+        try:
+            with open(_LINUX_STATUS_PATH, encoding="utf-8", errors="replace") as fh:
+                return _peak_rss_from_status(fh.read())
+        except OSError:
+            return None
     if _resource is None:
         return None
     peak = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss

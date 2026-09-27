@@ -46,9 +46,22 @@ from types import SimpleNamespace
 
 import pytest
 
+import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.sandbox import _build_launcher_script
 
 _LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux namespace launcher only")
+
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The flag helper lifted out of the launcher does not depend on that answer, and a
+    real ssh spawned from the test process is a host dependency this module is not
+    about. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
+
 
 #: Flag values the launcher defines for itself; mirrored so extracted code can run.
 _MS_RDONLY = 1

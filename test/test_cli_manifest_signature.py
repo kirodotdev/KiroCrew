@@ -21,6 +21,8 @@ import yaml
 from installer_test_helpers import run_bounded
 from skill_script_helpers import load_skill_script
 
+from kiro_crew import platform_compat
+
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "packaging" / "signing" / "cli-manifest.py"
 INSTALLER = ROOT / "cli.sh"
@@ -670,11 +672,12 @@ wait
     with pytest.raises(subprocess.TimeoutExpired):
         run_bounded(["sh", str(script), str(pidfile)], os.environ.copy(), 5.0, cwd=str(tmp_path))
     pid = int(pidfile.read_text(encoding="utf-8").strip())
+    # Liveness through the repo's own probe (AGENTS.md "Cross-platform"): a raw
+    # ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on Windows,
+    # and the sweep's caller filter recognises only the sanctioned helper.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not platform_compat.pid_exists(pid):
             return
         time.sleep(0.05)
     pytest.fail(f"grandchild {pid} survived the bounded run")

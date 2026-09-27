@@ -656,3 +656,21 @@ def test_dry_run_against_the_real_repo_never_plans_a_full_suite(gate, monkeypatc
         # Every rc==0 plan names CI as the full suite's owner, in one of two
         # spellings depending on whether there was anything related to select.
         assert "full suite deferred to CI" in err or "the full suite runs in CI" in err, err
+
+
+def test_the_reference_scan_reads_each_test_file_once_and_drops_it(gate) -> None:
+    """The selector streams the test tree; it must not memoise what it read.
+
+    ``related_targets`` reads every collectable test file once per call to match
+    it against the diff's tokens. An earlier revision wrapped that read in
+    ``functools.lru_cache(maxsize=None)``, so the whole tree -- ~3,200 files,
+    ~100 MB of ``str`` -- stayed resident for the life of whichever process had
+    imported the selector: the gate itself, or the pytest worker running the
+    end-to-end dry run above (+190 MiB high-water, outliving the test). The
+    re-read it saved is 0.4 s. Pinned by shape: the read seam is a plain function.
+    """
+    selector = importlib.import_module("run_scoped_tests")
+    assert not hasattr(selector._read_text, "cache_info"), (
+        "run_scoped_tests._read_text is memoised again; the reference scan must "
+        "read each file once and drop it, not retain the test tree's text"
+    )

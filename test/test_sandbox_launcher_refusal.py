@@ -21,6 +21,18 @@ import pytest
 
 from kiro_crew import sandbox as sb
 
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The refusal lines read out of the launcher do not depend on that answer, and a
+    real ssh spawned from the test process is a host dependency this module is not
+    about. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sb, "_ssh_supports_accept_new", lambda: True)
+
+
 #: The exact line a container under its runtime's default AppArmor profile
 #: produces: both unshares succeed, the launcher's first mount is refused.
 _MOUNT_REFUSED = (

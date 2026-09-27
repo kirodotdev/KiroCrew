@@ -75,9 +75,6 @@ _PI_EXTENSION = "/opt/run/kiro_crew_tool_gate.ts"
 # argv rather than the filesystem.
 _DSH_EXTENSION = "/opt/run/kiro_crew_tool_gate.mjs"
 _DSH_PATCH = "/opt/run/kiro_crew_dsh_gate.patch.yml"
-#: The private scratch window the DeepSeek gate marker is written into. Fixed so
-#: the capture names no host path; see the ``allocate_scratch`` stub below.
-_DSH_SCRATCH = Path("/opt/scratch/dsh-session")
 _OPENCODE_BIN = "/opt/bin/opencode"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
@@ -221,6 +218,27 @@ async def _windows_cleanup_passthrough(factory: Any) -> Any:
     return await factory()
 
 
+def _allocate_capture_scratch(tmp_path: Path, label: str) -> Path:
+    """A scratch window for *label*, as a REAL directory under *tmp_path*.
+
+    Stands in for ``agent_scratch.allocate_scratch`` on the one arm that needs a
+    window (DeepSeek, see :func:`_stub_common`). It has to be a directory that
+    exists, and it has to be under the test's own temp dir, because the spawn path
+    does not stop at reading the path back: ``record_owner`` installs the child's
+    pid as ``.owner`` inside the session window from an executor thread, and the
+    gate probe's throwaway window is ``shutil.rmtree``'d in the arm's ``finally``.
+    A fixed synthetic path -- this file once answered ``/opt/scratch/dsh-session``
+    -- turns both of those into writes at a real absolute path on the recording
+    host, outside every sandbox: an ``unlink`` of that path's ``.owner`` and an
+    ``rmtree`` of the path itself. Neither reaches the golden (the sandbox wrap,
+    the read-back and ``scratch_env`` are all stubbed), so nothing is pinned by
+    naming a host path here and nothing changes in the fixture by not doing so.
+    """
+    path = tmp_path / "scratch" / label
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 #: Collaborators the capture answers with one of the call's OWN arguments, and which
 #: argument each answers with. Every one of them reads the host otherwise -- the two
 #: env resolvers and the pod home remap read config and the real environment, the pod
@@ -308,17 +326,26 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             # its gate's load marker is written by the child into this private
             # window, because the gate-artifact leaf is sealed read-only against the
             # child, and a session with nowhere to put the marker is refused rather
-            # than run ungated.
+            # than run ungated. It is answered with a real directory under
+            # ``tmp_path`` (see :func:`_allocate_capture_scratch`), one per label,
+            # because the arm WRITES into the window it is handed.
             patch.object(
                 client_mod.agent_scratch,
                 "allocate_scratch",
-                return_value=_DSH_SCRATCH if backend == ACP_BACKEND_DEEPSEEK else None,
+                side_effect=_stub_for(
+                    client_mod.agent_scratch.allocate_scratch,
+                    lambda call: (
+                        _allocate_capture_scratch(tmp_path, call["label"])
+                        if backend == ACP_BACKEND_DEEPSEEK
+                        else None
+                    ),
+                ),
             ),
             # The env that window contributes, pinned to placeholders rather than to
             # this host's spelling of it. Two things vary by platform and neither is
-            # the fact the golden exists to hold. ``str(Path("/opt/scratch/x"))``
-            # renders backslash-separated on Windows, so a literal path would fail
-            # there on separators alone; and ``KIRO_CHAT_LOG_FILE`` is set only where
+            # the fact the golden exists to hold. ``str(Path(...))`` renders
+            # backslash-separated on Windows, so a literal path would fail there on
+            # separators alone; and ``KIRO_CHAT_LOG_FILE`` is set only where
             # the log cap can bound it, which is every platform except Windows, so its
             # KEY presence varies too. Stubbing the whole contribution keeps one
             # golden for both platforms while still pinning what matters -- that the

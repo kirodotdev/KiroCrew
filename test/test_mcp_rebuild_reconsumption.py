@@ -24,7 +24,25 @@ import pytest
 from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.mcp_provenance import DERIVED_KEY
+
+
+@pytest.fixture(autouse=True)
+def _pinned_kiro_cli_version(monkeypatch):
+    """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
+
+    Every rebuild here ends in ``_write_derived_permissions``, which reads
+    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
+    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
+    whichever test in the worker rebuilds first pays it against the HOST's install
+    with the checkout as the child's cwd. Pinned to the floor release, as
+    ``test_agent.py`` and the generated-writer suites pin it.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version",
+        lambda: SPEC_PERMISSIONS_MIN_VERSION,
+    )
 
 
 def _emitted(tmp_path: Path, cfg_dir: Path, kiro_servers: dict, **kw) -> dict:

@@ -2212,14 +2212,11 @@ def test_blind_lookup_squatter_is_not_adopted_without_child_binding_proof(
         lambda pid, port: None,
         raising=False,
     )
-    monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
-    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda port: [])
-    monkeypatch.setattr(
-        platform_compat,
-        "probe_port_listeners",
-        lambda port: ([], True),
-        raising=False,
-    )
+    # The shared stub, not a hand-rolled copy of its three listener pins: the copy
+    # dropped ``process_descendant_identities``, so every one of the 120 readiness
+    # rounds ran two real ``ps`` snapshots against pid 4242 -- a host process this
+    # test does not own -- and the fake-clock loop took 20 real seconds.
+    _stub_port_owner(monkeypatch, listener_pids=())
 
     assert mod.ensure_running() is None
     assert mod._info is None
@@ -2250,14 +2247,7 @@ def test_blind_lookup_adopts_real_child_after_recognized_binding_report(
         lambda pid, port: None,
         raising=False,
     )
-    monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
-    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda port: [])
-    monkeypatch.setattr(
-        platform_compat,
-        "probe_port_listeners",
-        lambda port: ([], True),
-        raising=False,
-    )
+    _stub_port_owner(monkeypatch, listener_pids=())
 
     with caplog.at_level("WARNING"):
         info = mod.ensure_running()

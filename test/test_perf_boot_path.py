@@ -37,35 +37,6 @@ from kiro_crew.slack.gateway import GatewayOrchestrator
 _SRC = str(Path(kiro_crew.__file__).resolve().parents[1])
 
 
-@pytest.fixture(autouse=True)
-def _close_knowledge_stores(monkeypatch):
-    """Close the SQLite connection each ``KnowledgeStore`` opened on this thread.
-
-    ``KnowledgeStore`` opens a per-thread SQLite connection (three descriptors
-    in WAL) on first ``db`` access and never closes it without an explicit
-    call; the scan tests here would otherwise leave the test-thread connection
-    open until GC. Track every instance and release it at teardown.
-    """
-    from kiro_crew.knowledge import store as _store_mod
-
-    created = []
-    orig_init = _store_mod.KnowledgeStore.__init__
-
-    def _tracking_init(self, *args, **kwargs):
-        orig_init(self, *args, **kwargs)
-        created.append(self)
-
-    monkeypatch.setattr(_store_mod.KnowledgeStore, "__init__", _tracking_init)
-    try:
-        yield
-    finally:
-        for store in created:
-            try:
-                store.close()
-            except Exception:
-                pass
-
-
 def _probe(snippet: str) -> dict:
     """Run *snippet* in a clean interpreter, returning the JSON it prints.
 
@@ -387,10 +358,15 @@ class _CountingDb:
 
 class TestFolderWatcherScanQueryCount:
     """A scan re-read ``sources.properties`` and issued a ``last_seen`` UPDATE
-    once per discovered file — up to 10,000 on-loop sqlite ops per scan."""
+    once per discovered file — up to 10,000 on-loop sqlite ops per scan.
+
+    Each store goes through the rootdir conftest's ``opened`` fixture: the
+    batched ``last_seen`` flush runs on a worker connection, which a per-thread
+    ``close()`` from the test thread never reached.
+    """
 
     @pytest.mark.asyncio
-    async def test_pause_check_and_last_seen_are_not_per_file(self, tmp_path: Path) -> None:
+    async def test_pause_check_and_last_seen_are_not_per_file(self, tmp_path: Path, opened) -> None:
         from kiro_crew.knowledge.folder_watcher import (
             _PAUSE_RECHECK_FILES,
             FolderWatcher,
@@ -405,7 +381,7 @@ class TestFolderWatcherScanQueryCount:
         for i in range(n_files):
             (vault / f"note{i}.md").write_text(f"Note {i}", encoding="utf-8")
 
-        store = KnowledgeStore(tmp_path / "knowledge.db")
+        store = opened(KnowledgeStore(tmp_path / "knowledge.db"))
         pipeline = MagicMock()
         pipeline._dedup_enabled = False
         fw = FolderWatcher(store, pipeline)
@@ -454,7 +430,7 @@ class TestFolderWatcherScanQueryCount:
         ], "all unchanged-file last_seen touches must land in one worker batch"
 
     @pytest.mark.asyncio
-    async def test_last_seen_is_still_written(self, tmp_path: Path) -> None:
+    async def test_last_seen_is_still_written(self, tmp_path: Path, opened) -> None:
         """The batching must not drop the touches it defers."""
         from kiro_crew.knowledge.folder_watcher import FolderWatcher
         from kiro_crew.knowledge.store import KnowledgeStore
@@ -463,7 +439,7 @@ class TestFolderWatcherScanQueryCount:
         vault.mkdir()
         (vault / "note.md").write_text("Note", encoding="utf-8")
 
-        store = KnowledgeStore(tmp_path / "knowledge.db")
+        store = opened(KnowledgeStore(tmp_path / "knowledge.db"))
         pipeline = MagicMock()
         pipeline._dedup_enabled = False
         fw = FolderWatcher(store, pipeline)
@@ -495,7 +471,7 @@ class TestFolderWatcherScanQueryCount:
         assert row["last_seen"] != "1999-01-01", "batched last_seen was never flushed"
 
     @pytest.mark.asyncio
-    async def test_pause_still_stops_a_scan(self, tmp_path: Path) -> None:
+    async def test_pause_still_stops_a_scan(self, tmp_path: Path, opened) -> None:
         """Bounding the re-check must not remove the pause path."""
         from kiro_crew.knowledge.folder_watcher import FolderWatcher
         from kiro_crew.knowledge.store import KnowledgeStore
@@ -505,7 +481,7 @@ class TestFolderWatcherScanQueryCount:
         for i in range(5):
             (vault / f"note{i}.md").write_text(f"Note {i}", encoding="utf-8")
 
-        store = KnowledgeStore(tmp_path / "knowledge.db")
+        store = opened(KnowledgeStore(tmp_path / "knowledge.db"))
         fw = FolderWatcher(store, MagicMock())
         source_id = store.add_source(
             "t", "local_folder", str(vault), properties={"scan_paused": True}

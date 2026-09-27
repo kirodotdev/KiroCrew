@@ -119,10 +119,17 @@ async def _park(
 
 
 async def _drain(mgr: SubagentManager, approval: _ParkedApproval) -> None:
+    """Release the parked run, then the manager's process-lifetime task store.
+
+    Cancelling the tasks frees the loop; ``close()`` frees the durable task
+    queue the constructor opened (a SQLite connection plus its writer thread),
+    which nothing else in these tests closes.
+    """
     approval.gate.set()
     for t in list(mgr._tasks.values()):
         t.cancel()
     await asyncio.sleep(0)
+    mgr.close()
 
 
 @asynccontextmanager

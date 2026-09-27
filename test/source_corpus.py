@@ -270,7 +270,28 @@ def repo_files() -> tuple[Path, ...]:
     CALLING gate: this says what the checkout holds, never what a gate polices.
     """
     root = repo_root()
-    argv = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    scratch = _run_scratch_roots(root)
+    # What ``_is_run_scratch`` drops below is also handed to git as exclusions, so
+    # ``--others`` does not WALK it first: a sweep's ``TMPDIR`` under the checkout
+    # held ~126k files under pytest's ``pytest-of-<user>`` marker -- 20 s of git
+    # per worker (plus 138k ``Path`` objects built to be dropped), paid by every
+    # gate that first asked on that worker and again by every test that cleared the
+    # cache. Excluded, the same enumeration is under a second. The Python filter
+    # stays: it is the contract (``test_the_runs_own_temp_files_are_not_the_checkout``
+    # pins it with real git), and the two must agree, so both read the same roots
+    # and the same marker.
+    argv = [
+        "git",
+        "-C",
+        str(root),
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        f"--exclude={_PYTEST_TEMP_ROOT_PREFIX}*/",
+        *(f"--exclude={_gitignore_literal(candidate.relative_to(root))}" for candidate in scratch),
+    ]
     try:
         out = subprocess.run(argv, capture_output=True, check=True, timeout=60, cwd=str(root))
     except OSError:
@@ -302,12 +323,25 @@ def repo_files() -> tuple[Path, ...]:
     # tree but not yet staged (the index entry survives, so git still names it),
     # and a submodule gitlink, which arrives as a DIRECTORY path -- and ``--others``
     # lists a nested repository as its bare directory. ``is_file`` drops all three.
-    scratch = _run_scratch_roots(root)
     return tuple(
         sorted(
             path for path in paths if not _is_run_scratch(path, root, scratch) and path.is_file()
         )
     )
+
+
+def _gitignore_literal(rel: Path) -> str:
+    """*rel* as a ``--exclude`` pattern matching exactly that directory under the root.
+
+    gitignore syntax: a leading ``/`` anchors the pattern at the top level and a
+    trailing ``/`` matches only a directory, so ``/hygiene/tmp/`` is that tree and
+    nothing that merely shares its name. The wildcard characters and the escape
+    itself are escaped so a temp root spelled with one is still a literal.
+    """
+    text = rel.as_posix()
+    for char in ("\\", "*", "?", "[", "]"):
+        text = text.replace(char, "\\" + char)
+    return f"/{text}/"
 
 
 #: pytest's per-user temp root. ``_pytest/tmpdir.py`` creates every ``tmp_path``

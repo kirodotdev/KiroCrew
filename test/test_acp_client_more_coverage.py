@@ -67,10 +67,29 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.hooks import HOOK_EVENT_POST_TOOL_USE
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only APIs (os.kill, /proc, ps, AF_UNIX sockets)"
 )
+
+
+@pytest.fixture(autouse=True)
+def _pinned_kiro_cli_version(monkeypatch):
+    """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
+
+    A client start here materialises the agent spec (``ensure_agent_materialized``
+    -> ``rebuild_agent_config`` -> ``_write_derived_permissions``), which reads
+    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
+    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
+    whichever test in the worker starts a client first pays it against the HOST's
+    install with the checkout as the child's cwd. Pinned to the floor release, as
+    ``test_agent.py`` and the generated-writer suites pin it.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version",
+        lambda: SPEC_PERMISSIONS_MIN_VERSION,
+    )
 
 
 def _client(tmp_path: Path, **kwargs) -> AcpClient:

@@ -39,6 +39,7 @@ import sys
 
 import pytest
 
+import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.sandbox import _PROBE_SHIM_CODE, _build_launcher_script
 
 pytestmark = pytest.mark.skipif(
@@ -46,6 +47,18 @@ pytestmark = pytest.mark.skipif(
     reason="the namespace launcher is Linux-only: _build_launcher_script uses "
     "os.getuid() (absent on Windows) and binds unshare() (absent on macOS libc)",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The AST these tests walk does not depend on that answer, and a real ssh
+    spawned from the test process is a host dependency this module is not about.
+    Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
+
 
 #: Labels for every pre-confinement script this module generates. Both kinds run
 #: with a caller-supplied environment before any namespace exists, so both are

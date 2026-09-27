@@ -14,6 +14,13 @@ from kiro_crew.skills import SkillsLoader
 env = _member_env
 
 
+@pytest.fixture(autouse=True)
+def _close_skills_loaders(close_skills_loaders):
+    """Every test here builds a ``ContextBuilder`` (``env`` included): close its
+    ``SkillsLoader`` (rootdir conftest) -- the skill search index is a SQLite
+    connection nothing else closes."""
+
+
 def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(env, monkeypatch):
     memory = env.memory
     memory.write_preferences("Use a concise reply.")
@@ -122,14 +129,14 @@ def test_withheld_memory_does_not_advertise_automatic_recall(tmp_path, options):
     assert "Facts and past experiences are not searched automatically" not in message
 
 
-def test_v1_new_session_bounds_pref_rows_at_the_startup_cap(tmp_path):
+def test_v1_new_session_bounds_pref_rows_at_the_startup_cap(tmp_path, opened):
     """The cap must reach the store through the real plumbing
     (context._ResolvedCaps -> memory.get_context -> get_preferences_context).
     Mocks cannot see a dropped keyword argument; a real store over the cap can."""
     from kiro_crew.context import _PREFS_STARTUP_CAP
     from kiro_crew.vector_memory import VectorMemoryStore
 
-    vectors = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    vectors = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
     vectors.init()
     for i in range(60):
         vectors.set_semantic(f"pref.rule_{i:02d}", f"standing rule {i} " * 25, 0.9, "user_explicit")

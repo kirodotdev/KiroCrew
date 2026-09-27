@@ -36,6 +36,31 @@ def _no_learned_cost(monkeypatch):
     monkeypatch.setattr(subagent, "read_learned_cost", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built in a test.
+
+    Construction opens the durable task queue (a SQLite connection and its
+    writer thread); ``_mgr()`` builds one per test and nothing here closes it,
+    so each manager leaked those descriptors until the cyclic collector ran.
+    Track every instance and release it at teardown, the shape
+    ``test_spawn_reasoning_effort`` uses.
+    """
+    created = []
+    orig_init = subagent.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(subagent.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            mgr.close()
+
+
 def _cfg(
     *,
     max_subagents: int = 0,

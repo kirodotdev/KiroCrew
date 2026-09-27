@@ -153,6 +153,25 @@ def _pin_default_config(monkeypatch) -> None:
     monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
 
 
+@pytest.fixture(autouse=True)
+def _doctor_reads_the_warm_probe_cache(monkeypatch):
+    """The doctor's blocking ``warm_backend()`` is a no-op here.
+
+    ``_doctor()`` calls ``sandbox.warm_backend()`` before its MCP probes so a fresh
+    CLI process has a settled backend verdict before anything spawns on the loop.
+    In this suite the rootdir conftest already keeps ``sandbox._backend`` warm for
+    every test (``pytest_runtest_setup``), yet the warm thread re-runs the real
+    probe unconditionally -- a fork plus a ``sys.executable`` spawn per doctor
+    test, 43 of them in this file, all against a verdict the conftest already
+    holds. The doctor then reads the cache the conftest filled, which is the same
+    thing a warmed boot gives it. Nothing in this file tests the warm itself
+    (``test_sandbox_backend_cache.py`` does).
+    """
+    import kiro_crew.cli_doctor as _doc
+
+    monkeypatch.setattr(_doc, "warm_backend", lambda timeout=None: None)
+
+
 class TestDoctor:
     @pytest.fixture(autouse=True)
     def _hermetic_config(self, monkeypatch):
@@ -6475,9 +6494,14 @@ class TestInstallPidfdChildWatcher:
     """Verify _install_child_watcher's platform behavior."""
 
     @staticmethod
-    def _install_then_spawn_in_child(expected_watcher: str) -> None:
+    def _install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
         """Run "_install_child_watcher() then asyncio.run(subprocess)" in a CLEAN
         child Python process, and assert it exits 0.
+
+        *cwd* is the caller's ``tmp_path``: the child imports ``kiro_crew`` off the
+        propagated ``PYTHONPATH``, never off its working directory, so the one
+        thing the process cwd could still do is let a ``-c`` child run inside the
+        developer's checkout.
 
         Why a subprocess instead of an in-process ``asyncio.run``: on CPython
         3.10 the child watcher is bound to the loop inside asyncio's
@@ -6523,6 +6547,7 @@ class TestInstallPidfdChildWatcher:
             text=True,
             timeout=60,
             env=env,
+            cwd=cwd,
         )
         assert result.returncode == 0, (
             f"install-before-run child failed (rc={result.returncode}):\n"
@@ -6652,7 +6677,7 @@ class TestInstallPidfdChildWatcher:
         )
 
     @pytest.mark.skipif(sys.platform != "linux", reason="pidfd watcher is Linux-only")
-    def test_real_subprocess_works_after_install_on_linux(self) -> None:
+    def test_real_subprocess_works_after_install_on_linux(self, tmp_path: Path) -> None:
         """End-to-end: after installing the watcher the way the gateway does
         (before asyncio.run, on the main thread), asyncio subprocess support must
         still work. This is the property the mocked test above cannot prove — it
@@ -6677,13 +6702,15 @@ class TestInstallPidfdChildWatcher:
             expected = "SafeChildWatcher"
         else:
             expected = "PidfdChildWatcher"
-        self._install_then_spawn_in_child(expected_watcher=expected)
+        self._install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
 
     @pytest.mark.skipif(
         sys.platform == "linux" or not hasattr(__import__("asyncio"), "SafeChildWatcher"),
         reason="exercises the real macOS SafeChildWatcher install (non-Linux Unix, 3.10-3.13)",
     )
-    def test_real_subprocess_works_after_safe_watcher_install_on_macos(self) -> None:
+    def test_real_subprocess_works_after_safe_watcher_install_on_macos(
+        self, tmp_path: Path
+    ) -> None:
         """End-to-end on macOS: after the REAL _install_child_watcher() installs
         SafeChildWatcher the way the gateway does (before asyncio.run, on the main
         thread), asyncio subprocess support must still work.
@@ -6699,7 +6726,7 @@ class TestInstallPidfdChildWatcher:
         is itself main-thread-only, so an in-process run under a non-main
         pytest-xdist worker thread would fail spuriously.
         """
-        self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher")
+        self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
 
 
 class TestChildWatcherApiRemoved:

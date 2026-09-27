@@ -8157,13 +8157,83 @@ def _scale_ru_maxrss(ru_maxrss: int) -> int:
 def _ru_maxrss_bytes() -> int | None:
     """Peak (high-water) RSS in bytes from ``getrusage``, or None on failure.
 
-    POSIX only. This is a **peak**, not a live reading: ``ru_maxrss`` never
-    decreases for the life of the process.
+    POSIX only, and NOT the Linux reader: there ``execve`` folds the pre-exec
+    image's high-water mark into the new process's ``ru_maxrss`` (``fs/exec.c``
+    ``exec_mmap`` -> ``setmax_mm_hiwater_rss``), so a gateway started from a
+    large parent -- a launcher, a test runner, a bloated shell -- reports that
+    parent's peak as its own for life. :func:`_linux_peak_rss_bytes` is the
+    Linux source; :func:`_posix_peak_rss_bytes` picks. This is a **peak**, not
+    a live reading: ``ru_maxrss`` never decreases for the life of the process.
     """
     try:
         return _scale_ru_maxrss(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except (ImportError, OSError, ValueError, AttributeError):
         return None
+
+
+#: Where Linux reports THIS process's own peak resident size: ``VmHWM`` in
+#: ``/proc/self/status`` is the current ``mm``'s high-water mark, which a fresh
+#: image starts from zero, unlike ``ru_maxrss`` (see :func:`_ru_maxrss_bytes`).
+_LINUX_STATUS_PATH = Path("/proc/self/status")
+_LINUX_PEAK_RSS_FIELD = "VmHWM:"
+#: The highest ``VmHWM`` this process has read. The kernel answers ``VmHWM``
+#: with ``max(hiwater_rss, live RSS)`` but folds the live figure into
+#: ``hiwater_rss`` only at unmap/exit, from per-thread counters it syncs in
+#: batches, so a reading taken while a mapping is live can sit a few hundred KiB
+#: above what the next reading, after the unmap, reports (measured 136-376 KiB
+#: on a 128 MiB mapping). A peak that never decreases is the contract, so the
+#: reader keeps its own floor.
+_LINUX_PEAK_RSS_FLOOR = 0
+
+
+def _peak_rss_from_status(status: str) -> int | None:
+    """Parse ``VmHWM`` out of a ``/proc/<pid>/status`` text, in bytes.
+
+    The kernel prints the field as ``VmHWM:\\t   11432 kB`` -- always kB, so any
+    other shape (a missing field, a unit that is not kB, a non-numeric value) is
+    unreadable rather than a guess. ``kiro_crew.pdf_extract_child`` carries the
+    same parser by design: that module keeps its imports minimal because it runs
+    under a capped address space, so it does not import this one.
+    """
+    for line in status.splitlines():
+        if not line.startswith(_LINUX_PEAK_RSS_FIELD):
+            continue
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == "kB" and parts[1].isdigit():
+            return int(parts[1]) * 1024
+        return None
+    return None
+
+
+def _linux_peak_rss_bytes() -> int | None:
+    """This process's OWN peak RSS in bytes from ``VmHWM``, or None if unreadable.
+
+    Monotonic across calls (see :data:`_LINUX_PEAK_RSS_FLOOR`); an unreadable
+    status file is None even when a floor exists, so a failure reads as one.
+    """
+    global _LINUX_PEAK_RSS_FLOOR
+    try:
+        peak = _peak_rss_from_status(_LINUX_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if peak is None:
+        return None
+    if peak > _LINUX_PEAK_RSS_FLOOR:
+        _LINUX_PEAK_RSS_FLOOR = peak
+    return _LINUX_PEAK_RSS_FLOOR
+
+
+def _posix_peak_rss_bytes() -> int | None:
+    """Peak RSS in bytes for THIS process, or None where it cannot be read.
+
+    Linux reads its own ``VmHWM``; an unreadable ``/proc`` is None, never the
+    inherited ``ru_maxrss`` -- a wrong number is worse than a missing one in a
+    figure an operator uses to size a host. Every other POSIX platform reads
+    ``ru_maxrss`` in its unit.
+    """
+    if sys.platform.startswith("linux"):
+        return _linux_peak_rss_bytes()
+    return _ru_maxrss_bytes()
 
 
 def _linux_current_rss_bytes() -> int | None:
@@ -8264,11 +8334,12 @@ def proc_rss_bytes() -> int:
     - Linux: ``/proc/self/statm`` resident pages.
     - macOS: Mach ``task_info(MACH_TASK_BASIC_INFO).resident_size``.
     - Windows: ``GetProcessMemoryInfo().WorkingSetSize``.
-    - Last resort on POSIX only: ``getrusage(RUSAGE_SELF).ru_maxrss``, which is
-      a **peak** that never decreases. It is here so an unreadable ``/proc`` or
-      an unavailable ``libSystem`` still yields an order-of-magnitude number
-      rather than 0, and it over-reports by construction — see
-      :func:`proc_peak_rss_bytes` for the peak as a deliberate reading.
+    - Last resort on POSIX only: the process's own peak (``VmHWM`` on Linux,
+      ``getrusage(RUSAGE_SELF).ru_maxrss`` elsewhere), which never decreases.
+      It is here so an unavailable ``libSystem`` or a ``statm`` that will not
+      parse still yields an order-of-magnitude number rather than 0, and it
+      over-reports by construction — see :func:`proc_peak_rss_bytes` for the
+      peak as a deliberate reading.
     """
     if IS_POSIX:
         current = (
@@ -8276,7 +8347,7 @@ def proc_rss_bytes() -> int:
         )
         if current is not None:
             return current
-        return _ru_maxrss_bytes() or 0
+        return _posix_peak_rss_bytes() or 0
     counters = _windows_memory_counters()
     return 0 if counters is None else int(counters.WorkingSetSize)
 
@@ -8391,12 +8462,14 @@ def proc_peak_rss_bytes() -> int:
 
     The high-water mark since the process started: it never decreases, which is
     what makes it useful for diagnosing a transient spike that a live reading
-    has already forgotten — and useless as the live reading itself. POSIX reads
-    ``getrusage(RUSAGE_SELF).ru_maxrss``; Windows reads
+    has already forgotten — and useless as the live reading itself. Linux reads
+    this process's own ``/proc/self/status`` ``VmHWM`` (``ru_maxrss`` there is
+    inherited across ``execve`` from the parent, see :func:`_ru_maxrss_bytes`);
+    other POSIX reads ``getrusage(RUSAGE_SELF).ru_maxrss``; Windows reads
     ``GetProcessMemoryInfo().PeakWorkingSetSize``.
     """
     if IS_POSIX:
-        return _ru_maxrss_bytes() or 0
+        return _posix_peak_rss_bytes() or 0
     counters = _windows_memory_counters()
     return 0 if counters is None else int(counters.PeakWorkingSetSize)
 

@@ -223,6 +223,50 @@ def _acquire_controlling_tty(fd: int) -> bool:
     return True
 
 
+def _default_ignored_signals() -> list[int]:
+    """Give the terminal session the default dispositions a login would.
+
+    ``SIG_IGN`` survives ``exec`` where a handler does not, so every signal the
+    gateway process inherited as ignored -- a launcher that backgrounds it from
+    a script sets SIGINT and SIGQUIT to ignore, ``nohup`` sets SIGHUP, and this
+    interpreter itself ignores SIGPIPE on startup -- would otherwise reach the
+    shell as ignored. An interactive shell keeps a signal that was ignored on
+    entry ignored in every command it runs, so the user would get a terminal
+    where Ctrl+C never interrupts the foreground job and a closed terminal never
+    hangs it up, with nothing in the shell's own state to say why. ``login``
+    and ``sshd`` hand the shell defaults; so does this.
+
+    Only dispositions that are ``SIG_IGN`` are touched: handlers reset on
+    ``exec`` by themselves, and the two signals that cannot be changed are
+    skipped by the ``OSError`` the kernel raises for them. Returns the signals
+    it changed so a failed ``exec`` can put them back: the shim then reports
+    through the stderr it was given, and must not die of a SIGPIPE it had been
+    told to ignore while doing so.
+    """
+    import signal
+
+    changed: list[int] = []
+    for signum in signal.valid_signals():
+        try:
+            if signal.getsignal(signum) is signal.SIG_IGN:
+                signal.signal(signum, signal.SIG_DFL)
+                changed.append(signum)
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return changed
+
+
+def _reignore_signals(signums: list[int]) -> None:
+    """Undo :func:`_default_ignored_signals` on the path where ``exec`` did not happen."""
+    import signal
+
+    for signum in signums:
+        try:
+            signal.signal(signum, signal.SIG_IGN)
+        except (OSError, ValueError, RuntimeError):
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the shim's own options, then ``exec`` the command after ``--``.
 
@@ -307,16 +351,24 @@ def main(argv: list[str] | None = None) -> int:
     # runtime spawn path owns. A terminal (--ctty-fd) command that is already
     # missing must fail fast instead of stalling the shell for the budget.
     attempts = 1 if ctty_fd is not None else _EXECV_RETRY_ATTEMPTS
-    for attempt in range(attempts):
-        try:
-            os.execv(encoded[0], encoded)
-        except OSError as exc:
-            if exc.errno in _EXECV_RETRYABLE_ERRNOS and attempt < attempts - 1:
-                time.sleep(_EXECV_RETRY_DELAY_S)
-                continue
-            sys.stderr.write(f"spawn shim: cannot execute {args[0]!r}: {exc.strerror}\n")
-            return _EXEC_FAILED
-        return _EXEC_FAILED  # pragma: no cover - execv does not return on success
+    # A terminal session starts from default signal dispositions, as it would
+    # from login. Done last, so the shim's own failure reports above still run
+    # under the dispositions it was given, and undone if exec does not happen.
+    reset_signals = _default_ignored_signals() if ctty_fd is not None else []
+    try:
+        for attempt in range(attempts):
+            try:
+                os.execv(encoded[0], encoded)
+            except OSError as exc:
+                if exc.errno in _EXECV_RETRYABLE_ERRNOS and attempt < attempts - 1:
+                    time.sleep(_EXECV_RETRY_DELAY_S)
+                    continue
+                _reignore_signals(reset_signals)
+                sys.stderr.write(f"spawn shim: cannot execute {args[0]!r}: {exc.strerror}\n")
+                return _EXEC_FAILED
+            return _EXEC_FAILED  # pragma: no cover - execv does not return on success
+    finally:
+        _reignore_signals(reset_signals)
     return _EXEC_FAILED  # pragma: no cover - the loop returns on every attempt
 
 

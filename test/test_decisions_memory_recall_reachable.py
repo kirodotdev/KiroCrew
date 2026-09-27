@@ -89,8 +89,13 @@ class _Oracle:
 
 
 @pytest.fixture
-def wired(tmp_path, monkeypatch):
-    """A consented keystone, a live config, a seeded store, and a surfaced session."""
+def wired(tmp_path, monkeypatch, opened):
+    """A consented keystone, a live config, a seeded store, and a surfaced session.
+
+    The store goes through the rootdir conftest's ``opened`` register-and-close
+    fixture: a dropped ``VectorMemoryStore`` keeps its ``db``/``-wal``/``-shm``
+    descriptors until the cyclic collector runs.
+    """
     _Oracle.asked = []
 
     keystone = tmp_path / "decisions_consent.json"
@@ -119,7 +124,7 @@ def wired(tmp_path, monkeypatch):
         "kiro_crew.decisions.capability.is_decisions_denied", lambda *_a, **_kw: False
     )
 
-    store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
     store.init()
     _seed(store)
     # The embedder the real path would use, pinned so the query vector is the one the

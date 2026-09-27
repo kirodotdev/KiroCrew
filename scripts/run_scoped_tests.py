@@ -254,8 +254,18 @@ def _tree_files(root: Path, rel_roots: tuple[str, ...], name_re: re.Pattern[str]
     return tuple(sorted(out))
 
 
-@functools.lru_cache(maxsize=None)
 def _read_text(root: Path, rel: str) -> str:
+    """One test file's text, read for the scan that asked and then dropped.
+
+    Deliberately NOT memoised, unlike `_tree_files` above. `_referencing_tests`
+    reads each file exactly once per `related_targets` call, so a cache buys the
+    gate nothing; what it cost was the whole test tree resident for the life of
+    the process -- ~3,200 files, ~100 MB of `str` -- for a 0.4 s re-read. In the
+    gate process that is wasted memory; imported into a pytest worker (as
+    `test_local_gate.py` does) it was a +190 MiB high-water mark that outlived
+    the test. The self-test's dozen `related_targets` calls pay the re-read; the
+    regex scan they also repeat costs more than the read does.
+    """
     try:
         return (root / rel).read_text(encoding="utf-8", errors="replace")
     except OSError:

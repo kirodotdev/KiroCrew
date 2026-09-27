@@ -722,6 +722,7 @@ class TestProbeTimeout:
         rc 124 - the call returns promptly instead of blocking on the child."""
         monkeypatch.chdir(tmp_path)
         mod = _preflight_module()
+        monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(tmp_path))
         start = time.monotonic()
         rc, out, err = mod.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=1)
         elapsed = time.monotonic() - start
@@ -733,6 +734,7 @@ class TestProbeTimeout:
         """A subprocess that finishes inside the bound is unaffected."""
         monkeypatch.chdir(tmp_path)
         mod = _preflight_module()
+        monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(tmp_path))
         rc, out, err = mod.run([sys.executable, "-c", "print('ok')"], timeout=30)
         assert rc == 0
         assert out == "ok"
@@ -848,8 +850,20 @@ class TestBatchLauncherGuard:
 
     @pytest.mark.parametrize("arg", ["a&b", "a|b", "a%PATH%b", 'x"y', "a\r\nb"])
     def test_metachar_arg_refused_for_cmd_launcher(self, tmp_path, monkeypatch, arg):
+        """The launcher sits OUTSIDE the fenced working tree, so the batch
+        metacharacter guard - not the working-tree fence one check earlier -
+        is what refuses it.  ``tmp_path`` may itself lie inside a git checkout
+        (a ``TMPDIR`` pinned under the repo), so the fence root is pinned at
+        the seam ``run()`` reads to a sibling that is not the fake's ancestor
+        rather than left to the host's ``git rev-parse``."""
+        work = tmp_path / "clone"
+        work.mkdir()
+        monkeypatch.chdir(work)
         mod = self._preflight_module()
-        fake = tmp_path / "gh.cmd"
+        monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(work))
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "gh.cmd"
         fake.write_text("@echo off\r\n", encoding="utf-8")
         monkeypatch.setattr(mod.shutil, "which", lambda name: str(fake))
         rc, out, err = mod.run(["gh", arg])
@@ -859,6 +873,7 @@ class TestBatchLauncherGuard:
     def test_clean_args_pass_for_non_batch_target(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mod = self._preflight_module()
+        monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(tmp_path))
         rc, out, err = mod.run([sys.executable, "-c", "print('ok')"])
         assert rc == 0
         assert out == "ok"
@@ -923,6 +938,7 @@ class TestBatchLauncherGuard:
         work = tmp_path / "clone"
         work.mkdir()
         monkeypatch.chdir(work)
+        monkeypatch.setattr(mod, "_WORKTREE_ROOT", str(work))
         rc, out, err = mod.run([sys.executable, "-c", "print('ok')"])
         assert rc == 0
         assert out == "ok"

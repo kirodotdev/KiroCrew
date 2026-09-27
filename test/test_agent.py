@@ -29,6 +29,26 @@ from conftest import host_abs, requires_symlinks
 from kiro_crew import agent_state
 from kiro_crew import atomic_write as aw
 from kiro_crew.agent import _MANAGED_MCP_ENTRY_KEYS, install_agent, migrate_agent_specs
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _pinned_kiro_cli_version(monkeypatch):
+    """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
+
+    Every spec write here reaches ``_write_derived_permissions``, which reads
+    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
+    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
+    whichever test in the worker writes a spec first pays it -- against the
+    HOST's install, with the checkout as the child's cwd -- and that host decides
+    whether the block is written at all (CI has no binary and reads "refuse").
+    Pinned to the floor release, the same accepting arm ``test_agent_capabilities``
+    and the generated-writer suites pin, so no test here reaches the binary.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version",
+        lambda: SPEC_PERMISSIONS_MIN_VERSION,
+    )
 
 
 def _reject_json_constant(name: str):  # pragma: no cover - raises by design

@@ -2825,12 +2825,216 @@ went red, or the fix lands in the wrong file and the leak stays.
 and `green_age.run()` is a CLI whose contract is "git in the invoking cwd", so its ~150
 descriptors per round will stay flagged until the probe records the PROCESS cwd alongside
 the `cwd` kwarg -- with the fixture's `chdir` under `tmp_path`, none of them ran in the
-checkout. `push_guard.py`'s two direct `git patch-id --stable` calls bypass that module's
-`_GIT_CMD` injection seam (its docstring's "every command goes through `run()`" is false
-for them) and want a separate fix. `history_search`'s lazily opened `SessionSearchIndex`
+checkout. `push_guard.py`'s two direct `git patch-id --stable` calls bypassed that module's
+`_GIT_CMD` injection seam (its docstring's "every command goes through `run()`" was false
+for them); the twelfth pass routed them through `run()`. `history_search`'s lazily opened `SessionSearchIndex`
 has no close path, so `search_chat_history` leaks one handle per call until GC (+3, below
 threshold). The dashboard files' 731 `aiohttp` warnings are class 15 (`app[...]` writes
 after start, ~24 sites), not this pass.
+
+### What a twelfth five-run pass found (Linux, 16 workers, 139,019 tests per run)
+
+Five rounds of backend, vitest and electron on a test-only branch off one commit, on the
+same 32-core host as the tenth pass, with a LIVE gateway out of the same data home and a
+FRESH venv -- run the same day as the eleventh pass (macOS), on the other platform, from
+the same base: 139,019 / 39,695 / 2,204 tests per round, identical every round. The backend
+was red in every round with an unstable red set -- 12 tests failed 5/5, ten in one file
+flipped between pass and fail in every combination, one passed exactly once -- and vitest,
+green four times, went red once in round 5. Five production defects came out of it, two of
+them user-visible: a PDF extractor that refused every PDF under a large gateway, and a
+terminal whose Ctrl-C reached nothing when the gateway had been started as a background
+job. The largest class in the report was, once more, the instrument.
+
+The generalisable lesson this time: **inheritance across `exec` is a host property tests
+never see at `-n0`.** A child's `ru_maxrss` starts at its parent's high-water mark; a
+signal a launcher ignored stays ignored in every descendant; a process global one module
+bound stays bound for every module after it on the worker. Each of the three surfaced as a
+red in a test that was correct about its own subject, and each fix is at the seam that
+inherits, not in the test that noticed.
+
+#### The instrument
+
+- **The conftest's own cache tree is not a host write.** Run 1 filed 210 tests in 77 files
+  under `host_write`; 209 were `.pyc` files landing in the `sys.pycache_prefix` mirror the
+  rootdir conftest sets (a fresh venv compiles everything once) and the redirected
+  hypothesis example database, both under `~/.cache/kirocrew` by that conftest's documented
+  choice. The probe now sanctions the interpreter's bytecode prefix by construction and
+  reads a per-sweep `allow-roots.txt` for roots a harness owns, and the analyser re-cuts
+  runs recorded before the root was learned (`--allow-root`). After the re-cut the class
+  held one test, and it was real.
+- **A session-scoped fence lands on the worker's first test.** `GIT_CEILING_DIRECTORIES`,
+  set once per worker by the seventh pass's conftest floor, read as an `env_leak` on 44
+  innocent tests across five runs -- the same shape as the `XDG_RUNTIME_DIR` pop the
+  analyser already excludes, and now excluded with it. The one real leak underneath was a
+  module-scoped `mock.patch.dict(os.environ, {...})` in `test_issue_radar_crew_runtime.py`
+  (159 of 160 tests, `KIROCREW_CREW_LOG` on and a foreign `KIROCREW_HOME` between tests);
+  a function-scoped `monkeypatch.setenv` on the flag, and the conftest's own per-test home
+  pin for the home, took it to 0 of 160 under a per-test env probe.
+- **The driver ignored SIGINT for the whole suite.** `cmd &` in a non-interactive bash
+  starts `cmd` with SIGINT and SIGQUIT ignored; `SIG_IGN` survives `exec`; so every xdist
+  worker, every PTY shell a terminal test opened and every `sleep` under it ran with
+  Ctrl-C disabled, and the one test that asserts Ctrl-C delivery failed 4/5 with the
+  child's `SigIgn` bit set while the shell's was clean. The sweep's own `setsid` wrapper now
+  resets inherited `SIG_IGN` to `SIG_DFL` before it execs the run. It was also a production
+  finding (below): a gateway launched the same way ships the same terminals.
+- **`under_measured` was volume, not findings.** Thirty-nine tests dropped events past the
+  40-event cap; re-run alone with the cap raised, every one was the run-1 bytecode noise
+  above or the test's own `cwd`-carrying `git`/`openssl` spawns (1,384 per test in one
+  file). Zero host writes, zero checkout writes, zero connects in the complete streams.
+
+#### The reds
+
+- **A child's `ru_maxrss` is its parent's, until the child grows past it.** All seven
+  PDF reds (`test_pdf_extract.py`, `test_knowledge.py`, `test_file_grep.py`) were
+  `PDF extraction failed: memory` with detail `rss`: the extractor child's own peak-RSS
+  watchdog fired on its first 20 ms sample. On Linux `execve` folds the pre-exec image's
+  high-water RSS into the process's `ru_maxrss` (`fs/exec.c`, `exec_mmap` ->
+  `setmax_mm_hiwater_rss`), so a child forked from a 1.5-2.2 GiB xdist worker read more
+  than the 1 GiB `--max-rss` before parsing a byte -- measured on this host as a 1,312 MiB
+  child `ru_maxrss` against an 11 MB `VmHWM`. At `-n0` the runner is small and all 44
+  tests pass; a live gateway over 1 GiB cannot extract any PDF. The fix is production:
+  `pdf_extract_child.peak_rss_bytes()` reads the child's OWN `VmHWM` from
+  `/proc/self/status` on Linux (unreadable -> `None`, watchdog off, never the inherited
+  number); `ru_maxrss` stays the macOS source, where it is per-process. Pinned by a fake
+  status text through the `_LINUX_STATUS_PATH` seam and by a test whose PARENT touches
+  256 MiB, asserts its own `ru_maxrss` exceeds the 128 MiB ceiling it hands the real
+  child, and still gets page 1 back. The seven tests are unchanged.
+  `platform_compat.proc_peak_rss_bytes()` -- the dashboard's `proc_mem_peak_mb` and the
+  `process.memory.peak_rss_bytes` gauge -- read the same inherited number, so a gateway
+  started from a large parent published a peak that was wrong from its first sample and
+  never moved; it reads its own `VmHWM` now too, clamped monotonic (the kernel folds live
+  RSS into `hiwater_rss` lazily, and a raw read dips a few hundred KiB after an `munmap`),
+  pinned by a bloated-parent -> child spawn that asserts the inheritance is present in the
+  raw `ru_maxrss` and absent in the reader.
+- **A test that plants a fake executable under `tmp_path` and expects a LATER guard to
+  fire is asserting that `tmp_path` lies outside every checkout.** The five
+  `test_metachar_arg_refused_for_cmd_launcher[...]` reds failed one check early, at
+  `preflight.run()`'s working-tree fence, because this sweep's `TMPDIR` sits under the
+  worktree. CI passed by accident: `which()` was patched to answer the `.cmd` for `git`
+  too, so the fence's `git rev-parse` exec'd a text file and the resolver swallowed the
+  `OSError`. The fix pins the fence root at the seam `run()` reads (`_WORKTREE_ROOT`) to a
+  `tmp_path` sibling that is not the fake's ancestor -- the seventh pass's class, one more
+  spelling -- and four neighbours that paid a real host `git rev-parse` for a root they do
+  not test got the same pin (6 -> 2 `git` spawns per run; the two left are the tests OF
+  the probe).
+- **The same stale dispatcher, on Linux.** Ten tests in `test_trusted_apps_api.py` flipped
+  between runs, every failure a 409 `teardown_incomplete` whose body named `hooks disable
+  failed: object MagicMock can't be used in 'await' expression` -- the eleventh pass's
+  finding, measured here as a different subset of ten each round under sixteen workers.
+  Its rootdir restore floor is the fix; this pass adds the leaker's own contract on top:
+  the startup-coverage module's `_start_dashboard` pins
+  `hooks_integration._lifecycle_dispatcher` / `_route_registry` to `None` BEFORE it boots
+  the real server, so `monkeypatch` puts back what the test found. Attribute by the
+  failure body, not by the endpoint that answered.
+- **A launcher's `SIG_IGN` reaches the user's terminal.** `test_ws_ctrl_c_delivers_sigint`
+  passed once and failed four times. The failing evidence showed the PTY delivering `^C`
+  to the right foreground group and `sleep` ignoring it (`SigIgn` bit 1) while bash was
+  clean: bash keeps a signal that was ignored on entry ignored in every command it runs,
+  and the shell inherited it from the worker, which inherited it from the driver's `&`.
+  The passing run was vacuous: the test sent `\x03` on the line-discipline ECHO of
+  `sleep 120`, before bash had read the line, so `VINTR` flushed the unread input and the
+  marker echo ran in 48 ms with no `sleep` ever born. The production fix is in the exec
+  shim: on the `--ctty-fd` path, after `login_tty` and before `execv`, every disposition
+  that is `SIG_IGN` is reset to `SIG_DFL` (what `login` and `sshd` hand a shell), and the
+  set is re-ignored if `exec` does not happen so the in-process shim tests leave the worker
+  untouched. The test now gates the first Ctrl-C on `tcgetpgrp` of the PTY's own descriptor leaving the
+  shell's group, asserts the shell gets the foreground back afterwards, and reaps the
+  session in a `finally` -- the `leaked_child`, `thread_leak` and `slow` rows on this
+  nodeid were all its 35 s failure path. 6/6 green under a launcher that ignores SIGINT.
+- **The clock is a dependency, and `not.toContain` is a substring.** The one vitest red
+  (`CrewWebviewContainment.test.tsx`, round 5) rendered relative ages from the real
+  `Date.now()` against a fixture instant fixed in September; the "shown version" label
+  crossed from `22d ago` to `23d ago` during the sweep, and `not.toContain('3d ago')` is
+  satisfied by `23d ago`. It went red on `main` the same day and was fixed on its own
+  (a pinned clock and exact element text), so this pass carries no change for it.
+
+#### The classes that were quiet but real
+
+- **`spawn_no_cwd`: three binaries, three seams.** Real `kiro-cli --version` ran from
+  unit tests in eleven files, exactly once per worker per run (80 over five runs): every
+  agent-spec write ends in `installed_kiro_cli_version()`, cached process-wide, so the
+  HOST's install decided whether `permissions` was written and which test paid the spawn.
+  Each module now carries the house pin to `SPEC_PERMISSIONS_MIN_VERSION`. Real `ssh -V`
+  ran from nine sandbox files -- the `functools.lru_cache`d accept-new probe behind
+  `_build_launcher_script` the tenth pass pinned in six others; with the eleventh pass's
+  three and this pass's seven, the same one-line autouse fixture now sits in every
+  module that builds the launcher (a per-`Popen` recorder, not a
+  passing suite, is what showed 0). `push_guard.py`'s two `git patch-id --stable` calls
+  now go through `run()`/`_GIT_CMD`, with a test that fails before the change. A test in
+  `test_browser_cli_view.py` hand-rolled three of `_stub_port_owner`'s pins and dropped
+  `process_descendant_identities`: 242 real `ps` snapshots against a pid it did not own,
+  and 27 s -> 7 s for the file once it used the helper. The doctor's `warm_backend()`
+  re-probed userns on every `_doctor()` call past a warm cache (44 spawns -> 1);
+  `code_fingerprint`'s cache paid a real `git` in two more modules (pinned as the daemon
+  lifecycle module already was). `green_age.run()`'s 152 `cwd=None` spawns per round were
+  recorded WITH the process cwd this time: every one ran under the scratch root, so the
+  deliberate descriptor stays and the docstring now says why.
+- **`fd_leak`: the tenth pass's seams, applied.** Thirteen tests at +5..+10 in eight
+  files, all unclosed SQLite handles or a dashboard boot's process handles: stores routed
+  through the rootdir `opened` fixture (a `KnowledgeStore` per-thread `close()` never
+  reaches the connection a `to_thread` worker opened; the test-only every-thread close
+  does), `close_skills_loaders` requested from module autouse fixtures where
+  `ContextBuilder`s or an `env` fixture build a `SkillsLoader`, `SubagentManager`s tracked
+  and closed, and a boot that RAISES before returning its state now has that state
+  recorded through the constructor so `_release_process_handles` still runs. Per-test fd
+  probe: every flagged test at +0; the only +3 rows left are pytest-asyncio's replacement
+  loop.
+- **`heavy_rss`: a memoised read seam.** `run_scoped_tests._read_text` was an unbounded
+  `lru_cache`: the local gate's reference scan retained the text of 3,172 test files
+  (+189 MiB) for the life of the process, for a cache that saved a 0.4 s re-read. It
+  streams now, pinned by a shape test. `test_source_corpus.py` materialised the corpus
+  twice per test (`tuple(...)` plus `set(...)`); the tests consume the iterators (count,
+  path set, `zip(strict=True)`), +264 -> <20 MiB. On the way, `repo_files()` was letting
+  `git ls-files --others` WALK the run's own scratch under the checkout (126k files, 20 s
+  per first-asking worker) and filtering afterwards; the same scratch roots and pytest's
+  `pytest-of-*/` marker are now `--exclude` patterns git prunes, 27 s -> 0.5 s, and about
+  ten `slow`-class consumers of it clear without a change of their own.
+- **`host_write`: one, and it was a stub.** The DeepSeek arm of the launch-golden capture
+  answered `agent_scratch.allocate_scratch` with a FIXED absolute path,
+  `/opt/scratch/dsh-session`, and that arm WRITES into the window it is handed
+  (`record_owner` unlinks `.owner`, the gate probe `rmtree`s it) from executor threads --
+  unattributable by frame, host by path. The stub answers a real per-label directory under
+  `tmp_path` now, pinned by a test that wraps the writers and asserts every path
+  `is_relative_to(tmp_path)`. A "synthetic-looking" literal is still a path.
+- **`thread_leak` was named pools, again.** `mc-mcpprobe_*`, `mc-subproc_*`,
+  `mc-embed_*`, `mc-recall_*`, `mc-pathres_*`, `mc-discovery_*`,
+  `skill-catalog-refresh`: bounded pools warming on first use, left alone. The unnamed
+  `Thread-N (_do_shutdown)` / `asyncio-waitpid` rows were the terminal test's failure path.
+- **`kill`: 707 signals, zero non-zero signals at a foreign process.** An ownership
+  probe (registering every `Popen`/`fork`/`posix_spawn` pid, auditing `os.kill`/`killpg`,
+  classifying each target by registered pid, `/proc` lineage, own process group, own
+  thread, or an inherited marker variable) over the 68 flagged files, at `-n0`, twice:
+  395 signal-0 liveness probes, 190 SIGKILL, 120 SIGTERM, 2 SIGINT. Every SIGTERM and
+  SIGKILL went to a registered child, a descendant by lineage or group, or a number the
+  body had already proven dead (two: the fabricated `2000000000` and production's
+  `_sync_kill_provider` at an already-reaped grandchild, ESRCH). The six "external"
+  targets left were all signal 0 through `platform_compat.pid_exists` / `pid_liveness` /
+  `pgroup_exists` at fabricated pids (`1`, `123`, `1001`) or at the test's own `setsid`
+  grandchild after init had adopted it -- class 9's sanctioned shape. Exactly two
+  signal-0 probes came from anywhere else, and they were the real defects: a naked
+  `os.kill(pid, 0)` poll in `test_cli_manifest_signature.py` (routed through
+  `pid_exists`), and the twin driver-reap tests in `test_codex_session_mcp.py` /
+  `test_opencode_session_mcp.py`, which polled a grandchild pid read from the driver's
+  stdout with `os.kill(pid, 0)` and SIGKILLed the RAW number on the failure path after the
+  driver's group had been killed -- class 27: the driver now prints
+  `get_process_start_id(pid)` at spawn, the poll treats an identity mismatch as gone, and
+  the failure-path kill is `kill_pid_pinned`. Post-fix census: signal 0 outside
+  `platform_compat`, 2 -> 0.
+
+#### What not to re-derive
+
+The `unattributable` class (49,815 tests, every second file) is pytest's `tmp_path`
+retention sweep and the repo's pinned-descriptor writers, as the tenth pass established;
+the analyser excludes it from the partition. `green_age.run()` and the auto-improvement
+`git -C` helpers keep `cwd=None` (see the tenth pass), now with the process cwd recorded
+per spawn to prove it harmless. The exec shim still leaves `SIGPIPE`/`SIGXFSZ` ignored for
+NON-terminal spawns (a Python shim re-ignores them after the fork child's
+`restore_signals`), so `yes | head` in a spawned `bash -c` gets `EPIPE` -- a latent defect
+with its own test to write, deliberately not changed in this pass because it alters tool
+spawn semantics. `session_pid._sync_kill_provider` SIGKILLs a snapshot pid through the unpinned `kill_pid`
+(the census saw it hit an already-reaped grandchild, ESRCH) -- a production class-27
+candidate for its own change, with a test that plants a reissued number. The dashboard
+files' `aiohttp` warnings remain class 15.
 
 ## Running the suite: the defaults, and how to narrow safely
 

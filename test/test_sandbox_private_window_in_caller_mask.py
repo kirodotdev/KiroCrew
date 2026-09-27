@@ -38,6 +38,18 @@ import pytest
 
 from kiro_crew import sandbox
 
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The private-window lists read out of the launcher do not depend on that answer,
+    and a real ssh spawned from the test process is a host dependency this module is
+    not about. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
 _HOME = os.path.expanduser("~")
 _APPS = os.path.join(_HOME, ".kiro", "crew", "apps")
 _BUNDLE = os.path.join(_APPS, "demo-app")

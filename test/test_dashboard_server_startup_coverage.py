@@ -287,6 +287,16 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
     monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+    # The boot calls ``init_hooks_system`` with this module's MagicMock cron
+    # service and binds the result to two process globals nothing unbinds; a
+    # later module on the same worker that revokes an app trust would then
+    # await that MagicMock (the eleventh sweep's ten flaky 409s). Pin them
+    # here so monkeypatch puts back what this test found -- the leaker's own
+    # contract, alongside the rootdir conftest's snapshot/restore floor.
+    from kiro_crew.apps import hooks_integration as _hooks
+
+    monkeypatch.setattr(_hooks, "_lifecycle_dispatcher", None)
+    monkeypatch.setattr(_hooks, "_route_registry", None)
     # POSIX-only extra transport; irrelevant to the wiring under test and it
     # would bind a real socket in the data home.
     monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
@@ -433,6 +443,27 @@ async def _cancel_stray_tasks() -> None:
         task.cancel()
     if stray:
         await asyncio.gather(*stray, return_exceptions=True)
+
+
+def _record_states(monkeypatch) -> list[Any]:
+    """Record every ``DashboardState`` the boot builds, for a boot that raises.
+
+    A failing ``start_dashboard`` never returns its state, yet by the time it
+    fails it has already opened the knowledge store's connections (the route
+    registration reads the lazy property), and production releases those by
+    exiting. Handing the recorded state to :func:`_release_process_handles`
+    is what lets a failure-path test close them.
+    """
+    built: list[Any] = []
+    real_state = srv.DashboardState
+
+    def _recording(*args: Any, **kwargs: Any) -> Any:
+        state = real_state(*args, **kwargs)
+        built.append(state)
+        return state
+
+    monkeypatch.setattr(srv, "DashboardState", _recording)
+    return built
 
 
 class TestReserveDashboardPort:
@@ -716,7 +747,7 @@ class TestStartDashboardWiring:
         sessions.remove = AsyncMock()
         sessions.get_pid = MagicMock(return_value=None)
         sessions.any_active_turn = MagicMock(return_value=False)
-        runner, _state = await srv.start_dashboard(
+        runner, state = await srv.start_dashboard(
             sessions=sessions,
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
@@ -735,6 +766,7 @@ class TestStartDashboardWiring:
         finally:
             await runner.cleanup()
             await _cancel_stray_tasks()
+            _release_process_handles(state)
 
     @pytest.mark.asyncio
     async def test_ipv6_loopback_bind_exports_v6_host_evidence(self, tmp_path, monkeypatch) -> None:
@@ -782,7 +814,7 @@ class TestStartDashboardWiring:
         sessions.remove = AsyncMock()
         sessions.get_pid = MagicMock(return_value=None)
         sessions.any_active_turn = MagicMock(return_value=False)
-        runner, _state = await srv.start_dashboard(
+        runner, state = await srv.start_dashboard(
             sessions=sessions,
             crons=MagicMock(
                 list_jobs=MagicMock(return_value=[]),
@@ -800,6 +832,7 @@ class TestStartDashboardWiring:
         finally:
             await runner.cleanup()
             await _cancel_stray_tasks()
+            _release_process_handles(state)
 
     @pytest.mark.asyncio
     async def test_a_failed_port_reservation_spawns_no_backends(
@@ -998,6 +1031,7 @@ class TestStartDashboardWiring:
         )
         monkeypatch.setattr(srv.web, "SockSite", MagicMock(side_effect=RuntimeError("listen boom")))
         spies = _neutralise_outside_process_work(monkeypatch)
+        states = _record_states(monkeypatch)
         for _leak_key in (
             browser_cli_snapshots.OUTPUT_DIR_ENV,
             browser_cli_token.TOKEN_ENV,
@@ -1031,6 +1065,8 @@ class TestStartDashboardWiring:
             spies["on_gateway_shutdown"].assert_awaited()
         finally:
             await _cancel_stray_tasks()
+            for state in states:
+                _release_process_handles(state)
 
     @pytest.mark.asyncio
     async def test_the_app_is_wired_and_reports_ready(self, tmp_path, monkeypatch) -> None:

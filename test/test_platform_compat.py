@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import types
@@ -1231,6 +1232,165 @@ class TestResourceShims:
 
     def test_proc_rss_bytes_for_pid_none_for_unused_pid(self):
         assert pc.proc_rss_bytes_for_pid(2_000_000_000) is None
+
+
+class TestPeakRssIsThisProcesss:
+    """``proc_peak_rss_bytes`` reports the PROCESS's own high-water mark.
+
+    On Linux ``execve`` seeds the new image's ``ru_maxrss`` with the pre-exec
+    image's peak, so a gateway launched from a large parent would otherwise
+    publish that parent's peak on ``proc_mem_peak_mb`` and the
+    ``memory.peak_rss_bytes`` gauge for its whole life.
+    """
+
+    _STATUS = "Name:\tpython\nVmPeak:\t 1400000 kB\nVmHWM:\t   11432 kB\nVmRSS:\t   11432 kB\n"
+
+    # These tests drive the POSIX reader (``_posix_peak_rss_bytes``) directly, with
+    # ``sys.platform`` and the status-file seam pinned, so they run on every host:
+    # ``proc_peak_rss_bytes`` itself dispatches on the import-time ``IS_POSIX`` and
+    # on Windows answers from the Win32 counters, which have their own tests. The
+    # ``resource`` module exists only on POSIX, so the ``getrusage`` stand-in is
+    # installed with ``raising=False`` -- on Windows it CREATES the attribute the
+    # reader would consult, which is exactly what must never happen.
+
+    @staticmethod
+    def _never_getrusage(monkeypatch):
+        def inherited(*_a, **_k):
+            raise AssertionError("ru_maxrss consulted on linux: that is the parent's peak")
+
+        monkeypatch.setattr(
+            pc, "resource", types.SimpleNamespace(RUSAGE_SELF=0, getrusage=inherited), raising=False
+        )
+
+    def test_linux_peak_is_its_own_vmhwm_never_getrusage(self, tmp_path, monkeypatch):
+        status = tmp_path / "status"
+        status.write_text(self._STATUS, encoding="utf-8")
+        self._never_getrusage(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
+        assert pc._posix_peak_rss_bytes() == 11432 * 1024
+        # An unreadable /proc is None (the callers' documented 0), not the
+        # inherited number and not the floor a readable earlier call left behind.
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", tmp_path / "gone")
+        assert pc._posix_peak_rss_bytes() is None
+
+    @pytest.mark.skipif(
+        not pc.IS_POSIX, reason="proc_rss_bytes's POSIX last resort; Windows reads Win32 counters"
+    )
+    def test_the_current_readings_last_resort_is_the_same_own_peak(self, tmp_path, monkeypatch):
+        status = tmp_path / "status"
+        status.write_text(self._STATUS, encoding="utf-8")
+        self._never_getrusage(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
+        monkeypatch.setattr(pc, "_linux_current_rss_bytes", lambda: None)
+        assert pc.proc_rss_bytes() == 11432 * 1024
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            "Name:\tpython\nVmRSS:\t   11432 kB\n",  # no high-water field at all
+            "VmHWM:\t   11432 MB\n",  # a unit the kernel never prints
+            "VmHWM:\t   lots kB\n",
+            "VmHWM:\n",
+            "",
+        ],
+    )
+    def test_an_unreadable_status_is_none_not_a_guess(self, status):
+        assert pc._peak_rss_from_status(status) is None
+
+    def test_the_linux_reading_never_decreases(self, tmp_path, monkeypatch):
+        # The kernel folds the live RSS into hiwater_rss lazily from batched
+        # per-thread counters, so consecutive VmHWM readings around an unmap
+        # can dip by a few hundred KiB. The contract is a peak, so the reader
+        # holds its floor -- and drops it only for an unreadable file, which
+        # is None, not a stale number.
+        status = tmp_path / "status"
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
+        readings = []
+        for kib in (186_335_232 // 1024, 185_970_688 // 1024, 200_000):
+            status.write_text(f"VmHWM:\t{kib} kB\n", encoding="utf-8")
+            readings.append(pc._linux_peak_rss_bytes())
+        assert readings == [186_335_232, 186_335_232, 200_000 * 1024]
+        status.unlink()
+        assert pc._linux_peak_rss_bytes() is None
+
+    @pytest.mark.parametrize(
+        ("platform", "ru_maxrss", "expected"),
+        [("darwin", 123_456_789, 123_456_789), ("freebsd13", 11432, 11432 * 1024)],
+    )
+    def test_off_linux_getrusage_is_read_in_the_platforms_unit(
+        self, monkeypatch, platform, ru_maxrss, expected
+    ):
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(
+            pc,
+            "resource",
+            types.SimpleNamespace(
+                RUSAGE_SELF=0, getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=ru_maxrss)
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", Path("/nonexistent/status"))
+        assert pc._posix_peak_rss_bytes() == expected
+
+    def test_the_two_status_parsers_agree(self):
+        # pdf_extract_child keeps its own copy (it must not import this module
+        # under a capped address space); the two must read the same text alike.
+        from kiro_crew import pdf_extract_child
+
+        for text in (self._STATUS, "VmHWM:\t 1 kB\n", "VmHWM:\t 1 MB\n", ""):
+            assert pc._peak_rss_from_status(text) == pdf_extract_child._peak_rss_from_status(text)
+
+    def test_a_child_of_a_bloated_parent_reports_its_own_small_peak(self, tmp_path):
+        """A parent that has touched twice the bar spawns a child that reports its
+        own peak under it. The planted condition is proven, not assumed: the
+        parent's measured peak must exceed the bar, and on Linux the child's raw
+        ``ru_maxrss`` must show the inheritance the reader exists to bypass."""
+        bar = 256 * 1024 * 1024
+        child = textwrap.dedent("""
+            import json, sys
+            from kiro_crew import platform_compat as pc
+            json.dump(
+                {"own_peak": pc.proc_peak_rss_bytes(),
+                 "inherited": pc._ru_maxrss_bytes() if pc.IS_POSIX else None},
+                sys.stdout,
+            )
+            """)
+        parent = textwrap.dedent(f"""
+            import json, subprocess, sys
+            from kiro_crew import platform_compat as pc
+            blob = bytearray({2 * bar})
+            for i in range(0, len(blob), 4096):
+                blob[i] = 1
+            del blob
+            report = {{"parent_peak": pc.proc_peak_rss_bytes()}}
+            run = subprocess.run(
+                [sys.executable, "-c", {child!r}], cwd={str(tmp_path)!r},
+                capture_output=True, text=True, timeout=60, check=True,
+            )
+            report.update(json.loads(run.stdout))
+            json.dump(report, sys.stdout)
+            """)
+        run = subprocess.run(
+            [sys.executable, "-c", parent],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            timeout=90,
+            check=True,
+        )
+        report = json.loads(run.stdout)
+        assert report["parent_peak"] > bar, "the parent never crossed the bar"
+        if sys.platform.startswith("linux"):
+            # The kernel fact the Linux reader exists for: seen, or the pin is hollow.
+            assert report["inherited"] > bar, "ru_maxrss did not inherit the parent's peak"
+        assert 0 < report["own_peak"] < bar, report
 
     def test_proc_rss_tree_mb_for_pid_windows_only(self):
         # Windows-only: the lineage-validated tree walk. On POSIX it returns None
@@ -4014,7 +4174,8 @@ class TestResourceShimFailures:
         # the labelled last-resort peak -- so reaching 0 needs BOTH the
         # current-RSS reader and the fallback to fail. Asserting only the
         # getrusage failure would pass on a platform whose primary reader was
-        # silently removed.
+        # silently removed. On Linux the fallback peak is VmHWM, not getrusage,
+        # so its status file has to be unreadable too.
         if not pc.IS_POSIX:
             pytest.skip("POSIX resource.getrusage branch")
 
@@ -4022,20 +4183,24 @@ class TestResourceShimFailures:
             raise OSError("getrusage failed")
 
         monkeypatch.setattr(pc.resource, "getrusage", boom)
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", Path("/nonexistent/status"))
         monkeypatch.setattr(pc, "_linux_current_rss_bytes", lambda: None)
         monkeypatch.setattr(pc, "_macos_current_rss_bytes", lambda: None)
         assert pc.proc_rss_bytes() == 0
 
-    def test_proc_peak_rss_bytes_returns_zero_on_getrusage_failure(self, monkeypatch):
-        # The peak reading has getrusage as its ONLY POSIX source, so its
-        # failure branch is still a plain 0.
+    def test_proc_peak_rss_bytes_returns_zero_when_its_source_fails(self, monkeypatch):
+        # The peak reading has ONE source per POSIX platform: VmHWM on Linux,
+        # getrusage elsewhere. That source failing is a plain 0, and on Linux
+        # the failure must not fall through to getrusage, whose ru_maxrss is
+        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm).
         if not pc.IS_POSIX:
-            pytest.skip("POSIX resource.getrusage branch")
+            pytest.skip("POSIX peak-RSS branch")
 
         def boom(*args, **kwargs):
             raise OSError("getrusage failed")
 
         monkeypatch.setattr(pc.resource, "getrusage", boom)
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", Path("/nonexistent/status"))
         assert pc.proc_peak_rss_bytes() == 0
 
     def test_proc_cpu_seconds_returns_zero_on_getrusage_failure(self, monkeypatch):

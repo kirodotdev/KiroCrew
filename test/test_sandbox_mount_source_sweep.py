@@ -46,6 +46,7 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import (
     _MOUNT_SOURCE_MAX_AGE_SECONDS,
@@ -56,6 +57,18 @@ from kiro_crew.sandbox import (
     _PinScanCoverage,
     cleanup_stale_sandbox_profiles,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_host_ssh_probe(monkeypatch):
+    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+
+    The staging sites read out of the launcher do not depend on that answer, and a
+    real ssh spawned from the test process is a host dependency this module is not
+    about. Pinned so no binary runs.
+    """
+    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
+
 
 # ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
 # namespace launcher never runs on Windows).

@@ -49,6 +49,26 @@ from kiro_crew.connections.tool_aliases import (
     resolve_tool_aliases,
     statically_visible_tool_names,
 )
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _pinned_kiro_cli_version(monkeypatch):
+    """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
+
+    The real-rebuild tests below drive ``rebuild_agent_config``, which ends in
+    ``_write_derived_permissions`` and reads ``installed_kiro_cli_version``
+    function-locally from ``kiro_crew.kiro_cli``: one real ``kiro-cli --version``
+    spawn per binary identity, process-cached, so whichever test in the worker
+    rebuilds first pays it against the HOST's install with the checkout as the
+    child's cwd. Pinned to the floor release, as ``test_agent.py`` and the
+    generated-writer suites pin it.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version",
+        lambda: SPEC_PERMISSIONS_MIN_VERSION,
+    )
+
 
 URLS = {
     "github": "https://api.githubcopilot.com/mcp/",

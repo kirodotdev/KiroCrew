@@ -68,11 +68,32 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
     JsonRpcMessage,
 )
+from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 
 # ── Harness ──
+
+
+@pytest.fixture(autouse=True)
+def _pinned_kiro_cli_version(monkeypatch):
+    """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
+
+    A runtime start materialises the agent spec (``ensure_agent_materialized`` ->
+    ``rebuild_agent_config``) and a worker install writes one
+    (``_install_worker_agent`` -> ``_write_worker_spec``); both end in
+    ``_write_derived_permissions``, which reads ``installed_kiro_cli_version``
+    function-locally from ``kiro_crew.kiro_cli``: one real ``kiro-cli --version``
+    spawn per binary identity, process-cached, so whichever test in the worker
+    writes a spec first pays it against the HOST's install with the checkout as
+    the child's cwd. Pinned to the floor release, as ``test_agent.py`` and the
+    generated-writer suites pin it.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version",
+        lambda: SPEC_PERMISSIONS_MIN_VERSION,
+    )
 
 
 @pytest.fixture
