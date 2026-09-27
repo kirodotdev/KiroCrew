@@ -4343,3 +4343,103 @@ def test_the_churning_census_bounds_the_group_key_it_retains(native_tree):
     assert all(
         len(part) <= projection._CHURNING_LABEL_MAX_CHARS for key in churning for part in key
     )
+
+
+class TestTheProjectionWriteCarriesEffortOwnership:
+    """The settings republish keeps a valid effort record valid and a void one void.
+
+    ``prepare_native_skill_projection`` rewrites the whole workspace ``cli.json``
+    on every spawn and warm session start. Kiro Crew's effort record in that file
+    counts only while its stamp equals the file's mtime, so an unstamped republish
+    voided Kiro Crew's own record and the owned clear then left the level behind as
+    operator-written. An operator save that keeps the keys must stay void across
+    the same write: the projection may not re-validate what it cannot prove it wrote.
+    """
+
+    MODEL = "claude-opus-4.7"
+
+    @staticmethod
+    def _level(project, model):
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        model_cfg = data.get("chat.modelDefaults", {}).get(model, {})
+        return model_cfg.get("output_config", {}).get("effort")
+
+    @staticmethod
+    def _operator_rewrite_keeping_keys(project):
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        cli_json.write_text(json.dumps(data), encoding="utf-8")
+        assert data["kirocrew.effortOwnedStamp"] != int(cli_json.stat().st_mtime)
+
+    def test_the_projection_write_keeps_kiro_crews_record_valid(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        _write_cli_overlay(project, self.MODEL, "max")
+
+        assert projection.prepare_native_skill_projection(project) is not None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data[projection._INHERIT_SETTING] is True
+        assert data["kirocrew.effortOwned"] == {self.MODEL: "max"}
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) is None
+
+    def test_the_projection_write_does_not_revalidate_a_void_record(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        _write_cli_overlay(project, self.MODEL, "max")
+        self._operator_rewrite_keeping_keys(project)
+
+        assert projection.prepare_native_skill_projection(project) is not None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert data[projection._INHERIT_SETTING] is True
+        assert "kirocrew.effortOwned" not in data
+        assert "kirocrew.effortOwnedStamp" not in data
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) == "max"
+
+    def test_the_rollback_write_keeps_kiro_crews_record_valid(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        assert projection.prepare_native_skill_projection(project) is not None
+        _write_cli_overlay(project, self.MODEL, "max")
+
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert projection._MANAGED_SETTING not in data
+        assert data["kirocrew.effortOwned"] == {self.MODEL: "max"}
+        assert data["kirocrew.effortOwnedStamp"] == int(cli_json.stat().st_mtime)
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) is None
+
+    def test_the_rollback_write_does_not_revalidate_a_void_record(self, native_tree):
+        from kiro_crew.providers.acp import _clear_cli_overlay_effort, _write_cli_overlay
+
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        assert projection.prepare_native_skill_projection(project) is not None
+        _write_cli_overlay(project, self.MODEL, "max")
+        self._operator_rewrite_keeping_keys(project)
+
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+
+        cli_json = project / ".kiro" / "settings" / "cli.json"
+        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        assert projection._MANAGED_SETTING not in data
+        assert "kirocrew.effortOwned" not in data
+        assert "kirocrew.effortOwnedStamp" not in data
+        assert _clear_cli_overlay_effort(project, None, owned_only=True) is True
+        assert self._level(project, self.MODEL) == "max"

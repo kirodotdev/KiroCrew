@@ -2805,6 +2805,7 @@ class _ChatSlot:
         "_tool_stall_retries",
         "_tool_stall_exhausted_emitted",
         "_transient_5xx_retries",
+        "_effort_intent_owed",
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
@@ -3565,6 +3566,10 @@ class _ChatSlot:
         # ConnectionReset) retries on the interactive stream path. Distinct
         # budget from prompt-busy / pipe-death; reset on a completed turn.
         self._transient_5xx_retries: int = 0
+        # Set while this chat's pick is live but its explicit-Default intent was
+        # not saved, so the same pick again is a retry rather than a no-op; it is
+        # never persisted and goes with the slot.
+        self._effort_intent_owed: bool = False
         # L1 gateway-capacity retries: how many times THIS cycle waited out an
         # infrastructure refusal of a tool call (the ladder owns the budget; this
         # is the slot-visible count the health panel classifies as recovering).

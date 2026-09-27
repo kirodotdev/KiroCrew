@@ -5266,6 +5266,38 @@ async def _reset_slot_session(
 # match per-handler spellings.
 _TEARDOWN_INCOMPLETE_WARNING = "old session teardown incomplete"
 
+# An effort pick that is live and shown on the slot but whose explicit-Default
+# intent could not be saved. The status reports the durable write; the slot and
+# body report the value that is running.
+_EFFORT_INTENT_NOT_SAVED = (
+    "the effort choice is running but could not be saved; pick it again once the store is writable"
+)
+_EFFORT_INTENT_UNSAVED_CODE = "effort_intent_unsaved"
+# A reset refusal whose rollback could not restore the earlier intent.
+_EFFORT_INTENT_ROLLBACK_NOT_SAVED = "the earlier effort choice could not be saved again"
+
+
+def _effort_intent_unsaved(
+    slot: _ChatSlot,
+    effort: str,
+    *,
+    normalized_model: str | None = None,
+    rebind_warning: str | None = None,
+) -> web.Response:
+    """Report an intent write owed for a pick the live session already runs."""
+    # Retry state belongs to the slot that received the pick.
+    slot._effort_intent_owed = True
+    return web.json_response(
+        {
+            "error": _EFFORT_INTENT_NOT_SAVED,
+            "code": _EFFORT_INTENT_UNSAVED_CODE,
+            "reasoning_effort": effort,
+            "model": normalized_model,
+            "warning": rebind_warning,
+        },
+        status=503,
+    )
+
 
 async def _reset_slot_session_or_warn(
     state: DashboardState,
@@ -11085,11 +11117,143 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             slot._dirty = True
             return {"model": legacy_base}
 
-        if slot.reasoning_effort == effort and not legacy_base:
+        if slot.reasoning_effort == effort and not legacy_base and not slot._effort_intent_owed:
             return web.json_response({"ok": True, "reasoning_effort": effort})
         logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
         _updated_live: bool | None = False
+        # True once this request's own explicit clear has rewritten the overlay.
+        # A Default committed any other way (no live provider, the deferred push,
+        # a clear that raised, a model without effort) is carried to the key's
+        # next cold start, the first point that can remove an entry Kiro Crew
+        # did not write.
+        overlay_cleared = False
+        # Set once this request has saved the session key's intent and must not
+        # write it again: by the reset path before its reset await (a cold start
+        # during that await can spend it, and writing it again at the final
+        # commit would arm it a second time), or by a level's clear of a pending
+        # Default before its live push.
+        intent_recorded = False
+
+        async def record_default_intent(key: str, pending: bool) -> bool | None:
+            """Save *key*'s explicit-Default intent.
+
+            True once saved; False when it could not be saved. None when the
+            write is refused because a cold start under *key* is in flight: that
+            start read the key's effort basis once and publishes a session built
+            on that read, so a basis written meanwhile is one it cannot have
+            seen, and would leave the slot showing a value the session does not
+            run. Nothing is written and the caller answers a retryable 409.
+            Checked with no await before the write below, so no start can begin
+            between the check and the save. The write is counted
+            (``effort_intent_write``) from the in-memory flag through the save
+            and its put-back, so a start that takes the key's reservation during
+            the save waits for it to settle before reading the basis.
+
+            A level pick on a key whose flag is already clear has nothing to
+            record: it is True at once, with nothing written, counted or
+            refused, because the start reads the same basis either way. The
+            reservation is also held while a caller waits to claim the key's
+            live session, which can last a whole turn, so without this a level
+            pick during a live turn would be refused for as long as a second
+            claimant is queued. A Default pick on a key whose Default is
+            already pending stays refused: a start on a level its caller chose
+            spends that flag without applying it, and the refusal is what lets
+            the retry arm it again.
+            """
+            if state.sessions.effort_basis_locked(key):
+                if not pending and not state.sessions.explicit_effort_default_pending(key):
+                    return True
+                return None
+            with state.sessions.effort_intent_write(key):
+                prior = state.sessions.explicit_effort_default_pending(key)
+                if prior and not pending:
+                    # This request can still put the flag back (a failed save
+                    # below, the reset path's rollback), so its row stays counted
+                    # until the request ends and no other key's pick can take it
+                    # meanwhile.
+                    _stack.enter_context(state.sessions.hold_explicit_effort_default(key))
+                if not state.sessions.set_explicit_effort_default(key, pending):
+                    return False
+                try:
+                    await state.sessions.aflush()
+                except asyncio.CancelledError:
+                    # A cancelled pick committed nothing, so its value must not
+                    # reach the file with a later save.
+                    state.sessions.set_explicit_effort_default(key, prior)
+                    with contextlib.suppress(Exception):
+                        await state.sessions.aflush()
+                    raise
+                except Exception:
+                    # Memory keeps what the file still holds.
+                    state.sessions.set_explicit_effort_default(key, prior)
+                    logger.warning("Could not save explicit effort Default intent", exc_info=True)
+                    return False
+            return True
+
+        def intent_unavailable() -> web.Response:
+            # Answered before the slot's value changed or anything reached the
+            # session it is bound to, so a retry starts over.
+            return web.json_response(
+                {
+                    "error": "the effort choice could not be saved",
+                    "code": "effort_intent_unavailable",
+                },
+                status=503,
+            )
+
+        def start_in_flight() -> web.Response:
+            # A cold start under the key is in flight and has read, or will read,
+            # the effort basis this pick would change (``record_default_intent``
+            # returned None; a pick that would leave it as it is passes). Nothing
+            # changed, so a retry once it has registered lands. The same code a
+            # live turn earns: the picker's failure copy for it already says to
+            # try again when the session is free.
+            return web.json_response(
+                {"error": "the session is starting", "code": "turn_in_flight"}, status=409
+            )
+
+        def intent_refused(recorded: bool | None) -> web.Response:
+            """The refusal for an intent write that did not land before anything changed."""
+            return start_in_flight() if recorded is None else intent_unavailable()
+
+        async def put_back_default_unless_committed() -> None:
+            # Runs as this request exits: a pick that did not leave the slot on
+            # its level has not replaced the Default it cleared before the push.
+            # Written even while a cold start under the key is in flight: it
+            # restores a Default this same request cleared, so a start that read
+            # the cleared value arms nothing and the NEXT cold start applies the
+            # flag. The intent survives, one start late, and the hold taken at
+            # the clear is what keeps its row.
+            if slot.reasoning_effort == effort:
+                return
+            state.sessions.set_explicit_effort_default(session_key, True)
+            try:
+                await state.sessions.aflush()
+            except Exception:
+                # Memory keeps the Default, and the map's next save writes it.
+                logger.warning("Could not save the explicit effort Default again", exc_info=True)
+
+        async def undo_live_push() -> bool:
+            """Put the live session this pick reached back on the slot's value.
+
+            True once that session runs the value again. An automatic clear puts
+            back a Default, so an entry Kiro Crew did not write stays.
+            """
+            if not isinstance(provider, AcpProvider):
+                return False
+            try:
+                if slot.reasoning_effort:
+                    return bool(await provider.change_effort(slot.reasoning_effort))
+                return bool(await provider.clear_effort())
+            except Exception:
+                logger.warning("Could not put the live session back on its effort", exc_info=True)
+                return False
+
+        # True once this request pushed its pick to the live session, which cannot
+        # be unwound: from then on a failed save keeps the pick and answers 503.
+        pushed_live = False
+
         if isinstance(provider, AcpProvider) and provider.supports_effort():
             # Guard against racing the in-flight prompt read loop: a live
             # change_effort issues session/set_config_option and its response wait
@@ -11101,8 +11265,12 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 logger.info("Slot %s deferred live effort push: turn active", name)
                 # This path's success point: the override is recorded on the
                 # slot now and pushed to the live session next turn.
+                recorded = await record_default_intent(session_key, not effort)
+                if not recorded:
+                    return intent_refused(recorded)
                 slot.reasoning_effort = effort
                 normalized = normalize_legacy_model()
+                slot._effort_intent_owed = False
                 state.push_slots_update()
                 return web.json_response(
                     {"ok": True, "reasoning_effort": effort, "deferred": True, **normalized}
@@ -11110,11 +11278,33 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the override → fall back to model
             # default (kiro: /effort with model default; claude: leave as-is).
+            # This is the one explicit operator clear, so it alone may remove an
+            # overlay entry Kiro Crew did not write; every automatic clear (a
+            # live model switch on a Default slot) keeps the ownership guard.
+            #
+            # A level replaces a pending Default for good, so that clear is saved
+            # before the push: a push the file could not follow would leave the
+            # flag for a later cold start that takes no level, and that start
+            # would run Default under the level the slot shows.
+            if effort and state.sessions.explicit_effort_default_pending(session_key):
+                recorded = await record_default_intent(session_key, False)
+                if not recorded:
+                    return intent_refused(recorded)
+                intent_recorded = True
+                _stack.push_async_callback(put_back_default_unless_committed)
             try:
                 if effort:
                     _updated_live = await provider.change_effort(effort)
                 else:
-                    _updated_live = await provider.clear_effort()
+                    _updated_live = await provider.clear_effort(
+                        owned_only=False,
+                        fence_rewrite=state.sessions.fence_effort_overlay_rewrite,
+                    )
+                    # A bool means this clear left nothing for a cold start to
+                    # remove (False only asks for the reset below); None changed
+                    # nothing and is refused below.
+                    overlay_cleared = _updated_live is not None
+                pushed_live = bool(_updated_live)
             except Exception as exc:
                 logger.warning(
                     "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
@@ -11137,10 +11327,16 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # teardown, and the success path at the one before the final 200),
             # so either would show "default" while the overlay still holds the
             # old level and a respawn re-applies it. Commit nothing, reset
-            # nothing, and let the caller retry once the other writer is done.
+            # nothing, and report that the overlay is locked, a link or in a
+            # linked folder, unreadable, non-object or holding a non-object
+            # setting for this model, or past its read ceiling.
             return web.json_response(
                 {
-                    "error": "the workspace effort overlay is locked by another writer",
+                    "error": (
+                        "the workspace effort overlay is locked or fenced by a spawning session, a link or "
+                        "in a linked folder, unreadable, not a JSON object, holds a non-object setting "
+                        "for this model, or exceeds its 1 MiB size limit"
+                    ),
                     "code": "effort_overlay_busy",
                 },
                 status=409,
@@ -11155,16 +11351,49 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # happen and leave the slot value contradicting the persisted
             # override. Commit the slot value (it is what the new binding's
             # next cold start reads) and report the rebind as a warning.
+            #
+            # This request never touched the new binding's overlay, so a Default
+            # is carried to that key's next cold start, and a level clears any
+            # Default pending there. That is saved before the slot shows the
+            # pick: otherwise the slot would show a pick that key's next cold
+            # start does not run, and a retry of a Default would stop at the
+            # same-value check. A cold start in flight under the new binding
+            # refuses the write the same way a failed save does: it already read
+            # the basis this pick would change.
+            saved_new = await record_default_intent(effective_session_key(slot), not effort)
+            if not saved_new and (not pushed_live or await undo_live_push()):
+                # Nothing was pushed, or the session the push reached runs the
+                # slot's value again, so the refusal describes a pick that
+                # changed nothing. When it cannot be put back, the push stands
+                # and the pick is kept, answered 503 below.
+                return intent_refused(saved_new)
             slot.reasoning_effort = effort
+            # The push landed on the session the slot WAS bound to, so that key
+            # follows the ordinary rule, unless a level already cleared its
+            # Default before the push.
+            saved_old = intent_recorded or await record_default_intent(
+                session_key, not effort and not overlay_cleared
+            )
             normalized = normalize_legacy_model()
             state.push_slots_update()
+            warning = (
+                "slot session was rebound during the switch; "
+                "the new binding applies on its next cold start"
+            )
+            if not (saved_old and saved_new):
+                return _effort_intent_unsaved(
+                    slot,
+                    effort,
+                    normalized_model=normalized.get("model"),
+                    rebind_warning=warning,
+                )
+            slot._effort_intent_owed = False
             return web.json_response(
                 {
                     "ok": True,
                     "reasoning_effort": effort,
                     **normalized,
-                    "warning": "slot session was rebound during the switch; "
-                    "the new binding applies on its next cold start",
+                    "warning": warning,
                 }
             )
 
@@ -11215,7 +11444,24 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # would make the acting tab keep the OLD store value for a
             # switch that actually happened.
             prior_effort = slot.reasoning_effort
+            prior_explicit_default = state.sessions.explicit_effort_default_pending(session_key)
+            recorded_default = not effort and not overlay_cleared
+            recorded = await record_default_intent(session_key, recorded_default)
+            if not recorded:
+                return intent_refused(recorded)
+            intent_recorded = True
             slot.reasoning_effort = effort
+
+            async def restore_default_intent() -> bool:
+                # Undo only this request's own write: a cold start during the
+                # reset await may already have applied and spent it. One still
+                # in flight has read this request's write, so the undo is
+                # refused and reported as a rollback not saved.
+                current = state.sessions.explicit_effort_default_pending(session_key)
+                if current != recorded_default:
+                    return True
+                return bool(await record_default_intent(session_key, prior_explicit_default))
+
             teardown_incomplete = False
             reset_ok = True
             try:
@@ -11248,6 +11494,10 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # then let the raise escape as a 500.
                 if slot.reasoning_effort == effort:
                     slot.reasoning_effort = prior_effort
+                    if not await restore_default_intent():
+                        logger.warning(
+                            "Could not restore explicit effort Default intent for %s", session_key
+                        )
                 slot._dirty = True
                 state.push_slots_update()
                 raise
@@ -11265,6 +11515,15 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 if isinstance(busy_provider, LLMProvider):
                     if busy_provider.has_active_turn():
                         slot.reasoning_effort = prior_effort
+                        if not await restore_default_intent():
+                            return web.json_response(
+                                {
+                                    "error": "a turn is in flight",
+                                    "code": "turn_in_flight",
+                                    "warning": _EFFORT_INTENT_ROLLBACK_NOT_SAVED,
+                                },
+                                status=409,
+                            )
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -11283,6 +11542,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                     except Exception:
                         if slot.reasoning_effort == effort:
                             slot.reasoning_effort = prior_effort
+                            if not await restore_default_intent():
+                                logger.warning(
+                                    "Could not restore explicit effort Default intent for %s",
+                                    session_key,
+                                )
                         slot._dirty = True
                         state.push_slots_update()
                         raise
@@ -11296,6 +11560,15 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                         and state.sessions.get_provider(session_key) is not None
                     ):
                         slot.reasoning_effort = prior_effort
+                        if not await restore_default_intent():
+                            return web.json_response(
+                                {
+                                    "error": "a turn is in flight",
+                                    "code": "turn_in_flight",
+                                    "warning": _EFFORT_INTENT_ROLLBACK_NOT_SAVED,
+                                },
+                                status=409,
+                            )
                         return web.json_response(
                             {"error": "a turn is in flight", "code": "turn_in_flight"},
                             status=409,
@@ -11308,6 +11581,15 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # (that session was idle and no longer bound); roll back and
                 # let the retry resolve the current binding.
                 slot.reasoning_effort = prior_effort
+                if not await restore_default_intent():
+                    return web.json_response(
+                        {
+                            "error": "slot session was rebound during the switch",
+                            "code": "session_rebound",
+                            "warning": _EFFORT_INTENT_ROLLBACK_NOT_SAVED,
+                        },
+                        status=409,
+                    )
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -11317,6 +11599,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 )
             if teardown_incomplete:
                 normalized = normalize_legacy_model()
+                slot._effort_intent_owed = False
                 state.push_slots_update()
                 return web.json_response(
                     {
@@ -11328,8 +11611,19 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 )
         # Live-update and deferral paths commit here (the reset path already
         # committed before its reset, and assigning again is a no-op).
+        saved: bool | None = True
+        if not intent_recorded:
+            saved = await record_default_intent(session_key, not effort and not overlay_cleared)
+            if not saved and not pushed_live:
+                return intent_refused(saved)
         slot.reasoning_effort = effort
         normalized = normalize_legacy_model()
+        if not saved:
+            # The live session already runs the pick, so the slot keeps that value
+            # while the response reports the durable intent still owed.
+            state.push_slots_update()
+            return _effort_intent_unsaved(slot, effort, normalized_model=normalized.get("model"))
+    slot._effort_intent_owed = False
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})
 

@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -211,6 +212,55 @@ class TestFillWarmPool:
 
 
 class TestLivenessDrainLoop:
+    @pytest.mark.asyncio
+    async def test_a_provider_queued_before_an_explicit_default_rewrite_is_discarded(self):
+        """It read cli.json at its own spawn, so it would run the entry just removed."""
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        stale = _make_provider()
+        mgr._warm_pool.put_nowait((stale, time.monotonic()))
+
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+
+        assert await mgr._drain_and_claim("kirocrew") is None
+        stale.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_provider_is_claimed_while_an_explicit_default_rewrite_is_in_progress(self):
+        """The file can change at any point in the write, so no queued runtime is known fresh."""
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        queued = _make_provider()
+        mgr._warm_pool.put_nowait((queued, time.monotonic() + 3600))
+
+        with mgr.fence_effort_overlay_rewrite():
+            assert await mgr._drain_and_claim("kirocrew") is None
+
+        queued.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_spawned_during_an_explicit_default_rewrite_is_discarded(self):
+        """Its kiro-cli may have read the file before the write landed."""
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        spawned_during = _make_provider()
+
+        with mgr.fence_effort_overlay_rewrite():
+            await asyncio.sleep(0.01)
+            mgr._warm_pool.put_nowait((spawned_during, time.monotonic()))
+
+        assert await mgr._drain_and_claim("kirocrew") is None
+        spawned_during.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_provider_spawned_after_an_explicit_default_rewrite_is_claimed(self):
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        fresh = _make_provider()
+        mgr._warm_pool.put_nowait((fresh, mgr._pool.state.effort_overlay_epoch + 0.001))
+
+        assert await mgr._drain_and_claim("kirocrew") is fresh
+        fresh.shutdown.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_dead_provider_discarded_healthy_used(self):
         """Dead providers are drained; first healthy one is used."""
@@ -419,6 +469,155 @@ class TestGetOrCreatePoolIntegration:
         assert kwargs["crew_agent"] == ""
         assert isinstance(kwargs["watchdog"], WatchdogSettings)
         mgr._schedule_replenish.assert_called_once()
+        factory.assert_not_called()
+
+    @staticmethod
+    def _warm_acp_provider():
+        from kiro_crew.providers.acp import AcpProvider
+
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        return pooled
+
+    async def _claim_waiting_at_model_resolution(self, mgr, monkeypatch):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def resolve_pool_model(_agent):
+            entered.set()
+            assert release.wait(timeout=5), "the test did not release model resolution"
+            return "custom-model"
+
+        monkeypatch.setattr(mgr, "_resolve_agent_model", resolve_pool_model)
+        task = asyncio.create_task(
+            mgr.get_or_create("test-key", agent="kirocrew", model="custom-model")
+        )
+        assert await asyncio.to_thread(
+            entered.wait, 5
+        ), "the warm claim never reached model resolution"
+        return task, release
+
+    @pytest.mark.asyncio
+    async def test_completed_effort_rewrite_after_claim_discards_before_registration(
+        self, monkeypatch
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard = AsyncMock()
+        mgr._discard_pool_provider = discard
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        release.set()
+        provider, is_new, _ = await asyncio.wait_for(task, timeout=5)
+
+        assert provider is not pooled and is_new
+        discard.assert_awaited_once_with(pooled, "Warm pool effort registration discard")
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_cancelled_effort_rewrite_discard_releases_reservation(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard_entered = asyncio.Event()
+
+        async def discard(provider, context):
+            assert provider is pooled
+            assert context == "Warm pool effort registration discard"
+            discard_entered.set()
+            await asyncio.Event().wait()
+
+        mgr._discard_pool_provider = AsyncMock(side_effect=discard)
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            pass
+        release.set()
+        await asyncio.wait_for(discard_entered.wait(), timeout=5)
+        assert mgr.effort_basis_locked("test-key") is True
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        mgr._discard_pool_provider.assert_awaited_once_with(
+            pooled, "Warm pool effort registration discard"
+        )
+        # This is the picker's turn_in_flight gate. A leaked reservation leaves it true.
+        assert mgr.effort_basis_locked("test-key") is False
+        assert mgr._allocation_boundary()._allocation_reservations == {}
+
+        provider, is_new, _ = await mgr.get_or_create("test-key", agent="kirocrew")
+        assert provider is not pooled and is_new
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_in_progress_effort_rewrite_after_claim_discards_before_registration(
+        self, monkeypatch
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+        discard = AsyncMock()
+        mgr._discard_pool_provider = discard
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        with mgr.fence_effort_overlay_rewrite():
+            release.set()
+            provider, is_new, _ = await asyncio.wait_for(task, timeout=5)
+
+        assert provider is not pooled and is_new
+        discard.assert_awaited_once_with(pooled, "Warm pool effort registration discard")
+        factory.assert_called_once()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_warm_claim_without_effort_rewrite_still_registers(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+        mgr._schedule_replenish = MagicMock()
+
+        task, release = await self._claim_waiting_at_model_resolution(mgr, monkeypatch)
+        release.set()
+        provider, is_new, _ = await asyncio.wait_for(task, timeout=5)
+
+        assert provider is pooled and is_new
+        pooled.shutdown.assert_not_awaited()
+        factory.assert_not_called()
+        mgr.release("test-key")
+        await mgr.reset("test-key")
+
+    @pytest.mark.asyncio
+    async def test_claim_model_resolution_failure_removes_claimed_spawn_time(self, monkeypatch):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = self._warm_acp_provider()
+        mgr._warm_pool.put_nowait((pooled, time.monotonic()))
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(
+                mgr,
+                "_resolve_agent_model",
+                MagicMock(side_effect=RuntimeError("model resolution failed")),
+            )
+            with pytest.raises(RuntimeError, match="model resolution failed"):
+                await mgr.get_or_create("test-key", agent="kirocrew", model="custom-model")
+
+        assert mgr._pool.state.claimed_spawn_times == {}
         factory.assert_not_called()
 
     @pytest.mark.asyncio
@@ -2018,3 +2217,766 @@ class TestFillLockReleasedAcrossStart:
         # second provider against the retired identity.
         assert len(providers) == 1
         providers[0].shutdown.assert_awaited_once()
+
+
+class TestExplicitEffortDefaultAllocation:
+    """A pending explicit Default is saved spent right before the start that arms it."""
+
+    KEY = "test-key"
+
+    @staticmethod
+    def _cold_manager(applied: bool, start: AsyncMock | None = None):
+        mgr, factory = _make_manager()
+        mgr._drain_and_claim = AsyncMock(return_value=_make_provider())
+        mgr._schedule_replenish = MagicMock()
+        mgr._record_pool_decision = MagicMock()
+        provider = _make_provider()
+        provider.explicit_effort_default_applied = applied
+        if start is not None:
+            provider.start = start
+        factory.side_effect = None
+        factory.return_value = provider
+        return mgr, factory, provider
+
+    @pytest.mark.asyncio
+    async def test_a_pending_default_skips_the_pool_and_arms_the_provider(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+        mgr.set_explicit_effort_default(self.KEY, True)
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # A warm process read cli.json at its own spawn and Default cannot be
+        # pushed live, so only a cold start can apply the intent.
+        assert created is provider
+        mgr._drain_and_claim.assert_not_awaited()
+        mgr._record_pool_decision.assert_called_once_with("bypass_effort", self.KEY)
+        provider.arm_explicit_effort_default.assert_called_once_with(
+            mgr.fence_effort_overlay_rewrite
+        )
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("applied", [True, False])
+    async def test_the_key_is_reserved_from_the_basis_read_through_registration(self, applied):
+        # The span the effort handler's refusal rests on: the allocation
+        # reservation is held before the start reads the one-shot Default and
+        # is still held when the session is registered, so no pick can change
+        # the basis a start publishes on. ``effort_basis_locked`` is that
+        # reservation, read as the handler reads it.
+        mgr, _factory, provider = self._cold_manager(applied=applied)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        seen: list[tuple[str, bool]] = []
+        real_pending = mgr.explicit_effort_default_pending
+
+        def pending(key: str) -> bool:
+            seen.append(("read", mgr.effort_basis_locked(key)))
+            return real_pending(key)
+
+        async def start() -> None:
+            seen.append(("start", mgr.effort_basis_locked(self.KEY)))
+
+        class Registry(dict[str, object]):
+            def __setitem__(self, key: str, session: object) -> None:
+                seen.append(("register", mgr.effort_basis_locked(key)))
+                super().__setitem__(key, session)
+
+        mgr.explicit_effort_default_pending = pending
+        provider.start = AsyncMock(side_effect=start)
+        mgr._allocation_boundary()._sessions = Registry()
+        assert mgr.effort_basis_locked(self.KEY) is False
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert created is provider
+        assert seen[0] == ("read", True)
+        assert ("start", True) in seen
+        assert seen[-1] == ("register", True)
+        assert all(locked for _step, locked in seen)
+        # Released once the allocation returned: the next pick lands.
+        assert mgr.effort_basis_locked(self.KEY) is False
+
+    # -- a pick saving its flag when the start begins settles before the read --
+    #
+    # The handler's check passes before the start takes the key's reservation,
+    # so the pick's in-memory write is already there when the start begins and
+    # its save is still in flight. The start waits for that write to settle
+    # before its single basis read, so it reads the saved value or the one a
+    # failed save put back, never an in-memory value no save keeps.
+
+    async def _a_default_pick_saving_as_the_start_begins(
+        self,
+        mgr,
+        outcome: str,
+        pick_key: str | None = None,
+        start_key: str | None = None,
+        alias_folds: list[tuple[str, str]] | None = None,
+    ):
+        """Race a Default pick's save against a key's cold start.
+
+        The pick is the effort handler's write as ``record_default_intent``
+        makes it: the ``effort_basis_locked`` check passes (no reservation yet),
+        the flag is written in memory under the key's intent-write count, and
+        the save runs until the start has reached its basis read. ``outcome``
+        is what the save then does: "saved", "raised" or "cancelled". Returns
+        the pick's task and the start's reads as ``(value, save_settled)``.
+        """
+        pick_key = self.KEY if pick_key is None else pick_key
+        start_key = self.KEY if start_key is None else start_key
+        save_started = asyncio.Event()
+        save_release = asyncio.Event()
+        start_at_read = asyncio.Event()
+        save_settled = False
+        flushes = 0
+
+        async def aflush() -> None:
+            nonlocal flushes, save_settled
+            flushes += 1
+            if flushes > 1:
+                # The pick's put-back save and the start's own spend save.
+                return
+            save_started.set()
+            await save_release.wait()
+            save_settled = True
+            if outcome == "raised":
+                raise OSError("disk full")
+            if outcome == "cancelled":
+                raise asyncio.CancelledError()
+
+        real_wait = mgr.wait_for_effort_intent_writes
+        real_pending = mgr.explicit_effort_default_pending
+        reads: list[tuple[bool, bool]] = []
+
+        async def wait_for_writes(key: str) -> None:
+            # The start announces it is at its read; the wait right before it
+            # is where it stops while the save is in flight.
+            if alias_folds is not None:
+                alias_folds.append((mgr._fold_key(pick_key), mgr._fold_key(start_key)))
+            start_at_read.set()
+            await real_wait(key)
+
+        def pending(key: str) -> bool:
+            # Announced here too, for a start that reaches the read without
+            # waiting: the save is then released only after the read landed.
+            start_at_read.set()
+            value = real_pending(key)
+            reads.append((value, save_settled))
+            return value
+
+        async def pick() -> bool:
+            assert mgr.effort_basis_locked(pick_key) is False
+            with mgr.effort_intent_write(pick_key):
+                prior = real_pending(pick_key)
+                assert mgr.set_explicit_effort_default(pick_key, True) is True
+                try:
+                    await mgr.aflush()
+                except asyncio.CancelledError:
+                    mgr.set_explicit_effort_default(pick_key, prior)
+                    await mgr.aflush()
+                    raise
+                except Exception:
+                    mgr.set_explicit_effort_default(pick_key, prior)
+                    return False
+            return True
+
+        mgr.aflush = aflush
+        mgr.wait_for_effort_intent_writes = wait_for_writes
+        mgr.explicit_effort_default_pending = pending
+        alias_seed = None
+        if alias_folds is not None:
+            alias_seed = object()
+            mgr._allocation_boundary()._sessions[start_key] = alias_seed
+        pick_task = asyncio.create_task(pick())
+        await save_started.wait()
+        if alias_seed is not None:
+            assert mgr._allocation_boundary()._sessions.pop(start_key) is alias_seed
+        start_task = asyncio.create_task(mgr.get_or_create(start_key, agent="kirocrew"))
+        await start_at_read.wait()
+        save_release.set()
+        created, _is_new, _ = await start_task
+        return pick_task, created, reads
+
+    @pytest.mark.asyncio
+    async def test_a_default_whose_save_raises_under_a_cold_start_is_not_read_by_it(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+
+        pick_task, created, reads = await self._a_default_pick_saving_as_the_start_begins(
+            mgr, "raised"
+        )
+
+        # The pick is refused (the handler answers 503) and put the flag back;
+        # the start read that restored value, after the save had settled, so it
+        # took the warm pool as a start with no Default pending does and armed
+        # nothing.
+        assert await pick_task is False
+        assert reads[0] == (False, True)
+        assert created is not provider
+        mgr._drain_and_claim.assert_awaited_once()
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert self.KEY not in mgr._effort_intent_writes
+        assert mgr.effort_basis_locked(self.KEY) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pick_key", "start_key"),
+        [
+            ("slack:1700000000.000100", "1700000000.000100"),
+            ("1700000000.000100", "slack:1700000000.000100"),
+        ],
+    )
+    async def test_a_start_under_an_alias_waits_for_a_failed_default_save(
+        self, pick_key, start_key
+    ):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+        alias_folds: list[tuple[str, str]] = []
+
+        pick_task, created, reads = await self._a_default_pick_saving_as_the_start_begins(
+            mgr,
+            "raised",
+            pick_key=pick_key,
+            start_key=start_key,
+            alias_folds=alias_folds,
+        )
+
+        assert alias_folds[0][0] == alias_folds[0][1]
+        assert await pick_task is False
+        assert reads[0] == (False, True)
+        assert created is not provider
+        mgr._drain_and_claim.assert_awaited_once()
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(start_key) is False
+        assert "slack:1700000000.000100" not in mgr._effort_intent_writes
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pick_key", "start_key"),
+        [
+            ("slack:1700000000.000100", "1700000000.000100"),
+            ("1700000000.000100", "slack:1700000000.000100"),
+        ],
+    )
+    async def test_a_cold_start_under_an_alias_waits_for_a_failed_default_save(
+        self, pick_key, start_key
+    ):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+
+        pick_task, created, reads = await self._a_default_pick_saving_as_the_start_begins(
+            mgr,
+            "raised",
+            pick_key=pick_key,
+            start_key=start_key,
+        )
+
+        assert await pick_task is False
+        assert reads[0] == (False, True)
+        assert created is not provider
+        mgr._drain_and_claim.assert_awaited_once()
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(start_key) is False
+
+    @pytest.mark.asyncio
+    async def test_a_default_whose_save_lands_under_a_cold_start_is_spent_by_it(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+
+        pick_task, created, reads = await self._a_default_pick_saving_as_the_start_begins(
+            mgr, "saved"
+        )
+
+        # The start read the saved value once the save had settled, skipped the
+        # pool for it and spent it.
+        assert await pick_task is True
+        assert reads[0] == (True, True)
+        assert created is provider
+        mgr._drain_and_claim.assert_not_awaited()
+        provider.arm_explicit_effort_default.assert_called_once_with(
+            mgr.fence_effort_overlay_rewrite
+        )
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert self.KEY not in mgr._effort_intent_writes
+
+    @pytest.mark.asyncio
+    async def test_a_default_whose_save_is_cancelled_under_a_cold_start_is_not_read_by_it(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+
+        pick_task, created, reads = await self._a_default_pick_saving_as_the_start_begins(
+            mgr, "cancelled"
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await pick_task
+        assert reads[0] == (False, True)
+        assert created is not provider
+        mgr._drain_and_claim.assert_awaited_once()
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert self.KEY not in mgr._effort_intent_writes
+
+    @pytest.mark.asyncio
+    async def test_the_keys_write_count_is_gone_once_its_last_write_has_exited(self):
+        # Nothing outlives a write: the entry is removed when the count reaches
+        # zero, however the write ended, and a waiter wakes at that moment.
+        mgr, _factory, _provider = self._cold_manager(applied=True)
+
+        with mgr.effort_intent_write(self.KEY):
+            assert mgr._effort_intent_writes[self.KEY].count == 1
+        assert self.KEY not in mgr._effort_intent_writes
+
+        with pytest.raises(OSError):
+            with mgr.effort_intent_write(self.KEY):
+                raise OSError("disk full")
+        assert self.KEY not in mgr._effort_intent_writes
+
+        with pytest.raises(asyncio.CancelledError):
+            with mgr.effort_intent_write(self.KEY):
+                raise asyncio.CancelledError()
+        assert self.KEY not in mgr._effort_intent_writes
+
+        # Two picks under one key: the entry stays until the last one exits,
+        # and a waiter is released only then.
+        waiting = asyncio.Event()
+
+        async def waiter() -> None:
+            waiting.set()
+            await mgr.wait_for_effort_intent_writes(self.KEY)
+
+        with mgr.effort_intent_write(self.KEY):
+            with mgr.effort_intent_write(self.KEY):
+                entry = mgr._effort_intent_writes[self.KEY]
+                assert entry.count == 2
+                waiter_task = asyncio.create_task(waiter())
+                await waiting.wait()
+                assert not waiter_task.done()
+            assert entry.count == 1
+            assert not entry.settled.is_set()
+            assert not waiter_task.done()
+        assert entry.settled.is_set()
+        await waiter_task
+        assert mgr._effort_intent_writes == {}
+
+    @pytest.mark.asyncio
+    async def test_with_no_write_in_flight_the_basis_read_is_not_delayed(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        assert getattr(mgr, "_effort_intent_writes", {}) == {}
+
+        # The wait completes on its first step: nothing to wait for, no
+        # suspension, and no write was ever entered.
+        wait = mgr.wait_for_effort_intent_writes(self.KEY)
+        with pytest.raises(StopIteration):
+            wait.send(None)
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert created is provider
+        provider.arm_explicit_effort_default.assert_called_once_with(
+            mgr.fence_effort_overlay_rewrite
+        )
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert getattr(mgr, "_effort_intent_writes", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_start_that_did_not_apply_it_keeps_the_intent(self):
+        mgr, _factory, _provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # The projection could not rewrite the file (locked, a link, past its
+        # ceiling), so the next cold start tries again.
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+
+    @pytest.mark.asyncio
+    async def test_the_start_rewrites_inside_the_warm_pools_fence(self):
+        inside: list[int] = []
+
+        async def start() -> None:
+            (fence,) = provider.arm_explicit_effort_default.call_args.args
+            with fence():
+                inside.append(mgr._pool.state.effort_overlay_rewrites)
+
+        mgr, _factory, provider = self._cold_manager(
+            applied=True, start=AsyncMock(side_effect=start)
+        )
+        mgr.set_explicit_effort_default(self.KEY, True)
+        before = time.monotonic()
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # The fence the start rewrites inside is the pool's: claims are refused
+        # while it is up, and runtimes queued before it came down are discarded.
+        assert inside == [1]
+        assert mgr._pool.state.effort_overlay_rewrites == 0
+        assert mgr._pool.state.effort_overlay_epoch >= before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [RuntimeError("spawn failed"), asyncio.CancelledError()])
+    @pytest.mark.parametrize("applied", [True, False])
+    async def test_a_start_that_fails_arms_it_again_only_when_it_did_not_apply(
+        self, applied, error
+    ):
+        mgr, _factory, _provider = self._cold_manager(
+            applied=applied, start=AsyncMock(side_effect=error)
+        )
+        mgr.set_explicit_effort_default(self.KEY, True)
+
+        with pytest.raises(type(error)):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # A replacement that ran stays spent: it runs at most once.
+        assert mgr.explicit_effort_default_pending(self.KEY) is (not applied)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("start_fails", [False, True])
+    async def test_a_default_revoked_while_the_start_spawns_stays_revoked(
+        self, monkeypatch, start_fails
+    ):
+        from kiro_crew import session_allocation
+
+        async def pre_spawn_identity(*_args, **_kwargs):
+            # A second allocation under the same key spends the flag between
+            # this start's read of it and its own spend: both read it pending,
+            # and only the one that clears it may arm the replacement. (A pick
+            # cannot write here: the effort handler refuses one while the key's
+            # allocation reservation is held.)
+            assert mgr.set_explicit_effort_default(self.KEY, False) is True
+            return ""
+
+        monkeypatch.setattr(session_allocation, "pre_spawn_identity", pre_spawn_identity)
+        start = AsyncMock(side_effect=RuntimeError("spawn failed")) if start_fails else None
+        mgr, _factory, provider = self._cold_manager(applied=False, start=start)
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+
+        if start_fails:
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await mgr.get_or_create(self.KEY, agent="kirocrew")
+        else:
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # The spent Default was the only authorization to remove an entry Kiro
+        # Crew did not write, so this start runs no replacement, and a start that
+        # fails after the other spend does not put the Default back.
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+
+    @pytest.mark.asyncio
+    async def test_a_spend_cancelled_while_saving_arms_it_again(self):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        mgr.aflush = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        provider.start.assert_not_awaited()
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+
+    @pytest.mark.asyncio
+    async def test_the_spend_is_saved_right_before_the_start(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        seen: list[tuple[bool, int, int]] = []
+
+        async def aflush():
+            seen.append(
+                (
+                    mgr.explicit_effort_default_pending(self.KEY),
+                    provider.arm_explicit_effort_default.call_count,
+                    provider.start.await_count,
+                )
+            )
+
+        mgr.aflush = aflush
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # Saved spent before the provider is armed and started, so no later start,
+        # in this process or after a restart, can run the replacement again.
+        assert seen == [(False, 0, 0)]
+        provider.arm_explicit_effort_default.assert_called_once_with(
+            mgr.fence_effort_overlay_rewrite
+        )
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+
+    @pytest.mark.asyncio
+    async def test_a_spend_that_cannot_be_saved_starts_with_the_guard(self, caplog):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        mgr.aflush = AsyncMock(side_effect=OSError("disk full"))
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # No replacement without a saved spend; memory keeps what the file holds,
+        # so the next start tries again.
+        assert created is provider
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+        assert "Could not save that the explicit effort Default" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_refused_rearm_does_not_break_a_cold_start(self, caplog):
+        mgr, _factory, _provider = self._cold_manager(applied=False)
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+        real_set_explicit_effort_default = mgr.set_explicit_effort_default
+
+        def refuse_rearm(key: str, pending: bool) -> bool:
+            if pending:
+                return False
+            return real_set_explicit_effort_default(key, pending)
+
+        mgr.set_explicit_effort_default = MagicMock(side_effect=refuse_rearm)
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert "Could not arm the explicit effort Default" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_rearm_save_failure_fails_the_start(self, monkeypatch):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        session_map = mgr._session_map
+        save_calls = 0
+        original_save = session_map._save
+        hard_kills: list[object] = []
+
+        def record_save() -> None:
+            nonlocal save_calls
+            save_calls += 1
+            original_save()
+
+        monkeypatch.setattr(session_map, "_save", record_save)
+        monkeypatch.setattr(mgr, "_dispatch_hard_kill", hard_kills.append)
+        mgr.aflush = AsyncMock(side_effect=[None, OSError("disk full")])
+
+        with pytest.raises(RuntimeError, match="refusing to publish this start"):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert self.KEY not in mgr._sessions
+        assert hard_kills == [provider]
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+        # The spend, the re-arm whose save raised, the re-arm's own put-back, and
+        # the failed-start arm: each armed write owes the flag to the map's next
+        # save, and the last two are the same value written twice.
+        assert save_calls == 4
+
+        await session_map.aclose()
+        assert '"explicit_effort_default": true' in session_map._path.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_a_start_after_a_failed_rearm_spends_and_applies_the_default(self):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        mgr.aflush = AsyncMock(side_effect=[None, OSError("disk full")])
+
+        with pytest.raises(RuntimeError, match="refusing to publish this start"):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        provider.explicit_effort_default_applied = True
+        provider.arm_explicit_effort_default.reset_mock()
+        mgr.aflush = AsyncMock(return_value=None)
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert created is provider
+        provider.arm_explicit_effort_default.assert_called_once_with(
+            mgr.fence_effort_overlay_rewrite
+        )
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+
+    @pytest.mark.asyncio
+    async def test_a_still_broken_disk_costs_one_start_not_the_key(self):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr.set_explicit_effort_default(self.KEY, True)
+        mgr.aflush = AsyncMock(side_effect=[None, OSError("disk full")])
+
+        with pytest.raises(RuntimeError, match="refusing to publish this start"):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        provider.arm_explicit_effort_default.reset_mock()
+        mgr.aflush = AsyncMock(side_effect=OSError("disk full"))
+
+        created, _is_new, _ = await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert created is provider
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_logs_a_refused_rearm(self, caplog):
+        mgr, _factory, provider = self._cold_manager(
+            applied=False, start=AsyncMock(side_effect=RuntimeError("spawn failed"))
+        )
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+        real_set_explicit_effort_default = mgr.set_explicit_effort_default
+
+        def refuse_rearm(key: str, pending: bool) -> bool:
+            if pending:
+                return False
+            return real_set_explicit_effort_default(key, pending)
+
+        mgr.set_explicit_effort_default = MagicMock(side_effect=refuse_rearm)
+
+        with pytest.raises(RuntimeError, match="spawn failed"):
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        assert "after a failed start; no later start applies it" in caplog.text
+        provider.start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["unapplied", "raised", "unsaved"])
+    async def test_another_chat_cannot_take_the_row_while_the_start_holds_it(
+        self, monkeypatch, path
+    ):
+        from kiro_crew import session_map as session_map_module
+
+        monkeypatch.setattr(session_map_module, "EXPLICIT_EFFORT_DEFAULT_ROW_CAP", 1)
+        other = "dashboard:another-chat"
+        admitted = []
+
+        def another_chat_picks_default():
+            # Another chat's Default pick while this key's spend has cleared its flag.
+            if not admitted:
+                admitted.append(mgr.set_explicit_effort_default(other, True))
+
+        async def start():
+            another_chat_picks_default()
+            if path == "raised":
+                raise RuntimeError("spawn failed")
+
+        mgr, _factory, _provider = self._cold_manager(
+            applied=False, start=None if path == "unsaved" else AsyncMock(side_effect=start)
+        )
+        if path == "unsaved":
+
+            async def aflush():
+                if not admitted:
+                    another_chat_picks_default()
+                    raise OSError("disk full")
+
+            mgr.aflush = aflush
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+
+        if path == "raised":
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await mgr.get_or_create(self.KEY, agent="kirocrew")
+        else:
+            await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # The start held this key's row until it ended: the other pick is refused,
+        # this key is armed again, and the map never holds more rows than the bound.
+        assert admitted == [False]
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+        assert mgr.explicit_effort_default_pending(other) is False
+
+    @pytest.mark.asyncio
+    async def test_the_row_is_free_again_once_an_applied_start_ends(self, monkeypatch):
+        from kiro_crew import session_map as session_map_module
+
+        monkeypatch.setattr(session_map_module, "EXPLICIT_EFFORT_DEFAULT_ROW_CAP", 1)
+        other = "dashboard:another-chat"
+        during_start = []
+
+        async def start():
+            during_start.append(mgr.set_explicit_effort_default(other, True))
+
+        mgr, _factory, _provider = self._cold_manager(
+            applied=True, start=AsyncMock(side_effect=start)
+        )
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # Refused while this start could still arm the key again; free once the
+        # replacement ran and the start ended.
+        assert during_start == [False]
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+        assert mgr.set_explicit_effort_default(other, True) is True
+
+    @pytest.mark.asyncio
+    async def test_the_start_releases_the_row_before_the_session_is_registered(self, monkeypatch):
+        from kiro_crew import session_allocation
+        from kiro_crew import session_map as session_map_module
+
+        monkeypatch.setattr(session_map_module, "EXPLICIT_EFFORT_DEFAULT_ROW_CAP", 1)
+        other = "dashboard:another-chat"
+        after_start = []
+
+        async def stamp_spawn_identity(*_args, **_kwargs):
+            after_start.append(mgr.set_explicit_effort_default(other, True))
+
+        monkeypatch.setattr(session_allocation, "stamp_spawn_identity", stamp_spawn_identity)
+        mgr, _factory, _provider = self._cold_manager(applied=True)
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        # The hold ends with the start itself, not with the allocation around it.
+        assert after_start == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_level_start_whose_spend_is_not_saved_keeps_its_row(self, monkeypatch):
+        from kiro_crew import session_map as session_map_module
+
+        monkeypatch.setattr(session_map_module, "EXPLICIT_EFFORT_DEFAULT_ROW_CAP", 1)
+        other = "dashboard:another-chat"
+        admitted = []
+        mgr, _factory, _provider = self._cold_manager(applied=True)
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        assert mgr.set_explicit_effort_default(self.KEY, True) is True
+
+        async def aflush():
+            if not admitted:
+                admitted.append(mgr.set_explicit_effort_default(other, True))
+                raise OSError("disk full")
+
+        mgr.aflush = aflush
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew", reasoning_effort_override="high")
+
+        # The spend held the row while its save ran, so the flag it puts back
+        # needs no row the other chat could have taken.
+        assert admitted == [False]
+        assert mgr.explicit_effort_default_pending(self.KEY) is True
+        assert mgr.explicit_effort_default_pending(other) is False
+
+    @pytest.mark.asyncio
+    async def test_a_level_the_caller_starts_on_supersedes_a_pending_default(self):
+        mgr, _factory, provider = self._cold_manager(applied=True)
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        mgr.set_explicit_effort_default(self.KEY, True)
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew", reasoning_effort_override="high")
+
+        # A stale Default never authorizes replacing an entry for a level start.
+        provider.arm_explicit_effort_default.assert_not_called()
+        assert mgr.explicit_effort_default_pending(self.KEY) is False
+
+    def test_a_provider_that_reads_no_overlay_has_nothing_to_arm(self):
+        from kiro_crew.providers.base import LLMProvider
+
+        # Declared on the base so the session layer calls and reads them without
+        # a probe; a provider with no workspace overlay spends a Default at once.
+        assert LLMProvider.arm_explicit_effort_default(object(), nullcontext) is None
+        assert LLMProvider.explicit_effort_default_applied.fget(object()) is True
+
+    @pytest.mark.asyncio
+    async def test_without_a_pending_default_nothing_is_armed(self):
+        mgr, _factory, provider = self._cold_manager(applied=False)
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+
+        mgr._drain_and_claim.assert_awaited_once()
+        provider.arm_explicit_effort_default.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_keeps_the_intent_for_the_next_cold_start(self):
+        # The handler records the intent and then resets the session; the reset
+        # recycles the process and keeps the map entry the intent lives on.
+        mgr, _factory, _provider = self._cold_manager(applied=True)
+        await mgr.get_or_create(self.KEY, agent="kirocrew")
+        mgr.set_explicit_effort_default(self.KEY, True)
+
+        await mgr.reset(self.KEY)
+
+        assert mgr.explicit_effort_default_pending(self.KEY) is True

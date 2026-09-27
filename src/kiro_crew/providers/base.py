@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractContextManager
 from functools import cached_property
 from typing import TYPE_CHECKING, AsyncContextManager, Literal, Protocol, runtime_checkable
 
@@ -514,6 +515,29 @@ class LLMProvider(ABC):
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight and not yet cancelled. Default False."""
         return False
+
+    def arm_explicit_effort_default(
+        self, fence_rewrite: Callable[[], AbstractContextManager[object]]
+    ) -> None:
+        """Arm a spent explicit Default for this provider's next start.
+
+        Called by the cold start after it saved the session map's one-shot
+        ``explicit_effort_default`` as spent, right before ``start()``. The start
+        rewrites the file inside ``fence_rewrite``, which keeps warm runtimes
+        that may have read the removed entry from being claimed. Default: a
+        provider that reads no workspace effort overlay has nothing to arm.
+        """
+
+    @property
+    def explicit_effort_default_applied(self) -> bool:
+        """Whether an armed explicit Default is done with once this provider started.
+
+        The cold start reads this after ``start()`` and arms the session map's
+        flag again when it is False. Default True: a provider that reads no
+        workspace effort overlay has nothing for that start to remove.
+        ``AcpProvider`` reports whether its pre-spawn projection applied it.
+        """
+        return True
 
     def has_unfinished_turn(self) -> bool:
         """True if a native turn has not reached its done boundary, independent
