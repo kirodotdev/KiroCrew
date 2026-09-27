@@ -31,9 +31,10 @@ name: GUI User Test
 # under test can be the PR's while the code holding credentials is not.
 #
 # COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
-# the run-level USD budget is an input (default $40, and the nightly schedule
-# runs under the same $40 cap -- the full nightly tier on Opus costs about $30,
-# and the earlier $5 / $8 / $20 caps tripped mid-run); a failed scenario is
+# the run-level USD budget is an input (default $60, and the nightly schedule
+# runs under the same $60 cap -- the 41-scenario nightly tier on Opus costs
+# about $45 with retries, and the earlier $5 / $8 / $20 / $40 caps tripped
+# mid-run and skipped the tail of the tier); a failed scenario is
 # retried once. The per-token prices passed to the harness are Opus list prices
 # so the budget gate measures real dollars, not Sonnet-priced ones.
 
@@ -56,7 +57,7 @@ on:
       budget_usd:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
-        default: "40"
+        default: "60"
   schedule:
     - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
@@ -160,8 +161,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-opus-5}"; budget="${IN_BUDGET:-40}" ;;
-            *)                 tier="nightly"; model="us.anthropic.claude-opus-5"; budget="40" ;;
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-opus-5}"; budget="${IN_BUDGET:-60}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-opus-5"; budget="60" ;;
           esac
           scenario_args=""
           if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then

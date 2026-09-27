@@ -368,10 +368,10 @@ owning server is not a virtual one.
   minutes; on Opus (the default) about five times that. Budget the nightly tier
   (every shipped scenario, one retry each in the worst case) at about $1 per
   scenario on Opus and the smoke tier at about $0.80. The run stops at
-  `--budget-usd` (default $40 everywhere: the `budget_usd` dispatch input, the
+  `--budget-usd` (default $60 everywhere: the `budget_usd` dispatch input, the
   nightly schedule's fixed value, and the harness's own fallback when the flag is
-  omitted -- the 35-scenario nightly tier cost about $6 on Sonnet, so about $30 on
-  Opus, and the earlier $5 / $8 / $20 caps tripped mid-run and skipped the tail
+  omitted -- the 41-scenario nightly tier on Opus spends about $45 with retries;
+  the earlier $5 / $8 / $20 / $40 caps all tripped mid-run and skipped the tail
   of the tier) and
   marks the remaining scenarios `SKIPPED`; the job's 90-minute timeout is the
   backstop for a hung target, not the budget. Keep the nightly bill well under the
