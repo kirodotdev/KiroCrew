@@ -15155,7 +15155,6 @@
         "custom_deny_pattern": "Patrón de denegación personalizado",
         "custom_patterns_counted_separately": "Tus patrones personalizados se cuentan por separado en Comandos denegados.",
         "custom_patterns_hidden_by_filter": "El filtro actual oculta tus patrones personalizados.",
-        "data_classification_notice": "Aviso de clasificación de datos",
         "defense_in_depth_architecture": "Arquitectura de defensa en profundidad",
         "delete_pattern": "Eliminar el patrón {{name}}",
         "denied_commands": "Comandos denegados",
@@ -15189,7 +15188,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "Desactivar una regla que se solapa con un control siempre activo (lectura de archivos sensibles, IMDS, git-publish) no lo desbloquea por completo — la defensa en profundidad lo mantiene bloqueado.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Desactivar todas las denegaciones integradas elimina la protección de {{productName}} frente a los comandos destructivos y de exfiltración de credenciales. Algunos comandos pueden seguir bloqueados por controles independientes de defensa en profundidad (rutas sensibles, IMDS, git-publish).",
         "disabling_weakens_protection": "Desactivar \"{{name}}\" debilita la protección contra comandos destructivos o de exfiltración de credenciales. Algunos comandos pueden seguir bloqueados por controles independientes de defensa en profundidad.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "No introduzcas datos muy sensibles o restringidos en {{productName}}. Sigue las políticas de manejo de datos aplicables al decidir qué compartir con el agente.",
         "documentation": "Documentación",
         "effective_security_ceiling": "Techo de seguridad efectivo",
         "enabled": "Activado",
@@ -16886,7 +16884,7 @@
         "label": "Versiones"
       },
       "security": {
-        "description": "Postura de seguridad, capas de defensa, certificaciones y clasificación de datos",
+        "description": "Postura de seguridad, capas de defensa y certificaciones",
         "label": "Seguridad"
       },
       "shortcuts": {

@@ -7363,7 +7363,7 @@
         "label": "Releases"
       },
       "security": {
-        "description": "Security posture, defense layers, certifications, and data classification",
+        "description": "Security posture, defense layers, and certifications",
         "label": "Security"
       },
       "shortcuts": {

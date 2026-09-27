@@ -14725,7 +14725,6 @@
         "custom_deny_pattern": "사용자 지정 거부 패턴",
         "custom_patterns_counted_separately": "사용자 지정 패턴은 ‘거부된 명령’에서 별도로 집계됩니다.",
         "custom_patterns_hidden_by_filter": "현재 필터로 인해 사용자 지정 패턴이 숨겨져 있습니다.",
-        "data_classification_notice": "데이터 분류 고지",
         "defense_in_depth_architecture": "다층 방어 아키텍처",
         "delete_pattern": "{{name}} 패턴 삭제",
         "denied_commands": "거부된 명령",
@@ -14759,7 +14758,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "항상 켜져 있는 제어(민감 파일 읽기, IMDS, git-publish)와 겹치는 규칙을 비활성화해도 완전히 허용되지는 않습니다 — 다층 방어가 계속 차단합니다.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "모든 기본 거부 규칙을 비활성화하면 파괴적인 명령과 자격 증명 유출 명령에 대한 {{productName}}의 보호가 사라집니다. 일부 명령은 독립적인 다층 방어(민감 경로, IMDS, git-publish)로 계속 차단될 수 있습니다.",
         "disabling_weakens_protection": "‘{{name}}’을(를) 비활성화하면 파괴적인 명령이나 자격 증명 유출에 대한 보호가 약해집니다. 일부 명령은 독립적인 다층 방어로 계속 차단될 수 있습니다.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "매우 민감하거나 제한된 데이터를 {{productName}}에 입력하지 마세요. 에이전트와 공유할 내용을 결정할 때는 적용되는 데이터 처리 정책을 따르세요.",
         "documentation": "문서",
         "effective_security_ceiling": "실제 적용되는 보안 상한",
         "enabled": "활성화됨",
@@ -16416,7 +16414,7 @@
         "label": "개요"
       },
       "security": {
-        "description": "보안 태세, 방어 계층, 인증, 데이터 분류",
+        "description": "보안 태세, 방어 계층, 인증",
         "label": "보안"
       },
       "shortcuts": {

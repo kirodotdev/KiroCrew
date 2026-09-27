@@ -36,7 +36,7 @@ from kiro_crew.config.loader import (
     unsandboxed_exec_platform_default,
     update_config_locked,
 )
-from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
+from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
@@ -295,7 +295,6 @@ def _setup_impl(
         return
 
     print("Kiro Crew Setup 👻\n")
-    print(f"  {DATA_WARNING.replace(chr(10), chr(10) + '  ')}\n")
 
     # Report on optional prerequisites.
     _ensure_prerequisites()

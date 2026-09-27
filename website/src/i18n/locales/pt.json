@@ -15155,7 +15155,6 @@
         "custom_deny_pattern": "Padrão de negação personalizado",
         "custom_patterns_counted_separately": "Seus padrões personalizados são contados separadamente em Comandos negados.",
         "custom_patterns_hidden_by_filter": "O filtro atual oculta seus padrões personalizados.",
-        "data_classification_notice": "Aviso de classificação de dados",
         "defense_in_depth_architecture": "Arquitetura de defesa em profundidade",
         "delete_pattern": "Excluir o padrão {{name}}",
         "denied_commands": "Comandos negados",
@@ -15189,7 +15188,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "Desativar uma regra que se sobrepõe a um controle sempre ativo (leitura de arquivos sensíveis, IMDS, git-publish) não a desbloqueia por completo — a defesa em profundidade a mantém bloqueada.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Desativar todas as negações integradas remove a proteção do {{productName}} contra comandos destrutivos e de exfiltração de credenciais. Alguns comandos podem continuar bloqueados por controles independentes de defesa em profundidade (caminhos sensíveis, IMDS, git-publish).",
         "disabling_weakens_protection": "Desativar \"{{name}}\" enfraquece a proteção contra comandos destrutivos e de exfiltração de credenciais. Alguns comandos podem continuar bloqueados por controles independentes de defesa em profundidade.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "Não insira dados altamente sensíveis ou restritos no {{productName}}. Siga as políticas de tratamento de dados aplicáveis ao decidir o que compartilhar com o agente.",
         "documentation": "Documentação",
         "effective_security_ceiling": "Teto de segurança efetivo",
         "enabled": "Ativado",
@@ -16886,7 +16884,7 @@
         "label": "Lançamentos"
       },
       "security": {
-        "description": "Postura de segurança, camadas de defesa, certificações e classificação de dados",
+        "description": "Postura de segurança, camadas de defesa e certificações",
         "label": "Segurança"
       },
       "shortcuts": {

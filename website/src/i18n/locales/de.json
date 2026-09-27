@@ -14940,7 +14940,6 @@
         "custom_deny_pattern": "Benutzerdefiniertes Verbotsmuster",
         "custom_patterns_counted_separately": "Ihre eigenen Muster werden unter „Verweigerte Befehle“ separat gezählt.",
         "custom_patterns_hidden_by_filter": "Ihre eigenen Muster sind durch den aktuellen Filter ausgeblendet.",
-        "data_classification_notice": "Hinweis zur Datenklassifizierung",
         "defense_in_depth_architecture": "Defense-in-Depth-Architektur",
         "delete_pattern": "Muster {{name}} löschen",
         "denied_commands": "Verbotene Befehle",
@@ -14974,7 +14973,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "Das Deaktivieren einer Regel, die sich mit einem stets aktiven Steuerelement überschneidet (Lesen sensibler Dateien, IMDS, git-publish), hebt die Blockade nicht vollständig auf — Defense-in-Depth hält sie blockiert.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Das Deaktivieren aller integrierten Verbote entfernt den Schutz von {{productName}} vor destruktiven Befehlen und Befehlen zur Exfiltration von Anmeldedaten. Einige Befehle bleiben möglicherweise durch unabhängige Defense-in-Depth-Steuerelemente blockiert (sensible Pfade, IMDS, git-publish).",
         "disabling_weakens_protection": "Das Deaktivieren von „{{name}}“ schwächt den Schutz vor destruktiven Befehlen und vor Befehlen, die Zugangsdaten abfließen lassen. Einige Befehle bleiben möglicherweise durch unabhängige Defense-in-Depth-Kontrollen blockiert.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "Geben Sie keine hochsensiblen oder eingeschränkten Daten in {{productName}} ein. Beachten Sie alle geltenden Richtlinien zum Umgang mit Daten, wenn Sie entscheiden, was Sie mit dem Agenten teilen.",
         "documentation": "Dokumentation",
         "effective_security_ceiling": "Effektive Sicherheitsobergrenze",
         "enabled": "Aktiviert",
@@ -16653,7 +16651,7 @@
         "label": "Releases"
       },
       "security": {
-        "description": "Sicherheitslage, Verteidigungsschichten, Zertifizierungen und Datenklassifizierung",
+        "description": "Sicherheitslage, Verteidigungsschichten und Zertifizierungen",
         "label": "Sicherheit"
       },
       "shortcuts": {

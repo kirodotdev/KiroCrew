@@ -15155,7 +15155,6 @@
         "custom_deny_pattern": "Motif de refus personnalisé",
         "custom_patterns_counted_separately": "Vos motifs personnalisés sont comptés séparément dans Commandes refusées.",
         "custom_patterns_hidden_by_filter": "Le filtre actuel masque vos motifs personnalisés.",
-        "data_classification_notice": "Avis de classification des données",
         "defense_in_depth_architecture": "Architecture de défense en profondeur",
         "delete_pattern": "Supprimer le motif {{name}}",
         "denied_commands": "Commandes refusées",
@@ -15189,7 +15188,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "Désactiver une règle qui recoupe un contrôle toujours actif (lecture de fichiers sensibles, IMDS, publication git) ne la débloque pas entièrement — la défense en profondeur la maintient bloquée.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Désactiver tous les refus intégrés supprime la protection de {{productName}} contre les commandes destructrices et d’exfiltration d’identifiants. Certaines commandes peuvent rester bloquées par des contrôles indépendants de défense en profondeur (chemins sensibles, IMDS, publication git).",
         "disabling_weakens_protection": "Désactiver « {{name}} » affaiblit la protection contre les commandes destructrices et celles qui exfiltrent des identifiants. Certaines commandes peuvent rester bloquées par des contrôles indépendants de défense en profondeur.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "N'entrez pas de données hautement sensibles ou à accès restreint dans {{productName}}. Respectez les politiques de traitement des données applicables lorsque vous décidez de ce que vous partagez avec l'agent.",
         "documentation": "Documentation",
         "effective_security_ceiling": "Plafond de sécurité effectif",
         "enabled": "Activé",
@@ -16886,7 +16884,7 @@
         "label": "Versions"
       },
       "security": {
-        "description": "Posture de sécurité, couches de défense, certifications et classification des données",
+        "description": "Posture de sécurité, couches de défense et certifications",
         "label": "Sécurité"
       },
       "shortcuts": {

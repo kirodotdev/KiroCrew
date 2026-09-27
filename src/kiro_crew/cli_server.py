@@ -33,7 +33,6 @@ from kiro_crew.config.loader import (
     config_path,
     read_local_secret,
 )
-from kiro_crew.constants import DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard import tailnet_serve
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
@@ -1902,7 +1901,6 @@ def _update(force: bool = False) -> None:
         sys.exit(1)
 
     print("\n✅ Kiro Crew updated!")
-    print(f"\n{DATA_WARNING}\n")
 
     _refresh_agent_config(proj)
 

@@ -3123,29 +3123,12 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     }
   })
 
-  const banner = (
-    // ── Data Classification Warning ──
-    // In the SubNav banner slot on purpose: it is an instruction about what to
-    // type into the product, not a section of the security model, and a notice
-    // you can navigate away from is a notice most readers never see.
-    <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-      <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
-      <div>
-        <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
-        <div className="text-[12px] text-muted mt-1 leading-relaxed">
-          {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
-        </div>
-      </div>
-    </div>
-  )
-
   return (
     <SettingsSubNav
       items={items}
       railWidth={248}
       listLabel={i18nT('pages.settings.securityPanel.security_sections')}
       backLabel={i18nT('settings.tabs.security.label')}
-      banner={banner}
       basePath={basePath}
     >
       {active => {

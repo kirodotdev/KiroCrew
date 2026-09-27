@@ -15155,7 +15155,6 @@
         "custom_deny_pattern": "Pattern di blocco personalizzato",
         "custom_patterns_counted_separately": "I tuoi pattern personalizzati sono conteggiati separatamente in Comandi negati.",
         "custom_patterns_hidden_by_filter": "Il filtro attuale nasconde i tuoi pattern personalizzati.",
-        "data_classification_notice": "Avviso sulla classificazione dei dati",
         "defense_in_depth_architecture": "Architettura a difesa in profondità",
         "delete_pattern": "Elimina il pattern {{name}}",
         "denied_commands": "Comandi bloccati",
@@ -15189,7 +15188,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "Disattivare una regola che si sovrappone a un controllo sempre attivo (lettura di file sensibili, IMDS, git-publish) non la sblocca completamente — la difesa in profondità la mantiene bloccata.",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Disattivare tutti i divieti integrati rimuove la protezione di {{productName}} contro i comandi distruttivi e di esfiltrazione delle credenziali. Alcuni comandi possono restare bloccati da controlli indipendenti di difesa in profondità (percorsi sensibili, IMDS, git-publish).",
         "disabling_weakens_protection": "Disattivare «{{name}}» riduce la protezione dai comandi distruttivi o di esfiltrazione di credenziali. Alcuni comandi possono restare bloccati da controlli indipendenti di difesa in profondità.",
-        "do_not_enter_highly_sensitive_or_restricted_data": "Non inserire dati altamente sensibili o riservati in {{productName}}. Rispetta le eventuali policy di gestione dei dati applicabili quando decidi cosa condividere con l'agente.",
         "documentation": "Documentazione",
         "effective_security_ceiling": "Limite di sicurezza effettivo",
         "enabled": "Attivato",
@@ -16886,7 +16884,7 @@
         "label": "Release"
       },
       "security": {
-        "description": "Postura di sicurezza, livelli di difesa, certificazioni e classificazione dei dati",
+        "description": "Postura di sicurezza, livelli di difesa e certificazioni",
         "label": "Sicurezza"
       },
       "shortcuts": {
