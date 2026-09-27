@@ -2864,6 +2864,33 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   z-index: 1;
 }
 
+/* Settings icon tiles (SidePanelLayout `tile`): the coloured rounded square
+ * behind each Settings section icon, as macOS / iOS System Settings draw them.
+ * Fixed hues by design -- a tile is an identity mark for its section, and the
+ * same section must look the same in every theme -- with a light polarity that
+ * is a shade deeper so a white glyph keeps contrast on a white list. */
+:root {
+  --tile-fg: #fff;
+  --tile-gray: #8e8e93; --tile-blue: #0a84ff; --tile-green: #30d158; --tile-indigo: #5e5ce6;
+  --tile-orange: #ff9f0a; --tile-pink: #ff375f; --tile-purple: #bf5af2; --tile-red: #ff453a;
+  --tile-teal: #40c8e0;
+}
+[data-mode="light"] {
+  --tile-gray: #8e8e93; --tile-blue: #007aff; --tile-green: #34c759; --tile-indigo: #5856d6;
+  --tile-orange: #ff9500; --tile-pink: #ff2d55; --tile-purple: #af52de; --tile-red: #ff3b30;
+  --tile-teal: #32ade6;
+}
+
+/* Liquid Glass tint (components/ui/liquid-glass.tsx): the fill laid over the
+ * blurred backdrop of the composer and the mobile settings search capsule. Read
+ * from data-mode polarity like the composer halo: light themes get a milky
+ * white so the glass reads as a lit pane, dark themes a translucent near-black
+ * so it reads as smoked glass — both keep --text legible on top. --glass-edge is
+ * the hairline around the pane: a lit white rim is invisible on a white page, so
+ * the edge is dark-on-light and light-on-dark instead. */
+:root { --glass-tint: rgba(30, 30, 34, 0.55); --glass-edge: rgba(255, 255, 255, 0.14); }
+[data-mode="light"] { --glass-tint: rgba(255, 255, 255, 0.72); --glass-edge: rgba(0, 0, 0, 0.10); }
+
 /* Composer halo (ChatInput.tsx): an offset-free shadow spreading evenly on all
  * four sides, so the box reads as set INTO the page rather than dropped onto it.
  * At rest it is neutral and faint; while the composer holds focus it takes the
@@ -2944,6 +2971,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * never match this query and keep the glass look. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  /* The Liquid Glass pane (components/ui/liquid-glass.tsx) solidifies to the
+     elevated surface and drops its effect layers, so the composer and the
+     Settings capsule keep an opaque, delimited box. */
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  .liquid-glass>[aria-hidden="true"]{ display:none !important }
   /* Floating notification cards (NotificationFeed mac variant) sit OVER page
      content, so they solidify to the card color, not the page background. */
   .notif-material{ background:var(--card) !important }
@@ -2983,9 +3015,16 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 }
 @media (prefers-reduced-transparency: reduce){
   .topbar-glass,.glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important; background:var(--bg) !important }
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  .liquid-glass>[aria-hidden="true"]{ display:none !important }
 }
 @media (prefers-contrast: more){
   .glass-surface,.topbar-glass{ background:var(--bg) !important; border:1px solid var(--text) !important }
+  .liquid-glass{ background:var(--bg-elevated) !important }
+  /* On :root, not on .liquid-glass: the Settings capsule draws its hairline on
+     the box AROUND the pane, so a pane-scoped override would miss it. */
+  :root{ --glass-edge:var(--text) }
+  .liquid-glass>[aria-hidden="true"]{ display:none !important }
 }
 
 /* ── Mono-family compensation ─────────────────────────────────────────────

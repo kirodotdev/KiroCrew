@@ -81,6 +81,18 @@ other side, so a code or output block that relies on the well being darker than 
 card gets the same `border-border` — and a `hover:bg-card` on a row that sits on
 the page is not a hover at all in this theme; hover states use `bg-bg-hover`.
 
+**Polarity-fixed variables are not roles.** A few `index.css` variables are read
+from `data-mode` (the polarity `useTheme` paints), not from the theme, and a pack
+cannot override them: `--glass-tint` and `--glass-edge`, the fill and hairline the
+Liquid Glass surfaces (the composer, the mobile Settings search capsule) lay over
+their blurred backdrop, and
+the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
+the glass must read as a lit pane on any light palette and as smoked glass on any
+dark one, and a section's tile is an identity mark that must look the same in
+every theme — the same reasoning as the composer halo's rest shadow. Adding one
+of these takes a `:root` line plus a `[data-mode="light"]` line and no allowlist
+work; adding a color a pack should be able to change takes the role path below.
+
 ## Adding a new color role
 
 When you genuinely need a new color role, add the variable to **both** sides in

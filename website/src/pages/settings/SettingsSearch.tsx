@@ -178,7 +178,8 @@ export default function SettingsSearch() {
           <input
             {...inputProps}
             // focus-cue-ok: the cue is the SidePanelLayout capsule's focus-within
-            // border-accent; the ancestor sits in another file, so the gate can't see it.
+            // border-accent hairline plus its `.composer-halo` glow; the ancestor sits
+            // in another file, so the gate can't see it.
             className="w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-hidden"
           />
         </>

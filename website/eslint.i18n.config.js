@@ -100,6 +100,15 @@ export default [
       // to this module will not be reported. Keep it stylesheet-only; anything a
       // person reads belongs in the component with `i18nT`.
       'src/components/fileChangeChipsCss.ts',
+      // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
+      // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
+      // and `color-mix(…)` values, every one built as a string and handed to the
+      // CSS or SVG parser. It renders no copy of its own: `children` is the only
+      // text on screen, and that text belongs to (and is gated at) the caller.
+      //
+      // Stated as a false-negative class, per this file's convention: any copy
+      // added to this module will not be reported. Keep it effect-only.
+      'src/components/ui/liquid-glass.tsx',
       // Synthesizes the `diff --git` / `---` / `+++` headers Pierre needs to
       // identify a file in a bare patch body: git wire format handed to Pierre's
       // parser, never read as words. Extracted from `PullRequestPanel.tsx` so that

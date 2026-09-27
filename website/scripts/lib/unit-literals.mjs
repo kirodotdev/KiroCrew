@@ -31,6 +31,7 @@ export const ROUND_TRIP = new Map([
   ['utils/tz.ts', 'UTC±HH:MM offset token, and en-US pins that derive cron day-of-week numbers'],
   ['components/fileChangeChipsCss.ts', 'CSS animation durations parsed by the browser stylesheet parser, not read as text'],
   ['lib/kiroGhostAvatar.ts', 'CSS animation durations/keyframes inside the generated SVG <style>, parsed by the browser stylesheet parser, not read as text'],
+  ['components/ui/liquid-glass.tsx', 'CSS color-mix() percentage inside an inline style value, parsed by the browser stylesheet parser, not read as text'],
   ['dev/scrollInspector.ts', 'Developer overlay whose every string is a fixed-format diagnostic compared against an earlier frame -- the format IS the interface, so a localised copy would destroy the only property that makes it useful. Assigns its own textContent, which no callee or CSS rule can see. Inert unless a developer turns the overlay on; renders no product copy'],
 ])
 

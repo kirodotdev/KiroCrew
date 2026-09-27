@@ -12,10 +12,15 @@ import { useTerminalPoppedOut } from '../utils/terminalPopout'
 import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
+import { LiquidGlass } from './ui/liquid-glass'
 export interface SidePanelTab {
   key: string
   label: string
   icon: React.ReactNode
+  /** Background of a coloured rounded tile drawn behind `icon` (a `--tile-*`
+   *  token), the way System Settings marks each section. Omitted: the bare icon
+   *  in `--muted`, as every other host of this layout renders it. */
+  tile?: string
   description?: string
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
@@ -458,7 +463,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     className={`flex items-center gap-2.5 w-full px-2.5 py-2.5 ${COARSE_TOUCH_TARGET} rounded-md text-[14px] text-left font-medium cursor-pointer border-none bg-transparent text-text transition-colors hover:bg-bg-hover`}
                     onClick={() => setTab(t.key)}
                   >
-                    <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>
+                    {t.tile
+                      ? <span className="w-[30px] h-[30px] shrink-0 flex items-center justify-center rounded-[8px] text-[color:var(--tile-fg)] [&_svg]:w-4 [&_svg]:h-4" style={{ background: t.tile }}>{t.icon}</span>
+                      : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
                     {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
                     <ChevronRight size={15} className="text-muted-strong shrink-0" />
@@ -493,10 +500,23 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
               // occludes the visual viewport.
               style={keyboardInset > 0 ? { transform: `translateY(-${keyboardInset}px)` } : undefined}
             >
-              <div className="pointer-events-auto mx-auto max-w-sm rounded-full border border-border focus-within:border-accent shadow-lg backdrop-blur-xl bg-[color-mix(in_srgb,var(--bg-elevated)_92%,transparent)]">
+              {/* Liquid Glass capsule: frosted --glass-tint over the list scrolling
+                * beneath, a --glass-edge hairline, and the composer's
+                * offset-free halo for depth. Focus is the hairline turning accent
+                * plus the halo's accent glow — the glow alone is too faint to read
+                * as a cue on a light page. */}
+              {/* The halo rides an outer box of the same radius: a shadow class on
+                * the ui/ primitive itself would be a restyle of the primitive. */}
+              <div className="pointer-events-auto mx-auto max-w-sm rounded-[25px] border border-[color:var(--glass-edge)] focus-within:border-accent composer-halo">
+              <LiquidGlass
+                cornerRadius={24}
+                frost={22}
+                lightIntensity={26}
+              >
                 <SidePanelDockContext.Provider value="bottom-float">
                   {headerRight}
                 </SidePanelDockContext.Provider>
+              </LiquidGlass>
               </div>
             </div>
           )}
@@ -540,9 +560,11 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                 }`}
                 onClick={() => setTab(t.key)}
               >
-                <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
-                  {t.icon}
-                </span>
+                {t.tile
+                  ? <span className="w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] text-[color:var(--tile-fg)] [&_svg]:w-3 [&_svg]:h-3" style={{ background: t.tile }}>{t.icon}</span>
+                  : <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${tab === t.key ? 'text-accent' : 'text-muted'}`}>
+                      {t.icon}
+                    </span>}
                 {t.label}
                 {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
               </button>
