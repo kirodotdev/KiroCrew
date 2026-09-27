@@ -11,8 +11,9 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_disposable_work_dir``, ``_effort_per_model``,
 ``_work_dir_claim_probe``.
 
-Instance fields read: ``_client``, ``_configured_model``, ``essential_delivery``,
-``member_context``, ``memory_mode``.
+Instance fields read: ``_client``, ``_configured_model``,
+``_explicit_effort_default_pending``, ``_fence_explicit_effort_default_rewrite``,
+``essential_delivery``, ``member_context``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -25,8 +26,15 @@ from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.providers.acp_cli_overlay import (
+    _EFFORT_OVERLAY_MODEL_OVERRIDE,
+    _WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS,
+    _await_overlay_write,
+    _hold_workspace_effort_overlay_fence,
+)
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.session_work_dir import mark_run_dir, reclaim_session_work_dir
+from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_TIMEOUT_SECS
 
 if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
@@ -51,39 +59,97 @@ async def start(self: AcpProvider) -> None:
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
     # Re-apply the overlay on every (re)start to cover resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
-    # Off the loop: the cli.json lock is shared with sibling threads and
-    # processes, and an acquire on the loop thread makes one attempt and
-    # never waits, so a brief overlap would refuse the write.
-    await asyncio.to_thread(self._apply_effort_overlay)
-    await asyncio.to_thread(self._apply_tool_search_overlay)
+    # Off the loop: on the loop thread the settings lock is single-shot, so
+    # a start that met another chat's change_effort mid-write gave up at once
+    # and spawned into the level that chat left. Off-loop the startup
+    # ceiling (the method's default) is a real wait, short enough for a
+    # launch to pay.
+    # An armed explicit Default (see ``arm_explicit_effort_default``) removes
+    # this model's entry whoever wrote it, as ``clear_effort(owned_only=False)``
+    # does live. It is disarmed only when that projection succeeds, so a
+    # later spawn of this provider (a resume, a model swap) projects with the
+    # ownership guard again. The rewrite runs inside the owner's fence and
+    # the worker records its outcome, so neither a warm-runtime claim nor a
+    # cancellation of this start falls between the file changing and that
+    # being known.
+    fence_mode = self._effort_overlay_fence_mode()
 
-    if self.is_acp_runtime_backend:
-        # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
-        # Spawn a runtime, create/resume a session, wrap in
-        # AcpSessionProvider. One process hosts parent + all subagent
-        # sessions (session sharing).
-        await self._start_kiro_runtime()
-        if self.is_kiro_backend:
-            await self._note_zero_tool_servers()
+    async def project_overlay() -> None:
+        projection_model_token = _EFFORT_OVERLAY_MODEL_OVERRIDE.set(self._spawn_effort_model)
+        try:
+            if self._explicit_effort_default_pending:
+                with self._fence_explicit_effort_default_rewrite():
+                    await _await_overlay_write(self._project_explicit_effort_default)
+            else:
+                await _await_overlay_write(self._apply_effort_overlay)
+        finally:
+            _EFFORT_OVERLAY_MODEL_OVERRIDE.reset(projection_model_token)
+
+    async def start_runtime() -> None:
+        if self.is_acp_runtime_backend:
+            # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
+            # Spawn a runtime, create/resume a session, wrap in
+            # AcpSessionProvider. One process hosts parent + all subagent
+            # sessions (session sharing).
+            await self._start_kiro_runtime()
+        else:
+            # ── CC path: legacy AcpClient ──
+            self._client.member_context = self.member_context
+            await self._client.ensure_ready()
+            # Startup records the advertised spelling of the pin, or the backend
+            # default when every spelling was refused; the level follows a pin.
+            running = self._client._model
+            if running != DEFAULT_MODEL and self._configured_model in self._effort_per_model:
+                level = self._effort_per_model.pop(self._configured_model)
+                self._effort_per_model.setdefault(running, level)
+            # An enrolled member's saved spec is confirmed against what this session
+            # actually consumed, once the session exists. Called on THIS arm only: the
+            # Kiro and KAS runtimes take the branch above, so their construction paths
+            # gain no call, await or branch for it (harness-parity H13). A no-op for
+            # every session that projects nothing.
+            if isinstance(self._client, AcpClient):
+                await self._client.confirm_member_projection()
+
+    if fence_mode == "window":
+        async with _hold_workspace_effort_overlay_fence(
+            self._client._work_dir,
+            "window",
+            _WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS,
+        ) as acquired:
+            if not acquired:
+                logger.error(
+                    "ACP Default effort overlay fence wait timed out for work directory %s; "
+                    "refusing to start before a gateway write can finish",
+                    self._client._work_dir,
+                )
+                raise RuntimeError(
+                    "Default effort overlay fence wait timed out for work directory "
+                    f"{self._client._work_dir}"
+                )
+            await project_overlay()
+            await _await_overlay_write(self._apply_tool_search_overlay)
+            await start_runtime()
     else:
-        # ── CC path: legacy AcpClient ──
-        self._client.member_context = self.member_context
-        await self._client.ensure_ready()
-        # Startup records the advertised spelling of the pin, or the backend
-        # default when every spelling was refused; the level follows a pin.
-        running = self._client._model
-        if running != DEFAULT_MODEL and self._configured_model in self._effort_per_model:
-            level = self._effort_per_model.pop(self._configured_model)
-            self._effort_per_model.setdefault(running, level)
-        # An enrolled member's saved spec is confirmed against what this session
-        # actually consumed, once the session exists. Called on THIS arm only: the
-        # Kiro and KAS runtimes take the branch above, so their construction paths
-        # gain no call, await or branch for it (harness-parity H13). A no-op for
-        # every session that projects nothing.
-        if isinstance(self._client, AcpClient):
-            await self._client.confirm_member_projection()
+        if fence_mode == "write":
+            async with _hold_workspace_effort_overlay_fence(
+                self._client._work_dir, "write", CLI_SETTINGS_LOCK_TIMEOUT_SECS
+            ) as acquired:
+                if acquired:
+                    await project_overlay()
+                else:
+                    self._log_effort_overlay_projection_skipped("write")
+        else:
+            await project_overlay()
+        await _await_overlay_write(self._apply_tool_search_overlay)
+        await start_runtime()
 
+    if self.is_acp_runtime_backend and self.is_kiro_backend:
+        # After the window fence, not under it: every overlay write to this
+        # settings folder waits for open windows and gives up when its wait
+        # runs out, so these reads must not lengthen the hold.
+        await self._note_zero_tool_servers()
     await self._bind_unbound_effort()
+    await self._reassert_projected_effort()
     await self._apply_initial_effort()
 
 

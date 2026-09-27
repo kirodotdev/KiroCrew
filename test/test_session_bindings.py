@@ -88,6 +88,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_draining_bg_runtimes": ("property", False, "eb482a8b1e3b", "state_views"),
     "_draining_subagent_runtimes": ("property", False, "eb482a8b1e3b", "state_views"),
     "_eager_respawn": ("function", True, "958babeb61c8", "teardown"),
+    "_effort_intent_writes_in_flight": ("function", False, "dfeea3d0cb81", "turn_context"),
     "_ensure_background": ("function", True, "ffb4efadb2a1", "runtimes"),
     "_ensure_cleanup_task": ("function", False, "b60c5fea256e", "sweeps"),
     "_evict_stale_session": ("function", True, "70690b0be258", "claims"),
@@ -114,6 +115,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_lifecycle_state_boundary": ("function", False, "4b08dece16e8", "state_views"),
     "_lock": ("property", False, "fd738ff11600", "state_views"),
     "_mark_identity_epoch": ("function", False, "b60c5fea256e", "runtimes"),
+    "_may_predate_effort_overlay_rewrite": ("function", False, "a476c90dfc62", "runtimes"),
     "_on_compacted": ("property", False, "863b11bcd58c", "state_views"),
     "_on_config_change": ("function", True, "999e37524dc3", "config_apply"),
     "_on_recycled": ("property", False, "67238bb9d853", "state_views"),
@@ -164,6 +166,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_suppress_replay": ("property", False, "67a56d539800", "state_views"),
     "_sweep_warm_pool_once": ("function", True, "b60c5fea256e", "runtimes"),
     "_sync_autocompact_pct": ("function", False, "b60c5fea256e", "config_apply"),
+    "_take_claim_spawn_time": ("function", False, "708a4dc2d50c", "runtimes"),
     "_trigger_compaction": ("function", False, "ea34ffbc5059", "turn_context"),
     "_update_pause_owned": ("property", False, "a6632a57e602", "state_views"),
     "_warm_pool": ("property", False, "c1bd5834bcdd", "state_views"),
@@ -216,9 +219,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "drain_all_providers": ("function", True, "f5423acdeebc", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
     "effective_autocompact_pct": ("function", False, "c61b0946c307", "turn_context"),
+    "effort_basis_locked": ("function", False, "1eda252b53bd", "turn_context"),
+    "effort_intent_write": ("function", False, "e1e3936a7475", "turn_context"),
     "end_children_for": ("function", True, "958babeb61c8", "teardown"),
     "ending_key": ("function", False, "e1e3936a7475", "claims"),
     "enqueue": ("function", False, "d3c6da093136", "claims"),
+    "explicit_effort_default_pending": ("function", False, "1eda252b53bd", "turn_context"),
+    "fence_effort_overlay_rewrite": ("function", False, "08ba78a8a6e0", "runtimes"),
     "fence_update_restart": ("function", False, "a6632a57e602", "claims"),
     "final_drain_started": ("property", False, "a6632a57e602", "state_views"),
     "find_key_by_sid": ("function", False, "7f231b93851d", "links"),
@@ -243,6 +250,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_thread": ("function", False, "4b576121a346", "links"),
     "has_mirror_row": ("function", False, "1eda252b53bd", "links"),
     "has_session": ("function", False, "1eda252b53bd", "claims"),
+    "hold_explicit_effort_default": ("function", False, "01799f94def1", "turn_context"),
     "identity_sweep_waiting_on": ("property", False, "9d5ab4ea1828", "state_views"),
     "inbound_callback_count": ("property", False, "fa6cfecd5574", "state_views"),
     "is_busy": ("function", False, "1eda252b53bd", "claims"),
@@ -307,6 +315,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_compact_callback": ("function", False, "6f1bae527bd9", "turn_context"),
     "set_compacting_callback": ("function", False, "2aed1f018edf", "turn_context"),
     "set_continuable_fallback": ("function", False, "9129b57ccbd2", "claims"),
+    "set_explicit_effort_default": ("function", False, "076de2d36343", "turn_context"),
     "set_injection_probe": ("function", False, "f6fd6f250ecd", "sweeps"),
     "set_lifecycle_turn_active": ("function", False, "3656499fe52f", "claims"),
     "set_mirror_link": ("function", False, "e65f668f550c", "links"),
@@ -331,6 +340,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "unlanded_marker_pending": ("function", False, "1eda252b53bd", "turn_context"),
     "unmark_continuable": ("function", False, "958babeb61c8", "claims"),
     "update_restart_fenced": ("property", False, "a6632a57e602", "state_views"),
+    "wait_for_effort_intent_writes": ("function", True, "958babeb61c8", "turn_context"),
     "warm_providers": ("function", False, "6d42d4fe7cc2", "runtimes"),
     "widen_cold_start_queues": ("function", False, "b60c5fea256e", "config_apply"),
 }
@@ -400,6 +410,7 @@ _SERVED = frozenset(
         "_CHANNEL_PREFIX",
         "_COMPACT_RESULT_WAIT_FLOOR_SECS",
         "_CompactCallback",
+        "_EffortIntentWrites",
         "_GEN_SUFFIX_RE",
         "_MAX_ORIGIN_LINKS",
         "_PERSISTENT_KEYS",
@@ -418,7 +429,13 @@ _SERVED = frozenset(
 )
 
 #: Classes that moved to an owner and must keep the facade's module name.
-_MOVED_CLASSES = ("FirstTurnState", "_Session", "_CompactCallback", "_RecycleCallback")
+_MOVED_CLASSES = (
+    "FirstTurnState",
+    "_Session",
+    "_EffortIntentWrites",
+    "_CompactCallback",
+    "_RecycleCallback",
+)
 
 _PACKAGE = "kiro_crew.session_parts"
 

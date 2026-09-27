@@ -258,6 +258,16 @@ repository's exclude list. Only missing lines are appended, the
 user's own lines are never rewritten, and a failed exclude write never blocks
 the overlay. A repository that already tracks `.kiro/settings/cli.json` still
 sees it modified: git's exclude list does not hide tracked files (known limit).
+The lock admits a `.kiro` or `settings` link component by component. It uses
+`lstat` and `readlink` only on names already inside the resolved work directory,
+then decides containment from the link text before probing the target. A link
+naming a remote, outside, other-drive, or looping path is refused without being
+opened or resolved. Projection and rollback then read and write the admitted
+folder. A clear or Default under a refused link reports that it could not change
+the file, whether or not the target contains `cli.json`. A component swapped for
+a link after admission is still refused by the pinned walk (see
+[providers](providers.md)); an outside link skips projection and logs the existing
+refusal.
 Crew records the original local inheritance key's presence and value in
 `kirocrew.skillDiscovery.previousInheritance`. Rollback restores that snapshot
 only while the native key still equals Crew's asserted `true`, removes Crew's
@@ -312,7 +322,7 @@ removes it, and its name is no sweep candidate. The doctor's census below still
 counts it with the unmarked folders, since counting deletes nothing. The key
 predicate and corresponding directory-name regex come from one shared shape table;
 stable `cron:<job>:<agent>` keys are not one-run directories.
-`AcpProvider.start` writes a `.kirocrew-run-dir` marker before
+`AcpProvider.start` (`providers/acp_lifecycle.py`) writes a `.kirocrew-run-dir` marker before
 any other writer: two ASCII lines, the data-home identity (`data_home_id()`, the
 digest of the resolved `config_dir()`) and the gateway pid. That marker is the
 directory's only provenance: a name under the workspace root is not one (a person

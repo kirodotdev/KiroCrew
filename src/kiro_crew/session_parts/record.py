@@ -59,6 +59,19 @@ class FirstTurnState(Enum):
 
 
 @dataclass
+class _EffortIntentWrites:
+    """The effort intent writes in flight under one folded session key.
+
+    ``count`` is how many picks are between their in-memory write and the end
+    of their save; ``settled`` is set when the last of them exits, which is
+    what a cold start waiting to read the key's effort basis wakes on.
+    """
+
+    count: int = 0
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
 class _Session:
     provider: LLMProvider
     last_used: float = field(default_factory=time.monotonic)
@@ -284,3 +297,4 @@ def _unlink_session_queue(session: "_Session") -> None:
 # must not leak into them.
 FirstTurnState.__module__ = "kiro_crew.session"
 _Session.__module__ = "kiro_crew.session"
+_EffortIntentWrites.__module__ = "kiro_crew.session"

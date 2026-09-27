@@ -7,14 +7,17 @@ import functools  # noqa: F401
 import importlib as _importlib
 import json  # noqa: F401
 import logging
+import os  # noqa: F401
 import sys as _sys
 import time  # noqa: F401
 from collections.abc import AsyncIterator, Callable  # noqa: F401
-from contextlib import aclosing  # noqa: F401
+from contextlib import AbstractContextManager, aclosing, nullcontext  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncContextManager
 
-from kiro_crew import _facade_mirror, model_scope  # noqa: F401
+from kiro_crew import model_scope  # noqa: F401
+from kiro_crew import _facade_mirror
+from kiro_crew import atomic_write as atomic_write_module  # noqa: F401
 from kiro_crew.acp.client import (  # noqa: F401
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -97,6 +100,7 @@ from kiro_crew.effort import (  # noqa: F401
     model_supports_effort,
     resolve_effort_for_model,
 )
+from kiro_crew.hooks import safe_read_file_bytes_nolink  # noqa: F401
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of  # noqa: F401
 from kiro_crew.platform_compat import pid_exists  # noqa: F401
@@ -105,7 +109,6 @@ from kiro_crew.providers import acp_lifecycle as _acp_lifecycle
 from kiro_crew.providers import acp_model_effort as _acp_model_effort
 from kiro_crew.providers import acp_runtime_start as _acp_runtime_start
 from kiro_crew.providers import acp_turns as _acp_turns
-from kiro_crew.providers.acp_cli_overlay import _read_cli_overlay
 from kiro_crew.providers.base import (  # noqa: F401
     CancelOutcome,
     LLMEvent,
@@ -120,6 +123,8 @@ from kiro_crew.trust_patterns import GrantDeadline
 from kiro_crew.workspace_cli_settings import (  # noqa: F401
     CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
     CLI_SETTINGS_LOCK_TIMEOUT_SECS,
+    locked_workspace_cli_settings,
+    workspace_cli_settings_fence_key,
     workspace_cli_settings_lock,
 )
 
@@ -259,6 +264,11 @@ class AcpProvider(LLMProvider):
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
+        self._explicit_effort_default_pending = False
+        self._explicit_effort_default_applied = False
+        self._fence_explicit_effort_default_rewrite: Callable[
+            [], AbstractContextManager[object]
+        ] = nullcontext
         # MCP Tool Search toggle (kiro-cli backend only). None = caller did not
         # specify (e.g. claude_code factory), so leave the overlay untouched.
         # True/False = write the kiro settings overlay deterministically so the
@@ -274,21 +284,6 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-            # Recover overlay-persisted levels (server-restart resilience) and
-            # write the overlay BEFORE the first spawn so kiro-cli reads it on
-            # session/new. Caller-provided overrides win — only fill gaps.
-            #
-            # The overlay set, not the transport set: the file belongs to the kiro
-            # family, and a harness that shares the runtime without reading it
-            # would seed its effort map out of another harness's file.
-            try:
-                for m, lvl in _read_cli_overlay(self._client._work_dir).items():
-                    self._effort_per_model.setdefault(m, lvl)
-            except Exception:
-                logger.debug("ACP effort overlay recovery failed", exc_info=True)
-            self._apply_effort_overlay()
-            self._apply_tool_search_overlay()
 
     @property
     def client(self) -> AcpClient:
@@ -821,11 +816,17 @@ class AcpProvider(LLMProvider):
         ``start()``), which issues a fresh ``session/new`` on the already-running
         process, skipping subprocess spawn + the ``initialize`` handshake. This is
         the primitive a warm session pool uses to reuse one worker across
-        independent tasks without leaking context between them. The claude backend
-        would delegate to its own client-side reset the same way (its ``AcpClient``
-        does not ship one — hence the type ignore).
+        independent tasks without leaking context between them. After the fresh
+        session exists, it binds a level requested with nothing pinned to the
+        model that session serves, because a changed backend default can make
+        it a different model, then reasserts a resolved kiro effort because the warm
+        process may have read an operator or peer projection at its own spawn.
+        The claude backend would delegate to its own client-side reset the same
+        way (its ``AcpClient`` does not ship one — hence the type ignore).
         """
         await self._client.new_conversation()  # type: ignore[attr-defined]
+        await self._bind_unbound_effort()
+        await self._reassert_projected_effort()
 
     def is_alive(self) -> bool:
         """Whether the shared client is responsive.
@@ -935,10 +936,20 @@ class AcpProvider(LLMProvider):
 
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
+    _effort_overlay_fence_mode = _acp_cli_overlay._effort_overlay_fence_mode
+    _log_effort_overlay_projection_skipped = _acp_cli_overlay._log_effort_overlay_projection_skipped
+    _project_explicit_effort_default = _acp_cli_overlay._project_explicit_effort_default
+    _spawn_effort_model = property(_acp_cli_overlay._spawn_effort_model)
+    _write_effort_overlay = _acp_cli_overlay._write_effort_overlay
+    arm_explicit_effort_default = _acp_cli_overlay.arm_explicit_effort_default
+    explicit_effort_default_applied = property(
+        _acp_cli_overlay.explicit_effort_default_applied
+    )  # type: ignore[assignment]
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
     maybe_refresh_available_models = _acp_model_effort.maybe_refresh_available_models
     _bind_unbound_effort = _acp_model_effort._bind_unbound_effort
+    _reassert_projected_effort = _acp_model_effort._reassert_projected_effort
     _advertised_effort_levels = _acp_model_effort._advertised_effort_levels
     accepts_effort_level = _acp_model_effort.accepts_effort_level
     supports_effort = _acp_model_effort.supports_effort
@@ -1050,17 +1061,49 @@ for _owner in _ACP_PROVIDER_OWNERS:
 #: Module-level names this module bound before the split that only owner code reads.
 _SERVED: frozenset[str] = frozenset(
     {
+        "_BoundedCliEffortPairs",
         "_CLI_JSON_ENCODING",
+        "_CLI_JSON_MAX_BYTES",
+        "_CliJsonVersion",
+        "_EFFORT_OVERLAY_AUTO_CLEAR_WARNING",
+        "_EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING",
+        "_EFFORT_OVERLAY_MODEL_OVERRIDE",
+        "_KIROCREW_EFFORT_OWNED_KEY",
+        "_KIROCREW_EFFORT_OWNED_STAMP_KEY",
+        "_OVERLAY_REFUSED",
+        "_OverlayParentNotAnObject",
+        "_OverlayTooLarge",
         "_RESUME_BACKOFF_BASE_S",
         "_RESUME_MAX_ATTEMPTS",
         "_RESUME_TRANSIENT_LOCK_MARKERS",
         "_SETUP_FAILURE_LOG_CAP",
+        "_UNKNOWN_CLI_JSON_VERSION",
+        "_WARN_UNOWNED_MAX_CHARS",
+        "_WARN_UNOWNED_MAX_ITEMS",
+        "_WORKSPACE_EFFORT_FENCES",
+        "_WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS",
+        "_WorkspaceEffortOverlayFence",
         "_ZERO_TOOL_CHECK_TIMEOUT_SECS",
+        "_await_overlay_write",
         "_clamp_min_pct",
         "_clamp_min_tokens",
         "_clear_cli_overlay_effort",
+        "_cli_effort_is_owned",
+        "_cli_json_version",
+        "_current_cli_json_version",
+        "_hold_workspace_effort_overlay_fence",
         "_is_transient_resume_lock_error",
+        "_log_atom",
+        "_log_effort_level",
+        "_log_model_key",
+        "_owned_cli_effort",
+        "_pinned_settings_fd",
+        "_publish_cli_overlay",
+        "_read_cli_overlay_document",
+        "_read_pinned_cli_json",
         "_unlink_dead_session_lock",
+        "_warn_unowned_cli_effort",
+        "_workspace_effort_overlay_fence",
         "_write_cli_overlay",
         "_write_tool_search_overlay",
     }
@@ -1079,9 +1122,41 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.providers.acp_cli_overlay import (  # noqa: F401
         _CLI_JSON_ENCODING,
+        _CLI_JSON_MAX_BYTES,
+        _EFFORT_OVERLAY_AUTO_CLEAR_WARNING,
+        _EFFORT_OVERLAY_DEFAULT_CLEAR_WARNING,
+        _EFFORT_OVERLAY_MODEL_OVERRIDE,
+        _KIROCREW_EFFORT_OWNED_KEY,
+        _KIROCREW_EFFORT_OWNED_STAMP_KEY,
+        _OVERLAY_REFUSED,
+        _UNKNOWN_CLI_JSON_VERSION,
+        _WARN_UNOWNED_MAX_CHARS,
+        _WARN_UNOWNED_MAX_ITEMS,
+        _WORKSPACE_EFFORT_FENCES,
+        _WORKSPACE_EFFORT_OVERLAY_FENCE_WINDOW_TIMEOUT_SECS,
+        _await_overlay_write,
+        _BoundedCliEffortPairs,
         _clamp_min_pct,
         _clamp_min_tokens,
         _clear_cli_overlay_effort,
+        _cli_effort_is_owned,
+        _cli_json_version,
+        _CliJsonVersion,
+        _current_cli_json_version,
+        _hold_workspace_effort_overlay_fence,
+        _log_atom,
+        _log_effort_level,
+        _log_model_key,
+        _OverlayParentNotAnObject,
+        _OverlayTooLarge,
+        _owned_cli_effort,
+        _pinned_settings_fd,
+        _publish_cli_overlay,
+        _read_cli_overlay_document,
+        _read_pinned_cli_json,
+        _warn_unowned_cli_effort,
+        _workspace_effort_overlay_fence,
+        _WorkspaceEffortOverlayFence,
         _write_cli_overlay,
         _write_tool_search_overlay,
     )

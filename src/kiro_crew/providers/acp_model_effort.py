@@ -19,6 +19,8 @@ import asyncio
 import functools
 import logging
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING
 
 from kiro_crew.acp.client import (
@@ -42,7 +44,11 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
-from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
+from kiro_crew.providers.acp_cli_overlay import (
+    _await_overlay_write,
+    _clear_cli_overlay_effort,
+    _hold_workspace_effort_overlay_fence,
+)
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
 
@@ -137,18 +143,20 @@ async def maybe_refresh_available_models(
 async def _bind_unbound_effort(self: AcpProvider) -> None:
     """Key a level requested with nothing pinned to the model now serving.
 
-    Runs on every (re)start once the session is ready and before the
-    initial effort push, because only then has the backend named the model
-    it chose. The requested level replaces one already stored for that
-    model: a live change on this provider moves the requested level with
-    it, so a stored level that differs can only be one a previous run left
-    in the workspace overlay, and keeping it would run the session at a
-    level the caller did not ask for. The kiro family reads effort from
-    the spawn-time overlay, which could not be keyed before the spawn, so
-    a level the overlay does not already hold is pushed live there through
-    :meth:`change_effort`, which also writes the overlay for the next
-    spawn. A level the serving model does not take is logged and left
-    unapplied.
+    Runs on every (re)start and every fresh warm-runtime conversation once
+    the session is ready and before the effort pushes, because only then
+    has the backend named the model it chose, and a fresh session can serve
+    another default than the last. The requested level replaces one already
+    stored for that model: a live change on this provider moves the
+    requested level with it, so a stored level that differs did not come
+    from this caller, and keeping it would run the session at a level the
+    caller did not ask for. The kiro family reads effort from the
+    spawn-time overlay, which could not be keyed before the spawn, so a
+    level not yet stored for that model is pushed live there through
+    :meth:`change_effort`, which also writes the overlay. A later start
+    projects as ``auto`` before its spawn, finds the level stored, and
+    :meth:`_reassert_projected_effort` pushes it after the spawn. A level
+    the serving model does not take is logged and left unapplied.
     """
     level = self._unbound_effort
     if not level:
@@ -172,9 +180,9 @@ async def _bind_unbound_effort(self: AcpProvider) -> None:
                 # change_effort stores the level itself once the overlay
                 # write and the live push have both landed, and rolls back
                 # to the entry it found when either fails. That entry must
-                # be the level this session was spawned with (the overlay's,
-                # or none), so a push kiro-cli refuses leaves the map and
-                # the overlay naming the level the session actually runs.
+                # be the one this session started with (none on a first
+                # start), so a push kiro-cli refuses leaves the map as it
+                # was rather than naming a level the session does not run.
                 _restore_stored()
                 try:
                     await self.change_effort(level)
@@ -400,9 +408,9 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
 async def change_effort(self: AcpProvider, level: str) -> bool:
     """Change effort live for the current model. Returns True on success.
 
-    Persists the slot override and (kiro family) rewrites the overlay so a
-    later respawn keeps the level, then pushes the change to the running
-    session: the ``/effort`` slash command for
+    Persists the slot override and (kiro family) projects the overlay for a
+    later respawn, then pushes the change to the running session: the
+    ``/effort`` slash command for
     ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option`` for
     ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
     model does not support effort, or when this harness is in neither set and
@@ -464,8 +472,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     # critical section makes losing the lock a stuck holder rather than
     # routine contention, and waiting it out on the loop would freeze every
     # session.
-    if not await asyncio.to_thread(
-        self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+    if not await self._write_effort_overlay(
+        lambda: self._apply_effort_overlay(timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS),
+        CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
     ):
         if _prev is None:
             self._effort_per_model.pop(model, None)
@@ -473,7 +482,9 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             self._effort_per_model[model] = _prev
         raise RuntimeError(
             f"could not persist effort {level!r} for {model!r}: the workspace "
-            "overlay is locked by another writer; try again"
+            "overlay is locked, a link or in a folder outside the work dir or on a "
+            "sensitive path, unreadable, not a JSON object, or past the 1 MiB read "
+            "ceiling; see the log"
         )
     try:
         if via_config_option:
@@ -485,30 +496,47 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
         if _prev is None:
             self._effort_per_model.pop(model, None)
             if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-                if not await asyncio.to_thread(
-                    _clear_cli_overlay_effort, self._client._work_dir, model
+                if not await self._write_effort_overlay(
+                    lambda: _clear_cli_overlay_effort(self._client._work_dir, model),
+                    CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
                 ):
-                    # The overlay keeps a level the live push never applied,
-                    # and construction re-seeds from it, so the next spawn
-                    # adopts a level this rollback reports as undone.
+                    # The overlay keeps the level the live push never applied.
+                    # Keep it in the map too: it is the level this session was
+                    # asked to run, so the next spawn projects it back rather
+                    # than this rollback reporting an undo the file does not
+                    # show.
                     self._effort_per_model[model] = level
                     logger.warning(
                         "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                        "the workspace overlay lock was busy, so a respawn adopts it",
+                        "the workspace overlay could not be rewritten because it is locked, "
+                        "a link or in a folder outside the work dir or on a sensitive path, "
+                        "unreadable, not a JSON object, or past the 1 MiB read ceiling; "
+                        "a respawn adopts it",
                         model,
                         level,
                     )
         else:
             self._effort_per_model[model] = _prev
-            if not await asyncio.to_thread(self._apply_effort_overlay):
-                # Same divergence the branch above guards: the file keeps the
-                # level the live push never applied and construction re-seeds
-                # from it, so the map follows the file rather than reporting
-                # an undo the next spawn contradicts.
+            # The ACTION ceiling, as the write being undone took: the
+            # method's own default is the startup ceiling, under which a
+            # holder of the settings lock that outlasts a launch's wait
+            # keeps the level the live push never applied in the file.
+            if not await self._write_effort_overlay(
+                lambda: self._apply_effort_overlay(timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS),
+                CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+            ):
+                # Same case as the branch above: the file keeps the level the
+                # live push never applied, and it is the level this session
+                # was asked to run, so the map follows the file and the next
+                # spawn projects it rather than this rollback reporting an
+                # undo the file does not show.
                 self._effort_per_model[model] = level
                 logger.warning(
                     "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                    "the workspace overlay lock was busy, so a respawn adopts it",
+                    "the workspace overlay could not be rewritten because it is locked, "
+                    "a link or in a folder outside the work dir or on a sensitive path, "
+                    "unreadable, not a JSON object, or past the 1 MiB read ceiling; "
+                    "a respawn adopts it",
                     model,
                     level,
                 )
@@ -550,6 +578,8 @@ async def reapply_live_effort(self: AcpProvider, level: str) -> bool:
         return bool(await self.change_effort(level))
     # No override: re-resolve so a workspace default reaches the new model. A
     # False here only means there was no default to push, so nothing is stale.
+    # An automatic clear: the ownership guard stays on, so an entry the
+    # operator wrote for the model switched to is left where it is.
     await self.clear_effort()
     return True
 
@@ -579,11 +609,29 @@ async def set_model(self: AcpProvider, model: str) -> None:
         logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
 
 
-async def clear_effort(self: AcpProvider) -> bool | None:
+async def clear_effort(
+    self: AcpProvider,
+    *,
+    owned_only: bool = True,
+    fence_rewrite: Callable[[], AbstractContextManager[object]] = nullcontext,
+) -> bool | None:
     """Clear the slot's effort override for the current model.
 
-    Drops the per-model override (and the kiro overlay entry) so the model
-    falls back to its own default.
+    Drops the per-model override. A clear without a workspace default falls
+    back to the model's own default after reset. With a workspace default,
+    the projected file value or the live post-spawn push carries that default.
+
+    ``owned_only`` decides whose overlay entry may go. The default removes
+    only a value Kiro Crew recorded in the same cli.json document, so an
+    operator-authored entry survives every automatic clear: a live model
+    switch on a Default slot reaches here through ``reapply_live_effort``
+    with nothing asked of that model's entry. Only the explicit dashboard
+    clear passes ``owned_only=False``, because there the operator has
+    directly asked for this model's entry to be removed, whoever wrote it.
+    That clear also passes the session manager's fence as ``fence_rewrite``:
+    the file is rewritten inside it, and a cancelled clear waits for its
+    write to settle, so no warm runtime that may have read the removed entry
+    is claimed after it.
 
     Returns True ONLY when a concrete default was applied LIVE to the
     running session (kiro family with a resolvable workspace default).
@@ -593,11 +641,18 @@ async def clear_effort(self: AcpProvider) -> bool | None:
     - the config-option channel has no "reset to default" value (there is no
       level to push; only a respawn drops the override), and
     - kiro with no workspace default (the model's built-in default is only
-      re-applied on respawn once the overlay is cleared).
+      re-applied on respawn once the overlay is cleared), and
+    - the explicit clear with a workspace default whose live push fails after
+      the rewrite (only a respawn applies the default: kiro-cli reads it from
+      the file, KAS takes it as the start's ``effortLevel`` push). An automatic
+      clear re-raises that failure instead, because its callers read a raise
+      as the live re-apply failing.
     Without this, the running session would silently keep its prior effort
     while the UI shows "default".
-    Returns None when NOTHING changed because the workspace overlay was busy:
-    neither the file nor this map, so the caller commits no slot value and
+    Returns None when NOTHING changed because the workspace overlay cannot be
+    rewritten: it is locked, a link or in a folder outside the work dir or on a
+    sensitive path, unreadable, not a JSON object, or past the 1 MiB read ceiling.
+    Neither the file nor this map changes, so the caller commits no slot value and
     resets nothing.
     """
     model = self._effort_model
@@ -620,45 +675,86 @@ async def clear_effort(self: AcpProvider) -> bool | None:
     # kiro family: clear/rewrite the overlay so a respawn doesn't re-apply it.
     level = self._resolve_effort()  # workspace default, or None
     if level:
-        # Persist before pushing live, as change_effort does: the FILE is what
-        # a respawn reads, so pushing over a write that did not persist reports
-        # a default the next spawn replaces with the level just cleared.
-        if not await asyncio.to_thread(
-            self._apply_effort_overlay, timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
-        ):
+        # Explicit Default replaces the model's effort entries and projects
+        # the workspace default in one locked atomic write. Automatic clears
+        # retain the ownership guard and carry the resolved default live.
+        async with _hold_workspace_effort_overlay_fence(
+            self._client._work_dir, "write", CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+        ) as acquired:
+            if acquired:
+                with fence_rewrite():
+                    rewritten = await _await_overlay_write(
+                        lambda: self._apply_effort_overlay(
+                            timeout=CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
+                            replace_unowned=not owned_only,
+                        )
+                    )
+            else:
+                rewritten = False
+        if not rewritten:
             if cleared is not None:
                 self._effort_per_model[model] = cleared
             logger.warning(
                 "ACP effort NOT cleared to workspace default %s (model=%s): the "
-                "workspace overlay was busy, so nothing was pushed live; clear "
-                "again once the concurrent writer finishes",
+                "workspace overlay cannot be rewritten because it is locked, a link or "
+                "in a folder outside the work dir or on a sensitive path, unreadable, "
+                "not a JSON object, or past the 1 MiB read ceiling; nothing was pushed live",
                 level,
                 model,
             )
             return None
-        # Same channel choice as change_effort: KAS takes the level as a
-        # config option, not the kiro-cli slash command.
-        if self.capabilities.effort_via_config_option:
-            await self._set_effort_config_option(level)
-        else:
-            await self._client.send_command("/effort", args={"level": level})
+        try:
+            # Same channel choice as change_effort: KAS takes the level as a
+            # config option, not the kiro-cli slash command.
+            if self.capabilities.effort_via_config_option:
+                await self._set_effort_config_option(level)
+            else:
+                await self._client.send_command("/effort", args={"level": level})
+        except Exception:
+            if owned_only:
+                raise
+            # The explicit clear has landed, so a reset carries the default to
+            # the session: kiro-cli reads it from the rewritten file and KAS
+            # takes it as the start's ``effortLevel`` push. Raising would make
+            # its caller carry a removal that the file already holds.
+            logger.warning(
+                "ACP effort cleared to workspace default %s (kiro), but the live push "
+                "failed; session reset needed",
+                level,
+                exc_info=True,
+            )
+            return False
         logger.info("ACP effort cleared to workspace default %s (kiro)", level)
         return True
     # No default to push live — clear the overlay and let the caller reset
     # so kiro respawns at the model's built-in default.
-    if not await asyncio.to_thread(_clear_cli_overlay_effort, self._client._work_dir, model):
+    async with _hold_workspace_effort_overlay_fence(
+        self._client._work_dir, "write", CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS
+    ) as acquired:
+        if acquired:
+            with fence_rewrite():
+                rewritten = await _await_overlay_write(
+                    lambda: _clear_cli_overlay_effort(
+                        self._client._work_dir, model, owned_only=owned_only
+                    )
+                )
+        else:
+            rewritten = False
+    if not rewritten:
         # NOTHING changed: not the file, and not this map once the entry
-        # goes back. Neither bool can say that -- False resets (and the reset
-        # re-reads the same level), True reports a live update, and BOTH make
+        # goes back. Neither bool can say that -- False resets (and the
+        # respawn meets the same held lock, so it spawns into the same
+        # level), True reports a live update, and BOTH make
         # the handler commit the cleared slot value, so the UI would read
         # "default" over an overlay that still holds the level. None is the
         # third outcome, which the handler answers with a retryable 409.
         if cleared is not None:
             self._effort_per_model[model] = cleared
         logger.warning(
-            "ACP effort NOT cleared (model=%s): the workspace overlay was busy or "
-            "unreadable, so the file still holds it and the running session keeps "
-            "it; clear again once the concurrent writer finishes",
+            "ACP effort NOT cleared (model=%s): the workspace overlay cannot be rewritten "
+            "because it is locked, a link or in a folder outside the work dir or on a "
+            "sensitive path, unreadable, or past the 1 MiB read ceiling; the file still "
+            "holds it and the running session keeps it",
             model,
         )
         return None
@@ -682,8 +778,10 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
     ``session/set_config_option`` is a fact the table already holds, and
     "runs on the shared runtime" is a different fact. The kiro family is
     outside the channel set because it reads effort from the spawn-time
-    cli.json overlay instead, so it still skips the push; KAS is the
-    exception, since it reads no overlay and is a member; opencode is
+    cli.json overlay instead, so it still skips the push here; its own
+    post-spawn push is :meth:`_reassert_projected_effort`, on the
+    ``/effort`` channel. KAS is the exception, since it reads no overlay
+    and is a member; opencode is
     outside it because its ``session/new`` advertises no ``effort`` option at
     all. Reading the runtime answer here instead drops a codex session's
     configured effort as soon as the preview switch puts codex on the
@@ -708,6 +806,54 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
             "ACP initial effort apply failed (backend=%s model=%s effort=%s)",
             self._client.backend,
             self._client._model,
+            level,
+            exc_info=True,
+        )
+
+
+async def _reassert_projected_effort(self: AcpProvider) -> None:
+    """Push this session's level live after spawn and each fresh warm-runtime session.
+
+    Only the harnesses that read the overlay and take effort over ``/effort``
+    (``capabilities.effort_via_slash_command``) need this. KAS gets the overlay
+    written but never reads it; it takes its level as the ``effortLevel``
+    option that :meth:`_apply_initial_effort` pushes. The overlay is one file
+    per work dir, projected before the spawn and read by kiro-cli at the
+    spawn. Between the two, another session
+    in the same work dir can project its own Default and remove this
+    session's entry: an unpinned session removes every Kiro Crew entry, a
+    session on the same model removes this model's, and the warm pool
+    constructs such a session in the dashboard's own work dir on every fill
+    and every replenish. This session cannot stop a peer from projecting, so
+    it pushes its level through the same ``/effort`` channel a live change
+    uses, and what it runs is its pick whatever the file said at the read.
+
+    A session that resolves no level pushes nothing. This includes a Default
+    session without a workspace default, ``auto``, or a harness that does not
+    support effort. A Default session that inherits a workspace default pushes
+    that level like a pick. The level is read under ``_effort_model``, so an
+    unpinned session pushes the level :meth:`_bind_unbound_effort` stored
+    for the model it serves. Kiro-cli has no live "model default" to push to,
+    so the Default side of that same race stays with the overlay. Best-effort
+    like :meth:`_apply_initial_effort`: a rejected push must not break session
+    start.
+    """
+    if not self.capabilities.effort_via_slash_command:
+        return
+    model = self._effort_model
+    if not model or model == DEFAULT_MODEL or not self.supports_effort():
+        return
+    level = self._resolve_effort()
+    if not level:
+        return
+    try:
+        await self._client.send_command("/effort", args={"level": level})
+        logger.debug("ACP effort reasserted after spawn: model=%s effort=%s", model, level)
+    except Exception:
+        logger.warning(
+            "ACP effort reassert after spawn failed (model=%s effort=%s): the session "
+            "runs whatever level kiro-cli read from the overlay at spawn",
+            model,
             level,
             exc_info=True,
         )

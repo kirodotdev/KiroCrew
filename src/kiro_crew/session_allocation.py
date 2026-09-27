@@ -180,6 +180,7 @@ class SessionRegistryState:
     #: still cold-starting. Reads like the set it replaces.
     starting_pids: PidRefcount = field(default_factory=PidRefcount)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
+    explicit_effort_default_reservations: set[str] = field(default_factory=set)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
@@ -265,6 +266,18 @@ class _AllocationOwner(Protocol):
 
     def _bg_backend_supports_runtime(self) -> bool: ...
 
+    def explicit_effort_default_pending(self, key: str) -> bool: ...
+
+    def set_explicit_effort_default(self, key: str, pending: bool) -> bool: ...
+
+    def hold_explicit_effort_default(self, key: str) -> contextlib.AbstractContextManager[None]: ...
+
+    async def wait_for_effort_intent_writes(self, key: str) -> None: ...
+
+    def fence_effort_overlay_rewrite(self) -> contextlib.AbstractContextManager[None]: ...
+
+    async def aflush(self) -> None: ...
+
     async def await_replay_gap(self, key: str) -> None: ...
 
     def absorb_orphaned_release(self, key: str) -> bool: ...
@@ -313,11 +326,17 @@ class _AllocationOwner(Protocol):
 
     async def _drain_and_claim(self, agent: str | None) -> LLMProvider | None: ...
 
+    def _take_claim_spawn_time(self, provider: LLMProvider) -> float | None: ...
+
+    def _may_predate_effort_overlay_rewrite(self, spawn_time: float) -> bool: ...
+
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
+
+    async def _discard_pool_provider(self, provider: LLMProvider, context: str) -> None: ...
 
     def _resolve_agent_model(self, agent: str) -> str: ...
 
@@ -1077,6 +1096,25 @@ class SessionAllocationService:
     def mapped_session_keys(self) -> frozenset[str]:
         return frozenset(self._owner._session_map.mapped_sids_by_key())
 
+    def _reserve_explicit_effort_default(self, key: str) -> bool:
+        """Reserve *key*'s pending explicit Default for one in-flight start.
+
+        The durable flag stays armed until the provider's projection applies it.
+        A process death before that clear is saved therefore leaves the next cold
+        start to apply the Default again. The reservation is process-local and
+        canonical-keyed so two spellings of one conversation cannot both arm.
+        """
+        reservation_key = self._deps.canonical_key(key)
+        reservations = self.state.explicit_effort_default_reservations
+        if not self._owner.explicit_effort_default_pending(key) or reservation_key in reservations:
+            return False
+        reservations.add(reservation_key)
+        return True
+
+    def _release_explicit_effort_default(self, key: str) -> None:
+        """Release *key*'s process-local explicit Default reservation."""
+        self.state.explicit_effort_default_reservations.discard(self._deps.canonical_key(key))
+
     def seed_conversation(
         self,
         key: str,
@@ -1450,6 +1488,7 @@ _SERVED_NAMES: frozenset[str] = frozenset(
         "START_QUEUE_LOG_MIN_MS",
         "SessionBusyError",
         "SpeculativeResumeRefused",
+        "_WarmPoolEffortRewriteDiscard",
         "_collect_parent_runtime_kwargs",
         "acquire_session_lease",
         "bound_profile_env",
@@ -1499,6 +1538,7 @@ if TYPE_CHECKING:  # the names in _SERVED_NAMES, for type checkers and IDEs
     from kiro_crew.session_allocation_parts.errors import (  # noqa: F401
         SessionBusyError,
         SpeculativeResumeRefused,
+        _WarmPoolEffortRewriteDiscard,
     )
     from kiro_crew.start_priority import (  # noqa: F401
         START_QUEUE_COLD_START,

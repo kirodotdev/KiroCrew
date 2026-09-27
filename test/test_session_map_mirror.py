@@ -17,6 +17,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from session_map_mirror_helpers import session_map_fixture  # noqa: F401
 
 from kiro_crew.messaging.link import (
     UNBIND_REASON_PRUNED_STALE,
@@ -33,13 +34,6 @@ from kiro_crew.session_map import (
     SessionMap,
     set_unbind_listener,
 )
-
-
-@pytest.fixture()
-def session_map(tmp_path):
-    """A SessionMap backed by a temp directory."""
-    with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
-        yield SessionMap()
 
 
 def _manager_over(session_map):

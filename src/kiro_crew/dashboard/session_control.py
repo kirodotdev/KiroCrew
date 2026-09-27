@@ -166,6 +166,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     from kiro_crew.dashboard.session_control_parts.model_switch import (  # noqa: F401
         _JEV_ROUTE_SPELLINGS,
         PendingModelPick,
+        PendingModelPickCommitSnapshot,
         _another_alias_is_mid_turn,
         _caller_tab_id,
         _pending_pick_view,
@@ -174,9 +175,11 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _target_busy_error,
         apply_pending_model_pick,
         arm_model_switch_reset,
+        capture_pending_model_pick_commit,
         effort_commit_needs_reset,
         legacy_effort_base,
         model_switch_deferred,
+        restore_pending_model_pick_commit,
         set_model_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_create import (  # noqa: F401
