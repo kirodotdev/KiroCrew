@@ -8,9 +8,11 @@ import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, 
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { Input } from './ui'
 import { useTranslation } from 'react-i18next'
+import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
+import { useConfirm } from './ConfirmDialog'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
@@ -32,10 +34,13 @@ import { i18nT } from '../i18n/t'
  *  `hintId` names the strip's visible editing helper (rendered outside the
  *  scrolling tablist by TerminalTabsView), which the editor is described by;
  *  `onEditingChange` tells the strip when to show it. */
-function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEditingChange }: {
+function TabChip({ tab, active, closing = false, hintId, closeActions, onSelect, onEditingChange }: {
   tab: TermTab; active: boolean; closing?: boolean; hintId: string
-  onSelect: () => void; onClose: () => void; onEditingChange: (editing: boolean) => void
+  /** Also carries the × control's `onClose`. */
+  closeActions: TabCloseActions
+  onSelect: () => void; onEditingChange: (editing: boolean) => void
 }) {
+  const { onClose } = closeActions
   const { t } = useTranslation()
   const ime = useImeGuard()
   const liveTitle = useTerminalTitle(tab.id)
@@ -120,6 +125,11 @@ function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEd
           onPointerDownCapture={(e) => {
             if (e.button !== 0 || (e.target as HTMLElement).closest('button, input')) clearPriorActive()
           }}
+          // A touch hold belongs to the strip's reorder gesture, which opens
+          // this menu itself when the finger lifts in place; the trigger's own
+          // 700ms touch timer would open it mid-hold. Preventing the press is
+          // what makes Radix skip that timer, and it keeps click and pan.
+          onPointerDown={(e) => { if (e.pointerType === 'touch') e.preventDefault() }}
           onPointerCancel={clearPriorActive}
           onDragStartCapture={clearPriorActive}
           onContextMenuCapture={clearPriorActive}
@@ -213,7 +223,7 @@ function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEd
               meant to leave the field would blur-save and then kill the shell. */}
           {!editing && (
             <div className="flex items-center gap-0.5 shrink-0">
-              {/* Closing remains visible while the popout's last PTY DELETE settles. */}
+              {/* Closing remains visible while the popout's final batch of PTY DELETEs settles. */}
               <button
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); clearPriorActive(); if (!closing) onClose() }}
@@ -255,6 +265,8 @@ function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEd
             {t('terminalTab.automatic_name')}
           </ContextMenuItem>
         )}
+        <ContextMenuSeparator />
+        <TabCloseMenuItems {...closeActions} />
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -263,11 +275,14 @@ function TabChip({ tab, active, closing = false, hintId, onSelect, onClose, onEd
 /** One reorderable chip in the strip. A component rather than inline JSX inside
  *  the map: each chip owns its own long-press drag state, and a hook cannot be
  *  called from a loop. */
-function DraggableTermTab({ tab, active, closing, separator, hintId, onSelect, onClose, onEditingChange }: {
+function DraggableTermTab({ tab, active, closing, separator, hintId, onSelect, onEditingChange, ...closeActions }: TabCloseActions & {
   tab: TermTab; active: boolean; closing: boolean; separator: boolean; hintId: string
-  onSelect: () => void; onClose: () => void; onEditingChange: (editing: boolean) => void
+  onSelect: () => void; onEditingChange: (editing: boolean) => void
 }) {
-  const { itemProps, dragging } = useLongPressReorder()
+  // One touch hold, two outcomes: move the finger to reorder, lift it in place
+  // to open the close menu. Precise pointers drag on press and right-click for
+  // the menu; touch swipes keep scrolling the strip.
+  const { itemProps, dragging } = useLongPressReorder({ onHoldRelease: openTabCloseMenu })
   return (
     <Reorder.Item
       value={tab}
@@ -280,9 +295,14 @@ function DraggableTermTab({ tab, active, closing, separator, hintId, onSelect, o
       {separator && (
         <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
       )}
-      <TabChip tab={tab} active={active} closing={closing} hintId={hintId} onSelect={onSelect} onClose={onClose} onEditingChange={onEditingChange} />
+      <TabChip tab={tab} active={active} closing={closing} hintId={hintId} closeActions={closeActions} onSelect={onSelect} onEditingChange={onEditingChange} />
     </Reorder.Item>
   )
+}
+
+interface PendingPopoutClose {
+  targets: TermTab[]
+  finished: boolean
 }
 
 /**
@@ -326,8 +346,14 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // the always-mounted panel root renders (see BottomTerminalPanel below) —
   // closing the LAST tab unmounts this strip before a delayed rejection arrives.
   const del = useDeleteTerminalSession()
-  // The popout's last tab, while its DELETE is in flight (see closeTab).
-  const [closingId, setClosingId] = useState<string | null>(null)
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  // The strip stays live behind the confirm, so a batch resolves its targets
+  // against the tabs as they are when the answer arrives.
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const mountedRef = useRef(true)
+  const pendingPopoutCloseRef = useRef<PendingPopoutClose | null>(null)
   // Chips with an open name editor. A count rather than an id: a second
   // editor can open (F2 on another tab) before the first's blur-save lands.
   const [editingCount, setEditingCount] = useState(0)
@@ -340,31 +366,78 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // set; otherwise the backend's default cwd applies.
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
 
-  /** Close a tab: kill its backend PTY (best-effort), tear down local WS +
-   *  xterm, then drop it from the store (which hides the panel if it was last).
+  const finishTargets = useCallback((targets: readonly TermTab[]) => {
+    for (const tab of targets) {
+      disposeTerminalSession(tab.id)
+      removeTab(tab.id)
+    }
+  }, [])
+
+  const finishPendingPopoutClose = useCallback(() => {
+    const pending = pendingPopoutCloseRef.current
+    if (!pending || pending.finished) return
+    pending.finished = true
+    finishTargets(pending.targets)
+    pendingPopoutCloseRef.current = null
+  }, [finishTargets])
+
+  useEffect(() => {
+    mountedRef.current = true
+    if (variant !== 'popout') {
+      return () => { mountedRef.current = false }
+    }
+    const finishOnUnload = () => finishPendingPopoutClose()
+    window.addEventListener('pagehide', finishOnUnload)
+    return () => {
+      mountedRef.current = false
+      window.removeEventListener('pagehide', finishOnUnload)
+      finishOnUnload()
+    }
+  }, [finishPendingPopoutClose, variant])
+
+  /** Close terminal tabs: kill backend PTYs (best-effort), tear down local WS +
+   *  xterm state, then drop them from the store.
    *
-   *  In the POPOUT the last tab is special: emptying `tabs` makes the frame
-   *  return itself to the main window, which tears this JS context down — so a
-   *  rejection that arrives after that point has no callback left to record it.
-   *  Let the DELETE settle first (the request itself is `keepalive`, so a hung
-   *  one is bounded by the browser and cannot leak the shell), showing the chip
-   *  as closing so the wait never reads as a dead click; the rejection then lands
-   *  in the cross-window close-failed flag while this window still exists, and
-   *  the main window's panel root renders it after the return. */
-  const closeTab = useCallback((id: string) => {
-    if (variant === 'popout' && tabs.length === 1) {
-      if (closingId) return // already on its way out
-      setClosingId(id)
-      void del.mutateAsync(id).catch(() => { /* recorded by the hook's onError */ }).finally(() => {
-        disposeTerminalSession(id)
-        removeTab(id)
+   *  In the popout, a batch that empties the tab list waits for every DELETE to
+   *  settle before removing tabs, so rejected deletes can still set the shared
+   *  close-failed flag while this window exists. If the user closes the popout
+   *  during that wait, the pagehide/unmount cleanup above removes the same tabs
+   *  synchronously so stale persisted tabs cannot reconnect later.
+   *
+   *  Each target's connection is released BEFORE its DELETE is issued, never
+   *  after the wait: a socket that closes while the connection is still live
+   *  schedules a redial (≥1s backoff), and a redial landing inside the DELETE
+   *  window spawns a replacement PTY that the batch never asked for and no
+   *  longer has a tab to close, leaving it to the server's orphan reaper.
+   *  Releasing first clears the reconnect timer, so the only shells the batch
+   *  can leave behind are ones whose DELETE itself failed.
+   *
+   *  Every tab is a running shell, so a batch of more than one asks first
+   *  (`batchCloseConfirm`); a single close does not, like its × control. */
+  const closeTabs = useCallback(async (ids: readonly string[]) => {
+    if (closingIds.size > 0 || confirmOpen) return
+    const requested = new Set(ids)
+    const asked = batchCloseConfirm([], tabs.filter(tab => requested.has(tab.id)).length)
+    if (asked && !await confirm(asked)) return
+    if (!mountedRef.current || pendingPopoutCloseRef.current) return
+    const current = tabsRef.current
+    const targets = current.filter(tab => requested.has(tab.id))
+    if (targets.length === 0) return
+
+    if (variant === 'popout' && targets.length === current.length) {
+      pendingPopoutCloseRef.current = { targets, finished: false }
+      setClosingIds(new Set(targets.map(tab => tab.id)))
+      for (const tab of targets) disposeTerminalConnection(tab.id)
+      void Promise.allSettled(targets.map(tab => del.mutateAsync(tab.id))).then(() => {
+        finishPendingPopoutClose()
+        if (mountedRef.current) setClosingIds(new Set())
       })
       return
     }
-    del.mutate(id)
-    disposeTerminalSession(id)
-    removeTab(id)
-  }, [del, variant, tabs.length, closingId])
+
+    for (const tab of targets) del.mutate(tab.id)
+    finishTargets(targets)
+  }, [closingIds.size, confirm, confirmOpen, del, finishPendingPopoutClose, finishTargets, tabs, variant])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
@@ -387,10 +460,11 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* The popout window has no BottomTerminalPanel root, so the strip hosts
-          the notice there for a non-last tab; the last tab's rejection is
-          settled before teardown (closeTab) and crosses to the main window
-          through the persisted store. In the dock the root renders it. */}
+          the notice while an emptying close-all batch settles; if the popout is
+          manually closed mid-wait, cleanup still clears persisted tabs. In the
+          dock the root renders it. */}
       {variant === 'popout' && <TerminalCloseErrorNotice />}
+      {confirmDialog}
       {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
           horizontally to reorder (framer Reorder). */}
       <div className="flex items-center gap-1.5 h-10 shrink-0 pl-1 pr-1.5">
@@ -408,13 +482,18 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
               key={t.id}
               tab={t}
               active={t.id === activeId}
-              closing={closingId === t.id}
+              closing={closingIds.has(t.id)}
               // Hairline between adjacent chips, suppressed on both edges of
               // the active tab (its pill already delineates it).
               separator={i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId}
               hintId={hintId}
+              closeOthersDisabled={tabs.length === 1}
+              closeRightDisabled={i === tabs.length - 1}
               onSelect={() => setActiveTab(t.id)}
-              onClose={() => closeTab(t.id)}
+              onClose={() => closeTabs([t.id])}
+              onCloseOthers={() => closeTabs(tabs.filter(tab => tab.id !== t.id).map(tab => tab.id))}
+              onCloseRight={() => closeTabs(tabs.slice(i + 1).map(tab => tab.id))}
+              onCloseAll={() => closeTabs(tabs.map(tab => tab.id))}
               onEditingChange={onEditingChange}
             />
           ))}

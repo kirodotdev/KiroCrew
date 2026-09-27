@@ -27,6 +27,17 @@ export interface LongPressReorderItemProps {
   style: React.CSSProperties
 }
 
+interface LongPressReorderOptions {
+  /**
+   * Called when a touch hold arms and the finger then lifts WITHOUT moving —
+   * the same hold that, had the finger moved, would have dragged the chip. A
+   * chip with a context menu passes its opener here, so one touch gesture
+   * carries both: hold and drag reorders, hold and release opens the menu.
+   * `target` is the element the press landed on.
+   */
+  onHoldRelease?: (e: PointerEvent, target: HTMLElement) => void
+}
+
 /**
  * Make a `Reorder.Item` reorderable WITHOUT stealing the touch gesture that
  * scrolls the strip it lives in.
@@ -54,11 +65,30 @@ export interface LongPressReorderItemProps {
  * mechanism that works after the fact, and it is installed for exactly as long
  * as the drag lasts.
  *
+ * A chip that also has a context menu shares the hold with it rather than
+ * giving it up: the hold arms the drag as above, and what the finger does next
+ * decides — moving reorders, lifting in place calls `onHoldRelease`, which the
+ * chip uses to open its menu at the release point. That is the iOS home-screen
+ * model (hold, then either drag or let go for the menu), so it needs no new
+ * gesture. Two guards keep the two owners of the hold from colliding:
+ *
+ * - A Radix `ContextMenuTrigger` wrapping the chip arms its OWN touch timer
+ *   (700ms) and would open the menu mid-arm, so when `onHoldRelease` is set the
+ *   touch press is default-prevented — `composeEventHandlers` then skips the
+ *   trigger's handler. A prevented `pointerdown` only suppresses the
+ *   compatibility mouse events; `click` still fires and panning is unaffected.
+ * - Android fires a native `contextmenu` on a long press (iOS never does) and
+ *   cancels the touch unless it is prevented, which would both open the menu
+ *   and kill the armed drag. A `contextmenu` listener on the chip swallows it
+ *   for exactly as long as the touch is down. Right-click never installs it.
+ *
  * Returns `dragging` so the caller can show that the hold registered — with a
  * long press the reader gets no feedback until they move, and without a cue a
  * successful arm is indistinguishable from a failed one.
  */
-export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; dragging: boolean } {
+export function useLongPressReorder(
+  { onHoldRelease }: LongPressReorderOptions = {},
+): { itemProps: LongPressReorderItemProps; dragging: boolean } {
   const dragControls = useDragControls()
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
@@ -109,21 +139,26 @@ export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; d
       dragControls.start(e)
       return
     }
+    if (onHoldRelease) e.preventDefault() // the trigger's own long press stands down
+    const target = e.currentTarget as HTMLElement
     const originX = e.clientX
     const originY = e.clientY
+    const travelled = (ev: PointerEvent) =>
+      Math.abs(ev.clientX - originX) > LONG_PRESS_SLOP_PX || Math.abs(ev.clientY - originY) > LONG_PRESS_SLOP_PX
     // The native event outlives this handler (React stopped pooling in 17), and
     // framer reads only the press point from it — which is precisely the point
     // the hold happened at.
     const origin = e.nativeEvent
-    const onMove = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - originX) > LONG_PRESS_SLOP_PX || Math.abs(ev.clientY - originY) > LONG_PRESS_SLOP_PX) {
-        clearPending()
-      }
-    }
+    // Android's long-press `contextmenu` would open the menu and cancel the
+    // touch; swallowed while this touch is down, released with it.
+    const swallowContextMenu = (ev: Event) => { ev.preventDefault(); ev.stopPropagation() }
+    if (onHoldRelease) target.addEventListener('contextmenu', swallowContextMenu)
+    const onMove = (ev: PointerEvent) => { if (travelled(ev)) clearPending() }
     window.addEventListener('pointermove', onMove, { passive: true })
     window.addEventListener('pointerup', clearPending)
     window.addEventListener('pointercancel', clearPending)
     cleanupRef.current = () => {
+      target.removeEventListener('contextmenu', swallowContextMenu)
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', clearPending)
       window.removeEventListener('pointercancel', clearPending)
@@ -133,8 +168,27 @@ export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; d
       clearPending()
       setDragging(true)
       dragControls.start(origin)
+      if (!onHoldRelease) return
+      // Armed. Now the finger decides: travel is a reorder (framer has the
+      // pointer), a lift in place is the hold-release action.
+      let moved = false
+      const onArmedMove = (ev: PointerEvent) => { if (travelled(ev)) moved = true }
+      const onArmedUp = (ev: PointerEvent) => {
+        clearPending() // drops the swallow first, so the opener's own event goes through
+        if (!moved) onHoldRelease(ev, target)
+      }
+      target.addEventListener('contextmenu', swallowContextMenu)
+      window.addEventListener('pointermove', onArmedMove, { passive: true })
+      window.addEventListener('pointerup', onArmedUp)
+      window.addEventListener('pointercancel', clearPending)
+      cleanupRef.current = () => {
+        target.removeEventListener('contextmenu', swallowContextMenu)
+        window.removeEventListener('pointermove', onArmedMove)
+        window.removeEventListener('pointerup', onArmedUp)
+        window.removeEventListener('pointercancel', clearPending)
+      }
     }, LONG_PRESS_MS)
-  }, [clearPending, dragControls])
+  }, [clearPending, dragControls, onHoldRelease])
 
   return {
     itemProps: {
