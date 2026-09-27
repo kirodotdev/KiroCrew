@@ -217,6 +217,7 @@ arguing with the rule.
 | The nav-drawer swipe contract and `data-owns-swipe` | [narrow-viewport.md](narrow-viewport.md#a-horizontal-drag-on-mobile-belongs-to-the-nav-drawer-unless-a-page-claims-it) |
 | Binding a panel's gesture live to its offset | [narrow-viewport.md](narrow-viewport.md#a-panel-that-gains-a-gesture-must-be-bound-live-to-its-offset) |
 | Horizontal insets below the breakpoint, and `Card`'s measured budget | [narrow-viewport.md](narrow-viewport.md#horizontal-insets-below-the-breakpoint) |
+| The phone chat page's single top bar (`topbar-single`), its portal slots and the drawer rail | [narrow-viewport.md](narrow-viewport.md#the-phone-chat-page-has-one-top-bar) |
 
 ## Stat cards
 

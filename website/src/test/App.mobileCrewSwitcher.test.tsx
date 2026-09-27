@@ -94,7 +94,10 @@ describe('crew switcher at phone widths', () => {
     // The trailing dropdown is the affordance that must survive: it lists every
     // crew, including the one on screen, so it alone is a complete switcher.
     expect(await screen.findByLabelText('Switch crew')).toBeTruthy()
-    // The nav button shares the group and must not be crowded out of the DOM.
-    expect(screen.getByLabelText('Open menu')).toBeTruthy()
+    // On the phone chat page the switcher sits in the single bar's leading
+    // cell; the nav-drawer logo is not on this route (the chat drawer's rail
+    // is the navigation), and the chat page's title slot must still be there.
+    expect(screen.queryByLabelText('Open menu')).toBeNull()
+    expect(screen.getByTestId('mobile-topbar-slot')).toBeTruthy()
   })
 })

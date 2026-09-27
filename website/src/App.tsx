@@ -71,6 +71,11 @@ import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, s
  *  — a travel wider than the panel spends the settle's tail moving something
  *  already off the screen. */
 const MOBILE_NAV_WIDTH = 220
+/** The chat route, spelled once. Two things key off it on the phone -- the
+ *  single-bar header variant and the shell nav drawer's swipe gate -- and a
+ *  drift between two spellings is exactly how "two drawers for one gesture"
+ *  would come back. */
+const isChatRoute = (pathname: string) => pathname === '/chat' || pathname.startsWith('/chat/') || pathname === '/'
 /** The `mx-2` inset the panel sits at, so its left edge starts here. */
 const MOBILE_NAV_INSET = 8
 /** What it takes for the nav drawer to clear the screen: its own width, the
@@ -139,6 +144,7 @@ import { useNavShortcutHint } from './hooks/useNavShortcutHint'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from './hooks/useAutoConnectInstances'
 import { useCommandPalette } from './hooks/useCommandPalette'
+import { MobileNavRailContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import { useProvider } from './providers/context'
 import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
@@ -854,12 +860,25 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
  *  right-edge geometry in a real browser — the one check that can see the
  *  badge-over-chord overlap this row's unit tests can only pin structurally
  *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
-export function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
+export function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed, touch, replace, caption }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
    *  terminal). `active` only paints the row; without aria-pressed a screen
    *  reader announces an identical button whether the panel is open or shut. */
   pressed?: boolean
+  /** Phone rail geometry for a `collapsed` row: a 64x56 `rounded-xl` tile with a
+   *  10px caption under the glyph, instead of the desktop rail's pointer-sized
+   *  icon-only `rounded-md` row. Same icon, same selected paint. */
+  touch?: boolean
+  /** Navigate with `replace` instead of a push. The phone drawer that hosts the
+   *  rail holds a duplicate history entry while open (see ChatPage's
+   *  `pushDrawerEntry`); a row leaving the chat page overwrites it so Back
+   *  lands on the chat, not on a second copy of it. */
+  replace?: boolean
+  /** Phone rail tile caption when the full label is too long for a 64px tile
+   *  (e.g. "Agent Capabilities" -> "Capabilities"). The accessible name stays
+   *  the full label. */
+  caption?: string
 }) {
   const navigate = useNavigate()
   // On mobile this row lives inside the nav DRAWER, whose slide runs on the
@@ -890,7 +909,7 @@ export function NavItem({ path, label, icon, active, collapsed, badge, onClickOv
     // ask would pop a discard-confirm over a click that was never going to
     // destroy anything.
     if (!onClickOverride && !isCurrentUrl(path) && !mayLeave()) return
-    onClick?.(); (onClickOverride || (() => navigate(path)))()
+    onClick?.(); (onClickOverride || (() => navigate(path, { replace })))()
   }
   return (
     <motion.div layout={isMobileRow ? undefined : 'position'}
@@ -908,7 +927,11 @@ export function NavItem({ path, label, icon, active, collapsed, badge, onClickOv
       // scales — that one is feedback for an action the user actually took.
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
+      // `touch`: the desktop rail dims an inactive icon to 70% (`opacity-70` on
+      // the glyph span), which on the phone rail's flat 40x40 tiles measured
+      // 3.4:1 against a light surface. The tile keeps the muted colour at full
+      // opacity instead (>= 4.5:1); active tiles are unchanged.
+      className={`nav-item group/nav relative flex items-center min-w-0 cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 transition-colors duration-200 ${touch ? 'w-16 h-14 px-0.5 flex-col justify-center gap-0.5 rounded-xl shrink-0 [&_.app-icon-nav]:w-5 [&_.app-icon-nav]:h-5 [&_.app-icon-nav>svg]:w-5 [&_.app-icon-nav>svg]:h-5 [&_.app-icon-nav]:opacity-100' : 'rounded-md py-2 pl-3 pr-3'} ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -943,6 +966,13 @@ export function NavItem({ path, label, icon, active, collapsed, badge, onClickOv
         >
           {label}
         </span>
+      )}
+      {/* Phone rail tile: a one-word caption under the glyph. The desktop rail's
+          collapsed rows name themselves with a hover tip, which a finger cannot
+          summon, and a cold reader could not tell the Artifacts and
+          Capabilities glyphs apart (UX lane). 10px is this project's floor. */}
+      {collapsed && touch && (
+        <span aria-hidden="true" className="max-w-full whitespace-normal text-center text-[10px] leading-[1.1] font-medium tracking-tight line-clamp-2 [overflow-wrap:anywhere]">{caption ?? label}</span>
       )}
       {/* Expanded rail: the chord rides the row's existing `group/nav` seam, so it
           appears on hover AND on keyboard focus-visible rather than on hover alone
@@ -2313,7 +2343,13 @@ export default function App() {
    * hamburger stays the discoverable path.
    */
   useDrawerSwipe(shellRef, {
-    enabled: isMobile,
+    // Off on the phone chat page: that page's sessions drawer carries the main
+    // navigation as a rail (see `mobileNavRail`), so the nav drawer has no
+    // trigger there and must not be reachable by a swipe on the header either
+    // — two drawers for one gesture is the state this bar exists to remove.
+    // The chat container already claims its own swipe via `data-owns-swipe`;
+    // this gate covers the header above it.
+    enabled: isMobile && !isChatRoute(location.pathname),
     travel: mobileNavTravel,
     open: mobileNavPhase === 'open',
     x: mobileNavX,
@@ -3044,6 +3080,16 @@ export default function App() {
   useEffect(() => {
     if (pillHidden) setKiroUsageOpen(false)
   }, [pillHidden])
+  // Phone drawers: the Kiro Account row (nav drawer) and tile (the chat
+  // drawer's rail) are the phone's only way to the account modal -- the readout
+  // capsule that carries the desktop credits segment is not rendered on the
+  // phone (docs/narrow-viewport.md). On the Kiro backend it is always there
+  // (the modal's Refresh is how an empty reading gets filled). On any other
+  // harness it appears only for a reading the desktop segment would show
+  // (`pillHidden` is the segment's own derivation) and never for the warming
+  // `null` -- the desktop paints a spinner there and takes it back if the cache
+  // settles on `none`, which for a nav row would be a row blinking in and out.
+  const kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)
   const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
   // The inline metric readings are dropped by a CSS container-query rung when
   // the actions group runs out of room (the ladder in index.css, whose rungs
@@ -3599,7 +3645,15 @@ export default function App() {
   //    that mapping means exactly one row lights at a time.
   const libraryNavActive = activePath === '/apps/library' || activePath.startsWith('/apps/library/')
   const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/-/') || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
-  const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
+  const isChat = isChatRoute(activePath)
+  // Phone chat page: the header is ONE bar for both the shell and the
+  // conversation. The chat page fills `#mobile-topbar-slot` (sessions toggle,
+  // session title + menu) and `#mobile-topbar-trail-slot` (its overflow menu)
+  // through portals, and the shell keeps only the crew switcher and the bell.
+  // The nav drawer's logo trigger, the readout capsule and the search square
+  // are not rendered here: search and the main destinations live in the rail
+  // the chat page's sessions drawer shows (see `mobileNavRail` below).
+  const mobileSingle = isMobile && isChat
   // /webhooks is a full-height rail-and-detail shell (like /capabilities), so it
   // owns its own scrolling and must not sit inside <main>'s scroll container.
   const needsFixedHeight = isChat || activePath === '/settings' || activePath.startsWith('/settings/') || activePath === '/developer' || activePath === '/capabilities' || activePath === '/webhooks'
@@ -3661,6 +3715,156 @@ export default function App() {
       badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
   )
+
+  /**
+   * Phone chat page: the main navigation as a 72px icon rail.
+   *
+   * The chat page renders this beside its sessions pane, inside the ONE drawer
+   * a phone chat has (MobileNavRailContext). The rows are the shell's — the
+   * same registry (`advertisedNavItems`, `sortedAppGroup`, the Bottom group),
+   * the same `NavItem`, the same badges and active rules the desktop rail and
+   * the nav drawer use — so a destination added to the registry appears here
+   * without a second list to maintain. `touch` gives each row a 64x56
+   * `rounded-xl` tile with a one-word caption under the glyph -- the desktop
+   * rail names its collapsed rows with a hover tip a finger cannot summon; the
+   * selected paint is the desktop rail's.
+   *
+   * Two rows behave differently from the nav drawer's, both because the host
+   * drawer minted a duplicate history entry when it opened (see ChatPage's
+   * `pushDrawerEntry`): the row for the page the user is ON only closes the
+   * drawer (`onActivate`), and a row that leaves the chat page navigates with
+   * `replace` so Back returns to the chat rather than to a second copy of it.
+   * That is a property of the drawer that hosts the rail, so it is not an option.
+   *
+   * Rows the full nav drawer offers and this rail does not: Library (reachable
+   * from Discover), Developer, Terminal and Connect-your-phone — each toggles a
+   * desktop-shaped surface or is moot on the phone itself.
+   *
+   * The brand mark on top is a control -- the product's "home": it goes to the
+   * chat root (the page every other app's logo returns to) and closes the
+   * drawer. A cold reader tapped it expecting exactly that, and an inert mark
+   * in the tap-target position of every other app read as broken. Search is
+   * pinned at the bottom and opens the same command palette the header's
+   * search square used to.
+   *
+   * `null` off the phone chat page, so every other consumer renders no rail.
+   */
+  const mobileNavRail = mobileSingle
+    ? ({ onActivate }: MobileNavRailOptions) => {
+      const railRow = (
+        n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
+      ) => {
+        const active = navRowActive(n.path)
+        return (
+          <NavItem
+            key={n.id}
+            navId={n.id}
+            path={n.path}
+            label={surfaceLabel(n)}
+            icon={n.icon}
+            active={active}
+            collapsed
+            touch
+            replace
+            caption={n.id === 'capabilities' ? i18nT('nav.agent_capabilities_short') : undefined}
+            onClickOverride={active ? onActivate : undefined}
+            badge={<NavBadge navId={n.id} collapsed appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
+          />
+        )
+      }
+      const settingsSurface = NAV_ITEMS.find(n => n.id === 'settings')!
+      const capabilitiesSurface = NAV_ITEMS.find(n => n.id === 'capabilities')!
+      const searchLabel = slotOwners['quick-search']
+        ? i18nT('app.open_command_bar')
+        : i18nT('app.search_sessions_files_and_commands')
+      return (
+        <nav
+          data-testid="mobile-nav-rail"
+          role="navigation"
+          aria-label={i18nT('app.main_navigation')}
+          className="w-[72px] shrink-0 h-full flex flex-col items-center gap-1 pt-1.5 pb-2.5 border-r border-border bg-bg-accent overflow-hidden"
+        >
+          <button
+            type="button"
+            data-testid="mobile-nav-rail-home"
+            onClick={() => { onActivate(); if (!(activePath === '/chat' || activePath === '/')) navigate('/chat', { replace: true }) }}
+            className="w-11 h-11 mb-1 flex items-center justify-center shrink-0 rounded-xl bg-transparent border-none cursor-pointer"
+            // Named for what it DOES (home = the chat root), not for the brand
+            // it shows: an icon-only control announced as the product name told
+            // a screen-reader user nothing about where the tap goes.
+            aria-label={i18nT('nav.home')}
+          >
+            <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
+          </button>
+          {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
+          <NavItem
+            navId="apps"
+            path="/apps"
+            label={i18nT('nav.discover')}
+            icon={<Compass size={16} />}
+            active={discoverNavActive}
+            collapsed
+            touch
+            replace
+            onClickOverride={discoverNavActive ? onActivate : undefined}
+            badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
+          />
+          {/* Apps list: scrolls in its OWN frame when many apps are installed --
+              the brand mark, the Main rows and Discover above it, and
+              Capabilities / Settings / Search below it stay pinned, exactly as
+              the desktop rail does. The scroller has no gap of its own so a
+              short list sits flush under Discover. */}
+          <div
+            data-testid="mobile-nav-rail-apps"
+            className="flex-1 min-h-0 w-full flex flex-col items-center gap-1 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none"
+            style={{ scrollbarWidth: 'none' }}
+          >
+            {sortedAppGroup.map(railRow)}
+          </div>
+          {railRow(capabilitiesSurface)}
+          {/* The account modal (balance, sign-in state): the desktop opens it
+              from the readout capsule, which the phone does not render, so the
+              rail carries it -- on exactly the readings the desktop segment
+              shows (`kiroAccountEntry`). Toggles a surface, so `pressed`. */}
+          {kiroAccountEntry && (
+            <NavItem
+              navId="account"
+              path="#"
+              label={i18nT('components.kiroAccountModal.kiro_account')}
+              icon={<Coins size={16} />}
+              active={kiroUsageOpen}
+              pressed={kiroUsageOpen}
+              collapsed
+              touch
+              onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+            />
+          )}
+          <NavItem
+            path={settingsSurface.path}
+            label={surfaceLabel(settingsSurface)}
+            icon={settingsSurface.icon}
+            active={navRowActive(settingsSurface.path)}
+            collapsed
+            touch
+            replace
+            onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
+            badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
+          />
+          <button
+            type="button"
+            data-testid="mobile-nav-rail-search"
+            onClick={() => { onActivate(); commandPalette.openPalette() }}
+            className="mt-1 w-16 h-14 px-0.5 rounded-xl border border-border bg-card text-text flex flex-col items-center justify-center gap-0.5 cursor-pointer shrink-0"
+            aria-label={searchLabel}
+            title={searchLabel}
+          >
+            <SearchIcon size={18} />
+            <span aria-hidden="true" className="max-w-full whitespace-normal text-center text-[10px] leading-[1.1] font-medium tracking-tight line-clamp-2">{i18nT('nav.search_short')}</span>
+          </button>
+        </nav>
+      )
+    }
+    : null
 
   return (
     <ZoomProvider>
@@ -3802,7 +4006,15 @@ export default function App() {
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
         ref={topPeekSurface}
-        className="topbar topbar-glass relative pl-2 pr-3"
+        // `topbar-single` (phone chat page) swaps the three-track grid for
+        // `auto minmax(0,1fr) auto` (index.css): the centre cell is the chat
+        // page's title slot and takes every pixel the two side cells leave.
+        // Those side cells are a plain flex div / `tb-trail`, NOT `tb-left` /
+        // `tb-right`: the latter are inline-size containers, and a size
+        // container in an `auto` track has no content size to give, so it
+        // collapses to its padding and clips whatever it holds
+        // (test/topbarMenuButtonNarrow.test.ts records the measurement).
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}`}
         // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
         // theme-overlay ceiling from them — the header must outrank pack
         // decoration in both layouts (#7377), and a literal here could drift.
@@ -3845,6 +4057,7 @@ export default function App() {
             `.tb-right` carries a padding/negative-margin pair that keeps the
             notification badge's 4px overhang from being clipped, and re-tuning
             that needs a real WebKit check, not a local one. */}
+        {!mobileSingle && (
         <div className="tb-left relative h-full">
           {/* Windows only: the application menu shares this cluster. It needs no
               width reservation of its own: the identity group is sized by its own
@@ -3888,6 +4101,28 @@ export default function App() {
           )}
           <InstanceTabBar variant="inline" />
         </div>
+        )}
+        {/* Phone chat page, leading cell: the crew switcher (renders nothing
+            until a remote crew exists) and downstream widgets while they exist.
+            The update pill is NOT here: with a remote crew the switcher already
+            renders its chip and its dropdown, and the pill made a third action
+            in the group — on this page the update is the first item of the
+            chat page's overflow menu instead (UpdatePill variant="menu-item").
+            The nav-drawer logo is not here either — on this page the main
+            destinations are the rail inside the sessions drawer, opened by the
+            toggle the chat page puts first in the centre slot, so the bar never
+            offers two drawers. Sized `auto`, so the common empty cell costs no
+            width and the sessions toggle stays on the gutter. */}
+        {mobileSingle && (
+          <div data-testid="topbar-lead" className="relative h-full flex items-center gap-1.5 min-w-0">
+            <InstanceTabBar variant="inline" />
+            {getTopBarWidgets().map(w => (
+              <ErrorBoundary key={w.id} scope={`topbar-widget:${w.id}`} fallback={null}>
+                <w.component />
+              </ErrorBoundary>
+            ))}
+          </div>
+        )}
         {/* Centre track: the ⌘K trigger. A flow item, not an overlay — its width
             is the track's width, so it can never sit under a sibling cluster and
             never has to be dropped to stay clear of one. On mobile the same
@@ -3952,33 +4187,17 @@ export default function App() {
           </button>
           </div>
         )}
-        {/* Mobile centre track: the same trigger in its icon-only form, in the
-            same window-centred track the desktop one uses, so the control does
-            not change place at the breakpoint. A grid child of its own, not a
-            third sibling inside the actions group -- three action controls in one
-            horizontal row is what website/AUTOSDE.yaml's max-two-buttons-per-row
-            forbids. */}
-        {isMobile && (
-          <button
-            type="button"
-            onClick={commandPalette.openPalette}
-            className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center cursor-pointer shrink-0"
-            aria-label={
-              slotOwners['quick-search']
-                ? i18nT('app.open_command_bar')
-                : i18nT('app.search_sessions_files_and_commands')
-            }
-            // Not the "(⌘K)" title the desktop trigger carries: this form only
-            // renders below 768px, where advertising a chord to a touch surface
-            // names a gesture the device may have no way to produce.
-            title={
-              slotOwners['quick-search']
-                ? i18nT('app.open_command_bar')
-                : i18nT('app.search_sessions_files_and_commands')
-            }
-          >
-            <SearchIcon size={14} />
-          </button>
+        {/* Mobile centre cell. On the chat page it is the slot the chat page
+            fills through a portal: [sessions toggle][session title + menu].
+            `min-w-0` + `flex` so the title inside can truncate instead of
+            growing the cell. Elsewhere the cell is an empty spacer: the search
+            trigger that used to sit here moved into the chat drawer's rail, and
+            the header still needs its third in-flow child so the actions group
+            is not auto-placed into the `auto` centre track (where, as a size
+            container, it would collapse to its padding). */}
+        {isMobile && (mobileSingle
+          ? <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full" />
+          : <span aria-hidden="true" data-testid="topbar-centre-spacer" className="w-0" />
         )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
             scanner sweep), chosen by resolved mode. Absent unless a registered
@@ -4010,6 +4229,7 @@ export default function App() {
             itself reads, so they move together; during the pill's lazy-chunk
             fetch the class can lead the pill by a moment, which costs readout
             room briefly and harms nothing. */}
+        {!mobileSingle && (
         <div ref={metricsGroupRef} className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
           {/* Zero-footprint probe for the metrics rung. It carries the readings'
               own class, so JS reads the LADDER's verdict rather than a copy of
@@ -4031,8 +4251,13 @@ export default function App() {
               the capsule reddens quietly underneath it. (The upstream
               enterprise-SSO segment is dropped here: that SSO flow is stubbed
               in this fork. The Claude-cost usage branch is likewise dropped:
-              this fork's usage pill is Kiro-credits-only.) */}
-          {(() => {
+              this fork's usage pill is Kiro-credits-only.)
+
+              Desktop only. A phone bar has room for two controls on the right
+              (bell + the chat page's overflow menu) and a resource readout is
+              not something a phone user acts on; the session-expired banner
+              stays the offline signal there. */}
+          {!isMobile && (() => {
             const offline = !connected
             // The accessible name and the role="status" live region are the
             // ONLY screen-reader carriers of the offline cause: the
@@ -4202,22 +4427,6 @@ export default function App() {
                 </button>)
               }
             }
-            // Mobile: show metrics as a passive readout (not a button) when the
-            // capsule is expanded and data is available. No independent toggle —
-            // visibility is tied to the capsule expand/collapse state.
-            if (isMobile && sysMetrics) {
-              // Same derivation as the desktop readout, from the one helper, so
-              // the two cannot disagree about what a partial frame means.
-              const { cpuValid, memValid, dskValid, m } = readMetricsFrame(sysMetrics)
-              const memPct = memValid ? m.memUsed / m.memTotal : 0
-              const dskUsed = m.diskTotal - m.diskFree
-              const dskPct = dskValid ? dskUsed / m.diskTotal : 0
-              segments.push(<span key="metrics-mobile" className={`${seg} gap-2 text-[11px] font-mono tabular-nums`} aria-label={i18nT('app.system_metrics')}>
-                <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'}>{i18nT('app.cpu')} {cpuValid ? fmtPercent(m.cpuPct / 100) : '\u2014'}</span>
-                <span className={memValid ? metricColor(memPct) : 'text-muted'}>{i18nT('app.mem')} {memValid ? fmtPercent(memPct) : '\u2014'}</span>
-                <span className={dskValid ? metricColor(dskPct) : 'text-muted'}>{i18nT('app.dsk')} {dskValid ? fmtPercent(dskPct) : '\u2014'}</span>
-              </span>)
-            }
             // Usage segment — Kiro credit plan from KiroCrew's own usage
             // cache. Spinner while the cache warms, a dash when the fetch
             // failed or when the gateway holds no reading. On the Kiro
@@ -4353,6 +4562,50 @@ export default function App() {
               no longer narrows this full-width header.) */}
           <NotificationsBellButton />
         </div>
+        )}
+        {/* Phone chat page, trailing cell: EXACTLY two controls (the
+            max-two-buttons-per-row rule) — the bell, then the chat page's
+            overflow menu, portaled into `#mobile-topbar-trail-slot`. The
+            update pill is NOT here: with an update pending it made this a
+            three-control group. On this page the update is the first item of
+            that overflow menu (UpdatePill variant="menu-item"), carrying the
+            same lifecycle label as the pill; downstream widgets sit in the
+            leading cell. */}
+        {mobileSingle && (
+          <div className="tb-trail relative h-full flex items-center gap-1.5 shrink-0">
+            <NotificationsBellButton />
+            <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" />
+          </div>
+        )}
+        {/* Phone: the generic offline signal. The readout capsule (whose dot
+            turned red on a transport drop) is not rendered below 768px, so a
+            phone would otherwise show nothing while the socket is down. One
+            strip hanging off the bar, driven by the same `connected` state the
+            capsule read; auth expiry keeps its own banner (api/client.ts), so
+            this stays quiet then rather than saying "reconnecting" over a fix
+            that is pasting a token. Absolute (out of the bar's grid flow) so
+            the three-track invariant holds. */}
+        {isMobile && !connected && !authRequired && (
+          <div
+            role="status"
+            data-testid="mobile-offline-strip"
+            // `pointer-events-none`: the strip hangs over the top 24px of
+            // whatever <main> paints; a readout must not swallow the taps and
+            // scroll starts that land there while the socket is down.
+            className="absolute left-0 right-0 top-full z-[1] pointer-events-none flex items-center justify-center gap-1.5 h-6 text-[12px] font-medium text-danger bg-danger-subtle border-b border-danger/30"
+          >
+            <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
+            {i18nT('app.gateway_offline_reconnecting')}
+          </div>
+        )}
+        {/* Session expired on the phone: the auth banner (api/client.ts) is the
+            visible message and has no live region, and the capsule's sr-only
+            carrier is not rendered below 768px -- so this is the one
+            announcement a screen-reader user gets. Nothing visible: the banner
+            already says it. */}
+        {isMobile && !connected && authRequired && (
+          <span role="status" data-testid="mobile-offline-sr" className="sr-only">{i18nT('app.gateway_offline_session_expired_see_banner_above')}</span>
+        )}
       </header>
 
       {agentSwitchNotice && (
@@ -4861,7 +5114,42 @@ export default function App() {
                   onClickOverride={() => setMobileConnectOpen(true)}
                 />
               )}
+              {/* Phone only: Search as a nav row. The bar's search square left
+                  the phone (the chat page's bar has no room for it), so the nav
+                  drawer — the one surface every non-chat phone page opens — is
+                  where the command palette is reached; the chat page reaches it
+                  from its own drawer's rail. Same label, same palette. */}
+              {isMobile && (
+                <NavItem
+                  path="#"
+                  label={slotOwners['quick-search'] ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
+                  icon={<SearchIcon size={16} />}
+                  active={false}
+                  collapsed={effectiveCollapsed}
+                  onClick={closeMobileNav}
+                  onClickOverride={commandPalette.openPalette}
+                  navId="search"
+                />
+              )}
               <div>{renderNavRow(cap)}</div>
+              {/* Phone only: the account modal (balance, sign-in state) has no
+                  other phone entry -- the readout capsule that opens it on the
+                  desktop is not rendered on the phone. Shown on exactly the
+                  readings the desktop segment shows (`kiroAccountEntry`); the
+                  chat page reaches it from its own drawer's rail. */}
+              {isMobile && kiroAccountEntry && (
+                <NavItem
+                  path="#"
+                  label={i18nT('components.kiroAccountModal.kiro_account')}
+                  icon={<Coins size={16} />}
+                  active={kiroUsageOpen}
+                  pressed={kiroUsageOpen}
+                  collapsed={effectiveCollapsed}
+                  onClick={closeMobileNav}
+                  onClickOverride={() => setKiroUsageOpen(true)}
+                  navId="account"
+                />
+              )}
               <NavItem
                 path={s.path}
                 label={surfaceLabel(s)}
@@ -5045,6 +5333,9 @@ export default function App() {
               the app, not of the page, and the launch after a crash rarely lands
               on the page the user was on when it happened. */}
           <CrashReportNotice />
+          {/* The rail renderer reaches the chat page through context rather than
+              a prop: the route element is shared with the popout/embed frames. */}
+          <MobileNavRailContext.Provider value={mobileNavRail}>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -5101,6 +5392,7 @@ export default function App() {
             <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
+          </MobileNavRailContext.Provider>
         </main>
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders

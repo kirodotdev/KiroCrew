@@ -40,7 +40,7 @@ const dashboardState = {
 
 const slot = { key: 'chat-1', title: 'My Session' } as unknown as ChatSlot
 
-function renderMenu() {
+function renderMenu(props: { omitPopout?: boolean } = {}) {
   const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ ...slot }] } })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
@@ -48,7 +48,7 @@ function renderMenu() {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatHeaderMenu activeSlot={slot.key} />
+            <ChatHeaderMenu activeSlot={slot.key} {...props} />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -93,5 +93,17 @@ describe('SessionActionsMenu popout items', () => {
     renderMenu()
     fireEvent.click(await screen.findByText('Bring back to main'))
     expect(navigated).toEqual(['/chat?sid=chat-1'])
+  })
+
+  // The phone chat page's single bar has a trailing ⋯ menu that owns "Pop out
+  // to window" / "Focus popped-out window"; the title menu next to it leaves
+  // them out so one action is not offered twice. The rest of the menu is
+  // untouched, and "Bring back to main" (no other home) is not part of the
+  // omission -- the self-popout case above keeps pinning it.
+  it('omitPopout: leaves out pop out / focus and keeps the rest of the menu', async () => {
+    renderMenu({ omitPopout: true })
+    expect(await screen.findByText('Copy link')).toBeTruthy()
+    expect(screen.queryByText('Pop out to window')).toBeNull()
+    expect(screen.queryByText('Focus popped-out window')).toBeNull()
   })
 })

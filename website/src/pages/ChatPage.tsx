@@ -1,9 +1,11 @@
-import { Fragment, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { Fragment, Suspense, lazy, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useShellSlot } from '../hooks/useShellSlot'
+import { useMobileNavRail } from '../components/MobileNavRailContext'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
@@ -55,7 +57,7 @@ import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as h
 import { isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
 import { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
-import { triggerRefresh, updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
+import { triggerRefresh, updateSlot, slotIsRemoteBound, sseSlotTitle } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
@@ -274,7 +276,7 @@ import ChatInput from '../components/ChatInput'
 import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
-import ErrorNotice from '../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import VoicePlaybackNotice from '../components/VoicePlaybackNotice'
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
@@ -312,6 +314,7 @@ import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { JiraHostsCtx } from '../lib/jiraHosts'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
+import ErrorBoundary from '../components/ErrorBoundary'
 import SessionTitleControl from './chat/SessionTitleControl'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import { useChatPins } from '../hooks/useChatPins'
@@ -334,6 +337,10 @@ import { commitRevealedSource, parseSourceLinkUrl, type SourceLinkKind } from '.
 import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
+// Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
+// off the app-core budget, and the phone menu needs it only while an update exists.
+const MobileUpdateMenuItem = lazy(() => import('../components/UpdatePill'))
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { scaleContentWidth } from './chat/contentWidth'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
@@ -341,7 +348,7 @@ import { focusComposer, focusComposerAfter, revealComposer } from './chat/compos
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, X } from 'lucide-react'
+import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, X, MoreHorizontal, EyeOff, VenetianMask } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
@@ -526,6 +533,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // that effect is defined well above where the layout hooks start.
   const isMobile = useIsMobile()
+  /**
+   * Phone: the App shell's top bar is the ONE bar, and this page's title row
+   * lives in it. The shell renders `#mobile-topbar-slot` (centre cell) and
+   * `#mobile-topbar-trail-slot` (after the bell) only on the chat route below
+   * the breakpoint; this page fills them through `createPortal` — the same
+   * hand-off `#activity-bar-slot` uses on desktop. Both resolve to `null`
+   * anywhere the shell does not render them (the popout window, an embedded
+   * host, a desktop width), and the page then keeps its own inline title row
+   * — so a missing slot degrades to today's layout rather than to no title.
+   *
+   * `mobileNavRail` is the shell's main navigation as an icon rail, rendered
+   * beside the sessions pane inside this page's ONE drawer (see the
+   * OverlayDrawer below). `null` off the phone chat route.
+   */
+  const singleBar = isMobile && !embedded && !popout
+  const topbarSlot = useShellSlot('mobile-topbar-slot', singleBar)
+  const topbarTrailSlot = useShellSlot('mobile-topbar-trail-slot', singleBar)
+  const mobileNavRail = useMobileNavRail()
+  /**
+   * Whether the title row is in the shell's bar rather than inline. Derived
+   * from the slot ELEMENT, not from `isMobile`: the two can disagree for a
+   * render on a breakpoint crossing, and the row must be in exactly one place
+   * — the inline copy stands down only once the portal target exists, and the
+   * transcript's header spacer, the fixed sessions button and the split view's
+   * inline toggle all key off this same flag so none of them doubles up.
+   */
+  const titleInTopbar = topbarSlot !== null
   // The mobile sessions drawer and its scrim are `fixed` overlays that autofocus
   // a search input, so a software keyboard is open whenever they are. iOS Safari
   // shrinks only the VISUAL viewport for the keyboard (`interactive-widget`
@@ -4162,6 +4196,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // it, so exiting focus mode restores what the user had. null = focus mode is
   // not the reason the list is hidden (the user owns the state).
   const sidebarAutoHidden = useRef<boolean | null>(null)
+  // One LLM title generation at a time from the phone bar's menu item: the
+  // menu closes on select, so nothing else stops a second tap from starting a
+  // concurrent call whose last response would win (SessionTitleControl's
+  // button has the same guard in its `generating` state).
+  const menuAutoTitleInFlight = useRef(false)
   const [sidePanelDock] = useSidePanelDock()
   // Recomputed on every dock flip: the wrapper keeps one React key across the
   // flip, so both axes have to stay named or the flipped-away one gets driven
@@ -6402,36 +6441,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // top-to-bottom. The header row ends at the slot's left edge,
   // so the top-bar right cluster (capsule, terminal, bell, gear) shifts left
   // when the panel opens. Null on mobile / embed frames -> inline fallback.
-  //
-  // Seed the portal slot SYNCHRONOUSLY so the very first render after a
-  // ChatPage remount (e.g. switching back to /chat) already targets the
-  // full-height actbar grid column. An effect-only seed leaves activitySlot
-  // null for render 1, which falls back to the inline panel (rendered below
-  // the header) and then flashes: below-header -> disappear -> portal opens.
-  // The App shell (and its #activity-bar-slot) lives outside the router, so on
-  // route-nav back it's already in the DOM. The effect below stays as the
-  // fallback for cold load / mobile->desktop crossings where it isn't yet.
-  const [activitySlot, setActivitySlot] = useState<HTMLElement | null>(
-    () => (isMobile || embedMode) ? null : document.getElementById('activity-bar-slot'),
-  )
-  useEffect(() => {
-    if (isMobile || embedMode) { setActivitySlot(null); return }
-    const el = document.getElementById('activity-bar-slot')
-    if (el) { setActivitySlot(el); return }
-    // Slot not in the DOM yet. On a mobile -> desktop crossing, this
-    // component's media-query subscription can flush (and run this effect)
-    // before the App shell re-renders the slot div -- a one-shot lookup here
-    // would miss it forever and strand the panel on the inline fallback
-    // (rendering below the header instead of in the full-height column).
-    // Watch the DOM until the slot appears, then latch it and stop.
-    setActivitySlot(null)
-    const mo = new MutationObserver(() => {
-      const found = document.getElementById('activity-bar-slot')
-      if (found) { setActivitySlot(found); mo.disconnect() }
-    })
-    mo.observe(document.body, { childList: true, subtree: true })
-    return () => mo.disconnect()
-  }, [isMobile, embedMode])
+  // `useShellSlot` seeds synchronously (no first-render flash into the inline
+  // fallback) and watches the DOM across a mobile -> desktop crossing; the
+  // phone top-bar slots below resolve through the same hook.
+  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and the render below so the two cannot disagree. */
   const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
@@ -6800,6 +6813,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {mobileSessions ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
     </button>
   )
+  /**
+   * The same toggle for the shell's bar. `p-2` puts its 32px box at the bar's
+   * 8px inset, so the glyph's ink lands on the 16px page gutter the nav logo
+   * held before it (page-layout.md, "The title belongs to the content column").
+   */
+  const topbarSessionsToggle = (
+    <button className="p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')} aria-expanded={mobileSessions} data-testid="mobile-topbar-sessions-toggle">
+      {mobileSessions ? <PanelLeftLight size={18} /> : <PanelLeftSolid size={18} />}
+    </button>
+  )
 
   // Unchanged from the inline WelcomeView handler; shared with the composer memory chip.
   const switchMemoryMode = async (newMode: MemoryMode) => {
@@ -6988,7 +7011,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // OverlayDrawer applies width and the x slide AFTER this style, so neither
         // can be overridden from here.
         slideStyle={isMobile ? { marginTop: vv.offsetTop, marginBottom: keyboardInset } : undefined}
-        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-safe-offset-[42px] bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+        // Top edge: below the shell's bar while this page still draws its own
+        // title row under that bar, so the two bars stay visible above the
+        // panel; with the row IN the shell's bar (`titleInTopbar`) the panel
+        // covers the whole safe-area height like the App nav drawer it
+        // replaces on this route -- the rail's brand mark then sits where
+        // that drawer's did. Close: scrim tap, swipe, Back -- all unchanged.
+        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : ''}>
+        {/* Phone chat page: ONE drawer holds the shell's navigation rail (72px,
+            from MobileNavRailContext) beside the sessions pane, Discord-style, so
+            the bar above needs no second drawer trigger. The pane keeps its
+            `staticRows` content and takes the drawer's remaining width; the
+            drawer's own width, slide, scrim and keyboard inset are unchanged.
+            Row taps that stay on this page close the drawer (`closeSidebar`);
+            rows that leave it `replace` the duplicate history entry
+            `pushDrawerEntry` minted, so Back lands on the chat. */}
+        {(() => {
+        const sessionsPane = (
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -7010,7 +7049,175 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           chatDropTarget={canStageSessionRef ? chatPaneEl : null}
           onDropSessionRef={stageSessionRef}
         />
+        )
+        return isMobile && mobileNavRail ? (
+          <div className="flex h-full min-h-0 w-full" data-testid="mobile-split-drawer">
+            {mobileNavRail({ onActivate: closeSidebar })}
+            {/* The pane sits on the drawer's elevated surface so it reads apart
+                from the rail's `bg-bg-accent` (the sidebar's own shell paints
+                `bg-bg`, one step too close to the rail on the light themes). */}
+            {/* The drawer's `[&>*]` resets (no card border/radius/margin on the
+                sidebar root) reach only its direct child, which is now this
+                wrapper -- so the wrapper carries the same resets one level down. */}
+            <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col overflow-hidden bg-bg-elevated [&_.sidebar-inner]:!bg-bg-elevated [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!min-w-0 [&_.sidebar-inner]:!shrink [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0">{sessionsPane}</div>
+          </div>
+        ) : sessionsPane
+        })()}
       </OverlayDrawer>
+      )}
+      {/* Phone: this page's share of the shell's single top bar. Leading cell:
+          [sessions toggle][session title][session menu]. The title is first and
+          the menu chevron trails it, as on the approved mock — one control the
+          eye reads as "the session, and its menu". Rendered whenever the slot
+          exists, so the sessions toggle is in the bar even with no session open
+          (the fixed corner button below stands down); the title half needs a
+          session and is not drawn in split view, whose grid names each pane. */}
+      {topbarSlot && createPortal(
+        <>
+          {embedMode !== 'chat' && topbarSessionsToggle}
+          {activeSlot && !(splitMode && splitFeatureEnabled) && (
+            <div className="group/header flex min-w-0 flex-1 items-center gap-0.5" data-testid="mobile-topbar-title">
+              {/* ONE control for title + menu: the session menu's trigger carries
+                  the title text with the chevron flush after its last character
+                  (the approved mock), so the bar's centre holds two controls --
+                  the sessions toggle and this -- and the title has one tap
+                  target, not a rename tap beside a menu tap. Rename lives in the
+                  menu (`onRename`) and swaps this trigger for the shared title
+                  editor while it is open; the memory-mode glyphs ride the label
+                  so an incognito/temporary session is still marked. */}
+              {editingTitle ? (
+                <SessionTitleControl
+                  slotKey={activeSlot}
+                  title={title}
+                  editing
+                  onEditingChange={open => setEditingTitleSlot(open ? activeSlot : null)}
+                  onError={showActionError}
+                  onAttempt={() => setActionError(null)}
+                />
+              ) : (
+                <ChatHeaderMenu
+                  activeSlot={activeSlot}
+                  agent={currentSlot?.agent}
+                  onReveal={() => {
+                    // Same as the inline row's reveal: the phone drives its own
+                    // drawer, and the store carries the request (#912).
+                    sidebarAutoHidden.current = null
+                    openSidebar()
+                    dispatch(requestSlotReveal(activeSlot))
+                  }}
+                  onRename={() => setEditingTitleSlot(activeSlot)}
+                  // The phone bar does not render the title row's hover-revealed
+                  // Auto-title button (an opacity-0 control has no touch home), so
+                  // the LLM rename is a menu item here. Same endpoint and same
+                  // store write as SessionTitleControl's button; the Undo window
+                  // that button offers is a hover-hold affordance and is not
+                  // offered from a menu -- Rename in the same menu is the way back.
+                  onAutoTitle={() => {
+                    if (menuAutoTitleInFlight.current) return
+                    menuAutoTitleInFlight.current = true
+                    setActionError(null)
+                    const slot = activeSlot
+                    api.generateTitle(slot).then(r => {
+                      /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */
+                      if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title }))
+                    }).catch(e => showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title')))
+                      .finally(() => { menuAutoTitleInFlight.current = false })
+                  }}
+                  mode={effectiveMode}
+                  sidebarOnScreen={sidebarOnScreen}
+                  // Pop out / focus the popped-out window live in the bar's
+                  // trailing ⋯ menu (below), the phone's window menu; the same
+                  // row in two adjacent menus read as two different actions.
+                  omitPopout
+                  triggerLabel={
+                    <>
+                      {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
+                      {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
+                      {title}
+                    </>
+                  }
+                />
+              )}
+              {/* The autopilot explainer rides the bar too: it is the only
+                  place the mode is explained, and the inline row that carried
+                  it is not rendered here. A tooltip disclosure, not an action. */}
+              {/* No Autopilot InfoTip here: it is a third button in a two-button
+                  cell. The session menu already names the mode (its
+                  Autopilot/Normal switch row) and the composer shows it. No
+                  InboundLinkChip either, for the same reason: a two-way link
+                  would make it a third trigger. Its actions are the session
+                  menu's "Linked surfaces" section (LinkedSurfacesSection). */}
+            </div>
+          )}
+        </>,
+        topbarSlot,
+      )}
+      {/* Trailing cell: the page's overflow menu, after the shell's bell — the
+          second of the two controls a row may hold. It carries what the inline
+          title row shows as icons: pop-out (or focus the popped-out window),
+          the activity panel, and split view. Nothing here is a hard swap: the
+          menu opens with DropdownMenu's own animation. */}
+      {topbarTrailSlot && activeSlot && !embedMode && createPortal(
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="w-8 h-8 rounded-md flex items-center justify-center text-text hover:text-text-strong hover:bg-bg-hover bg-transparent border-none cursor-pointer shrink-0" aria-label={i18nT('pages.chatPage.more_actions')} title={i18nT('pages.chatPage.more_actions')} data-testid="mobile-topbar-more">
+              <MoreHorizontal size={18} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[220px]">
+            {/* A pending update leads the menu (accent row, same lifecycle label
+                as the desktop pill: available → downloading N% → ready). The
+                phone bar has no cell with room for the pill without making a
+                three-control group, so this is its phone home. Renders nothing
+                when no update exists. */}
+            {/* Local boundary: this is a lazy chunk, and a chunk that fails to
+                load after the preload heal declined would otherwise reject up
+                to the ROUTE boundary and replace the whole chat page with an
+                error card. The fallback is the shared error surface, not
+                nothing: this menu is the update's only phone home, so a chunk
+                that never loads must SAY so here (`errors-use-error-notice`),
+                and the sibling item carries the agent hand-off through the
+                menu's roving focus. Settings › About still checks for updates. */}
+            <ErrorBoundary
+              scope="mobile-update-menu"
+              fallback={
+                <>
+                  <ErrorNotice
+                    id="mobile-update-menu-error"
+                    variant="inline"
+                    className="px-2 py-1.5"
+                    message={i18nT('pages.chatPage.update_entry_load_failed')}
+                  />
+                  <ErrorNoticeMenuItem Item={DropdownMenuItem} message={i18nT('pages.chatPage.update_entry_load_failed')} describedBy="mobile-update-menu-error" />
+                </>
+              }
+            ><Suspense fallback={null}><MobileUpdateMenuItem variant="menu-item" /></Suspense></ErrorBoundary>
+            {activePoppedOut ? (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => focusActivePopout(activeSlot)}>
+                <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.focus_popped_out_window')}</span></span>
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => openActivePopout(activeSlot, currentSlot?.title)}>
+                <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.pop_out_to_window')}</span></span>
+              </DropdownMenuItem>
+            )}
+            {!activityOpen && (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={toggleAct}>
+                <span className="flex items-center gap-2"><PanelRightSolid size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.open_activity_panel')}</span></span>
+              </DropdownMenuItem>
+            )}
+            {splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(splitAnchorForActive)}>
+                <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.return_to_split_view')}</span></span>
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot)}>
+                <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.enter_split_view')}</span></span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>,
+        topbarTrailSlot,
       )}
 
       {/* Per-slot tag picker — a single connected popover, opened from any session
@@ -7156,7 +7363,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             corner -- in Papyrus, on the toolbar's back button, giving two
             overlapping tap targets on the app's primary exit. A host that
             embeds one scoped conversation has no sessions list to open. */}
-        {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
+        {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !titleInTopbar && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-safe-offset-[42px] left-safe ml-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={openSidebar} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {/* Same glyph as the desktop toggle: a control is named by the SURFACE
@@ -7224,7 +7431,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             // toggle inline.
             leading={
               isMobile
-                ? (embedMode !== 'chat' ? { control: mobileSessionsToggle } : undefined)
+                ? (embedMode !== 'chat' && !titleInTopbar ? { control: mobileSessionsToggle } : undefined)
                 : (embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && !sidebarOpen ? { inset: true } : undefined)
             }
             onClose={() => setSplitMode(false)}
@@ -7280,6 +7487,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   values on the same 320ms curve as the panel — an instant
                   class flip here reads as the title jumping sideways at the
                   start of the slide. */}
+              {/* Phone: the shell's single bar hosts this row (the portal above),
+                  so the inline copy stands down. The fold sentinel, the pinned
+                  prompt and the header fade stay: they belong to the transcript
+                  column, not to the bar. */}
+              {!titleInTopbar && (
               <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
                 {/* Divider between toggle and title — ALWAYS mounted and
                     absolute (zero width, no flex-gap participation) so it can
@@ -7392,6 +7604,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   the transcript and the pinned card paints above it). */}
               <EdgeFade side="top" anchor="below" />
               </div>
+              )}
+              {titleInTopbar && <EdgeFade side="top" anchor="below" />}
               {/* Fold sentinel — zero-height, always mounted. Its top edge is the
                   line the pinned prompt sticks to (see updatePinnedPrompt). */}
               <div ref={pinFoldRef} aria-hidden className="h-0" />
@@ -7443,6 +7657,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               side={chatConfig.minimapSide}
             />
             <TranscriptScrollShell
+              // The 64px spacer clears the inline title row; with the row in
+              // the shell's bar (phone) the transcript starts at the top of the
+              // column and the spacer would be a blank band under the bar.
+              headerSpacer={!titleInTopbar}
               scrollerRef={scrollerRef}
               onScroll={onScrollPin}
               virt={virt}

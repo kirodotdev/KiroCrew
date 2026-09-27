@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -40,6 +40,10 @@ export interface SessionActionsMenuProps {
   onReveal?: () => void
   /** Rename entry point — differs per surface (sidebar inline row-edit vs header title editor). */
   onRename?: () => void
+  /** Auto-title entry point for a surface whose title row cannot host the
+   *  hover-revealed button (the phone's single top bar): the LLM rename lands
+   *  here as a menu item so the capability keeps a touch-reachable home. */
+  onAutoTitle?: () => void
   /**
    * Open this session as a tab on the calling surface. Present only where a tab
    * strip exists (the dashboard chat surface), which is why it is a bubble prop
@@ -64,6 +68,13 @@ export interface SessionActionsMenuProps {
    * Omitted means "not on screen", the direction that never hides the fact.
    */
   sidebarOnScreen?: boolean
+  /**
+   * Leave out the "Pop out to window" / "Focus popped-out window" rows. The
+   * phone chat page's single top bar has its own window menu (the trailing ⋯)
+   * carrying exactly those two, and the same row in two adjacent menus read
+   * as two different actions. "Bring back to main" stays: it has no other home.
+   */
+  omitPopout?: boolean
 }
 
 /**
@@ -103,7 +114,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onOpenInNewTab, infoSlots, onColorPicked, sidebarOnScreen = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -163,6 +174,11 @@ export default function SessionActionsMenu({
       onRename && (
         <Item key="rename" onSelect={onRename}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
+        </Item>
+      ),
+      onAutoTitle && (
+        <Item key="auto-title" onSelect={onAutoTitle}>
+          <Sparkles size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.auto_title')}
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
@@ -259,7 +275,7 @@ export default function SessionActionsMenu({
         <Item key="bring-back-self" onSelect={returnSelfToMain}>
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
-      ) : poppedOut ? (
+      ) : omitPopout ? null : poppedOut ? (
         <Item key="focus-popout" onSelect={() => focusPopout(slotKey)}>
           <Monitor size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.focus_popped_out_window')}
         </Item>

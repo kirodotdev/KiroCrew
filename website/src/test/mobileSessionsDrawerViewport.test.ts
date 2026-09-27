@@ -76,7 +76,10 @@ describe('mobile sessions drawer overlay', () => {
     expect(call, 'the vertical extent must not be restated in JS')
       .not.toMatch(/\bcalc\(/)
     // …while the horizontal safe inset is untouched, as is the slide channel.
-    expect(call).toMatch(/mobile-sessions-overlay fixed top-safe-offset-\[42px\] bottom-safe left-safe/)
+    // Two top edges: below the shell bar while this page draws its own title
+    // row under it, the full safe-area height once that row lives IN the bar
+    // (the phone single top bar). Both spell the safe inset as a class.
+    expect(call).toMatch(/mobile-sessions-overlay fixed \$\{titleInTopbar \? 'top-safe' : 'top-safe-offset-\[42px\]'\} bottom-safe left-safe/)
   })
 })
 

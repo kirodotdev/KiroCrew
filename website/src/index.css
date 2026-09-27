@@ -2003,6 +2003,27 @@ file-tree-container{
 @media (max-width:767px){
   .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 }
+/* Phone chat page (`topbar-single`, App.tsx): the header is the ONE bar for
+   shell and conversation, so its centre cell is the chat page's title slot and
+   has to take every pixel the side cells leave -- the opposite of the
+   window-centred search above, where the sides split the remainder. Hence
+   `auto minmax(0,1fr) auto`, and no gap: the leading cell is empty in the
+   single-crew case, and a gap after an empty cell would push the sessions
+   toggle off the 16px page gutter the rest of the app lines up on.
+
+   The side cells here are a plain flex div / `.tb-trail`, deliberately NOT the
+   `.tb-left` / `.tb-right` groups: those are inline-size containers, and a size
+   container in an `auto` track has no content size to give, so it collapses to
+   its padding and clips its contents (the measurement is recorded in
+   test/topbarMenuButtonNarrow.test.ts). The single bar has no collapse ladder
+   -- the readout capsule is not rendered on it -- so it needs no containers.
+   `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the same
+   reason `.tb-right` has it: the bell badge overhangs its button by 4px, and
+   the header's own overflow would otherwise square it off. */
+@media (max-width:767px){
+  .topbar.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
+  .topbar.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
+}
 
 /* Each side group is a size-query container. Inline-size containment also stops
    the group contributing its content width to the track it sits in, which is

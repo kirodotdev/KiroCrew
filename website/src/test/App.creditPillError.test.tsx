@@ -109,16 +109,19 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
   })
 
-  it('keeps the dash on mobile, where the reading and the spinner are dropped', async () => {
-    // On a narrow viewport the segment renders neither the numbers nor the
-    // spinner, so without the dash the failed and warming states differ only by
-    // an opacity class on the same coin glyph — not a distinction a user can see.
+  it('renders no credit segment on mobile, where the readout capsule is not shown', async () => {
+    // The phone bar has no readout capsule at all (the chat page's single top
+    // bar holds two controls on the right, and a phone user does not act on a
+    // resource readout), so neither the failed nor the warming credit segment
+    // exists there — the dash-vs-spinner distinction is a desktop concern.
     isMobileMock.mockReturnValue(true)
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
-    const failed = await screen.findByLabelText(i18nT('app.kiro_credit_usage_unavailable'))
-    expect(failed.textContent).toContain('—')
+    await screen.findByRole('button', { name: i18nT('app.notifications') })
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    expect(document.querySelector('.tb-capsule')).toBeNull()
   })
 
   it('treats an api_key_auth unavailable payload as terminal, not still loading', async () => {
