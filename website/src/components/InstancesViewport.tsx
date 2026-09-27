@@ -35,7 +35,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import { api } from '../api/client'
-import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
+import {
+  DEFAULT_CONNECTION_METHOD,
+  WARM_SET_CAP_AUTO_CEILING,
+  transportPresentation,
+} from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
@@ -1028,7 +1032,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
-      transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+      // Through the shared mapping, not an inline comparison: this line used to
+      // read `=== 'ssm' ? 'ssm' : 'ssh'`, which reported a fargate crew's
+      // failure as `transport: ssh` — and disagreed with the settings panel,
+      // which reported the same failure as `ssm`.
+      transport: inst ? transportPresentation(inst).reportTransport : DEFAULT_CONNECTION_METHOD,
       // With the panel down the pane is healthy, so pass no status: the recorder's
       // no-failure path is what clears its de-dup signature, and gating this call
       // on `showPanel` would make that branch unreachable — leaving the signature
