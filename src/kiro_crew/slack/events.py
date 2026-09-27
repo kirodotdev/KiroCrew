@@ -1104,22 +1104,6 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
     try:
         blocks: list[dict] = []
 
-        # ── Data Handling Reminder ──
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        ":warning: *Do not enter sensitive or confidential data"
-                        " into Kiro Crew.* Follow your organization's data handling"
-                        " policy when using this tool."
-                    ),
-                },
-            }
-        )
-        blocks.append({"type": "divider"})
-
         # ── Status ──
         yolo = is_yolo_mode()
         blocks.append(

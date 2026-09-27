@@ -14725,7 +14725,6 @@
         "custom_deny_pattern": "自定义拒绝规则",
         "custom_patterns_counted_separately": "你的自定义模式在“拒绝的命令”中单独计数。",
         "custom_patterns_hidden_by_filter": "当前筛选条件隐藏了你的自定义模式。",
-        "data_classification_notice": "数据分级提示",
         "defense_in_depth_architecture": "纵深防御架构",
         "delete_pattern": "删除规则 {{name}}",
         "denied_commands": "已拒绝命令",
@@ -14759,7 +14758,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "禁用与常开控制项（敏感文件读取、IMDS、git 发布）重叠的规则并不会完全解除限制 — 纵深防御仍会阻止它。",
         "disabling_all_built_in_denies_removes_kirocrew_s": "禁用所有内置拒绝规则会移除 {{productName}} 针对破坏性命令和凭证外泄命令的保护。独立的纵深防御控制项（敏感路径、IMDS、git 发布）仍可能拦截部分命令。",
         "disabling_weakens_protection": "禁用“{{name}}”会削弱针对破坏性命令和凭证外泄命令的保护。独立的纵深防御控制项仍可能拦截部分命令。",
-        "do_not_enter_highly_sensitive_or_restricted_data": "请勿在 {{productName}} 中输入高度敏感或受限数据。在决定与代理共享哪些内容时，请遵循任何适用的数据处理政策。",
         "documentation": "文档",
         "effective_security_ceiling": "生效的安全上限",
         "enabled": "已启用",
@@ -16420,7 +16418,7 @@
         "label": "更新日志"
       },
       "security": {
-        "description": "安全态势、防御层级、认证与数据分级",
+        "description": "安全态势、防御层级与认证",
         "label": "安全"
       },
       "shortcuts": {

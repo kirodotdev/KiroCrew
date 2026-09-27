@@ -47,12 +47,6 @@ def env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ENV_TRUTHY
 
 
-DATA_WARNING = (
-    "⚠️  Do not enter sensitive, secret, or regulated data into KiroCrew.\n"
-    "   Treat anything you send as potentially logged or processed by the\n"
-    "   configured model provider."
-)
-
 # Outer wall-clock cap on a single ``_run_chat`` invocation (any dispatch site:
 # primary user turn, queue-drain, cron injection, subagent injection, Slack first
 # turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in

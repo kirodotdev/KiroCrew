@@ -21,7 +21,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
-from kiro_crew.constants import BANNER, DATA_WARNING
+from kiro_crew.constants import BANNER
 from kiro_crew.hooks import (
     TOOL_DENY,
     HookManager,
@@ -1069,7 +1069,6 @@ async def _interactive(
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold."""
     print(BANNER)
-    print(DATA_WARNING)
     print()
 
     print("Type your message (Ctrl+D or 'exit' to quit)\n")

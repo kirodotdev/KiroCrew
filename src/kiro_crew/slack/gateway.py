@@ -98,7 +98,7 @@ from kiro_crew.config.loader import (
     workspace_root,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
+from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY, strip_control_comments
 from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (
@@ -14347,7 +14347,6 @@ class GatewayOrchestrator:
         _watchdog.add_done_callback(self._background_tasks.discard)
 
         print("👻 Kiro Crew gateway starting…")
-        print(f"\n{DATA_WARNING}\n")
 
         connected = await self._connect_slack()
         # Record the real socket outcome so status surfaces (e.g. the Slack

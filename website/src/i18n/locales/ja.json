@@ -14725,7 +14725,6 @@
         "custom_deny_pattern": "カスタム拒否パターン",
         "custom_patterns_counted_separately": "カスタムパターンは「拒否されたコマンド」で個別に集計されます。",
         "custom_patterns_hidden_by_filter": "現在のフィルターによってカスタムパターンが非表示になっています。",
-        "data_classification_notice": "データ分類通知",
         "defense_in_depth_architecture": "多層防御アーキテクチャ",
         "delete_pattern": "パターン {{name}} を削除",
         "denied_commands": "拒否されたコマンド",
@@ -14759,7 +14758,6 @@
         "disabling_a_rule_that_overlaps_an_always_on_cont": "常時オンコントロール(機密ファイルの読み取り、IMDS、git-publish)と重複するルールを無効化しても、完全には解除されません。多層防御がブロック状態に保ちます。",
         "disabling_all_built_in_denies_removes_kirocrew_s": "すべての組み込み拒否を無効にすると、破壊的なコマンドや認証情報を持ち出すコマンドに対する {{productName}} の保護が解除されます。一部のコマンドは、独立した多層防御（機密パス、IMDS、git-publish）によって引き続きブロックされる場合があります。",
         "disabling_weakens_protection": "「{{name}}」を無効にすると、破壊的なコマンドや認証情報の持ち出しに対する保護が弱まります。独立した多層防御の制御によって引き続きブロックされるコマンドもあります。",
-        "do_not_enter_highly_sensitive_or_restricted_data": "{{productName}}に非常に機密性の高い、または制限されたデータを入力しないでください。エージェントと共有する内容を決定するときは、適用可能なデータ処理ポリシーに従ってください。",
         "documentation": "ドキュメント",
         "effective_security_ceiling": "有効なセキュリティシーリング",
         "enabled": "有効",
@@ -16420,7 +16418,7 @@
         "label": "リリース"
       },
       "security": {
-        "description": "セキュリティ体制、防御レイヤー、認定、データ分類",
+        "description": "セキュリティ体制、防御レイヤー、認定",
         "label": "セキュリティ"
       },
       "shortcuts": {

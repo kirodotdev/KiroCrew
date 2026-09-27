@@ -50,8 +50,8 @@ interface SettingsSubNavProps<K extends string> {
    *  because hosts historically used a shorter word for the back action
    *  ("Channels") than for the list's accessible name ("Chat channels"). */
   backLabel?: string
-  /** Content pinned to this SubNav in EVERY mode (e.g. Security's
-   *  data-classification notice). A slot rather than a host-rendered sibling
+  /** Content pinned to this SubNav in EVERY mode (e.g. Chat's save-error and
+   *  config-load-failure notices). A slot rather than a host-rendered sibling
    *  because its position depends on the responsive mode: above the list at
    *  rest, but BELOW the back bar when narrow mode has drilled in — a sibling
    *  above the component would sit above the back bar and displace the

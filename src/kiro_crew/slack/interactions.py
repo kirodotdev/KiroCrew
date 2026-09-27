@@ -2147,9 +2147,7 @@ async def _handle_allowlist(
                 dm = await _orch.slack.open_dm(new_user_id)
                 await _orch.slack.post_message(
                     dm,
-                    "✅ You've been added to the allowlist. You can now message me!\n\n"
-                    "⚠️ *Do not enter sensitive or confidential data into Kiro Crew.*"
-                    " Follow your organization's data handling policy when using this tool.",
+                    "✅ You've been added to the allowlist. You can now message me!",
                 )
             except Exception:
                 logger.debug("Failed to DM approved user %s", new_user_id, exc_info=True)
