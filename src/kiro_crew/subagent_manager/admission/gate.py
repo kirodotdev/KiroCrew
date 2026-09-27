@@ -517,9 +517,10 @@ class _GateMixin(ManagerComponent):
         # above: both must admit.
         # ``_parent_spawn_policy`` is the event-loop callers' OFF-loop read
         # (``spawn_async``, ``/api/spawn`` and the durable pump resolve it
-        # through ``to_thread``; the in-memory queue's drain re-enters with the
-        # copy stored in ``queue_params`` below). The inline fallback serves the
-        # synchronous ``spawn()`` callers that are not on the loop.
+        # through ``to_thread``). The inline fallback serves the synchronous
+        # ``spawn()`` callers and the in-memory queue's synchronous drain, which
+        # re-enters WITHOUT a stored copy so the declaration is read fresh at
+        # dispatch (``queue_params`` below says why).
         if _gate and _parent_spawn_policy is None:
             _parent_spawn_policy = parent_spawn_policy(parent_session_key)
         allowlist_err = (
@@ -594,12 +595,15 @@ class _GateMixin(ManagerComponent):
             # of the crew it was handed to.
             "memory_store": memory_store,
             "_execution_context": execution.to_record(),
-            # The parent's declaration as admitted, so the in-memory queue's
-            # synchronous drain re-enters without a directory scan on the loop.
-            # Process-local like ``_agent_prevalidated``: the durable row never
-            # carries it (``taskq_build_record``) and the pump re-resolves it
-            # off-loop before each re-check, so a restart faces a fresh read.
-            "_parent_spawn_policy": _parent_spawn_policy,
+            # Deliberately NOT queued: ``_parent_spawn_policy``. The queued
+            # entry waits on capacity, so the wait is unbounded in time, and
+            # the declaration it was admitted under may have been tightened
+            # while it waited. Every drain re-reads it: the durable pump
+            # off-loop before its re-check, the in-memory synchronous drain
+            # through the gate's inline fallback above -- a memo-pinned
+            # directory read (``_PARENT_ALLOWLIST_MEMO``), so a ``scandir``
+            # in the ordinary case, and a full parse only when the memo
+            # declines to pin.
             "crew": crew,
             "_stage_boundary_owner": _stage_boundary_owner,
             "_memory_mode": _memory_mode,

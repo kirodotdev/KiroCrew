@@ -546,11 +546,14 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   `parent_execution` it admitted (a parentless request passes `("", ())`),
   and the durable pump re-resolves it off-loop before each drained row's
   re-check — while the synchronous `spawn()` computes it inline for callers
-  that are not on the loop. The policy admitted with a row is stored in its
-  `queue_params` so the in-memory queue's synchronous drain re-enters with it
-  and scans nothing; it is process-local (`taskq_build_record` drops it from
-  the durable row, like `_agent_prevalidated`), so a restart faces a fresh
-  read. Neither catalog snapshot is used: `parsed_agent_specs` revalidates on
+  that are not on the loop. The policy a row was admitted under is NOT stored
+  with it: a queued row waits on capacity, so the wait is unbounded in time
+  and the declaration may be tightened while it waits. Every drain reads it
+  fresh -- the durable pump off-loop before its re-check, the in-memory
+  queue's synchronous drain through the gate's inline fallback, a memo-pinned
+  read (`_PARENT_ALLOWLIST_MEMO`) that is a `scandir` in the ordinary case and
+  a full parse only when the memo declines to pin. Neither catalog snapshot is
+  used: `parsed_agent_specs` revalidates on
   entry names and mtime alone, so an mtime-preserving rewrite of the parent's
   spec (`cp -p`, `rsync -t`, a restore) would serve its previous, permissive
   allowlist for ever; the non-blocking `cached_agent_specs` serves empty rows

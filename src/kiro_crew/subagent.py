@@ -56,10 +56,11 @@ from kiro_crew.agent_discovery import (
     _read_agent_spec,
     cached_project_agent_names,
     list_agents,
+    plain_markdown_document,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
-from kiro_crew.agent_spec_format import iter_agent_spec_files
+from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
@@ -647,7 +648,10 @@ def _scan_parent_spawn_allowlists(
 
     Every spec file goes through the hardened reader under the gate's own SEL
     labels, and a file the reader refuses is kept as UNREADABLE rather than
-    folded into "no spec". Propagates ``OSError`` from the directory walk.
+    folded into "no spec" -- except a markdown file with no opening frontmatter
+    fence, which is not a spec at all (:func:`plain_markdown_document`) and is
+    skipped like the AppleDouble sidecar. Propagates ``OSError`` from the
+    directory walk.
     """
     rows: list[tuple[dict[str, Any], Path]] = []
     unreadable: list[Path] = []
@@ -657,6 +661,14 @@ def _scan_parent_spawn_allowlists(
             continue
         data = _read_agent_spec(path, operation="spawn_available_agents", source="subagent")
         if data is None:
+            if is_markdown_spec(path) and plain_markdown_document(path):
+                # No opening frontmatter fence: a README or a shared prompt
+                # fragment, not a spec. It cannot carry a ``name`` kiro-cli
+                # would resolve, so it can hide no declaration and the
+                # fail-closed rule for an unreadable spec does not reach it.
+                # A FENCED document that fails to parse announced itself as a
+                # spec and stays UNREADABLE.
+                continue
             unreadable.append(path)
         else:
             rows.append((data, path))
@@ -776,9 +788,9 @@ def _vet_parent_available_agents(
                 "(fail-closed)"
             )
         return (
-            f"the parent agent {parent_template!r} spec could not be read, so its "
-            "toolsSettings.subagent.availableAgents is unknown; refusing (fail-closed) -- "
-            "fix or remove the unreadable spec file"
+            f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
+            "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
+            "(fail-closed) -- fix or remove the unreadable spec file"
         )
     if not allowlists:
         return None
@@ -798,13 +810,19 @@ def _vet_parent_available_agents(
     shown = [redact_via_context(p) for p in patterns[:_MAX_AVAILABLE_IN_ERROR]]
     withheld = len(patterns) - len(shown)
     roster = ", ".join(shown) + (f" (+{withheld} more)" if withheld else "")
+    # The two names are caller-supplied text: the refusal travels back to that
+    # caller through ``info.error`` BEFORE ``_validate_agent`` has vetted the
+    # target, and the warning lands in the log, so both surfaces get the same
+    # redaction as the roster.
+    shown_agent = redact_via_context(agent)
+    shown_parent = redact_via_context(parent_template)
     logger.warning(
         "Agent %r is not in parent agent %r availableAgents; refusing spawn",
-        agent,
-        parent_template,
+        shown_agent,
+        shown_parent,
     )
     return (
-        f"agent {agent!r} is not in the parent agent {parent_template!r} spec's "
+        f"agent {shown_agent!r} is not in the parent agent {shown_parent!r} spec's "
         f"toolsSettings.subagent.availableAgents"
         + (f" (allowed: {roster})" if roster else " (the list is empty)")
     )

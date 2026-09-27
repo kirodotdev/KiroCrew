@@ -223,6 +223,38 @@ class TestParentAllowlistResolution:
         agent_discovery.clear_list_agents_cache()
         assert sa.parent_spawn_allowlists("orchestrator3") == ()
 
+    def test_a_plain_markdown_document_is_not_an_unreadable_spec(self, agents_dir: Path) -> None:
+        """``planner.json`` declares no ``name`` so the parent resolves by filename
+        stem, and an ordinary ``README.md`` sits beside it. The README has no frontmatter fence, so it
+        is not a spec and cannot hide a declaration: it must not turn the
+        parent's answer from ``()`` into UNKNOWN (refuse every spawn)."""
+        (agents_dir / "planner.json").write_text(
+            json.dumps({"description": "d", "tools": ["fs_read"]}), encoding="utf-8"
+        )
+        agent_discovery.clear_list_agents_cache()
+        assert sa.parent_spawn_allowlists("planner") == ()
+        (agents_dir / "README.md").write_text("# Agents\n\nNotes about this directory.\n")
+        agent_discovery.clear_list_agents_cache()
+        assert sa.parent_spawn_allowlists("planner") == ()
+        assert _vet("planner", "agent1") is None
+
+    def test_a_fenced_markdown_spec_that_does_not_parse_still_refuses(
+        self, agents_dir: Path
+    ) -> None:
+        """The other side of the exemption: a ``.md`` that OPENS a frontmatter
+        fence announced itself as a spec, so when it fails to parse it stays
+        UNREADABLE and the stem-resolved parent is still refused (fail-closed).
+        Both a fence with broken YAML and a fence that never closes."""
+        (agents_dir / "planner.json").write_text(
+            json.dumps({"description": "d", "tools": ["fs_read"]}), encoding="utf-8"
+        )
+        broken = agents_dir / "planner-notes.md"
+        for text in ("---\nname: [broken\n---\nbody\n", "---\nname: planner\nnever closed\n"):
+            broken.write_text(text, encoding="utf-8")
+            agent_discovery.clear_list_agents_cache()
+            assert sa.parent_spawn_allowlists("planner") is None, text
+            assert _vet("planner", "agent1") is not None, text
+
     def test_unrelated_unreadable_spec_does_not_refuse_a_readable_parent(
         self, triage_fixture: Path
     ) -> None:
@@ -320,6 +352,41 @@ class TestVetAgainstParentSpec:
         assert "rogue" in denial and "availableAgents" in denial
         # The allowlist travels with the refusal so the caller can self-correct.
         assert "agent1" in denial
+
+    def test_refusal_redacts_a_credential_shaped_target(self, triage_fixture: Path) -> None:
+        """The refusal reaches the caller through ``info.error`` before
+        ``_validate_agent`` has vetted the name, so caller-supplied text in
+        ``agent`` must go through the same redaction as the roster next to it."""
+        # Named ``planted`` on purpose: CodeQL seeds a sensitive-data source from
+        # a variable called ``secret`` and does not treat the redaction as a
+        # sanitizer, so that name would re-flag the (redacted) log line downstream.
+        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        denial = _vet("orchestrator", planted)
+        assert denial is not None
+        assert planted not in denial
+        assert "[REDACTED" in denial
+        # The refusal is otherwise intact: the roster still travels with it.
+        assert "availableAgents" in denial and "agent1" in denial
+
+    def test_refusal_log_line_is_redacted_too(
+        self, triage_fixture: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        with caplog.at_level("WARNING", logger="kiro_crew.subagent"):
+            assert _vet("orchestrator", planted) is not None
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert "refusing spawn" in joined
+        assert planted not in joined and "[REDACTED" in joined
+
+    def test_unreadable_spec_refusal_redacts_the_parent_name(self) -> None:
+        """The fail-closed branch names the parent whose spec could not be read;
+        that name is the session's persisted template id, so it is redacted
+        exactly as the sibling refusal redacts it."""
+        planted = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        denial = sa._vet_parent_available_agents((planted, None), "agent1")
+        assert denial is not None
+        assert "could not be read" in denial
+        assert planted not in denial and "[REDACTED" in denial
 
     def test_listed_agent_is_admitted(self, triage_fixture: Path) -> None:
         for name in ("agent1", "agent2", "agent3"):
@@ -494,10 +561,12 @@ class TestGateWiring:
         assert seen and all(tid != loop_thread for tid in seen), "policy resolved on the loop"
 
     @pytest.mark.asyncio
-    async def test_queued_params_carry_the_admitted_policy(self, triage_fixture: Path) -> None:
-        """The in-memory queue's synchronous drain re-enters ``spawn`` from the
-        stored params, so the policy admitted with the row travels with it and
-        the drain scans nothing on the loop; the durable row never carries it."""
+    async def test_queued_params_do_not_carry_the_admitted_policy(
+        self, triage_fixture: Path
+    ) -> None:
+        """A queued entry waits on capacity, so the declaration it was admitted
+        under may be tightened while it waits. Neither the in-memory entry nor
+        the durable row stores the policy; every drain reads it fresh."""
         from kiro_crew.subagent import SubagentManager
 
         manager = SubagentManager(
@@ -519,7 +588,7 @@ class TestGateWiring:
             )
         assert queued is not None and queued.queued
         params = manager._queue[0]
-        assert params["_parent_spawn_policy"] == policy
+        assert "_parent_spawn_policy" not in params
         record = manager._admission.taskq_build_record(
             "x",
             params,
@@ -531,6 +600,59 @@ class TestGateWiring:
             approval_mode=None,
         )
         assert "_parent_spawn_policy" not in record.params
+
+    @pytest.mark.asyncio
+    async def test_sync_drain_honours_a_declaration_tightened_while_queued(
+        self, triage_fixture: Path
+    ) -> None:
+        """The in-memory queue's synchronous drain re-enters ``spawn`` from the
+        stored params. A spawn admitted under the parent's declaration, then
+        parked on capacity while the operator tightens ``availableAgents`` to
+        exclude its target, is refused when it drains -- the gate re-reads the
+        declaration instead of reusing the one it was admitted under."""
+        from kiro_crew.subagent import SubagentManager
+
+        manager = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder(), max_concurrent=1
+        )
+        await manager.wait_taskq_ready()
+        parent = _parent_execution("orchestrator")
+        admitted = ("orchestrator", (("agent1", "agent2", "agent3"),))
+        tightened = ("orchestrator", (("agent2",),))
+        drained: list[Any] = []
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.execution_context.read_session_execution", return_value=parent),
+            patch("kiro_crew.subagent.read_session_execution", return_value=parent),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+            patch.object(sa, "parent_spawn_policy", return_value=tightened) as fresh_read,
+        ):
+            manager.spawn(
+                "occupy",
+                parent_session_key="chat-parent",
+                agent="agent1",
+                _parent_spawn_policy=admitted,
+            )
+            queued = manager.spawn(
+                "waiting",
+                parent_session_key="chat-parent",
+                agent="agent1",
+                _parent_spawn_policy=admitted,
+            )
+            assert queued is not None and queued.queued
+            assert fresh_read.call_count == 0  # admitted from the precomputed policy
+            # The occupying run ends; the synchronous drain re-enters spawn.
+            real_spawn = manager.spawn
+            manager.spawn = lambda *a, **kw: drained.append(real_spawn(*a, **kw)) or drained[-1]  # type: ignore[method-assign]
+            manager._running_count = 0
+            manager._spawn_stagger_secs = 0.0
+            manager._drain_queue()
+        assert drained, "the queue did not drain"
+        info = drained[-1]
+        assert fresh_read.call_count == 1, "the drain did not re-read the declaration"
+        assert info is not None and info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+        assert "agent1" in info.error and "agent2" in info.error
 
     def test_error_code_is_distinct_from_not_found(self) -> None:
         assert sa.AGENT_NOT_AVAILABLE_CODE != sa.AGENT_NOT_FOUND_CODE

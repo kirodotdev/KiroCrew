@@ -280,9 +280,11 @@ class _PumpMixin(ManagerComponent):
         policy = await asyncio.to_thread(
             parent_spawn_policy, str(params.get("parent_session_key") or "")
         )
-        # The durable row carries no policy (``taskq_build_record`` drops it);
-        # a params dict that still holds one yields to the fresh read. ``params``
-        # itself stays whole: it is the row's identity for the stop path below.
+        # Neither the queued entry nor the durable row carries a policy
+        # (``queue_params`` never stores one, ``taskq_build_record`` drops the
+        # key); the filter keeps a params dict that somehow holds one from
+        # shadowing the fresh read. ``params`` itself stays whole: it is the
+        # row's identity for the stop path below.
         spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
         first: Any = self._manager.spawn(
             **spawn_params,
