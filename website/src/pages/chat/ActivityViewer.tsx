@@ -518,13 +518,11 @@ export { countDiffStats }
  * a trailing external-link arrow in the row's right slot. The whole row is the
  * anchor, so any part of it opens the link in a new tab. */
 function ResourceRow({ link }: { link: ExtractedLink }) {
-  /* eslint-disable shadcn/no-unknown-classes -- shadcn-ui/lint#38: the rule reads every member of a destructured initializer as a class */
   const { Icon, colorCls } = link.type === 'cr'
     ? { Icon: GitPullRequest, colorCls: 'text-accent' }
     : link.type === 'issue'
       ? { Icon: CircleDot, colorCls: 'text-ok' }
       : { Icon: LinkIcon, colorCls: 'text-muted' }
-  /* eslint-enable shadcn/no-unknown-classes */
   const typeLabel = resourceTypeLabel(link.type)
   let host = ''
   try { host = new URL(link.url).hostname.replace(/^www\./, '') } catch { host = link.url }
