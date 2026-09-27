@@ -121,11 +121,46 @@ export function postNativeNotification(title: string, options: NativeNotifyOptio
     return
   }
   if (typeof Notification === 'undefined') return
-  try {
-    new Notification(title, { ...options, silent })
-  } catch {
-    /* unsupported platform */
+  deliverNativeNotification(title, { ...options, silent })
+}
+
+/**
+ * Show an OS notification, preferring the service worker registration over the
+ * page-context `new Notification(...)` constructor.
+ *
+ * The constructor throws "Illegal constructor" in an installed iOS PWA (and on
+ * Android Chrome, #1828), where the OS only permits notifications through
+ * `ServiceWorkerRegistration.showNotification()`. When a service worker is
+ * registered we deliver through it; otherwise (a desktop browser with no active
+ * registration) we fall back to the constructor. Both paths swallow their
+ * errors: an uncaught throw on the WebSocket message path kills the rest of the
+ * handler, and an unsupported platform is not the caller's problem.
+ *
+ * `onClick` is only honoured on the constructor path: a service-worker
+ * notification's click is handled by the worker's `notificationclick` event,
+ * not by a page-side handler, so a relayed banner keeps its click behaviour on
+ * desktop and simply lacks it on a PWA (where the SW handles it).
+ */
+function deliverNativeNotification(
+  title: string,
+  options: NotificationOptions,
+  onClick?: () => void,
+): void {
+  const withConstructor = () => {
+    try {
+      const n = new Notification(title, options)
+      if (onClick) n.onclick = onClick
+    } catch {
+      /* unsupported platform */
+    }
   }
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.ready
+      .then((reg) => reg.showNotification(title, options))
+      .catch(withConstructor)
+    return
+  }
+  withConstructor()
 }
 
 /**
