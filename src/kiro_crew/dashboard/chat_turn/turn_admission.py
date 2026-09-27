@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         Routing,
         SessionBusyError,
         _AppAgentNotLoaded,
+        _apply_pending_model_pick_at_turn_start,
         _MemoryUnavailable,
         capabilities_of,
         crew_log_emit,
@@ -733,7 +734,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # Warms the config the pick's fence re-check reads, so the
         # synchronous gate below does no file IO on the loop.
         await prewarm_enabled_check()
-    if apply_pending_model_pick(state, slot):
+    if await _apply_pending_model_pick_at_turn_start(state, slot, apply_pending_model_pick):
         arm_model_switch_reset(state, slot)
         # The commit above is memory-only; persist it before the provider is
         # acquired, so a gateway exit mid-turn does not restore the old pin.
