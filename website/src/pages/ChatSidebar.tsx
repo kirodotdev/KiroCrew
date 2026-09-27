@@ -3147,7 +3147,7 @@ const SessionRow = memo(function SessionRow({
                    *  Inside the card's own meta group rather than beside the card:
                    *  outside it, this cluster occupied the column the time uses. */}
                   {conductorMeta}
-                  {slotActivityTs(s) && <span className="text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
+                  {slotActivityTs(s) && <span data-testid="session-row-time" className="text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
                    *  pushing the agent name off its own start edge. */}

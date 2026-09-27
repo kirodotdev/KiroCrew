@@ -78,9 +78,13 @@ export function FolderBody({
         // `clip` clips identically without becoming a scroll container.
         overflow: 'clip',
         // `clip` also means this grid item is no longer a scroll container, so
-        // its automatic minimum height is its content height again and the
-        // `0fr` track would stop collapsing. An explicit 0 restores the collapse.
+        // its automatic minimum size is its content size again, on BOTH axes.
+        // Height: the `0fr` track would stop collapsing. Width: the rows'
+        // single-line titles would set this box's min-content width, so every
+        // row in the folder grew to the longest title and pushed its timestamp
+        // and hide button past the sidebar's edge. Explicit zeros restore both.
         minHeight: 0,
+        minWidth: 0,
         visibility: open ? 'visible' : 'hidden',
         contentVisibility: layoutSuppressed ? 'hidden' : 'visible',
         padding: open ? padding : 0,
