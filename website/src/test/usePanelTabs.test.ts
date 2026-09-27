@@ -71,7 +71,7 @@ describe('usePanelTabs', () => {
   })
 
   it('openFile dedupes on path, titles by basename, and carries the origin slot', () => {
-    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
     act(() => result.current.openFile('/src/pages/ChatPage.tsx', 'body-1', 'slot-a'))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.activeTab).toMatchObject({
@@ -82,6 +82,23 @@ describe('usePanelTabs', () => {
     act(() => result.current.openFile('/src/pages/ChatPage.tsx', 'body-2', 'slot-a'))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.activeTab?.content).toBe('body-2')
+  })
+
+  it('routes the file tab into the NAMED slot bucket, not the bound one (#9921 split panes)', () => {
+    // Split view shares ONE opener across panes but each pane owns its own
+    // slot. A file opened from pane B must land in B's bucket AND be stamped B,
+    // or the tab vanishes when B becomes active (it would sit in the bound
+    // active slot A's bucket, keyed elsewhere). Same contract openView holds.
+    const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot, mock.descriptors), {
+      initialProps: { slot: 'pane-a' as string | null },
+    })
+    // Bound to A; open a file for pane B (the shared-opener situation).
+    act(() => result.current.openFile('/x/spec.md', 'body', 'pane-b'))
+    expect(result.current.tabs).toEqual([]) // A's bucket is untouched
+
+    rerender({ slot: 'pane-b' })
+    expect(result.current.tabs.map(t => t.id)).toEqual(['file:/x/spec.md'])
+    expect(result.current.activeTab).toMatchObject({ slot: 'pane-b', content: 'body' })
   })
 
   it('evictDocumentBodies drops clean file bodies and diff tabs, keeps dirty buffers, in every slot', () => {
@@ -147,12 +164,12 @@ describe('usePanelTabs', () => {
   })
 
   it('re-opening a file with unsaved edits focuses it and keeps the edited buffer', () => {
-    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    const { result } = renderHook(() => usePanelTabs('slot-a', mock.descriptors))
     act(() => result.current.openFile('/notes.md', 'on-disk', 'slot-a'))
     // The user types into the editor (MarkdownPanel patches content per edit).
     act(() => result.current.patchTab('file:/notes.md', { content: 'user edits' }))
     // Something re-opens the same path — another chip, the Files tab row.
-    act(() => result.current.openFile('/notes.md', 'on-disk'))
+    act(() => result.current.openFile('/notes.md', 'on-disk', 'slot-a'))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.activeId).toBe('file:/notes.md')
     // The buffer survives; the on-disk bytes do not revert it silently.
@@ -161,7 +178,7 @@ describe('usePanelTabs', () => {
   })
 
   it('re-opening a dirty text tab keeps its edits reachable: the disk binary verdict is not applied to the preserved buffer', () => {
-    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    const { result } = renderHook(() => usePanelTabs('slot', mock.descriptors))
     act(() => result.current.openFile('/a.bin', 'x', 'slot', { binary: false }))
     act(() => result.current.patchTab('file:/a.bin', { content: 'x edited' }))
 
@@ -178,7 +195,7 @@ describe('usePanelTabs', () => {
   })
 
   it('re-opening a CLEAN tab does apply the incoming disk binary verdict', () => {
-    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    const { result } = renderHook(() => usePanelTabs('slot', mock.descriptors))
     act(() => result.current.openFile('/a.bin', 'x', 'slot', { binary: false }))
     // No unsaved edits (buffer === baseline): the disk read replaces both the
     // buffer and its verdict, so the sibling branch does stamp binary: true.

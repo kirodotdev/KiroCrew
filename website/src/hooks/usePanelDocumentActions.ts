@@ -45,15 +45,21 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
   // placeholder tab; any other failure is REPORTED rather than shown as the
   // file's text. Bypassed entirely when the IntelliJ plugin handles file opens
   // — the user wanted IDE-native, not in-dashboard.
-  const openFile = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean }) => {
+  const openFile = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean; slot?: string | null }) => {
     try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
     if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     // Capture the slot BEFORE awaiting the read — the same discipline as
     // `saveFile`. `tabsCtl` was bound at the click, so the tab lands in the
     // INITIATING slot's bucket; stamping it with whatever slot is active once
     // the read resolves would route its comment submissions to a chat the user
-    // switched to mid-load.
-    const slot = slotRef.current ?? null
+    // switched to mid-load. In split view every pane shares ONE host opener but
+    // has its OWN slot, so a pane passes `opts.slot` to stamp the tab with the
+    // slot that owns the transcript the file was opened FROM, not whichever
+    // pane the host currently treats as active (#9487 / #9921). An `undefined`
+    // override falls back to the ref, keeping the single-chat and member-DM
+    // hosts byte-for-byte unchanged; an explicit `null` is a deliberate
+    // "no slot" and is honoured.
+    const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
     try {
       const [read] = await Promise.all([
         queryClient.fetchQuery({

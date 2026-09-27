@@ -58,8 +58,11 @@ export default function SessionGridView({
    *  geometric top-left pane either reserves its column (`inset`, desktop) or
    *  renders it inline (`control`, mobile) — see ChatPane's `leading`. */
   leading?: PaneLeading
-  /** Open a file in the host's file viewer for every pane (#9487). */
-  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a file in the host's file viewer for every pane (#9487). The host
+   *  opener accepts a `slot` override so each pane can stamp the opened tab
+   *  with ITS OWN session, not the host's active one — a file opened from a
+   *  non-focused pane in split view must bind to that pane's slot (#9921). */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void
 }) {
   const grid = useSessionGrid(seedSlot)
 
@@ -142,6 +145,17 @@ export default function SessionGridView({
   const renderLeaf = (leaf: GridLeaf, ownsTopLeft: boolean) => {
     const paneLeading = ownsTopLeft ? leading : undefined
     if (leaf.kind === 'session' && leaf.slot) {
+      // Slot-bound opener (#9921): the host hands ONE opener to every pane, but
+      // each pane owns a different session. Stamp the opened tab with THIS
+      // pane's slot so a file opened from a non-focused pane binds to that
+      // pane's chat (comment submissions, involvement breadcrumbs) instead of
+      // the host's active slot. ChatPane's `onFileOpen` only ever forwards a
+      // path (its transcript passes no opts today), so the pane slot is added
+      // here, at the one place that knows which pane this is.
+      const paneSlot = leaf.slot
+      const openFileForPane = onFileOpen
+        ? (path: string, opts?: { line?: number; endLine?: number }) => onFileOpen(path, { ...opts, slot: paneSlot })
+        : undefined
       return (
         <ChatPane
           slotKey={leaf.slot}
@@ -153,7 +167,7 @@ export default function SessionGridView({
           onOpenFull={onCollapse}
           openSideChat={openSideChat}
           leading={paneLeading}
-          onFileOpen={onFileOpen}
+          onFileOpen={openFileForPane}
         />
       )
     }

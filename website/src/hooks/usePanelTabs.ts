@@ -843,7 +843,15 @@ export function usePanelTabs(
     // line on the tab, so a later plain click on the same file would re-jump to
     // a line the user did not ask for.
     const reveal = opts?.line != null ? { line: opts.line, endLine: opts.endLine, nonce: nextRevealNonce() } : undefined
-    update(b => {
+    // Write into the bucket that OWNS the file, keyed by `slot`, not the strip's
+    // bound `key`. The two are the same on every host but split view, where one
+    // opener is shared across panes and `slot` is the pane's own session
+    // (#9921): stamping the tab `slot: B` while storing it in the bound slot A's
+    // bucket would hide the tab the moment B became active (it lives in A's
+    // bucket, keyed elsewhere). Routing the mutation to `bucketKey(slot)` keeps
+    // the stamp and the bucket the SAME slot. `null` slot keeps the bound key.
+    const target = slot !== null ? bucketKey(slot) : key
+    mutateSlot(target, b => {
       const prev = b.tabs.find(t => t.id === `file:${path}`)
       if (prev && prev.content !== prev.savedContent) {
         // The tab holds edits that were never saved (its buffer differs from
@@ -878,7 +886,7 @@ export function usePanelTabs(
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)
     })
-  }, [update])
+  }, [key])
 
   const openDiff = useCallback((path: string, modified: string, original = '') => {
     upsert({ id: `diff:${path}`, kind: 'diff', title: i18nT('hooks.usePanelTabs.diff', { name: basename(path) }), path, modified, original })
