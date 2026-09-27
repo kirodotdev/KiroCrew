@@ -268,7 +268,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
-src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
 src/kiro_crew/service/macos.py
 src/kiro_crew/session_workspace.py
