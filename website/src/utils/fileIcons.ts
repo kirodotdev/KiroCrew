@@ -210,11 +210,21 @@ export function fileToneForFamily(family: FileFamily): string {
 }
 
 export function colorForExt(path: string): string {
-  return FILE_COLORS[fileExtension(path)] || 'text-muted'
+  // `Object.hasOwn`, not a bare index with `||`: `FILE_COLORS` is an object literal, so
+  // a file named `x.constructor` or `x.__proto__` would resolve up the prototype chain
+  // to a truthy function or object and skip the fallback, handing a non-string to
+  // `className`. The extension comes from an untrusted path, so any key reaches here.
+  const extension = fileExtension(path)
+  return (Object.hasOwn(FILE_COLORS, extension) && FILE_COLORS[extension]) || 'text-muted'
 }
 
 /** Single icon lookup used by file chips, tiles, browsers and attachment cards. */
 export function fileIcon(path: string): LucideIcon {
   const extension = fileExtension(path)
-  return iconOverrides[extension] ?? FAMILY_ICONS[fileFamilyForPath(path)]
+  // `Object.hasOwn`, not a plain index with `??`: an INHERITED key is not nullish, so
+  // `iconOverrides['__proto__']` yields an object and `iconOverrides['constructor']` a
+  // function -- neither triggers the family fallback, and both would then be rendered
+  // as `<Icon />`, which throws and takes the whole transcript down with it.
+  if (Object.hasOwn(iconOverrides, extension)) return iconOverrides[extension]
+  return FAMILY_ICONS[fileFamilyForPath(path)]
 }

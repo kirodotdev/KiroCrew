@@ -2,6 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { BookOpen, File, FileCode, FileJson, FileKey, FileSpreadsheet, FileText, Image, Package, Paintbrush, Presentation, Settings, Terminal } from 'lucide-react'
 import { FILE_COLORS, fileIcon, colorForExt } from '../utils/fileIcons'
 
+/**
+ * Object.prototype keys that survive `fileExtension`'s lowercasing and so reach the
+ * lookup tables verbatim. (`toString`, `valueOf`, `hasOwnProperty` … lowercase to
+ * non-keys and are neutralised before the lookup; these two are not.)
+ */
+const PROTOTYPE_KEY_EXTENSIONS = ['__proto__', 'constructor']
+
 describe('fileIcon', () => {
   it('returns FileCode for code extensions', () => {
     expect(fileIcon('foo.ts')).toBe(FileCode)
@@ -79,6 +86,17 @@ describe('fileIcon', () => {
     expect(fileIcon('/abs/path/to/file.ts')).toBe(FileCode)
     expect(fileIcon('relative/path/to/file.css')).toBe(Paintbrush)
   })
+
+  it('falls back to generic File for prototype-chain extensions instead of an inherited value', () => {
+    // A bare `iconOverrides[extension] ?? ...` would return Object.prototype's own
+    // `constructor` (a function) or `__proto__` (an object), neither of which is a
+    // renderable component. The lookup must only honour the table's OWN keys.
+    for (const extension of PROTOTYPE_KEY_EXTENSIONS) {
+      expect(fileIcon(`evil.${extension}`)).toBe(File)
+      expect(fileIcon(`/abs/path/evil.${extension}`)).toBe(File)
+      expect(fileIcon(`.${extension}`)).toBe(File)
+    }
+  })
 })
 
 describe('colorForExt', () => {
@@ -124,5 +142,16 @@ describe('colorForExt', () => {
   it('is case-insensitive', () => {
     expect(colorForExt('Foo.TS')).toBe('text-blue-400')
     expect(colorForExt('Foo.PY')).toBe('text-green-500')
+  })
+
+  it('returns the muted fallback for prototype-chain extensions instead of an inherited value', () => {
+    // A bare `FILE_COLORS[extension] || ...` would return Object.prototype's own
+    // `constructor` (a truthy function), which then lands in `className`. Only the
+    // table's OWN keys may produce a color.
+    for (const extension of PROTOTYPE_KEY_EXTENSIONS) {
+      expect(colorForExt(`evil.${extension}`)).toBe('text-muted')
+      expect(colorForExt(`/abs/path/evil.${extension}`)).toBe('text-muted')
+      expect(colorForExt(`.${extension}`)).toBe('text-muted')
+    }
   })
 })
