@@ -446,6 +446,14 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
                 buffered,
                 dropped,
             )
+        if buffered or dropped:
+            # Every enqueue above started the ordinary 30-second batch timer. This
+            # is the meeting's opening, already delayed by agent initialization, so
+            # send it on the next event-loop turn instead of adding another full
+            # interval. Scheduling is synchronous: START_LOCK must not wait for an
+            # ordinary transcript turn, which has no lifecycle timeout.
+            for queue in session.agents.values():
+                queue.flush_soon()
         if dropped:
             # Off the lock (this is disk IO) but still inside START_LOCK. Recorded
             # so the human transcript states the loss too: the agents were told by

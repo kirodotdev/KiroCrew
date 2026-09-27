@@ -174,7 +174,7 @@ async def _toggle_agent_locked(
                             mdir, sess.get_enabled_agents(config, enabled_list)
                         ),
                     )
-                    + "\n\nYou are joining mid-meeting. Wait for transcription."
+                    + "\n\nYou are joining mid-meeting."
                 )
                 await sess._safe_dispatch(session, agent_id, message, agent_def.get("agent") or "")
     else:
