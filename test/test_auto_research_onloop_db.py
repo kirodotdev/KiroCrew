@@ -9,9 +9,10 @@ three directions:
 
 1. the runtime chokepoint guard in ``_get_db()`` (strict raise / production
    warn / off-loop no-op),
-2. a static AST ratchet: no ``async def`` in handlers.py calls a DB-touching
-   function directly (the offload pattern is ``asyncio.to_thread`` /
-   ``run_in_executor``, optionally via a nested sync helper),
+2. a static AST ratchet: no ``async def`` anywhere in the app package calls a
+   DB-touching function directly (the offload pattern is ``asyncio.to_thread``
+   / ``run_in_executor``, optionally via a nested sync helper), whether it
+   names the function bare or through its owning component module,
 3. an end-to-end contention proof: a held write lock on the campaigns DB
    stalls the affected handler, not the event loop's heartbeat.
 """
@@ -31,6 +32,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
+from kiro_crew.apps.builtins.auto_research.campaign import publication
 from kiro_crew.apps.builtins.auto_research.handlers import (
     CampaignStatus,
     _get_db,
@@ -109,12 +111,15 @@ class TestOnLoopGuard:
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         ]
         assert "check" in attrs
+        # ...and the guard it consults is the one these tests reset and read.
+        assert h._get_db.__globals__["_ON_LOOP_DB_GUARD"] is h._ON_LOOP_DB_GUARD
 
 
 # Functions that open (or transitively open) the campaigns DB. A direct call
-# to any of these inside an ``async def`` in handlers.py runs the 30s busy
-# timeout on the event loop. Kept honest by test_db_touching_set_is_current
-# below, which recomputes the closure from the AST.
+# to any of these inside an ``async def`` anywhere in the app package runs the
+# 30s busy timeout on the event loop. Kept honest by
+# test_db_touching_set_is_current below, which recomputes the closure from the
+# AST of every package module.
 _DB_TOUCHING_FNS = frozenset(
     {
         "_get_db",
@@ -133,30 +138,107 @@ _DB_TOUCHING_FNS = frozenset(
         "_ingest_emergent_questions",
         "_activate_emergent",
         "_advance_exploration",
+        "_append_question",
+        "_read_report_slug",
+        "_read_export_row",
+        "_persist_report_slug",
+        "_read_question_row",
+    }
+)
+
+_PACKAGE = Path(inspect.getsourcefile(h)).resolve().parent
+
+# The app's coroutines. The scans below must find each one, so none can drop
+# out of view unscanned.
+_HISTORIC_ASYNC_DEFS = frozenset(
+    {
+        "_settle_before_cancellation",
+        "_guarded_transition",
+        "_expire_trust",
+        "_suspend_research_loops_while_disabled",
+        "_record_new_cycle_from_watchdog",
+        "_settle_campaign_from_watchdog",
+        "_settle",
+        "_remove_terminating_loop",
+        "_watchdog_loop",
+        "_prepare_loop_launch",
+        "_launch_loop",
+        "_stop_loop",
+        "_launch_workflow",
+        "_stop_workflow",
+        "_poll_workflow_campaign",
+        "_read_json_body",
+        "_handle_validate",
+        "_grill_expand_children",
+        "_handle_grill_expand",
+        "_handle_create",
+        "_handle_list",
+        "_handle_get",
+        "_handle_report",
+        "_handle_action",
+        "_handle_delete",
+        "_handle_nudge",
+        "_handle_report_status",
+        "_handle_to_artifact",
+        "_handle_knowledge_status",
+        "_handle_to_knowledge",
+        "_handle_add_question",
+        "_handle_stream",
+        "_handle_grill_tree",
+        "_start_watchdog",
+        "_stop_watchdog",
     }
 )
 
 
-def _module_tree() -> ast.Module:
-    src = Path(inspect.getsourcefile(h)).read_text(encoding="utf-8")
-    return ast.parse(src)
+def _package_trees() -> list[tuple[str, ast.Module]]:
+    """Every module of the app package (its tests excluded), parsed."""
+    return [
+        (p.relative_to(_PACKAGE).as_posix(), ast.parse(p.read_text(encoding="utf-8")))
+        for p in sorted(_PACKAGE.rglob("*.py"))
+        if "tests" not in p.relative_to(_PACKAGE).parts and "__pycache__" not in p.parts
+    ]
+
+
+def _called_name(call: ast.Call) -> str | None:
+    """The function a call names, bare (``f()``) or through the component
+    module that owns it (``storage.f()``), so a qualified call is no blind spot."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name):
+        return call.func.attr
+    return None
+
+
+def _referenced_name(node: ast.AST) -> str | None:
+    """The function an expression names: ``f`` or ``component.f``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return node.attr
+    return None
 
 
 class TestStaticRatchet:
     def test_db_touching_set_is_current(self):
         """Drift guard: ``_DB_TOUCHING_FNS`` must equal the transitive closure
-        of top-level sync functions that reach ``_get_db``. A new sync DB
-        helper added to handlers.py without extending the set would make the
-        main ratchet below scan with a blind spot — fail loudly instead."""
-        tree = _module_tree()
+        of top-level sync functions that reach ``_get_db``, across every module
+        of the package. A new sync DB helper added without extending the set
+        would make the main ratchet below scan with a blind spot — fail loudly
+        instead."""
         calls: dict[str, set[str]] = {}
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef):
-                calls[node.name] = {
-                    n.func.id
-                    for n in ast.walk(node)
-                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                }
+        defined_in: dict[str, list[str]] = {}
+        for rel, tree in _package_trees():
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef):
+                    defined_in.setdefault(node.name, []).append(rel)
+                    calls[node.name] = {
+                        name
+                        for n in ast.walk(node)
+                        if isinstance(n, ast.Call) and (name := _called_name(n)) is not None
+                    }
+        # Merging by bare name is only sound while each name has one definition.
+        assert {n: m for n, m in defined_in.items() if len(m) > 1} == {}
         touching = {"_get_db"}
         changed = True
         while changed:
@@ -183,16 +265,12 @@ class TestStaticRatchet:
         _read_row()``) is flagged, since that re-runs the 30s busy wait on
         the loop while staying invisible to a name-based scan.
         """
-        tree = _module_tree()
         violations: list[str] = []
+        scanned: set[str] = set()
 
         def _body_touches_db(fn: ast.FunctionDef) -> bool:
             for n in ast.walk(fn):
-                if (
-                    isinstance(n, ast.Call)
-                    and isinstance(n.func, ast.Name)
-                    and n.func.id in _DB_TOUCHING_FNS
-                ):
+                if isinstance(n, ast.Call) and _called_name(n) in _DB_TOUCHING_FNS:
                     return True
             return False
 
@@ -218,10 +296,10 @@ class TestStaticRatchet:
                 if isinstance(n, ast.Call):
                     if _is_offload_call(n):
                         offloaded.update(
-                            a.id for a in n.args if isinstance(a, ast.Name) and a.id in flagged
+                            name for a in n.args if (name := _referenced_name(a)) in flagged
                         )
-                    elif isinstance(n.func, ast.Name) and n.func.id in flagged:
-                        violations.append(f"{node.name}:{n.lineno} calls {n.func.id}() on the loop")
+                    elif (name := _called_name(n)) in flagged:
+                        violations.append(f"{node.name}:{n.lineno} calls {name}() on the loop")
                 stack.extend(ast.iter_child_nodes(n))
             for name in sorted(db_closures - offloaded):
                 violations.append(
@@ -229,9 +307,12 @@ class TestStaticRatchet:
                     "passed to asyncio.to_thread / run_in_executor"
                 )
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef):
-                scan(node)
+        for _rel, tree in _package_trees():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AsyncFunctionDef):
+                    scanned.add(node.name)
+                    scan(node)
+        assert _HISTORIC_ASYNC_DEFS <= scanned, sorted(_HISTORIC_ASYNC_DEFS - scanned)
         assert not violations, (
             "direct campaigns-DB call(s) on the event loop (offload via "
             "asyncio.to_thread / run_in_executor):\n" + "\n".join(violations)
@@ -565,7 +646,6 @@ class TestGuardedTransition:
         lost-serialization race. ``_launch_workflow`` runs under
         ``_handle_action``'s transition lock, so its direct writes are exempt
         (the lock is not reentrant)."""
-        tree = _module_tree()
         background = {
             "_watchdog_loop",
             "_handle_nudge",
@@ -573,15 +653,19 @@ class TestGuardedTransition:
             "_record_new_cycle_from_watchdog",
         }
         offenders: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and node.name in background:
-                for n in ast.walk(node):
-                    if (
-                        isinstance(n, ast.Name)
-                        and n.id == "update_campaign_status"
-                        and isinstance(n.ctx, ast.Load)
-                    ):
-                        offenders.append(f"{node.name}:{n.lineno}")
+        found: list[str] = []
+        for _rel, tree in _package_trees():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AsyncFunctionDef) and node.name in background:
+                    found.append(node.name)
+                    for n in ast.walk(node):
+                        if (
+                            isinstance(n, (ast.Name, ast.Attribute))
+                            and isinstance(n.ctx, ast.Load)
+                            and _referenced_name(n) == "update_campaign_status"
+                        ):
+                            offenders.append(f"{node.name}:{n.lineno}")
+        assert sorted(found) == sorted(background), "a background frame dropped out of the scan"
         assert not offenders, (
             "background frame references update_campaign_status directly "
             f"(use _guarded_transition): {offenders}"
@@ -612,11 +696,13 @@ class TestBriefTransactionality:
         )
 
     def test_append_question_publishes_after_commit_under_the_lock(self):
-        src = self._producer_source(h._handle_add_question)
+        src = self._producer_source(publication._append_question)
         assert "_brief_publish_lock" in src, "append producer lost the publish lock"
         assert src.index("db.commit()") < src.index("_write_brief("), (
-            "_handle_add_question publishes the brief before commit"
+            "_append_question publishes the brief before commit"
         )
+        # The route adapter still reaches the append through that producer.
+        assert "publication._append_question" in self._producer_source(h._handle_add_question)
 
     def test_activate_emergent_publishes_after_commit_under_the_lock(self):
         src = self._producer_source(h._activate_emergent)
@@ -641,21 +727,22 @@ class TestBriefTransactionality:
         )
 
     def test_every_write_brief_producer_holds_the_publish_lock(self):
-        """Drift guard: any function that calls _write_brief must also acquire
-        _brief_publish_lock (rendering helpers and the lock factory exempt)."""
-        tree = _module_tree()
+        """Drift guard: any function in the package that calls _write_brief must
+        also acquire _brief_publish_lock (rendering helpers and the lock
+        factory exempt)."""
         offenders = []
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in ("_write_brief", "_brief_publish_lock"):
-                    continue
-                names = {
-                    n.func.id
-                    for n in ast.walk(node)
-                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                }
-                if "_write_brief" in names and "_brief_publish_lock" not in names:
-                    offenders.append(node.name)
+        producers = set()
+        for _rel, tree in _package_trees():
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name in ("_write_brief", "_brief_publish_lock"):
+                        continue
+                    names = {_called_name(n) for n in ast.walk(node) if isinstance(n, ast.Call)}
+                    if "_write_brief" in names:
+                        producers.add(node.name)
+                        if "_brief_publish_lock" not in names:
+                            offenders.append(node.name)
+        assert producers == {"_launch_loop", "_activate_emergent", "_append_question"}
         assert not offenders, f"_write_brief called without the publish lock in: {offenders}"
 
 

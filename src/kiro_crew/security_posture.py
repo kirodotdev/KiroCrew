@@ -2145,6 +2145,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "deploy/scan.py",
         # Bundled app backends: each app's own surface, not core egress.
         "apps/builtins/auto_research/handlers.py",
+        # A behavior-preserving decomposition of the Research Lab backend. These
+        # modules feed the same app-owned HTTP/SSE surface as handlers.py; the
+        # split adds no transport or audience and therefore no posture sink.
+        "apps/builtins/auto_research/campaign/agent_mode.py",
+        "apps/builtins/auto_research/campaign/exploration.py",
+        "apps/builtins/auto_research/campaign/lifecycle.py",
+        "apps/builtins/auto_research/campaign/publication.py",
+        "apps/builtins/auto_research/campaign/storage.py",
+        "apps/builtins/auto_research/campaign/untrusted.py",
+        "apps/builtins/auto_research/campaign/workflow_mode.py",
         "apps/builtins/code_review_sage/sage_lib/learning.py",
         "apps/builtins/code_review_sage/sage_lib/pipeline.py",
         "apps/builtins/code_review_sage/sage_lib/report.py",

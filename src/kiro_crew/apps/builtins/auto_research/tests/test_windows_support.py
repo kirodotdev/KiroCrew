@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -94,8 +95,13 @@ def test_every_text_io_call_pins_utf8():
     ``workflow_template.py`` carries Python source inside a string literal that
     must NOT be scanned as if it were code.
     """
+    files = _app_source_files()
+    # The engine's components are scanned too, not just the route facade.
+    assert {"handlers.py", "campaign/storage.py", "campaign/workflow_mode.py"} <= {
+        p.relative_to(APP_ROOT).as_posix() for p in files
+    }
     offenders: list[str] = []
-    for path in _app_source_files():
+    for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -241,7 +247,7 @@ def test_delete_campaign_keeps_the_row_when_a_path_cannot_be_removed(isolated: P
     def _failing_rmtree(path, onexc=None, **_kw):
         onexc(None, str(path), OSError("in use"))
 
-    with patch.object(mod.shutil, "rmtree", _failing_rmtree):
+    with patch.object(shutil, "rmtree", _failing_rmtree):
         result = mod.delete_campaign(cid)
     assert result == {"error": "cleanup incomplete", "residual": True}
     assert mod.get_campaign(cid) is not None
@@ -264,7 +270,7 @@ def test_delete_campaign_retried_after_cleanup_succeeds(isolated: Path):
     def _failing_rmtree(path, onexc=None, **_kw):
         onexc(None, str(path), OSError("in use"))
 
-    with patch.object(mod.shutil, "rmtree", _failing_rmtree):
+    with patch.object(shutil, "rmtree", _failing_rmtree):
         first = mod.delete_campaign(cid)
     assert first["error"] == "cleanup incomplete"
 

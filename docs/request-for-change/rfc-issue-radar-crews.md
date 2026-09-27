@@ -103,7 +103,7 @@ per-crew page therefore shows *phase and next step*, not a velocity number.
 | Workspace | one git worktree per issue |
 
 The closest existing precedent is `auto_research`
-(`src/kiro_crew/apps/builtins/auto_research/handlers.py:974-1040`): an app-owned
+(`src/kiro_crew/apps/builtins/auto_research/campaign/agent_mode.py`): an app-owned
 dashboard slot, an autonudge loop, per-slot trust, a STOP sentinel, and a TTL
 watchdog. That launch sequence is the one to copy.
 
@@ -619,5 +619,5 @@ Everything quantitative in this document, and where it came from.
 | Agent cold-start concurrency | 4 | `session.py:748` |
 | Terminal session cap (contrast) | 12 | `handlers/terminal.py:53` |
 | Idle cleanup threshold | 3 days | `chat_handlers.py:1941` |
-| `auto_research` trust TTL | 24h | `auto_research/handlers.py:126` |
+| `auto_research` trust TTL | 24h | `auto_research/campaign/watchdog.py` |
 | Repository labels | 34 total; `crew: ` is the crew-writable set | `gh label list` |

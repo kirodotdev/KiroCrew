@@ -68,7 +68,24 @@ beginning with `cycle_000.json`.
 | `failed` | Unresponsive (no activity past deadline) or execution failure |
 | `stopped` | User-stopped (terminal) |
 
-Pause/resume pauses/resumes the autonudge loop.
+In agent mode, pause/resume pauses/resumes the autonudge loop. In workflow mode, pause
+cancels the workflow run and resume starts a new one that appends to the same findings.
+
+### Who changes a campaign
+
+- **You**, from the dashboard: create, start, pause, resume, stop, fork, add a question,
+  nudge with guidance, export, delete.
+- **The watchdog**, on its own: it moves a running campaign to `complete`, `stagnant`,
+  `needs_input`, `stopped` (the worker ended the run itself) or `failed`. After 24 hours it
+  withdraws the worker's tool auto-approval and waits in `needs_input` until you resume.
+  While the app is disabled it pauses every research loop and withdraws that approval.
+- **One status change at a time.** Your status actions and the watchdog's decisions on the
+  same campaign wait their turn, and a decision the watchdog reached about a run you have
+  since paused and resumed is discarded, never applied to the new run.
+- **The worker** never changes status itself. In agent mode it writes findings,
+  `FINDINGS.md`, `emergent_questions.json`, `questions.json` and, when it decides the research
+  is done, `worker_done.json` before stopping its loop; the watchdog reads those files and
+  decides. In workflow mode the watchdog reads the workflow run instead.
 
 ## Scope and permissions
 

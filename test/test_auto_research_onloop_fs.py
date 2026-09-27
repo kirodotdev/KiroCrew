@@ -1,7 +1,7 @@
 """Off-loop filesystem discipline for the auto_research backend.
 
 ``test_auto_research_onloop_db.py`` pins this module's *database* discipline
-with a static ratchet: no ``async def`` in ``handlers.py`` may reach
+with a static ratchet: no ``async def`` in the app package may reach
 ``_get_db`` on the event loop. This module is the same guard for its
 filesystem calls.
 
@@ -126,37 +126,63 @@ def _spy(monkeypatch: pytest.MonkeyPatch, method: str, target: Path, sink: list[
 # --- 1. static ratchet -------------------------------------------------------
 
 
-def _module_tree() -> ast.Module:
-    src = Path(inspect.getsourcefile(h)).read_text(encoding="utf-8")
-    return ast.parse(src)
+_PACKAGE = Path(inspect.getsourcefile(h)).resolve().parent
+
+
+def _package_trees() -> list[ast.Module]:
+    """Every module of the app package (its tests excluded), parsed."""
+    return [
+        ast.parse(p.read_text(encoding="utf-8"))
+        for p in sorted(_PACKAGE.rglob("*.py"))
+        if "tests" not in p.relative_to(_PACKAGE).parts and "__pycache__" not in p.parts
+    ]
+
+
+def _fs_violations(tree: ast.Module, scanned: set[str] | None = None) -> list[str]:
+    """Filesystem calls in the OWN body of each ``async def`` in *tree*.
+
+    A nested sync helper is fine -- it runs in the worker it is handed to --
+    so nested defs and lambdas are skipped; a nested ``async def`` is scanned
+    on its own.
+    """
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if scanned is not None:
+            scanned.add(node.name)
+        stack = list(ast.iter_child_nodes(node))
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (ast.FunctionDef, ast.Lambda, ast.AsyncFunctionDef)):
+                continue  # body runs off-loop when offloaded
+            if isinstance(n, ast.Call):
+                fn = n.func
+                if isinstance(fn, ast.Attribute) and fn.attr in _FS_METHODS:
+                    violations.append(f"{node.name}:{n.lineno} calls .{fn.attr}()")
+                elif isinstance(fn, ast.Attribute) and fn.attr in _FS_FUNCS:
+                    violations.append(f"{node.name}:{n.lineno} calls {fn.attr}()")
+            stack.extend(ast.iter_child_nodes(n))
+    return violations
 
 
 class TestStaticRatchet:
     def test_no_async_def_touches_the_filesystem_directly(self):
-        """A nested sync helper is fine — it runs in the worker it is handed to.
-        What is flagged is a filesystem call in the ``async def``'s OWN body,
-        which is the shape that runs on the gateway loop.
-        """
-        violations: list[str] = []
-
-        def scan(node: ast.AsyncFunctionDef) -> None:
-            stack = list(ast.iter_child_nodes(node))
-            while stack:
-                n = stack.pop()
-                if isinstance(n, (ast.FunctionDef, ast.Lambda, ast.AsyncFunctionDef)):
-                    continue  # body runs off-loop when offloaded
-                if isinstance(n, ast.Call):
-                    fn = n.func
-                    if isinstance(fn, ast.Attribute) and fn.attr in _FS_METHODS:
-                        violations.append(f"{node.name}:{n.lineno} calls .{fn.attr}()")
-                    elif isinstance(fn, ast.Attribute) and fn.attr in _FS_FUNCS:
-                        violations.append(f"{node.name}:{n.lineno} calls {fn.attr}()")
-                stack.extend(ast.iter_child_nodes(n))
-
-        for node in ast.walk(_module_tree()):
-            if isinstance(node, ast.AsyncFunctionDef):
-                scan(node)
-
+        """A filesystem call in an ``async def``'s OWN body is the shape that
+        runs on the gateway loop; every module of the package is scanned."""
+        scanned: set[str] = set()
+        violations = [v for tree in _package_trees() for v in _fs_violations(tree, scanned)]
+        # The coroutines that do filesystem work must all be in view.
+        assert {
+            "_handle_to_knowledge",
+            "_handle_to_artifact",
+            "_handle_action",
+            "_handle_grill_tree",
+            "_poll_workflow_campaign",
+            "_watchdog_loop",
+            "_launch_loop",
+            "_write_knowledge_copy",
+        } <= scanned
         assert not violations, (
             "filesystem call(s) on the event loop (offload via asyncio.to_thread "
             "/ run_in_executor, or move them into a sync helper you hand to "
@@ -164,24 +190,18 @@ class TestStaticRatchet:
         )
 
     def test_the_ratchet_can_actually_fail(self):
-        """Guard against a scan that passes because it sees nothing: the same
-        walk must flag a known-bad snippet."""
+        """Guard against a scan that passes because it sees nothing: the real
+        scan must flag a known-bad snippet, and must skip a nested helper."""
         bad = ast.parse(
             "async def h(p):\n"
+            "    def _off():\n"
+            "        return p.stat()\n"
             "    if p.exists():\n"
             "        return p.read_text()\n"
             "    return None\n"
         )
-        found = [
-            n.func.attr
-            for node in ast.walk(bad)
-            for n in ast.walk(node)
-            if isinstance(node, ast.AsyncFunctionDef)
-            and isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr in _FS_METHODS
-        ]
-        assert set(found) == {"exists", "read_text"}
+        found = {v.rsplit(" ", 1)[-1] for v in _fs_violations(bad)}
+        assert found == {".exists()", ".read_text()"}
 
 
 # --- 2. behavioural proof ----------------------------------------------------

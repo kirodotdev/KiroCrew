@@ -352,7 +352,7 @@ ceiling deliberately rather than by forgetting a keyword:
 | Path | Counted? | Why |
 |---|---|---|
 | dashboard single-file add, multipart upload, agent `knowledge_add_document`, direct text ingest, remote connector sync | yes | no other counter sees them |
-| auto-research add-to-knowledge | yes | a user's click with no bound of its own |
+| auto-research add-to-knowledge (§7) | yes | a user's click with no bound of its own |
 | folder-watcher sweeps, single-file sweep | no | bounded by `sweep_chunk_budget` / `folder_ingest_chunk_budget` above |
 | artifact-sync reconcile | no | bounded per reconcile by `RECONCILE_INGEST_BUDGET` |
 
@@ -476,7 +476,7 @@ This complements `scripts/check_sync_io_in_async.py` rather than duplicating it.
 | Surface | Switch | Dev mode arms strict? |
 |---|---|---|
 | `history.py` session mutations | `KIROCREW_STRICT_ON_LOOP_PERSIST` | yes |
-| auto_research campaigns DB | `KIROCREW_STRICT_ON_LOOP_PERSIST` (shared default) | yes |
+| auto_research campaigns DB (§7) | `KIROCREW_STRICT_ON_LOOP_PERSIST` (shared default) | yes |
 | knowledge store | `KIROCREW_STRICT_ON_LOOP_STORE` | **no** |
 
 The knowledge store's two narrowings exist for one reason and are both temporary: it still carries on-loop callers. That backlog is now **the watcher's self-heal rebuild alone** — its two takes, which finalize the job row inline on the cancellation path where an interrupted `to_thread` could drop the write. They now carry inline `# on-loop-io-ok:` markers and `.github/sync-io-in-async-baseline.txt` is empty (#7019); a marker is an *exemption*, not an offload, so the finalize still runs on the loop and an empty baseline is NOT the completion signal. `start_rebuild_job` sweeps a stale 'processing' row to 'abandoned', so the single-flight guard recovers either way. `dashboard/handlers/knowledge.py` takes the store through a worker for every take of its own, endpoints and background tasks alike, so the `/api/knowledge/stats` and `/api/knowledge/namespaces` handlers this paragraph used to name are no longer on the loop. The claim is scoped to that file's own takes on purpose, and `SyncScheduler.sync_source` no longer undercuts it: every store take on that path runs on a worker thread, and both sync-outcome writers — the success reset and the failure increment — are cancellation-drained `run_to_completion` units whose read-modify-write goes through `KnowledgeStore.revise_source_properties`: one `BEGIN IMMEDIATE` take that reads the row's current blob under the write lock and guards its UPDATE with the blob it read, the shape `merge_source_properties` is the fixed-delta form of. Ingestion's finalize hop stamps its `content_hash` and reader metadata through the same take as a key delta rather than rewriting the row from its ingest-start snapshot, so the three same-row writers on worker threads serialize in the database itself and none can resurrect a stale blob over another's commit. The separate switch is load-bearing because `KIROCREW_STRICT_ON_LOOP_PERSIST` is **already exported** into the e2e gateway by `setup.py`'s `test_e2e` and `.github/workflows/ci.yml`, scoped when written to history's clean surface — on that switch the watcher's finalize would raise inside the e2e run. Excluding the dev-mode arm matters for the same backlog: raising on tracked work reports it as a regression, and the developer's rational response (unsetting `KIROCREW_DEV_MODE`) would silence `history.py`'s guard too. When the watcher's cancel-path finalize genuinely runs off the loop (not merely marker-exempt), both arguments go and this store joins the shared switch — `test_knowledge_store_onloop_db.py::TestSharedSwitchCannotArmThisStore` asserts the CI export against the real workflow file, so that flip has to be deliberate.
@@ -598,6 +598,31 @@ rather than borrowing the cached store `local_knowledge_search` builds with the
 migrating constructor, and it reports a schema-behind library (SEL
 `schema_behind`, with the same `knowledge dedup --apply` pointer) instead of
 migrating it.
+
+## 7. Research Lab campaign engine (`apps/builtins/auto_research/`)
+
+Research Lab (the `auto-research` builtin app) reaches this module twice: a campaign's findings become a Knowledge Library source (§2b), and its campaigns table sits behind the on-loop guard (§4). The app's backend is one route facade over single-owner components:
+
+- `handlers.py` keeps what is HTTP -- auth, request parsing, the status and JSON each route answers with, `register_routes`, and the watchdog task handle `_watchdog_task`. Every other name it defined, and every non-stdlib collaborator it imported, resolves as `handlers.<name>` to the one component that binds it, for reads and writes alike, so a patch applied through the facade reaches every caller.
+- The components import one way, in the table's order, never import the facade, reach each other through the module (`storage._get_db()`) rather than a from-import, bind each forwarded collaborator once (`agent_mode.research_slot_key`), and log under the historic `kiro_crew.apps.builtins.auto_research.handlers` logger name. `test_auto_research_facade.py` pins all of this; `test_auto_research_campaign_contract.py` pins the behaviour the facade preserves.
+
+| File (under `apps/builtins/auto_research/`) | Responsibility |
+|------|----------------|
+| `handlers.py` | HTTP/SSE route adapters, route registration, the watchdog task, the historic-name forwarding |
+| `campaign/untrusted.py` | The only binding of the canonical credential/exfil-URL redactor (`_HAS_SECURITY`, fail-closed masking) and the nonce fence around untrusted text in LLM prompts |
+| `campaign/storage.py` | Data-home paths (`research_dir`, `db_path`, resolved per call), the campaigns schema and migrations, `_get_db` behind `_ON_LOOP_DB_GUARD`, the campaign-directory file interface, cycle-file discovery, scrubbed row and finding reads |
+| `campaign/lifecycle.py` | Validation, create/transition/delete, which transitions are legal, the per-campaign transition lock, the `started_at` run-generation fence of `_guarded_transition`, settle-before-cancel for worker-thread writes, SSE fan-out, the SEL audit trail |
+| `campaign/publication.py` | `brief.md` (published after the row it renders commits, in commit order), the report and its artifact export, the Knowledge Library export |
+| `campaign/exploration.py` | Emergent sub-questions, the reserve zone of trailing cycles, FINALIZE MODE |
+| `campaign/agent_mode.py` | Agent-mode execution: launching, pausing and tearing down the autonudge worker, the `worker_done.json` marker, cycle accounting |
+| `campaign/workflow_mode.py` | Workflow-mode execution: Dynamic Workflow launch and cancel, the poll adapter, the `workflow_run.json` run id and cycle offset |
+| `campaign/watchdog.py` | The watchdog loop body: disabled-app suspension, the 24h trust expiry, question pauses, the stall verdict, terminal settlement |
+| `campaign/grill.py` | The question-tree planner behind the grill endpoint |
+| `session_keys.py`, `subquestion_queue.py`, `workflow_template.py` | Worker-slot identity, the emergent-question queue, the Dynamic Workflow template |
+
+**The add-to-knowledge row in §2b is `publication._ingest_findings`.** It calls `ingest_file` with the default `count_toward_import_budget`, so the export counts against the explicit-import ceiling, and an `ImportChunkBudgetError` parks the source `pending` rather than `error`. What is ingested is the scrubbed copy `findings_for_knowledge.md`, never the raw `FINDINGS.md`, and its resolved path is the dedup key the status probe reads.
+
+**The campaigns-DB row in §4 is `storage._ON_LOOP_DB_GUARD`,** consulted at the top of `storage._get_db`. `test_auto_research_onloop_db.py::TestStaticRatchet` recomputes the DB-touching closure and scans every coroutine across all of the app's modules, bare or component-qualified calls alike, so a coroutine in any component that reaches the campaigns DB without `asyncio.to_thread` or `run_in_executor` fails there.
 
 ## Invariants
 
