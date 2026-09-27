@@ -1,10 +1,11 @@
 """What a live session's backend can do — asked instead of which backend it is.
 
-Application code has six branches that depend on a PROPERTY of the harness: which
-model-id namespace it uses, whether its advertised list must be read back, which
-channel carries an effort change, whether compaction finishes inline, and which
-provider seam serves the session. Naming the harness instead of the property has
-one failure mode, always in the same direction. A fifth backend arrives, nobody
+Application code has seven branches that depend on a PROPERTY of the harness:
+which model-id namespace it uses, whether its advertised list must be read back,
+which channel carries an effort change, whether compaction finishes inline,
+whether it serves native todos, and which provider seam serves the session.
+Naming the harness instead of the property has one failure mode, always in the
+same direction. A fifth backend arrives, nobody
 edits the branch, and it silently takes whichever arm "not claude" happens to
 select — an arm it never demonstrated it can serve.
 ``docs/system-specs/modules/harness-parity.md`` calls this H6; RFC PR 3 is where it
@@ -56,6 +57,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_INLINE_COMPACTION,
+    ACP_BACKENDS_NATIVE_TODOS,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -141,6 +143,13 @@ class SessionCapabilities:
     #: itself, and firing them here too would run each one twice.
     crew_fires_spec_hooks: bool
 
+    #: Whether this harness interprets ``/todos`` as its native task-list command.
+    #:
+    #: This is deliberately narrower than general slash-command transport: the
+    #: kiro family has a native slash RPC but does not implement this command.
+    #: Unknown and newly registered backends remain False until they opt in.
+    supports_native_todos: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -158,6 +167,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
     )
 
 
@@ -182,6 +192,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     effort_via_config_option=False,
     compacts_inline=False,
     crew_fires_spec_hooks=False,
+    supports_native_todos=False,
 )
 
 
@@ -190,7 +201,7 @@ def capabilities_of(provider: object) -> SessionCapabilities:
 
     Accepts any shape and answers :data:`UNKNOWN_BACKEND_CAPABILITIES` for one
     that does not carry a real :class:`SessionCapabilities`. That is the calling
-    convention the six predicates this replaces already had — they were
+    convention the seven predicates this replaces already had — they were
     ``isinstance``-gated and answered False off a foreign shape — and it is what
     keeps a wrapper, an unstarted provider or a test double from reading as a
     member of every capability at once.

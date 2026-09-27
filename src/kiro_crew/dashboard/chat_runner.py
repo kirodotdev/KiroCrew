@@ -65,8 +65,8 @@ from kiro_crew.agent_discovery import (
     session_skill_globs,
     warm_project_agent_names,
 )
-from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
-from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name  # noqa: F401
+from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_sdk.spec_hooks import (
     crew_fired_spec_hooks,
@@ -8463,23 +8463,13 @@ async def _run_chat(
     first_word = message.split()[0] if message.strip() else ""
     _cfg_agent = KiroCrewConfig.load().agent
     _is_cc_provider = is_claude_code(_cfg_agent.provider)
-    # The claude harness answers on either provider axis: the claude_code seam, or
-    # the acp seam spawning the claude backend (both selectable in this build).
-    _is_cc_harness = _is_cc_provider or is_claude_backend_name(
-        getattr(_cfg_agent, "acp_backend", "")
-    )
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
     is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
     _this_turn_is_clear = is_slash and first_word.lower() == "/clear"
 
-    # Block dangerous/local-only commands before acquiring a session. The
-    # kiro-only members are skipped where the harness implements them itself.
-    _blocked = _BLOCKED_SLASH_COMMANDS
-    if _is_cc_harness:
-        _blocked -= _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
-    if first_word in _blocked:
+    def _refuse_blocked_slash() -> None:
         sel().log_tool_invocation(
             session_key="",
             agent=slot.agent or "kirocrew",
@@ -8496,6 +8486,15 @@ async def _run_chat(
         )
         state.push_slots_update()
         slot.append("done", "", "done")
+
+    # Commands that are impossible on every harness stay a true pre-dispatch
+    # gate: refusing them creates and consumes no session. The harness-specific
+    # subtraction is decided only after get_or_create below returns the exact
+    # provider that would execute it. A registry peek is not authoritative:
+    # get_or_create probes liveness and can evict a dead row, then build the
+    # opposite harness from the current factory defaults.
+    if first_word in (_BLOCKED_SLASH_COMMANDS - _KIRO_ONLY_BLOCKED_SLASH_COMMANDS):
+        _refuse_blocked_slash()
         return
 
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
@@ -8649,6 +8648,31 @@ async def _run_chat(
         slot.append("done", "", "done")
         return
 
+    # Refuse local-only commands before a claim can spawn or wait on a provider.
+    # A positively live row answers for itself; otherwise use allocation's
+    # member-aware successor selection. Acquisition still confirms support,
+    # because the provider can be replaced between this probe and the claim.
+    if first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
+        _todos_provider = state.sessions.get_provider(session_key)
+        _todos_provider_alive = (
+            await state.sessions.is_provider_alive(session_key)
+            if _todos_provider is not None
+            else None
+        )
+        if _todos_provider is not None and _todos_provider_alive is True:
+            _todos_supported = capabilities_of(_todos_provider).supports_native_todos
+        else:
+            _todos_agent_cfg = KiroCrewConfig.load().agent
+            _todos_backend = select_provider_backend(
+                session_key,
+                getattr(_todos_agent_cfg, "member_acp_backend", ""),
+                getattr(_todos_agent_cfg, "acp_backend", ""),
+            )
+            _todos_supported = capabilities_for(_todos_backend).supports_native_todos
+        if not _todos_supported:
+            _refuse_blocked_slash()
+            return
+
     # ── Manual /compact capability gate ──
     # KAS never answers the /compact prompt with a compaction status (its
     # summarization_* frames fire only for KAS-initiated auto-summarization),
@@ -8663,18 +8687,16 @@ async def _run_chat(
     # created, and no one-shot first-turn state (history replay, resume sid,
     # session-map binding, compaction override) can be consumed or destroyed.
     # The live session's provider is authoritative when one exists (peeked,
-    # never created); otherwise the answer comes from the same config field
-    # (`agent.acp_backend`) the provider factory would build a new session
-    # with, so the pre-turn answer cannot diverge from the session the
-    # dispatch would have created.
+    # never created); otherwise use the factory's member-aware backend
+    # selection, so a dead row cannot answer for its successor.
     if first_word == "/compact":
-        _live_sessions = getattr(state.sessions, "_sessions", None)
-        _live_provider = (
-            getattr(_live_sessions.get(session_key), "provider", None)
-            if isinstance(_live_sessions, dict)
+        _live_provider = state.sessions.get_provider(session_key)
+        _live_provider_alive = (
+            await state.sessions.is_provider_alive(session_key)
+            if _live_provider is not None
             else None
         )
-        if _live_provider is not None:
+        if _live_provider is not None and _live_provider_alive is True:
             # Declared on the LLMProvider ABC with a None default (H14); the
             # ACP implementations answer from ACP_BACKENDS_COMPACT membership.
             _compact_unsupported = getattr(
@@ -8684,7 +8706,14 @@ async def _run_chat(
             # Claude Code compacts natively in-prompt (cc_managed).
             _compact_unsupported = None
         else:
-            _cfg_backend = getattr(KiroCrewConfig.load().agent, "acp_backend", "")
+            # A dead registry row is not the harness dispatch would reach:
+            # get_or_create evicts it and uses this same member-aware selector.
+            _agent_cfg = KiroCrewConfig.load().agent
+            _cfg_backend = select_provider_backend(
+                session_key,
+                getattr(_agent_cfg, "member_acp_backend", ""),
+                getattr(_agent_cfg, "acp_backend", ""),
+            )
             _compact_unsupported = (
                 _cfg_backend
                 if isinstance(_cfg_backend, str) and _cfg_backend not in ACP_BACKENDS_COMPACT
@@ -8735,6 +8764,11 @@ async def _run_chat(
     # Bound before the try because cancellation may land while this turn waits
     # for shared memory preparation, before any provider is allocated.
     client: Any = None
+    # The pre-acquisition gate accepted this command. Keep its deferred OPTIONS
+    # drain owned by the finally until acquisition either refuses or drains it.
+    _deferred_options_expiry = (
+        _prompt_depth == 0 and first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    )
     try:
         # Publish the immutable identity BEFORE the first admission await, as
         # the first statement the enclosing finally covers. From here down the
@@ -8778,13 +8812,14 @@ async def _run_chat(
         # any OPTIONS control still live in this session's Slack thread stops
         # being answerable. Guarded on _prompt_depth so the in-turn re-entry that
         # expands a /prompts reference does not count as a new turn. Local
-        # commands returned above, so they do not consume a still-valid control.
-        if _prompt_depth == 0:
+        # commands returned above, except the capability-gated commands whose
+        # authority is the acquired provider. Defer those until their gate below.
+        if _prompt_depth == 0 and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
             await expire_slack_options(state, session_key)
 
         # Durable "turn in flight" marker, written at the same boundary as the
-        # active-turn identity: every local command has returned, no provider
-        # work has begun. Not gated on ``_prompt_depth``: the expanded re-entry
+        # active-turn identity: pre-acquisition local commands have returned,
+        # no provider work has begun. Not gated on ``_prompt_depth``: the expanded re-entry
         # is the only call that reaches here for a /prompts mention. The
         # generation is bound before the save is awaited so a cancellation
         # inside it still reaches the finally with something to retire.
@@ -9303,6 +9338,25 @@ async def _run_chat(
                 state.sessions.allocation_requested_model(session_key) or _requested_model
             )
         _acquired = True
+        # The acquired provider is the final authority for harness-specific slash
+        # gates. A dead live row can be replaced during the get_or_create call
+        # above. The positive capability fails closed for unknown adapters and
+        # does not infer support from any backend identity.
+        _refused_native_todos = (
+            first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+            and not capabilities_of(client).supports_native_todos
+        )
+        if _refused_native_todos:
+            _deferred_options_expiry = False
+        if _refused_native_todos and is_new:
+            # ``get_or_create`` has consumed the session's one-shot fresh
+            # observation, but this refusal dispatches no prompt. Re-use the
+            # replay lease so the next ordinary turn is still constructed as
+            # session start (including member rules). A warm refusal has no
+            # observation to restore and must not manufacture a duplicate.
+            # A speculative resume also arms is_new: its native transcript
+            # survives, but this claimant still owes session-start context.
+            state.sessions.mark_provider_switch_replay(session_key)
         # A fresh provider can still owe Kiro Crew history after its one-shot
         # ``is_new`` observation was consumed by a slash command. Keep that debt
         # separate from provider creation: slash commands bypass ContextBuilder,
@@ -9376,6 +9430,15 @@ async def _run_chat(
                 via="chat",
                 dedupe_session=True,
             )
+        # First-claim bookkeeping above also belongs to an unsupported command:
+        # no later claimant sees is_new. Refuse before spending Slack OPTIONS;
+        # the replay lease and member re-injection preserve undelivered context.
+        if _refused_native_todos:
+            _refuse_blocked_slash()
+            return
+        if _deferred_options_expiry:
+            _deferred_options_expiry = False
+            await expire_slack_options(state, session_key)
         # Publish the live inner AcpClient onto the slot so a concurrent request
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
@@ -17734,6 +17797,9 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
+            if _deferred_options_expiry:
+                _deferred_options_expiry = False
+                await expire_slack_options(state, session_key)
             if _mirror_stream_ts and state.slack_client and _mirror_chan:
                 try:
                     # Fenced for the same reason the in-progress append is: if that
