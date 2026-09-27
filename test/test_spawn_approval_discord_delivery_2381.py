@@ -36,7 +36,7 @@ import pytest
 
 # Reuse the fixtures the existing Discord suite uses (fake client, fake sessions,
 # dispatcher factory) so this suite exercises the SAME doubles.
-from test_discord import _dispatcher  # noqa: E402
+from test_discord import _dispatcher as _base_dispatcher  # noqa: E402
 
 from kiro_crew.discord import transport_dispatch as dispatch_mod
 from kiro_crew.discord.client import DiscordInteraction
@@ -46,6 +46,26 @@ from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.subagent import SpawnApprovalUnreachable
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+
+def _dispatcher(
+    allowed: set[str],
+    *,
+    allowed_threads: set[str] | None = None,
+    raise_on_get: bool = False,
+    default_agent: str = "",
+    dm_scope: str = "per-channel-peer",
+):
+    """Build the shared double with configured thread ids live in Discord too."""
+    dispatcher, client, sessions = _base_dispatcher(
+        allowed,
+        allowed_threads=allowed_threads,
+        raise_on_get=raise_on_get,
+        default_agent=default_agent,
+        dm_scope=dm_scope,
+    )
+    client.thread_channels.update(allowed_threads or ())
+    return dispatcher, client, sessions
 
 
 @pytest.fixture(autouse=True)
@@ -689,3 +709,184 @@ async def test_a_press_after_a_generation_rotation_resolves_nothing() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ── An unpressed wait after authorization ended mid-wait ───────────────────
+#
+# The checks before the post cover only the moment the prompt goes out. The wait
+# that follows lasts minutes, and three authorities can end inside it: the
+# operator's channels ceiling (``on_interaction`` then drops every press but an
+# explicit reject), the peer roster (checked first for EVERY press, no
+# exemption), and the thread roster (a guild press outside it is dropped). Once
+# any of them ends, no press can resolve the prompt, so its wait elapses -- and a
+# bare ``False`` there is a refusal the operator never made. The shared seam's
+# ``unpressed_wait_answer`` defines what an unpressed wait means, and the Telegram
+# hook follows it; these pin the same contract on Discord's hook.
+
+
+@pytest.fixture
+def _short_wait(monkeypatch):
+    """Elapse the decision window in a fraction of a second, deterministically.
+
+    No press is scheduled in any test using this, so the only way the wait ends is
+    its own timeout -- there is no race for the scheduler to decide.
+    """
+    from kiro_crew.discord import renderer as renderer_mod
+
+    monkeypatch.setattr(renderer_mod, "_APPROVAL_TIMEOUT_S", 0.05)
+
+
+@pytest.fixture
+def _ceiling(monkeypatch):
+    """A channels ceiling the test can close mid-wait, read in every namespace."""
+    state = {"permitted": True}
+
+    async def _permitted(_channel: str) -> bool:
+        return state["permitted"]
+
+    monkeypatch.setattr(dispatch_mod, "channel_inbound_permitted", _permitted)
+    monkeypatch.setattr(seam, "channel_inbound_permitted", _permitted)
+    return state
+
+
+async def _posted(task: "asyncio.Future[Any]", cli: Any) -> None:
+    """Yield until the prompt is on the wire, so a withdrawal lands mid-WAIT."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert cli.sent, "the prompt must have been posted before the withdrawal"
+    assert not task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_a_channels_deny_landing_mid_wait_answers_none_not_false(_ceiling) -> None:
+    d, cli, _ = _dispatcher({"u1"})
+    key = d._session_key("u1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    _ceiling["permitted"] = False  # the operator denies Discord while the prompt waits
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_the_host_gate_falls_through_on_a_mid_wait_deny(_ceiling) -> None:
+    """End to end through the seam: the gate reads ``None`` and offers Slack/dashboard."""
+    d, cli, _ = _dispatcher({"u1"})
+    key = d._session_key("u1")
+    seam.register_channel_delivery("discord", d.deliver_spawn_approval)
+
+    task = asyncio.ensure_future(seam.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    _ceiling["permitted"] = False
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_a_peer_dropped_from_the_roster_mid_wait_answers_none() -> None:
+    """Invisible to the channels ceiling: only this dispatcher's roster knows."""
+    d, cli, _ = _dispatcher({"u1"})
+    key = d._session_key("u1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    d._allowed.discard("u1")
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_a_thread_with_no_allowed_users_mid_wait_answers_none() -> None:
+    """A thread id alone is not enough when no user can pass `_authorized`."""
+    d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
+    key = d._session_key("u1", "t1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    d._allowed.clear()
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_a_thread_dropped_from_the_roster_mid_wait_answers_none() -> None:
+    d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
+    key = d._session_key("u1", "t1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    d._allowed_threads.discard("t1")
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_a_channel_that_stops_being_a_thread_mid_wait_answers_none() -> None:
+    d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
+    key = d._session_key("u1", "t1")
+    classification = {"is_thread": True}
+
+    async def is_thread_channel(_channel_id: str) -> bool:
+        return classification["is_thread"]
+
+    cli.is_thread_channel = is_thread_channel
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    classification["is_thread"] = False
+
+    assert await task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_short_wait")
+async def test_an_unpressed_wait_on_a_still_authorized_channel_still_denies() -> None:
+    """Negative control: nothing was withdrawn, so the elapsed wait is a real deny."""
+    d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
+
+    direct = asyncio.ensure_future(
+        d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", d._session_key("u1"))
+    )
+    thread = asyncio.ensure_future(
+        d.deliver_spawn_approval("spawn:a2", "spawn_run(t)", d._session_key("u1", "t1"))
+    )
+
+    assert await direct is False
+    assert await thread is False
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_reject_stays_false_through_a_mid_wait_deny(_ceiling) -> None:
+    """The reject press is exempt from the channels drop, and it is a real refusal.
+
+    Reading it as unpressed would re-offer on Slack a spawn the operator just
+    refused on Discord.
+    """
+    d, cli, _ = _dispatcher({"u1"})
+    key = d._session_key("u1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    _ceiling["permitted"] = False
+
+    await d.on_interaction(_itx(_pressed_ids(cli.sent[-1][1])[1]))
+    assert await task is False
+
+
+@pytest.mark.asyncio
+async def test_a_press_before_the_withdrawal_still_reports_its_decision() -> None:
+    d, cli, _ = _dispatcher({"u1"})
+    key = d._session_key("u1")
+
+    task = asyncio.ensure_future(d.deliver_spawn_approval("spawn:a1", "spawn_run(t)", key))
+    await _posted(task, cli)
+    await d.on_interaction(_itx(_pressed_ids(cli.sent[-1][1])[0]))
+    d._allowed.discard("u1")
+
+    assert await task is True

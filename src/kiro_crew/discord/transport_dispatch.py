@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import _clamp_pct
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.discord.attachments import (
     append_attachment_context,
@@ -119,6 +120,7 @@ from kiro_crew.messaging.session_resume import (
     persisted_session_agent,
     refused_resume_is_restricted,
 )
+from kiro_crew.messaging.spawn_approval_delivery import unpressed_wait_answer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
@@ -1836,6 +1838,11 @@ class DiscordDispatcher:
         # Auth first (deny-by-default short-circuit).
         if not self._authorized(itx.user_id):
             return
+        thread_id = itx.channel_id if itx.guild_id else ""
+        # The same actionable-interaction decision is re-used by the spawn
+        # approval timeout path. If a condition here can drop every press, an
+        # unpressed spawn wait must observe it before reporting a user denial.
+        interaction_actionable = await self._interaction_actionable(itx.user_id, thread_id)
         if not itx.guild_id:
             # A DM interaction names its peer, and every callback below answers
             # that SAME channel without ever opening it, so this is where the
@@ -1846,11 +1853,7 @@ class DiscordDispatcher:
             self.client.remember_dm_recipient(itx.channel_id, itx.user_id)
         # Guild interactions are accepted only in an allow-listed channel that
         # Discord confirms is a thread. This mirrors transport.receive().
-        thread_id = itx.channel_id if itx.guild_id else ""
-        in_allowed_thread = bool(thread_id) and (
-            thread_id in self._allowed_threads and await self.client.is_thread_channel(thread_id)
-        )
-        if itx.guild_id and not in_allowed_thread:
+        if itx.guild_id and not interaction_actionable:
             # A COMMAND gets an ephemeral explanation rather than silence. A
             # dropped interaction is not invisible to the user: Discord shows its
             # own red "did not respond" with no reason, which reads as the bot
@@ -2183,9 +2186,13 @@ class DiscordDispatcher:
         the recomputed key does not match the armed one, the press resolves
         nothing, and the prompt deny-by-defaults at its timeout (the user sees
         "already expired"). This mirrors how a mid-run tool prompt behaves across a
-        rotation. An elapsed wait is a DENY and NOT a fall-through: the prompt WAS
-        surfaced, so ``False`` is a real decision and the gate refuses the spawn on
-        it rather than re-offering it on Slack/dashboard.
+        rotation, and it stays a DENY: the prompt WAS surfaced, so ``False`` is a
+        real decision and the gate refuses the spawn on it rather than re-offering
+        it on Slack/dashboard. An elapsed wait falls through in one case only, when
+        AUTHORIZATION ended during it and no press could have answered: the
+        destination rosters are re-read here (``_spawn_prompt_destination_permitted``,
+        the pair that gated the post), and the channels ceiling is read by the seam
+        (``unpressed_wait_answer``), which owns that reading for every channel.
         """
         client = self.client
         if client is None:
@@ -2262,7 +2269,7 @@ class DiscordDispatcher:
             " ".join((description or "spawn_run").split()).replace("`", "'"),
             lambda s: redact_credentials(redact_exfiltration_urls(s)[0])[0],
         )
-        if not self._spawn_prompt_destination_permitted(channel_id, thread_id, user_id):
+        if not await self._spawn_approval_actionable(channel_id, thread_id, user_id):
             # Authorization for this destination was withdrawn between the turn that
             # asked for the spawn and this delivery. Retire the armed nonce and fall
             # through, so the spawn is still answerable on Slack/dashboard.
@@ -2305,7 +2312,27 @@ class DiscordDispatcher:
             return None
 
         decider = DiscordApprovalDecider(session_key=session_key)
-        return bool(await decider(SimpleNamespace(request_id=rid)))
+        approved = bool(await decider(SimpleNamespace(request_id=rid)))
+        if not approved and decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT:
+            # Nobody pressed. The checks above spoke for the moment of the post;
+            # the wait outlives them by minutes, and ``on_interaction`` drops
+            # every press once this peer (or thread) leaves its roster, and every
+            # press but an explicit reject once the channels ceiling closes. A
+            # wait that elapsed after either could not have been answered, so
+            # ``False`` would refuse the spawn in the operator's name. Re-read the
+            # rosters here -- the same check that gated the post -- and leave the
+            # ceiling's reading to the seam, which owns it for every channel. A
+            # press, reject included, returns its own answer below.
+            if not await self._spawn_approval_actionable(channel_id, thread_id, user_id):
+                logger.info(
+                    "Discord: the spawn-approval prompt for %s went unanswered and "
+                    "its destination is no longer authorized, so no press could have "
+                    "resolved it; falling through to the Slack/dashboard path",
+                    rid,
+                )
+                return None
+            return await unpressed_wait_answer(_CHANNEL, rid)
+        return approved
 
     async def _spawn_prompt_channel_permitted(self, request_id: str) -> bool:
         """Is the operator's channels ceiling open for this channel RIGHT NOW?
@@ -2358,7 +2385,7 @@ class DiscordDispatcher:
           rosters above stand alone; a raise is read as a denial.
         """
         if thread_id:
-            if thread_id not in self._allowed_threads:
+            if not self._allowed or thread_id not in self._allowed_threads:
                 return False
         elif not self._authorized(user_id):
             return False
@@ -2378,6 +2405,41 @@ class DiscordDispatcher:
                 exc_info=True,
             )
             return False
+
+    async def _interaction_actionable(self, user_id: str, thread_id: str) -> bool:
+        """Whether this user could resolve an interaction at this destination."""
+        if not self._authorized(user_id):
+            return False
+        if not thread_id:
+            return True
+        client = self.client
+        if client is None or thread_id not in self._allowed_threads:
+            return False
+        try:
+            return bool(await client.is_thread_channel(thread_id))
+        except Exception:
+            logger.warning(
+                "Discord: thread classification failed for an interaction; "
+                "treating the destination as unactionable",
+                exc_info=True,
+            )
+            return False
+
+    async def _spawn_approval_actionable(
+        self, channel_id: str, thread_id: str, user_id: str
+    ) -> bool:
+        """Whether some authorized user can still answer this spawn prompt."""
+        principal = user_id
+        if thread_id:
+            # A thread key intentionally carries no user id. Actionability is
+            # existential there: at least one live roster member must remain who
+            # could pass the same interaction gate as a real button press.
+            principal = next(iter(self._allowed), "")
+        if not await self._interaction_actionable(principal, thread_id):
+            return False
+        # Re-read the synchronous rosters after thread classification awaited,
+        # and include the transport's egress revocation in the final verdict.
+        return self._spawn_prompt_destination_permitted(channel_id, thread_id, user_id)
 
     def _spawn_chat_target(self, parent_session_key: str) -> tuple[str, str, str, str] | None:
         """``(channel_id, thread_id, user_id, session_key)`` for a Discord spawn parent.
