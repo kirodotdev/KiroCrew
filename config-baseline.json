@@ -5824,7 +5824,7 @@
         "whatsapp"
       ],
       "label": "Allowed WhatsApp IDs",
-      "help": "Phone numbers (digits only, country code, no '+') additionally permitted to DM the agent when dm_policy='allowlist'. Empty adds nobody beyond the linked account.",
+      "help": "Phone numbers (digits only, country code, no '+') permitted to address the agent besides the linked account: in direct chats when dm_policy='allowlist', and in every configured group regardless of dm_policy (a group member not listed here is dropped silently, even when they @-mention the agent or the group is in 'rules' mode). Empty adds nobody beyond the linked account.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -5854,7 +5854,7 @@
         "whatsapp"
       ],
       "label": "Group Rules",
-      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120)}. Groups not listed are ignored entirely.",
+      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120)}. Groups not listed are ignored entirely. Listing a group lets the agent speak there; it does not admit its members: only you and the numbers in allowed_wa_ids can make the agent reply.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []

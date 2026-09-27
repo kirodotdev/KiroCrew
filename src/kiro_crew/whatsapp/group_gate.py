@@ -16,9 +16,14 @@ group grants one of two speaking modes:
   bounds unprompted replies no matter what the model decides.
 - ``off`` — configured but muted (kept so its entry, rules and history stay).
 
-Group members other than the operator get **answer-only** treatment
-regardless of mode: the verdict marks whether the sender may steer the
-session (commands like /new) — only the operator may.
+This gate answers whether the agent may SPEAK in the group. It does NOT admit
+the sender: after it, the transport applies the same per-sender allowlist every
+other channel applies to group traffic (the linked account, or a number in
+``allowed_wa_ids``; an empty list admits nobody but the operator), for
+addressed and rules-mode unprompted messages alike. Group members other than the
+operator get **answer-only** treatment regardless of mode: the verdict marks
+whether the sender may steer the session (commands like /new) — only the
+operator may.
 
 This module is pure decision logic (no I/O, no neonize types) so the whole
 matrix is unit-testable; the transport feeds it normalized values.

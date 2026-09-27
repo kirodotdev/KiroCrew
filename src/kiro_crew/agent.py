@@ -57,6 +57,7 @@ from kiro_crew.agent_files import (
     AGENT_FILENAME,
 )
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME as _CONDUCTOR_AGENT_FILENAME
+from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import (
@@ -7757,6 +7758,47 @@ def _install_aim_capabilities() -> None:
     still written.
     """
     _install_lite_agent_fallback()
+    _install_guest_agent()
+
+
+#: What a non-operator channel sender's agent is told. Conversational, because a
+#: human is on the other end; explicit about having no tools, because the spec
+#: mounts none and the model should not promise to act.
+GUEST_AGENT_PROMPT = (
+    "You are answering a guest: a person the operator allowed to message this "
+    "account, not the operator. Reply to what they ask, briefly and helpfully, "
+    "from the conversation alone. You have no tools: you cannot run commands, read "
+    "or write files, browse, or act on anything, so never claim to have done so. "
+    "If a request needs any of that, say the account owner has to do it."
+)
+
+
+def _install_guest_agent() -> None:
+    """Write the tool-less ``kirocrew-guest`` config a non-operator sender talks to.
+
+    Separate from ``kirocrew-lite`` on purpose: the lite agent is the background
+    helper (titles, extraction) and may one day need a tool; this one is a trust
+    boundary and never may. Same model as the operator's chat so an admitted
+    sender gets an ordinary answer, never a background worker's minimal default.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        model = KiroCrewConfig.load().agent.model or "auto"
+    except Exception:
+        model = "auto"
+    guest_path = kiro_agents_dir_path() / _GUEST_AGENT_FILENAME
+    guest_config = {
+        "name": "kirocrew-guest",
+        "model": model,
+        "tools": [],
+        "mcpServers": {},
+        # Pinned: kiro-cli defaults this to True and would spawn every server in
+        # the user-level mcp.json for a session that must mount nothing.
+        "includeMcpJson": False,
+        "prompt": GUEST_AGENT_PROMPT,
+    }
+    _atomic_json_write(guest_path, guest_config)
 
 
 def _install_lite_agent_fallback() -> None:

@@ -389,34 +389,102 @@ def _sel():
 #: ``subagent.AGENT_NOT_FOUND_CODE``.
 _SPAWN_REJECTED_CODE = "spawn_rejected"
 
+#: Wire text for a run control that reached the gateway with no session identity.
+#: Actionable on purpose: the MCP wrapper hands this string to the model verbatim,
+#: and "not found" alone would send the caller looking for a typo in the run id.
+_IDENTITY_LESS_RUN_CONTROL = (
+    "not found: run controls are scoped to the session that started the run, and "
+    "this call carried no session identity (X-Session-Key). A kiro-cli process that "
+    "multiplexes sessions cannot name one; see the strict-identity diagnosis in "
+    "`kirocrew doctor` (mcp_gateway.stub_servers)."
+)
+
+
+def _run_belongs_to_caller(caller: str, run_id: str, parent: object) -> bool:
+    """Whether *caller* may control run *run_id* whose originating session is *parent*.
+
+    Ownership is the ONLY admission: the run's parent session, or the run itself.
+    A caller with no identity owns nothing that a session started -- it is admitted
+    to a run with no parent (one the host operator started from the CLI, which
+    carries the internal secret and no session) and to nothing else. Neither the
+    caller's memory store nor the transport it arrived on widens this.
+    """
+    if caller == f"subagent:{run_id}":
+        return True
+    if parent is None:
+        # No record of this run at all: nothing vouches for who started it, so
+        # nobody owns it. Reading "unknown" as "parentless" would let a caller
+        # with no identity act on any id it can name.
+        return False
+    parent_key = parent if isinstance(parent, str) else ""
+    return parent_key == caller
+
 
 async def _spawn_scope_refusal(
     request: web.Request, *, claimed_session: str | None = None
 ) -> web.Response | None:
-    """Keep run controls with their originating session, regardless of target member."""
+    """Keep run controls with their originating session, regardless of target member.
+
+    Every INTERNAL caller (kiro-cli's MCP servers, the CLI) takes the ownership
+    check, whatever memory store its identity resolved to and whether it resolved
+    one at all: a verified Global-memory session is still only the owner of its
+    own runs, and a caller that presented no ``X-Session-Key`` owns no run a
+    session started. Only the dashboard owner (cookie auth, no ``internal_auth``)
+    is admitted without it, because that surface IS the owner. Refusals answer
+    404 ``task_scope_denied`` so a run id is never confirmed to a caller that may
+    not see it; the identity-less refusal says why, since a wrong run id and a
+    missing identity are indistinguishable from the caller's side otherwise.
+    """
     scope, refusal = await internal_memory_scope(
         request, "spawn.access", claimed_session=claimed_session
     )
-    if refusal is not None or scope is None:
+    if refusal is not None:
         return refusal
+    if request.get("internal_auth") is not True:
+        return None  # the dashboard owner's own surface
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
     record = None if info is not None else await asyncio.to_thread(read_state, run_id)
-    parent = (
-        info.parent_session_key if info is not None else (record or {}).get("parent_session_key")
-    )
-    if parent == caller or caller == f"subagent:{run_id}":
+    parent: object
+    if info is not None:
+        parent = info.parent_session_key
+    elif record is not None:
+        # The persisted record spells the field ``parent_session``
+        # (``subagent_persistence.write_state``). A record that lacks it is an
+        # unknown owner, not a parentless run: ``None`` stays ``None``.
+        parent = record.get("parent_session")
+    else:
+        # A harness-native child has no managed run and no persisted record; its
+        # ownership is the dashboard slot that tracks its card. Anything else
+        # unknown stays ``None`` and is refused.
+        card = (getattr(state, "_native_cards", None) or {}).get(run_id)
+        # The card stores the bare slot key (``_register_native_card``); the
+        # caller's identity is that slot's session key, ``dashboard:<slot>``.
+        slot = card.get("slot") if isinstance(card, dict) else None
+        parent = f"dashboard:{slot}" if isinstance(slot, str) and slot else None
+    if _run_belongs_to_caller(caller, run_id, parent):
         return None
     _sel().log_api_access(
-        caller="internal",
+        caller=caller or "internal",
         operation="spawn.access",
         outcome="denied",
         source="subagent",
-        error="The run belongs to another originating session.",
+        error=(
+            "The run belongs to another originating session."
+            if caller
+            else "The caller presented no session identity."
+        ),
+        resources=f"run={run_id} scope={'private' if scope else 'global'}",
     )
-    return web.json_response({"error": "not found", "code": "task_scope_denied"}, status=404)
+    return web.json_response(
+        {
+            "error": "not found" if caller else _IDENTITY_LESS_RUN_CONTROL,
+            "code": "task_scope_denied",
+        },
+        status=404,
+    )
 
 
 async def _spawn_request_memory_mode(
@@ -1333,12 +1401,15 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         return refusal
     agents = []
     caller = request.headers.get("X-Session-Key", "")
+    # An internal caller lists only the runs it may control, by the same
+    # ownership rule the per-run routes apply: its own runs, or -- with no
+    # identity at all -- only runs no session started. Listing is a read, but a
+    # run id, its task text and its parent key are exactly what a later steer
+    # needs, so the list must not hand out what the control route would refuse.
+    # The dashboard owner (no ``internal_auth``) still sees everything.
+    internal = request.get("internal_auth") is True
     for info in state.subagents.all_agents:
-        if (
-            scope is not None
-            and info.parent_session_key != caller
-            and caller != f"subagent:{info.id}"
-        ):
+        if internal and not _run_belongs_to_caller(caller, info.id, info.parent_session_key):
             continue
         entry: dict[str, object] = {
             "id": info.id,

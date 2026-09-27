@@ -7671,9 +7671,12 @@ class WhatsAppConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed WhatsApp IDs",
-            "Phone numbers (digits only, country code, no '+') additionally "
-            "permitted to DM the agent when dm_policy='allowlist'. Empty adds "
-            "nobody beyond the linked account.",
+            "Phone numbers (digits only, country code, no '+') permitted to "
+            "address the agent besides the linked account: in direct chats when "
+            "dm_policy='allowlist', and in every configured group regardless of "
+            "dm_policy (a group member not listed here is dropped silently, even "
+            "when they @-mention the agent or the group is in 'rules' mode). Empty "
+            "adds nobody beyond the linked account.",
             tags=["whatsapp"],
         ),
     )
@@ -7687,7 +7690,9 @@ class WhatsAppConfig:
             "unprompted when the entry's rules say the agent can genuinely "
             "help) | 'off', 'rules': free-text guidance for when to speak, "
             "'cooldown_s': minimum seconds between unprompted replies "
-            "(default 120)}. Groups not listed are ignored entirely.",
+            "(default 120)}. Groups not listed are ignored entirely. Listing a "
+            "group lets the agent speak there; it does not admit its members: "
+            "only you and the numbers in allowed_wa_ids can make the agent reply.",
             tags=["whatsapp"],
         ),
     )

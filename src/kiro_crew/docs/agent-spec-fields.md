@@ -551,6 +551,7 @@ would otherwise clobber your pin.
 |---|---|---|
 | `kirocrew.json` | generated | every gateway start, and on `kirocrew setup --agent-only` |
 | `kirocrew-lite.json` | generated | every gateway start |
+| `kirocrew-guest.json` | generated | every gateway start (the tool-less agent a non-operator channel sender talks to) |
 | `kirocrew-worker.json` | DERIVED from `kirocrew.json` | every gateway start, and re-checked before every worker session |
 | `kirocrew-conductor.json` | generated | every gateway start |
 | `kirocrew-ledger-conductor.json` | generated | every gateway start |

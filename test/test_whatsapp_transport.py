@@ -227,6 +227,10 @@ class TestGroups:
     def cfg(self, mode="mention", rules=""):
         return [{"jid": GROUP, "name": "G", "mode": mode, "rules": rules, "cooldown_s": 0}]
 
+    #: A configured group admits the agent to the room, not the room to the
+    #: agent: every member below is listed, so these tests judge the GATE.
+    LISTED = ["447700900111"]
+
     async def test_unconfigured_group_is_invisible(self, harness):
         await harness.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
@@ -234,7 +238,7 @@ class TestGroups:
         assert harness.dispatched == []
 
     async def test_mention_of_own_jid_dispatches(self):
-        h = Harness(groups=self.cfg())
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
         await h.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
         )
@@ -242,19 +246,19 @@ class TestGroups:
         assert h.dispatched[0].is_mention
 
     async def test_mention_of_lid_alias_dispatches(self):
-        h = Harness(groups=self.cfg())
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
         await h.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_LID])
         )
         assert len(h.dispatched) == 1
 
     async def test_unaddressed_group_message_is_dropped_in_mention_mode(self):
-        h = Harness(groups=self.cfg())
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
         await h.transport.receive(event(chat=GROUP, sender=FRIEND, is_group=True))
         assert h.dispatched == []
 
     async def test_reply_to_agent_message_counts_as_addressed(self):
-        h = Harness(groups=self.cfg())
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
         ids = await h.transport._send_tracked(GROUP, "agent said this")
         await h.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, quoted_stanza=ids[0])
@@ -262,7 +266,10 @@ class TestGroups:
         assert len(h.dispatched) == 1
 
     async def test_rules_mode_unprompted_dispatches_with_verdict(self):
-        h = Harness(groups=self.cfg(mode="rules", rules="Answer python questions."))
+        h = Harness(
+            groups=self.cfg(mode="rules", rules="Answer python questions."),
+            allowed_wa_ids=self.LISTED,
+        )
         await h.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, text="how do dicts work?")
         )
@@ -271,7 +278,7 @@ class TestGroups:
         assert verdict is None  # popped after dispatch completes
 
     async def test_non_operator_group_command_dies_silently(self):
-        h = Harness(groups=self.cfg())
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
         await h.transport.receive(
             event(chat=GROUP, sender=FRIEND, is_group=True, text="/new", mentions=[OWN_JID])
         )
@@ -283,6 +290,97 @@ class TestGroups:
             event(chat=GROUP, sender=OWN_JID, from_me=True, is_group=True, text="/new")
         )
         assert len(h.dispatched) == 1
+
+
+@pytest.mark.asyncio
+class TestGroupSenderAllowlist:
+    """Configuring a group admits the agent to the room, not the room to the agent.
+
+    The group gate says whether the agent may SPEAK in the group. Whether a
+    PERSON may make it speak is the per-sender allowlist every other channel
+    applies to group traffic: the linked account, or a number in
+    ``allowed_wa_ids``. Without it, any member of a configured group who
+    @-mentions the agent (or merely posts, in ``rules`` mode) drives a turn on
+    the operator's host.
+    """
+
+    def cfg(self, mode="mention", rules=""):
+        return [{"jid": GROUP, "name": "G", "mode": mode, "rules": rules, "cooldown_s": 0}]
+
+    def _audit(self, monkeypatch):
+        import kiro_crew.whatsapp.transport as mod
+
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            mod, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: seen.append(kw))
+        )
+        return seen
+
+    async def test_an_unlisted_member_mentioning_the_agent_is_dropped_and_audited(
+        self, monkeypatch
+    ):
+        seen = self._audit(monkeypatch)
+        h = Harness(groups=self.cfg())
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
+        )
+        assert h.dispatched == []
+        assert [(a["operation"], a["outcome"], a["source"], a["caller"]) for a in seen] == [
+            ("whatsapp_transport.authorize_group", "denied", "whatsapp", "447700900111")
+        ]
+
+    async def test_an_unlisted_member_replying_to_the_agent_is_dropped(self):
+        h = Harness(groups=self.cfg())
+        ids = await h.transport._send_tracked(GROUP, "agent said this")
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, quoted_stanza=ids[0])
+        )
+        assert h.dispatched == []
+
+    async def test_an_unlisted_member_cannot_trigger_a_rules_mode_turn(self):
+        """Rules mode answers unaddressed messages, so the allowlist has to hold
+        for a message that never mentions the agent at all."""
+        h = Harness(groups=self.cfg(mode="rules", rules="Answer python questions."))
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, text="how do dicts work?")
+        )
+        assert h.dispatched == []
+
+    async def test_dm_policy_open_does_not_admit_group_members(self):
+        """`open` means anyone may DM the agent, not that anyone in a configured
+        group may drive it."""
+        h = Harness(dm_policy="open", groups=self.cfg())
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
+        )
+        assert h.dispatched == []
+
+    async def test_a_listed_member_is_admitted_whatever_the_dm_policy(self):
+        h = Harness(dm_policy="self", groups=self.cfg(), allowed_wa_ids=["447700900111"])
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
+        )
+        assert len(h.dispatched) == 1
+
+    async def test_the_operator_needs_no_listing(self, monkeypatch):
+        seen = self._audit(monkeypatch)
+        h = Harness(groups=self.cfg())
+        await h.transport.receive(
+            event(chat=GROUP, sender=OWN_JID, from_me=True, is_group=True, text="status?")
+        )
+        assert len(h.dispatched) == 1
+        assert seen == []
+
+    async def test_an_unconfigured_group_still_produces_no_audit_row(self, monkeypatch):
+        """Ordering is the contract: the group gate drops an unconfigured group
+        before the allowlist can write a row per stranger's message."""
+        seen = self._audit(monkeypatch)
+        h = Harness()
+        await h.transport.receive(
+            event(chat=GROUP, sender=FRIEND, is_group=True, mentions=[OWN_JID])
+        )
+        assert h.dispatched == []
+        assert seen == []
 
 
 @pytest.mark.asyncio

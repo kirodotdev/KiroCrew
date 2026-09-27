@@ -419,6 +419,44 @@ def test_busy_session_without_steer_asks_to_resend():
     assert any("resend" in t.lower() for _, t in transport.sent)
 
 
+def test_a_member_waits_while_the_operators_group_turn_streams():
+    """A group has two buckets (the operator's and the members'), and a reply
+    streaming from either is a reply in this chat. Back-pressure is keyed on the
+    conversation: the member gets the busy receipt and never steers the
+    operator's turn, even though their own bucket is idle."""
+    from kiro_crew.whatsapp.transport_dispatch import BUSY_NOTE
+
+    provider = FakeProvider()
+    d, _client, sessions, transport = _make(provider=provider)
+    transport._is_operator = False
+    operator_key = d._session_key(_GROUP, is_operator=True)
+    sessions.is_busy = lambda key: key == operator_key  # type: ignore[method-assign]
+    asyncio.run(d.handle_message(_msg("me too", conv=_GROUP, user="447700900111")))
+    assert provider.prompts == []
+    assert [t for _, t in transport.sent] == [BUSY_NOTE]
+
+
+def test_stop_acts_on_the_members_bucket_when_that_is_the_live_one():
+    """/stop is the channel's only cancel affordance and the operator types it
+    at the conversation, not at a bucket: when the members' tool-less bucket is
+    the one streaming, that is the turn it stops."""
+    from kiro_crew.whatsapp.transport_dispatch import STOPPED_TEXT
+
+    d, _client, sessions, transport = _make()
+    member_key = d._session_key(_GROUP, is_operator=False)
+    sessions.is_busy = lambda key: key == member_key  # type: ignore[method-assign]
+    stopped: list[str] = []
+
+    async def stop_turn(key):
+        stopped.append(key)
+        return "soft"
+
+    sessions.stop_turn = stop_turn  # type: ignore[attr-defined]
+    asyncio.run(d._handle_stop(_GROUP))
+    assert stopped == [member_key]
+    assert [t for _, t in transport.sent] == [STOPPED_TEXT]
+
+
 def test_busy_session_folds_into_current_reply_when_steerable():
     class Steering(FakeProvider):
         supports_steer = True
@@ -840,6 +878,26 @@ def test_a_non_operator_never_shares_the_operators_unified_session():
     assert operator_key != peer_key
 
 
+def test_a_non_operator_is_keyed_under_the_tool_less_agent():
+    """A `deny_all_tools` turn is driven on the tool-less agent, and the shared
+    pipeline refuses one whose session is already bound to another agent. So a
+    non-operator's bucket must be built under that agent from the start, in a DM
+    and in a group alike; the group's shared session stays the operator's.
+    """
+    from kiro_crew.messaging.dispatch import TOOLLESS_TURN_AGENT
+
+    d, _client, _sessions, transport = _make()
+    peer_dm = d._session_key("447711111111@s.whatsapp.net", is_operator=False)
+    assert peer_dm.split(":")[1] == TOOLLESS_TURN_AGENT
+
+    operator_group = d._session_key(_GROUP, is_operator=True)
+    member_group = d._session_key(_GROUP, is_operator=False)
+    assert operator_group.split(":")[1] == d._resolve_agent()
+    assert member_group.split(":")[1] == TOOLLESS_TURN_AGENT
+    assert member_group != operator_group, "a member must not reach the operator's tooled session"
+    assert _GROUP in member_group, "the member's bucket is still per group"
+
+
 # ── phase reactions: the marker must report the OUTCOME ─────────────────────
 def _react_msg(d, text="hi", conv=_DM, user="447700900000"):
     """An inbound message the transport can already draw a reaction on.
@@ -1130,3 +1188,32 @@ def test_the_operators_unified_bucket_is_the_one_seeded():
 def test_a_fresh_machine_still_starts_at_generation_zero():
     d, _client, _sessions, _transport = _make()
     assert d._conv.current_gen(_DM) == 0
+
+
+def test_a_scope_seeds_from_the_member_bucket_when_it_is_ahead():
+    """A group's members talk in a bucket of their own (tool-less agent, ``guest``
+    segment) that shares the scope's generation counter. If only members talked
+    since the last restart, the operator's bucket is behind; seeding from it
+    alone would hand a member a generation whose session is still on disk."""
+    from kiro_crew.messaging.dispatch import TOOLLESS_TURN_AGENT
+    from kiro_crew.messaging.link import (
+        CHAT_TYPE_FORUM,
+        DM_SCOPE_PER_CHANNEL_PEER,
+        build_dm_session_key,
+    )
+    from kiro_crew.whatsapp.transport_dispatch import GUEST_SCOPE_SEGMENT
+
+    d, _client, sessions, _transport = _make()
+    member_bucket = build_dm_session_key(
+        "whatsapp",
+        TOOLLESS_TURN_AGENT,
+        f"{_GROUP}:{GUEST_SCOPE_SEGMENT}",
+        gen=0,
+        dm_scope=DM_SCOPE_PER_CHANNEL_PEER,
+        chat_type=CHAT_TYPE_FORUM,
+    )
+    sessions.persisted_generations["whatsapp:kirocrew:forum:" + _GROUP] = 1
+    sessions.persisted_generations[member_bucket] = 5
+    assert d._conv.current_gen(_GROUP) == 5
+    # The seeded generation is what the member's key is then built with.
+    assert d._session_key(_GROUP, is_operator=False) != member_bucket

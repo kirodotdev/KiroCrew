@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.messaging.dispatch import warn_if_toolless_turns_unservable
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.whatsapp.client import (
     STATE_CONNECTED,
@@ -15,13 +16,66 @@ from kiro_crew.whatsapp.client import (
     neonize_available,
 )
 from kiro_crew.whatsapp.jids import normalize_jid
-from kiro_crew.whatsapp.transport import WhatsAppTransport
+from kiro_crew.whatsapp.transport import DM_POLICY_ALLOWLIST, DM_POLICY_OPEN, WhatsAppTransport
 from kiro_crew.whatsapp.transport_dispatch import WhatsAppDispatcher
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_if_non_operator_turns_unservable(cfg) -> None:
+    """Name, at startup, the configurations that silently answer no non-operator.
+
+    Two of them. A configured group with an empty ``allowed_wa_ids`` admits only
+    the linked account, so every other member is dropped without a reply. The
+    other, non-operators admitted on a backend that cannot run a tool-less turn,
+    is the shared :func:`warn_if_toolless_turns_unservable`; this only supplies
+    the WhatsApp admission facts.
+
+    A non-operator's turn runs tool-less, and only a backend whose routing mounts
+    the agent spec can make a turn tool-less
+    (``dispatch.toolless_turns_supported``). On any other backend such a turn is
+    refused with a one-line note. An operator
+    who admits non-operators (a configured group, or a DM policy wider than
+    ``self``) on such a backend would otherwise learn that only from the SEL.
+    """
+    wa = cfg.whatsapp
+    # Only a group whose mode can respond admits anyone; ``off`` is configured
+    # but muted, so it neither answers members nor warrants a warning.
+    live_groups = [
+        g
+        for g in (wa.groups or [])
+        if isinstance(g, dict)
+        and str(g.get("mode", "mention") or "mention").strip().lower() != "off"
+    ]
+    allowlist = [w for w in (wa.allowed_wa_ids or []) if str(w).strip()]
+    # Normalized the way the transport reads it; a value outside the known
+    # policies denies everyone there (fail closed), so it admits nobody.
+    policy = str(wa.dm_policy or "").strip().lower()
+    if live_groups and not allowlist:
+        # A configured group with nobody allowlisted answers only the operator;
+        # every other member is dropped silently. Said once here, since the
+        # members see nothing and the operator otherwise learns it from the SEL.
+        logger.warning(
+            "whatsapp: %d group(s) configured but allowed_wa_ids is empty: only the "
+            "linked account can make the agent reply there; other members are dropped. "
+            "Add their numbers to allowed_wa_ids to admit them.",
+            len(live_groups),
+        )
+    admits_others = (
+        bool(live_groups and allowlist)
+        or policy == DM_POLICY_OPEN
+        or (policy == DM_POLICY_ALLOWLIST and bool(allowlist))
+    )
+    backend = getattr(cfg.agent, "acp_backend", "")
+    warn_if_toolless_turns_unservable(
+        "whatsapp",
+        admits_non_operators=admits_others,
+        backend=backend if isinstance(backend, str) else "",
+        admission=f"groups={len(live_groups)}, dm_policy={policy}, allowed={len(allowlist)}",
+    )
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -137,6 +191,7 @@ async def maybe_start_whatsapp(orch: "GatewayOrchestrator") -> "WhatsAppClient |
             groups=list(cfg.groups),
         )
         dispatcher.transport = transport
+        _warn_if_non_operator_turns_unservable(orch._cfg)
 
         loop = asyncio.get_running_loop()
         checked_groups = False

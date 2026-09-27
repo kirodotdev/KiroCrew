@@ -286,7 +286,15 @@ class GroupClient:
 
 
 def _warnings(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    """Warnings from the configured-group CHECK. The admission warning
+    (``_warn_if_non_operator_turns_unservable``) fires at start for the same
+    fixture -- a group with an empty allowlist -- and has its own tests, so it is
+    kept out of these counts."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "allowed_wa_ids is empty" not in r.getMessage()
+    ]
 
 
 def test_configured_group_jids_skips_junk_entries():
@@ -531,3 +539,92 @@ def test_configured_group_jids_leaves_the_user_part_case_alone():
     over-denial being fixed.
     """
     assert _configured_group_jids([{"jid": "AbC@G.US"}]) == ["AbC@g.us"]
+
+
+class TestNonOperatorTurnsUnservableWarning:
+    """A configuration that admits non-operators on a backend that cannot run a
+    tool-less turn is named once at startup, not discovered one refused turn at
+    a time in the SEL."""
+
+    def _cfg(self, *, groups: list, dm_policy: str, backend: str):
+        cfg = _cfg()
+        cfg.whatsapp.groups = groups
+        cfg.whatsapp.dm_policy = dm_policy
+        cfg.agent.acp_backend = backend
+        return cfg
+
+    def test_warns_when_a_group_is_configured_on_a_non_spec_backend(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        cfg = self._cfg(groups=[{"jid": "g@g.us"}], dm_policy="self", backend=ACP_BACKEND_CLAUDE)
+        cfg.whatsapp.allowed_wa_ids = ["447700900111"]  # a member IS admitted
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert any("cannot run a tool-less turn" in r.getMessage() for r in caplog.records)
+
+    def test_silent_when_only_the_operator_is_admitted(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        cfg = self._cfg(groups=[], dm_policy="self", backend=ACP_BACKEND_CLAUDE)
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records
+
+    def test_names_a_configured_group_whose_allowlist_is_empty(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        cfg = self._cfg(groups=[{"jid": "g@g.us"}], dm_policy="self", backend=ACP_BACKEND_KIRO)
+        cfg.whatsapp.allowed_wa_ids = []
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert any("allowed_wa_ids is empty" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("dm_policy", ["Self", " self ", "nonsense", "allowlist", "disabled"])
+    def test_silent_when_the_policy_admits_nobody_beyond_the_operator(self, caplog, dm_policy):
+        """Read the way the transport reads it: normalized, an unknown value
+        denies everyone, and ``allowlist`` with no numbers admits nobody."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        cfg = self._cfg(groups=[], dm_policy=dm_policy, backend=ACP_BACKEND_CLAUDE)
+        cfg.whatsapp.allowed_wa_ids = []
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records
+
+    def test_warns_for_an_allowlist_policy_with_numbers_on_a_non_spec_backend(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        cfg = self._cfg(groups=[], dm_policy="allowlist", backend=ACP_BACKEND_CLAUDE)
+        cfg.whatsapp.allowed_wa_ids = ["447700900111"]
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert any("cannot run a tool-less turn" in r.getMessage() for r in caplog.records)
+
+    def test_a_muted_group_is_not_counted_as_admitting_anyone(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+        cfg = self._cfg(
+            groups=[{"jid": "g@g.us", "mode": "off"}], dm_policy="self", backend=ACP_BACKEND_CLAUDE
+        )
+        cfg.whatsapp.allowed_wa_ids = []
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records
+
+    def test_silent_for_a_group_with_an_allowlist_on_the_kiro_backend(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        cfg = self._cfg(groups=[{"jid": "g@g.us"}], dm_policy="self", backend=ACP_BACKEND_KIRO)
+        cfg.whatsapp.allowed_wa_ids = ["447700900111"]
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records
+
+    def test_silent_on_a_backend_that_mounts_the_spec(self, caplog):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+        cfg = self._cfg(groups=[{"jid": "g@g.us"}], dm_policy="open", backend=ACP_BACKEND_KIRO)
+        cfg.whatsapp.allowed_wa_ids = ["447700900111"]
+        with caplog.at_level(logging.WARNING):
+            gw._warn_if_non_operator_turns_unservable(cfg)
+        assert not caplog.records

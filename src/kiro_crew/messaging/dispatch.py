@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.backends import Routing, routing_for
 from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
@@ -89,6 +90,74 @@ from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 
 logger = logging.getLogger(__name__)
+
+#: The agent a ``deny_all_tools`` turn runs on. Its spec declares ``tools: []``
+#: and no MCP servers (``agent._install_guest_agent``), so the backend mounts
+#: nothing for the session: no tool exists to call, whatever the operator's own
+#: agent auto-approves. That is the only enforcement that holds on the stock kiro
+#: backend, where a tool named in ``allowedTools`` raises no permission request
+#: and therefore never reaches the driver's ``deny_all_tools`` branch. A spec of
+#: its own, not the background ``kirocrew-lite``: that helper may grow a tool one
+#: day and its empty prompt reads as "no user to address" on backends that need
+#: one, while this agent talks to a person. The spec pin in
+#: ``test_messaging_dispatch.py::TestToollessAgentSpecIsTheBoundary`` makes any
+#: drift loud.
+TOOLLESS_TURN_AGENT = "kirocrew-guest"
+
+
+#: What a sender whose turn was refused as un-tool-less-able reads. One line, no
+#: internals: silence reads as the agent ignoring the person, and the operator's
+#: side of the story is the SEL row, not this note.
+TOOLLESS_TURN_REFUSAL_NOTE = "This account cannot answer you on its current setup. Ask its owner."
+
+
+def toolless_turns_supported(backend: str) -> bool:
+    """Whether a ``deny_all_tools`` turn can be driven on *backend* at all.
+
+    True only where the agent spec is what the harness mounts
+    (``Routing.AGENT_SPEC``): there ``tools: []`` removes every tool. Read by
+    channel startup to warn an operator whose configuration admits non-operator
+    traffic on a backend that will refuse every such turn.
+    """
+    return routing_for(backend) is Routing.AGENT_SPEC
+
+
+def warn_if_toolless_turns_unservable(
+    channel: str, *, admits_non_operators: bool, backend: str, admission: str
+) -> bool:
+    """Warn once, at a channel's start, when its admitted non-operators will all be refused.
+
+    Shared with every ``deny_all_tools`` adopter because the refusal itself lives
+    on the shared seam (:func:`drive_turn`); a channel supplies only the two facts
+    it alone knows, whether its configuration admits anyone but the operator and
+    how (``admission``, for the message). Returns True when it warned.
+    """
+    if not admits_non_operators or toolless_turns_supported(backend):
+        return False
+    logger.warning(
+        "%s: non-operator senders are admitted (%s) but agent.acp_backend=%r cannot "
+        "run a tool-less turn; every non-operator turn will be refused with a note. "
+        "Use the kiro backend or narrow admission.",
+        channel,
+        admission,
+        backend,
+    )
+    return True
+
+
+class ToollessTurnUnavailable(RuntimeError):
+    """A ``deny_all_tools`` turn cannot be made tool-less on this session.
+
+    Two causes. The session key a channel hands in for such a turn must be one
+    that only tool-less turns ever use; a key shared with the operator's own
+    turns would hand the sender the operator's agent, tools included. And the
+    tool-less agent spec is honoured only by a backend whose routing is
+    ``Routing.AGENT_SPEC`` (the spawn names the agent, so ``tools: []`` is what
+    the harness mounts); a harness that reads no agent spec keeps its own native
+    tools, and a project-preapproved one raises no permission request for the
+    driver to refuse. Raised instead of running the turn either way: refusing
+    costs the sender one reply, running it costs the operator their machine.
+    """
 
 
 async def admit_inbound_callback(
@@ -271,8 +340,23 @@ class ChannelTurn:
     For a turn driven by someone the channel does not trust as its operator. The
     approval mode cannot express it: the PreToolUse hook may answer
     ``auto_approve`` and a session carrying Trust short-circuits, both before the
-    interactive ladder is consulted. Defaults False, so every existing adopter is
-    byte-identical."""
+    interactive ladder is consulted. Nor is a permission request guaranteed to be
+    raised at all: a tool the agent spec lists in ``allowedTools`` runs without
+    one on the kiro backend, so the driver never sees it. The turn is therefore
+    driven on :data:`TOOLLESS_TURN_AGENT`, whose spec mounts no tools and no MCP
+    servers, and the driver's own refusal of any permission request that does
+    arrive is the second line. The session key MUST be one that only such turns
+    use (a per-peer bucket, never the operator's): a session already bound to
+    another agent refuses the turn (:class:`ToollessTurnUnavailable`), and so does
+    a backend whose routing is not ``Routing.AGENT_SPEC``, since only a harness
+    that mounts what the spec names honours ``tools: []``. Defaults False, so
+    every existing adopter is byte-identical."""
+
+    unprompted: bool = False
+    """The turn was not addressed to the agent (a rules-mode group message the
+    model may answer or decline). A refusal of such a turn ends silently: a
+    note nobody asked for is an unsolicited post into the room, and it would
+    start the unprompted cooldown for a turn that never ran. Defaults False."""
 
     bind_provider: Optional[Callable[[Any], None]] = None
     """``(provider) -> None``, called once the session's provider exists.
@@ -1150,6 +1234,36 @@ def _set_replay_gap(sessions: Any, session_key: str, *, opened: bool) -> None:
             )
 
 
+def _toolless_turn_work_dir(session_key: str) -> Any:
+    """The isolated cwd a ``deny_all_tools`` turn cold-starts in.
+
+    The per-session work directory under the workspace root: created on first
+    use, owned by this session key alone, and never a project checkout, so no
+    ``.kiro/agents`` entry there can shadow the tool-less spec.
+    """
+    from kiro_crew.config.loader import _session_work_dir
+
+    path = _session_work_dir(session_key)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _provider_backend(provider: Any) -> str | None:
+    """The ACP backend id a provider drives, ``None`` when it cannot be read.
+
+    Read through ``provider.client.backend`` with ``getattr`` at both hops, the
+    same mock-safe shape ``session._is_claude_backend`` uses. ``None`` (not
+    ``""``) is the unreadable answer: the empty string IS ``ACP_BACKEND_KIRO``,
+    so collapsing an absent client onto it would route an unknown harness as the
+    one that honours the spec. The caller treats ``None`` as refused.
+    """
+    client = getattr(provider, "client", None)
+    if client is None:
+        return None
+    backend = getattr(client, "backend", None)
+    return backend if isinstance(backend, str) else None
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -1160,6 +1274,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     """
     renderer = turn.renderer
     session_key = turn.session_key
+    # A sender the channel does not trust talks to a tool-less agent, not to the
+    # operator's. Decided here, on the shared seam, so no adopter can set the
+    # flag and forget the agent that gives it teeth.
+    session_agent = TOOLLESS_TURN_AGENT if turn.deny_all_tools else turn.agent
     _acquired = False
     # Post-compaction re-injection bookkeeping for the finally: whether this
     # turn consumed the one-shot flag, and whether it landed (recorded success).
@@ -1226,6 +1344,22 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # always did. Widening the call for everyone would make the new field's
         # cost fall on channels that gain nothing from it.
         extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
+        if turn.deny_all_tools:
+            # ``crew_agent=""`` is the explicit "no crew" answer
+            # (``config.loader.resolve_crew_identity``): without it a crew
+            # ENROLLED under the tool-less agent's name would be made canonical by
+            # the crew-namespace fallback, and its tooled template would start
+            # under a binding that reads as the tool-less agent. The spec named
+            # here must be the template itself, never a namesake crew.
+            extra["crew_agent"] = ""
+            # And the process must be a COLD start in this session's own work
+            # directory: a warm-pool process was spawned in the operator's project
+            # cwd, where a project-local spec under the same name (tools and all)
+            # shadows the generated one the harness would otherwise load. An
+            # explicit cwd that is not the pool's makes the pool ineligible
+            # (``cwd_blocks_pool``) and the per-session directory carries no
+            # project-local agents of its own.
+            extra["cwd"] = str(await asyncio.to_thread(_toolless_turn_work_dir, session_key))
         # Bounded by the guard's own countdown: it holds a DONE only while it
         # still has a retry to grant, so this loop runs at most
         # ``1 + _COMPACTION_FAILED_RETRIES`` times. The driver renders through the
@@ -1259,9 +1393,50 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             # provider start. The same identity is then used for this turn's prompt.
             memory_store = await session_store_for_turn(ctx_builder, session_key)
             provider, is_new, resumed = await sessions.get_or_create(
-                session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
+                session_key, agent=session_agent, channel_id=turn.conversation_id, **extra
             )
             _acquired = True
+            if turn.deny_all_tools:
+                # The tool-less agent is a SPEC, and only a backend that mounts
+                # what the spec names honours it. On any other routing the
+                # harness keeps its own native tools, and one a project has
+                # pre-approved runs with no permission request for the driver to
+                # refuse -- so the turn is refused instead. Positive identity:
+                # the routing that holds, never the absence of another harness.
+                backend = _provider_backend(provider)
+                if backend is None or not toolless_turns_supported(backend):
+                    sel().log_api_access(
+                        caller=session_key,
+                        operation="turn_agent",
+                        outcome="denied",
+                        source="messaging",
+                        resources=(
+                            f"deny_all_tools turn on backend={'unknown' if backend is None else backend!r}: "
+                            "the tool-less agent spec is not honoured there"
+                        ),
+                    )
+                    raise ToollessTurnUnavailable(
+                        "deny_all_tools turn refused: this backend does not mount tools "
+                        "from the agent spec, so an untrusted sender's turn cannot be "
+                        "made tool-less on it"
+                    )
+                # ``get_or_create`` ignores ``agent`` for a session that already
+                # exists, so a key shared with a tooled session would silently run
+                # this turn with the operator's tools. Read the binding back and
+                # refuse rather than trust the key's shape.
+                bound = sessions.get_agent(session_key) if hasattr(sessions, "get_agent") else ""
+                if bound and bound != TOOLLESS_TURN_AGENT:
+                    sel().log_api_access(
+                        caller=session_key,
+                        operation="turn_agent",
+                        outcome="denied",
+                        source="messaging",
+                        resources=f"deny_all_tools turn on a session bound to agent={bound!r}",
+                    )
+                    raise ToollessTurnUnavailable(
+                        "deny_all_tools turn refused: its session is bound to an agent "
+                        "with tools; channels must key untrusted turns separately"
+                    )
             if stop_gen_at_entry is None:
                 stop_gen_at_entry = session_stop_generation(sessions, session_key)
             if conv_gen_at_entry is None:
@@ -1591,6 +1766,21 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # reach for the prompt.
         if not turn.inbound_restricted:
             await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
+    except ToollessTurnUnavailable as exc:
+        # Refused before the prompt opened; the sender gets one neutral line so
+        # the silence is not read as being ignored, the SEL row already names why.
+        # Not charged to the circuit breaker: this is a configuration refusal,
+        # not a provider failure, and a group of refused members would otherwise
+        # trip the breaker for the session they never got to use.
+        logger.warning("%s: %s", turn.channel_type, exc)
+        if not turn.unprompted:
+            try:
+                await renderer.on_text_chunk(TOOLLESS_TURN_REFUSAL_NOTE)
+                await renderer.on_done()
+            except Exception:
+                logger.warning(
+                    "%s: could not display tool-less refusal", turn.channel_type, exc_info=True
+                )
     except UnknownMemoryStore as exc:
         logger.warning("%s member memory unavailable: %s", turn.channel_type, exc)
         try:

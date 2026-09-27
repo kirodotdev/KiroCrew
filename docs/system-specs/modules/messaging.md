@@ -63,7 +63,8 @@ legacy metadata do not override a canonical execution.
 | `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `session_provenance_tag` (stable callback affinity without exposing session keys), `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line (WeCom, Weixin, iMessage and Feishu call it; WhatsApp declares `max_buttons=0` and strips the trailer instead, so a `0` alone does not promise the list survives). Also `credential_redaction_notice(count)` — the one sentence a channel sends when credential redaction rewrote text it already delivered, so the reader learns a pasted command will not run. Shared so the wording cannot fork per channel and each spelling need its own audit for leaked bytes; it carries only the count, never secret bytes, and is plain text with no markup or emoji because one string ships to platforms that render different dialects (or none). `redaction_notice(cred_count, url_count)` is the by-kind superset every channel delivery surface now posts through: it delegates to `credential_redaction_notice` byte-for-byte when `url_count` is zero, and otherwise names the suspicious-URL rewrite (`security.EXFILTRATION_REDACTION_TAG_PREFIX`, counted by prefix because the tag interpolates the domain) with the URL remedy — re-check the link against a trusted source — because telling a reader whose URL was rewritten to "supply the secret" names a remedy that cannot help them. Zero/zero is a `ValueError`, never an empty message. `count_redaction_tags(text)` is the shared two-kind tally beside it — exact-match over `CREDENTIAL_REDACTION_TAGS`, prefix-match for the URL tag — so a surface cannot adopt half the count and post a notice worded for the wrong remedy; every counting site routes through it. The notice itself is posted IN-RENDERER at every channel delivery surface, one best-effort follow-up message per turn: each renderer counts the text IT actually delivered — which can differ from the driver's accumulated view, because several renderers run a second display-form redaction pass at their own egress (Slack, Telegram, Teams and Discord re-redact against what the platform RENDERS, so their delivered form can carry placeholders the driver's byte-level stream scan never wrote) — and a failed notice send is logged, never raised, because the answer is already out. It is never folded into the answer text: renderers refuse text once finalized, and prose after an `[OPTIONS:]` trailer breaks the trailer parsers, which require it to END the text. Discord and Telegram tally per LANDED message across seals, recovery re-posts and the posted reasoning (streaming edits supersede each other, so only sealed forms count); Slack counts the final display-safe body plus the posted 💭 reasoning in one tally; WeCom tallies at `on_done` but posts from `close()`, where its deferred-overflow delivery finally settles, consumed on the first call so a second `close()` cannot post twice; `SilentRenderer` posts nothing because it delivers nothing |
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout (recording `last_deny_cause = approval_timeout` for the driver, below) and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text. Also `adoptable_reservation(pending, loop)`, the one rule for whether a stored future may be adopted as a reservation: a channel's registry is process-global and outlives any one event loop, so an entry a closed loop left behind is reachable by key, and awaiting it raises `attached to a different loop` while its lack of a result is not a decision either. Foreign-loop entries are refused whether or not they carry a result, because a verdict recorded on a loop that has ended cannot answer a later request. It lives here, not in each channel, because three copies of an adoption rule is how the per-channel registries diverged in the first place |
 | `messaging/driver.py` deny cause | A decider MAY carry `last_deny_cause` (`""` for a human's own answer, `constants.DENY_CAUSE_APPROVAL_TIMEOUT` when its prompt expired). After a denial the driver reads it and, for the timeout cause, awaits `deny_notice.steer_refusal_notice` BEFORE `reject_tool` (capability-gated on `provider.supports_steer`, bounded by `STEER_NOTICE_BOUND_SECS`, best-effort), so the model is told the prompt expired unanswered instead of reading kiro-cli's generic "User denied tool execution" as a human refusal. Cancellation mid-steer still answers the wire through a shielded, strongly referenced orphan reject. Every shipped decider records the cause: `TextReplyApprovalDecider`, `SessionApprovalDecider` (via `PendingApprovals.decide_with_cause`), `DiscordApprovalDecider`, `SlackApprovalDecider`, `TelegramApprovalDecider`, `TeamsApprovalDecider`. A plain callable without the attribute is a causeless denial, as before |
-| `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Defaults False |
+| `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Not the whole enforcement: see `dispatch.TOOLLESS_TURN_AGENT` below. Defaults False |
+| `messaging/dispatch.py` `TOOLLESS_TURN_AGENT` | `"kirocrew-guest"`: the agent a `deny_all_tools` turn is driven on. Its spec (`agent._install_guest_agent`, written beside the background `kirocrew-lite` on every rebuild) mounts `tools: []`, no MCP servers and `includeMcpJson: false` (so the user-level mcp.json is not mounted either), and carries a short conversational prompt of its own because a person is on the other end. Needed because a permission request is not guaranteed at all: a tool the operator's agent lists in `allowedTools` runs on the kiro backend without raising one, so the driver's refusal never sees it. `drive_turn` acquires the session under this agent when the flag is set and refuses the turn (`ToollessTurnUnavailable`, SEL `turn_agent` denied) when the session key handed in is already bound to another agent, since `get_or_create` keeps an existing session's agent, and when the provider's backend routing is not `Routing.AGENT_SPEC` (`agent_sdk.backends.routing_for`): only a harness that mounts what the spec names honours `tools: []`; one that reads no agent spec keeps its native tools and a project-preapproved one raises no permission request, so the turn is refused rather than run |
 | `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
 | `messaging/markup.py` | `strip_thinking_tags` / `flatten_pipe_tables` / `flatten_mermaid_body`: Markdown reductions for a surface that renders none of the source form (a `<thinking>` block, a pipe table needing a monospace grid, a `mermaid` fence needing an image). Emits Markdown, never a channel dialect, so each channel's own inline converter finishes the job. Stdlib-only leaf |
 | `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (stdlib-only, pure). Prefix-stable so streaming callers can send sealed chunks and keep only the last as a live buffer. `split_markdown_bytes` wraps it for a byte-capped platform, measuring the produced chunks and shrinking the character budget until they fit, with the `chunk_utf8_bytes` primitive as the floor. Also exports `iter_fence_spans`, the same fence machine viewed as character spans over a whole message, and `split_markdown_safe_with_tier`, which additionally declares whether the split entered the context-degrading tier (a cut that leaves a dirty remainder, so the deferred text can read as a delimiter the source line never contained). |
@@ -4872,18 +4873,33 @@ establish is whether a recipient's client RENDERS a native-flow message sent fro
 personal linked device rather than a Business account. Writing it down as
 impossible would close the door on every future picker on this channel.
 
-**A group member is admitted to the conversation, not to the machine.** Step 5 of
-the gauntlet authorizes the group SURFACE, so a configured group never reaches
-`authorize`, and membership alone would let any member trigger an authenticated
-whole-blob download into the gateway's heap at will: in `rules` mode an unaddressed
-message already answers `respond=True`, and the per-group cooldown does not bound
-the fetch because it only starts once a reply actually delivered, which a
-sentinel-silenced turn never does. `_may_fetch_media` therefore requires
-INDIVIDUAL admission for group media (the linked account, or a number the operator
-listed) and deliberately does not consult `dm_policy`, because `open` resolves to
-"anyone with a user id" and would hand the capability straight back. A refusal is
-spoken through the same note path an unsupported type uses, since silence reads as
-the agent ignoring a photo the sender believes it received.
+**Configuring a group admits the agent to the room, not the room to the agent.**
+The group gate (step 4) decides whether the agent may SPEAK in a group: is it
+configured, is the agent addressed, has the cooldown elapsed. Step 5 then applies
+the per-sender allowlist to the message, the same check every other channel makes
+on group traffic: the linked account always passes, any other member must appear
+in `allowed_wa_ids`, and an empty list admits nobody but the operator
+(`WhatsAppTransport._group_sender_admitted`). It runs for an @-mention, a reply to
+the agent and a rules-mode unprompted message alike, so an unlisted member cannot
+drive a turn of any kind on the operator's host; the drop is silent and SEL-audited
+(`whatsapp_transport.authorize_group`, outcome `denied`, source `whatsapp`), and
+an UNCONFIGURED group is still dropped at step 4 before any audit row. The check
+deliberately does not consult `dm_policy`: `open` means anyone may DM the agent,
+not that anyone in a configured group may drive it, and reading it here would hand
+the room back. Group turns from an admitted non-operator remain answer-only
+(`deny_all_tools`, no steering, minimal context), because being allowed to talk to
+the agent is still not being allowed to act as it.
+
+**Group media asks the same question again at the fetch.** `_may_fetch_media`
+requires the same individual admission for group media (the linked account, or a
+listed number) even though step 5 already did, because the fetch is the one point
+where bytes land on the host and it must stay closed to any future caller that
+reaches it without passing the gauntlet: in `rules` mode an unaddressed message
+already answers `respond=True`, and the per-group cooldown does not bound the fetch
+because it only starts once a reply actually delivered, which a sentinel-silenced
+turn never does. A refusal is spoken through the same note path an unsupported
+type uses, since silence reads as the agent ignoring a photo the sender believes
+it received.
 
 **Streaming is by edit, throttled.** The Web protocol exposes an edit where the
 Business Cloud API does not, so the renderer sends the first bubble once there is
@@ -4962,7 +4978,9 @@ its path only, because WhatsApp shows the recipient whatever `fileName` carries.
 (the default; only the linked account's own messages), `allowlist`, `open`, and
 `disabled`. An unrecognized value denies everyone. Groups are invisible
 unless configured per group, then gated by mode, mention and cooldown
-(`whatsapp/group_gate.py`). `WhatsAppTransport.reconfigure` adopts all three on a
+(`whatsapp/group_gate.py`), and within a configured group each sender is judged
+by the `allowed_wa_ids` allowlist (operator always; empty list admits nobody
+else) whatever `dm_policy` says. `WhatsAppTransport.reconfigure` adopts all three on a
 config reload: `dm_policy` (an unrecognized string is adopted, because
 `_dm_policy` denies what it does not recognize), `allowed_wa_ids`, and `groups`
 re-coerced through the loader's `_coerce_whatsapp_groups`. The `GroupGate` is
@@ -5027,7 +5045,59 @@ bucket whatever the global setting says.
 A non-operator's turn additionally carries `ChannelTurn.deny_all_tools`, because
 setting the approval mode is not enough: the PreToolUse hook can answer
 `auto_approve` and a session carrying Trust short-circuits, both ahead of the
-interactive ladder. They may talk to the agent; they cannot make it act. Steering
+interactive ladder. Nor is a permission request guaranteed to exist: a tool the
+operator's agent spec names in `allowedTools` runs on the kiro backend without
+asking, so a refusal that lives only on the permission event never sees it. The
+shared pipeline therefore drives a `deny_all_tools` turn on
+`dispatch.TOOLLESS_TURN_AGENT` (`kirocrew-guest`, `tools: []`, no MCP servers, its own conversational prompt; a spec separate from the background `kirocrew-lite` so that helper may grow a tool without handing it to a guest):
+the backend mounts nothing, so there is no tool to auto-approve, and the driver's
+refusal of any permission request that does arrive is the second line. The
+acquisition passes `crew_agent=""` (the explicit "no crew" answer of
+`resolve_crew_identity`) so the name resolves to the template itself: a crew
+enrolled under that name would otherwise be made canonical by the crew-namespace
+fallback and start its tooled spec under a binding that reads as tool-less. It
+also passes an explicit `cwd`, the session's own work directory under the
+workspace root (`_toolless_turn_work_dir`), so the acquisition is a cold start
+there and never a warm-pool claim: a pooled process was spawned in the operator's
+project cwd, where a project-local spec of the same name would shadow the
+generated one. The spec is the enforcement, so it holds only where the spec is
+what the harness mounts:
+`drive_turn` reads the provider's backend and refuses the turn unless
+`routing_for(backend)` is `Routing.AGENT_SPEC` (kiro, kas). A harness that reads
+no agent spec keeps its own native tools, and one a project has pre-approved
+raises no permission request, so on such a backend an untrusted sender gets no
+turn at all rather than a tooled one (positive identity per harness-parity, never
+"not claude"). A refused turn is not silent: the sender reads
+`TOOLLESS_TURN_REFUSAL_NOTE`, one neutral line with no internals, and the SEL row
+(`turn_agent` denied) carries the reason for the operator. An UNPROMPTED turn
+(`ChannelTurn.unprompted`, a rules-mode group message nobody addressed to the
+agent) is refused silently instead: the note would be an unsolicited post and
+would start the unprompted cooldown for a turn that never ran. An unreadable backend
+id (`None`, never `""`, which is the kiro id) refuses the same way. **Backwards
+compatibility:** on claude, codex, opencode, pi, goose and deepseek a
+non-operator who was answered before is refused after this change. WhatsApp
+names that at startup through the shared `dispatch.warn_if_toolless_turns_unservable`
+(the channel supplies only its admission facts; WhatsApp's caller is
+`gateway._warn_if_non_operator_turns_unservable`, reading
+`dm_policy` normalized as the transport does, an unknown value admitting nobody):
+when a group is configured with a non-empty `allowed_wa_ids`, or `dm_policy` is
+`open`, or `allowlist` with numbers, on a backend for which
+`dispatch.toolless_turns_supported` is False, one warning states that every
+non-operator turn will be refused and how to narrow admission; and when a group
+is configured with an empty `allowed_wa_ids`, one warning states that only the
+linked account is answered there and how to admit members. That is
+why a non-operator's session key is built under that agent (`_session_key`), in a
+DM and in a group alike: `get_or_create` keeps an existing session's agent, so a
+key shared with the operator's tooled session would either hand the sender those
+tools or (the pipeline reads the binding back) refuse the turn. In a group the
+operator's shared session stays the operator's; an admitted member gets a
+per-group bucket of their own (`GUEST_SCOPE_SEGMENT`), minimal-context like every
+group turn. The two buckets share the scope's generation counter, so `_seed_gen`
+seeds from the max over both, and back-pressure is keyed on the conversation: a
+sender whose own bucket is idle still gets the busy receipt (`BUSY_NOTE`) while the
+other bucket streams into the group, and never steers it; the operator's `/stop`
+and `/compact` act on whichever bucket is live (`_live_session_key`); a refused tool-less turn (`ToollessTurnUnavailable`)
+is a configuration answer and is not charged to the session's circuit breaker. They may talk to the agent; they cannot make it act. Steering
 is gated the same way, since it injects text into a turn already running, which
 under a unified DM scope is the operator's.
 

@@ -27,7 +27,7 @@ def _template(name: str, **kwargs) -> AgentInfo:
 
 def _owned(name: str, **kwargs) -> AgentInfo:
     """A spec the runtime writes itself, as global discovery reports it."""
-    source = "kirocrew" if name in ("kirocrew", "kirocrew-lite") else "builtin"
+    source = "kirocrew" if name in ("kirocrew", "kirocrew-lite", "kirocrew-guest") else "builtin"
     return _template(name, source=source, kirocrew_owned=True, **kwargs)
 
 
@@ -194,6 +194,7 @@ def test_background_exclusion_is_by_owned_file_not_by_name():
     project_lite = _template("kirocrew-lite", scope="project", kirocrew_owned=False)
     assert not agent_catalog._is_background_only(project_lite)
     assert agent_catalog._is_background_only(_owned("kirocrew-lite"))
+    assert agent_catalog._is_background_only(_owned("kirocrew-guest"))
     assert not agent_catalog._is_background_only(_owned("kirocrew"))
     assert not agent_catalog._is_background_only(_owned("kirocrew-worker"))
 

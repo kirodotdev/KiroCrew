@@ -32,6 +32,7 @@ from kiro_crew.messaging.conversation import (
     reserve_new_generation,
 )
 from kiro_crew.messaging.dispatch import (
+    TOOLLESS_TURN_AGENT,
     ChannelTurn,
     admit_inbound_callback,
     delivery_is_muted,
@@ -69,6 +70,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AGENT = "kirocrew"
+#: Scope segment appended to a group JID for a non-operator's own session bucket
+#: in that group. Colon-free by construction, so it is one more scope segment in
+#: the ``{channel}:{agent}:{chat_type}:{scope}`` key shape.
+GUEST_SCOPE_SEGMENT = "guest"
+
+#: The receipt a sender gets while a reply is still streaming into their chat.
+BUSY_NOTE = "Still working on the last message; please resend shortly."
 
 #: Phase reactions placed on the OPERATOR'S OWN inbound message, which is the
 #: same affordance Slack draws with its status reactions. Reacting to their
@@ -259,6 +267,22 @@ class WhatsAppDispatcher:
             logger.warning("whatsapp: could not build the status summary", exc_info=True)
             return STATUS_UNAVAILABLE_TEXT
 
+    def _live_session_key(self, scope: str) -> str:
+        """The session key of *scope* a command should act on.
+
+        A group has two buckets, the operator's and the members' (tool-less
+        agent, ``guest`` segment). A command typed by the operator addresses the
+        conversation, not a bucket, so it acts on whichever bucket is busy; the
+        operator's own when neither is. Only the operator reaches this: a
+        non-operator's commands are dropped by the transport.
+        """
+        own = self._session_key(scope, is_operator=True)
+        if is_group_jid(scope) and not self.sessions.is_busy(own):
+            other = self._session_key(scope, is_operator=False)
+            if self.sessions.is_busy(other):
+                return other
+        return own
+
     async def _handle_stop(self, scope: str) -> None:
         """Cooperative cancel, then report which of the two things happened.
 
@@ -268,7 +292,7 @@ class WhatsAppDispatcher:
         for both would leave them unsure whether the reply they were waiting on
         is still coming.
         """
-        session_key = self._session_key(scope)
+        session_key = self._live_session_key(scope)
         try:
             outcome = await self.sessions.stop_turn(session_key)
         except Exception:  # noqa: BLE001: the queue clear below still applies
@@ -288,7 +312,7 @@ class WhatsAppDispatcher:
         wrong one leaves them waiting for a compaction that will never happen.
         Whatever is acquired is always released.
         """
-        session_key = self._session_key(scope)
+        session_key = self._live_session_key(scope)
         if not await self.sessions.try_acquire(session_key):
             has_session = False
             try:
@@ -361,6 +385,13 @@ class WhatsAppDispatcher:
         session_key = self._session_key(scope, is_operator=is_operator)
         if self.sessions.is_busy(session_key):
             await self._handle_busy(inbound, session_key)
+            return
+        if group and self.sessions.is_busy(self._session_key(scope, is_operator=not is_operator)):
+            # Back-pressure is a property of the CONVERSATION: a group has two
+            # buckets (the operator's and the members'), and a reply streaming
+            # from either is a reply in this chat. The other bucket is never this
+            # sender's to steer, so only the receipt is sent.
+            await self._say(scope, BUSY_NOTE)
             return
         m = self._live_cfg().messaging
         self._conv.maybe_rotate(
@@ -443,6 +474,7 @@ class WhatsAppDispatcher:
                 decider=decider,
                 auto_approve_session=(decider.trusted if decider is not None else None),
                 deny_all_tools=deny_all_tools,
+                unprompted=unprompted,
                 # Private context is withheld whenever the SESSION is shared, not
                 # merely when the current sender is not the operator. Denying
                 # their tools does not reach this: the disclosure is in the
@@ -553,11 +585,9 @@ class WhatsAppDispatcher:
             and steer is not None
             and await steer(inbound.text)
         )
-        if ok:
-            note = "Folded into the current reply."
-        else:
-            note = "Still working on the last message; please resend shortly."
-        await self._say(inbound.conversation_id, note)
+        await self._say(
+            inbound.conversation_id, "Folded into the current reply." if ok else BUSY_NOTE
+        )
 
     async def _maybe_notice(
         self, scope: str, session_key: str, provider: Any, *, unprompted: bool
@@ -644,6 +674,15 @@ class WhatsAppDispatcher:
         admitted peer could ask what was discussed earlier and be told. A
         non-operator therefore always gets their own per-peer bucket, whatever
         the global setting says.
+
+        A non-operator's bucket is also built under the tool-less agent every
+        ``deny_all_tools`` turn runs on (``dispatch.TOOLLESS_TURN_AGENT``), and in
+        a GROUP it is a per-group bucket that is not the operator's: the shared
+        pipeline drives such a turn on that agent, and ``get_or_create`` keeps an
+        existing session's agent, so a key shared with the operator's tooled
+        session would either hand the member the operator's tools or refuse the
+        turn. The group's shared session belongs to the operator; admitted members
+        get one of their own for the group, minimal-context like every group turn.
         """
         from kiro_crew.messaging.link import (
             CHAT_TYPE_DIRECT,
@@ -654,10 +693,16 @@ class WhatsAppDispatcher:
         chat_type = CHAT_TYPE_FORUM if is_group_jid(scope) else CHAT_TYPE_DIRECT
         gen = self._conv.current_gen(scope)
         dm_scope = str(self.cfg.messaging.dm_scope) if is_operator else DM_SCOPE_PER_CHANNEL_PEER
+        if is_operator:
+            agent = self._resolve_agent()
+            user = scope
+        else:
+            agent = TOOLLESS_TURN_AGENT
+            user = f"{scope}:{GUEST_SCOPE_SEGMENT}" if chat_type == CHAT_TYPE_FORUM else scope
         return build_dm_session_key(
             "whatsapp",
-            self._resolve_agent(),
-            scope,
+            agent,
+            user,
             gen=gen,
             dm_scope=dm_scope,
             chat_type=chat_type,
@@ -684,13 +729,33 @@ class WhatsAppDispatcher:
         live in, answer 0, and reintroduce exactly the resurrection this seeding
         exists to prevent.
         """
-        from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, CHAT_TYPE_FORUM
+        from kiro_crew.messaging.link import (
+            CHAT_TYPE_DIRECT,
+            CHAT_TYPE_FORUM,
+            DM_SCOPE_PER_CHANNEL_PEER,
+        )
 
-        return seed_generation(
+        chat_type = CHAT_TYPE_FORUM if is_group_jid(scope) else CHAT_TYPE_DIRECT
+        operator_gen = seed_generation(
             self.sessions,
             channel="whatsapp",
             agent=self._resolve_agent(),
             user_id=scope,
             dm_scope=str(self.cfg.messaging.dm_scope),
-            chat_type=CHAT_TYPE_FORUM if is_group_jid(scope) else CHAT_TYPE_DIRECT,
+            chat_type=chat_type,
         )
+        # The non-operator bucket for the same scope lives under the tool-less
+        # agent (and a ``guest`` segment in a group) and shares this scope's
+        # generation counter. Seeding from the operator's bucket alone under-seeds
+        # when only members have talked since the last restart, handing a member
+        # back a generation whose session is still on disk. One counter per
+        # scope, so the seed is the max over both buckets.
+        guest_gen = seed_generation(
+            self.sessions,
+            channel="whatsapp",
+            agent=TOOLLESS_TURN_AGENT,
+            user_id=f"{scope}:{GUEST_SCOPE_SEGMENT}" if chat_type == CHAT_TYPE_FORUM else scope,
+            dm_scope=DM_SCOPE_PER_CHANNEL_PEER,
+            chat_type=chat_type,
+        )
+        return max(operator_gen, guest_gen)

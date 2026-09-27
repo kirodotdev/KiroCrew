@@ -12,12 +12,14 @@ import ast
 import asyncio
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
 from kiro_crew.messaging.renderer import COMPACTION, THINKING, SilentRenderer
@@ -37,11 +39,26 @@ class _Sessions:
         #: dispatch exactly as the real gate does once close_all has run.
         self.closing = closing
         self.begin_turns = 0
+        #: ``(key, agent)`` of every acquire, and the agent an existing session is
+        #: bound to (``None`` = the session is new and takes the agent asked for).
+        self.acquired: list[tuple[str, Any]] = []
+        self.acquire_extra: list[dict[str, Any]] = []
+        self.bound_agent: str | None = None
+        #: The ACP backend the returned provider reports, read the way the real
+        #: pipeline reads it (``provider.client.backend``).
+        self.backend: str | None = ACP_BACKEND_KIRO
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, **extra):
         if self._raise_on_acquire:
             raise RuntimeError("cold start failed")
-        return object(), False, False
+        self.acquired.append((key, agent))
+        self.acquire_extra.append(dict(extra))
+        if self.bound_agent is None:
+            self.bound_agent = agent
+        return SimpleNamespace(client=SimpleNamespace(backend=self.backend)), False, False
+
+    def get_agent(self, key):
+        return self.bound_agent or ""
 
     def begin_turn(self, key):
         """The real manager's synchronous pre-dispatch closing gate."""
@@ -74,8 +91,15 @@ class _Renderer:
     def __init__(self, close_raises: bool = False):
         self.close_raises = close_raises
         self.closed = 0
+        self.notes: list[str] = []
 
     async def on_turn_start(self):
+        pass
+
+    async def on_text_chunk(self, text):
+        self.notes.append(text)
+
+    async def on_done(self):
         pass
 
     async def close(self):
@@ -116,6 +140,132 @@ def _turn(renderer: Any) -> ChannelTurn:
         renderer=renderer,
         approval_mode="auto",
     )
+
+
+class TestDenyAllToolsRunsToolLess:
+    """``deny_all_tools`` has to hold for a tool no permission request ever
+    announces: on the kiro backend a tool named in the agent spec's
+    ``allowedTools`` runs without asking, so the driver's refusal never sees it.
+    The pipeline therefore drives such a turn on the tool-less agent, whose spec
+    mounts no tools at all, and refuses the turn outright when its session is
+    already bound to an agent that has them.
+    """
+
+    def _untrusted_turn(self, renderer: Any) -> ChannelTurn:
+        return ChannelTurn(
+            channel_type="weixin",
+            session_key=f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB",
+            conversation_id="weixin:peerB",
+            agent="agentA",
+            user_text="hi",
+            renderer=renderer,
+            approval_mode="interactive",
+            deny_all_tools=True,
+        )
+
+    def test_the_session_is_acquired_on_the_tool_less_agent(self, monkeypatch, tmp_path) -> None:
+        _patch_pipeline(monkeypatch)
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(tmp_path / "ws"))
+        sessions = _Sessions()
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert sessions.acquired == [
+            (f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB", D.TOOLLESS_TURN_AGENT)
+        ]
+        # The name must resolve to the TEMPLATE: an enrolled crew that happens to
+        # share it would otherwise be made canonical and start its tooled spec.
+        assert sessions.acquire_extra[0].get("crew_agent") == ""
+        # And the process must be a cold start in the session's own directory,
+        # never a warm-pool process spawned in the operator's project cwd, where
+        # a project-local spec under the same name would shadow the generated one.
+        cwd = sessions.acquire_extra[0].get("cwd")
+        assert cwd and Path(cwd).is_dir() and Path(cwd).is_relative_to(tmp_path.resolve())
+        assert "weixin_" in Path(cwd).name and D.TOOLLESS_TURN_AGENT in Path(cwd).name
+        assert sessions.successes == 1 and sessions.failures == 0
+
+    def test_a_trusted_turn_keeps_its_own_agent(self, monkeypatch) -> None:
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert sessions.acquired == [("weixin:agentA:direct:userA", "agentA")]
+        assert "crew_agent" not in sessions.acquire_extra[0]
+        assert "cwd" not in sessions.acquire_extra[0]
+
+    def test_a_session_bound_to_a_tooled_agent_refuses_the_turn(self, monkeypatch) -> None:
+        """``get_or_create`` keeps an existing session's agent, so a key shared
+        with the operator's session would run the sender on the operator's tools.
+        The pipeline reads the binding back and never opens the prompt."""
+        _patch_pipeline(monkeypatch)
+        ran: list[str] = []
+
+        class _SpyDriver(_Driver):
+            async def run(self, message):
+                ran.append(message)
+                return await super().run(message)
+
+        monkeypatch.setattr(D, "TurnDriver", _SpyDriver)
+        sessions = _Sessions()
+        sessions.bound_agent = "agentA"  # the operator's session already exists
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert ran == [], "the untrusted turn ran on a tooled session"
+        # A configuration refusal is not a provider failure: the breaker is untouched.
+        assert sessions.failures == 0 and sessions.successes == 0
+        assert sessions.released == 1 and renderer.closed == 1
+        assert renderer.notes == [D.TOOLLESS_TURN_REFUSAL_NOTE]
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, None])
+    def test_a_backend_that_reads_no_agent_spec_refuses_the_turn(self, monkeypatch, backend):
+        """``tools: []`` is a SPEC. A harness that reads no agent spec keeps its
+        native tools, and a project-preapproved one raises no permission request
+        for the driver to refuse, so the turn never opens there. An unreadable
+        backend (``None``, never ``""``: the empty string is the kiro id) fails
+        closed the same way."""
+        _patch_pipeline(monkeypatch)
+        ran: list[str] = []
+
+        class _SpyDriver(_Driver):
+            async def run(self, message):
+                ran.append(message)
+                return await super().run(message)
+
+        monkeypatch.setattr(D, "TurnDriver", _SpyDriver)
+        sessions = _Sessions()
+        sessions.backend = backend
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert ran == [], "the untrusted turn ran on a backend that keeps native tools"
+        # A configuration refusal is not a provider failure: the breaker is untouched.
+        assert sessions.failures == 0 and sessions.successes == 0
+        assert sessions.released == 1 and renderer.closed == 1
+        assert renderer.notes == [D.TOOLLESS_TURN_REFUSAL_NOTE]
+
+    def test_an_unprompted_refused_turn_posts_nothing(self, monkeypatch) -> None:
+        """A rules-mode group message nobody addressed to the agent is refused
+        SILENTLY: the note would be an unsolicited post into the room, and it
+        would start the unprompted cooldown for a turn that never ran."""
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        sessions.backend = ACP_BACKEND_CLAUDE
+        renderer = _Renderer()
+        turn = self._untrusted_turn(renderer)
+        turn.unprompted = True
+        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert renderer.notes == [] and renderer.closed == 1
+        assert sessions.successes == 0 and sessions.failures == 0
+
+    def test_a_trusted_turn_is_not_backend_gated(self, monkeypatch) -> None:
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        sessions.backend = ACP_BACKEND_CLAUDE
+        asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert sessions.successes == 1 and sessions.failures == 0
 
 
 def _patch_pipeline(monkeypatch, *, permitted: bool = True):
@@ -1790,3 +1940,39 @@ def test_a_turn_that_omits_the_hook_still_runs(monkeypatch) -> None:
     asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
 
     assert sessions.successes == 1
+
+
+class TestToollessAgentSpecIsTheBoundary:
+    """The guest spec is the whole enforcement for an untrusted sender's turn. A
+    change that grants it a tool or an MCP server would hand that tool to every
+    untrusted sender on the kiro backend, so the emptiness is pinned here, where
+    the boundary lives, not only where the file is written. It also talks to a
+    person, so it carries a prompt of its own rather than the background helper's
+    empty one."""
+
+    def test_the_regenerated_guest_spec_mounts_no_tools_and_no_servers(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew import agent as agent_module
+
+        monkeypatch.setattr(agent_module, "kiro_agents_dir_path", lambda: tmp_path)
+        agent_module._install_guest_agent()
+        spec = json.loads((tmp_path / agent_module._GUEST_AGENT_FILENAME).read_text())
+        assert spec["name"] == D.TOOLLESS_TURN_AGENT
+        assert spec["tools"] == [] and spec["mcpServers"] == {}
+        # The user-level mcp.json must not be mounted either: kiro-cli defaults
+        # ``includeMcpJson`` to True, which would spawn every configured server.
+        assert spec["includeMcpJson"] is False
+        assert "no tools" in spec["prompt"]
+
+    def test_the_guest_spec_is_installed_with_the_lite_one(self, tmp_path, monkeypatch):
+        """Every rebuild that writes the background agent writes the guest agent."""
+        from kiro_crew import agent as agent_module
+
+        monkeypatch.setattr(agent_module, "kiro_agents_dir_path", lambda: tmp_path)
+        monkeypatch.setattr(agent_module, "_background_agent_model", lambda: "auto")
+        monkeypatch.setattr(agent_module, "_background_cc_model", lambda: "auto")
+        monkeypatch.setattr(agent_module.agent_state, "set_cc_model", lambda *_a, **_k: None)
+        agent_module._install_aim_capabilities()
+        assert (tmp_path / agent_module._GUEST_AGENT_FILENAME).is_file()
+        assert (tmp_path / agent_module._LITE_AGENT_FILENAME).is_file()

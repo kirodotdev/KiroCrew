@@ -1865,6 +1865,29 @@ the destination's ordinary security checks and to the effective
 
 ### Dashboard Authentication & Authorization
 
+**Run controls are ownership-scoped for every internal caller.** The per-run spawn
+routes (`steer`, `release`, `status`, `retry`, `delete`, `continue`) and the run
+list admit an `internal_auth` caller only to runs it owns: the run's originating
+session (`parent_session_key == X-Session-Key`) or the run itself
+(`subagent:<id>`). The check runs whatever memory store the caller's identity
+resolved to -- a verified Global-memory session is still only the owner of its own
+runs -- and a caller that presented NO `X-Session-Key` owns no run a session
+started; it reaches only a run with no parent (the host operator's own CLI run).
+A refusal is 404 `task_scope_denied`, so a run id is never confirmed to a caller
+that may not see it; the identity-less refusal says so and points at the
+strict-identity diagnosis (`kirocrew doctor`), because from the caller's side a
+wrong run id and a missing identity are the same "not found". Only the dashboard
+owner (cookie auth, no `internal_auth`) is admitted without the fence: that
+surface IS the owner. `handlers/messaging.py::_run_belongs_to_caller` is the one
+predicate both the routes and the list use.
+
+**An untrusted channel sender talks to a tool-less agent.** A messaging turn the
+channel does not trust as its operator (`ChannelTurn.deny_all_tools`) is driven on
+`dispatch.TOOLLESS_TURN_AGENT` (`kirocrew-guest`: `tools: []`, no MCP servers, own prompt), in a
+session of its own, because a tool the operator's agent auto-approves through
+`allowedTools` raises no permission request on the kiro backend and so no
+permission-time refusal can reach it. Details: [messaging](messaging.md).
+
 **Dashboard URL config** — single `dashboard.url` field in `config.json` (e.g. `http://my-host.example.com:8080`). Hostname, port, local-only mode, and allowed origins are all derived from this URL. When not set, defaults to `localhost:5476`. `KIROCREW_PORT` env var overrides the port (dev mode).
 
 **SSH tunnel instructions** — All SSH tunnel commands printed by `kirocrew gateway` and `kirocrew doctor` now use the `-N` flag (`ssh -NL ...`) to suppress remote shell allocation. The tunnel purely forwards the port without opening an interactive session on the remote host.

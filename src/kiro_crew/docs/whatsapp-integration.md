@@ -150,6 +150,13 @@ listed. Each entry:
   caps unprompted replies per group regardless.
 - `mode: "off"` — keep the entry, mute the group.
 
+Listing a group lets the agent speak there. It does not let every member drive
+it: in a configured group only you and the numbers in `whatsapp.allowed_wa_ids`
+can make the agent reply, whether by @-mention, by replying to it, or through
+`rules` mode. A message from anyone else is dropped silently (and audited),
+whatever `dm_policy` is set to. Add a number to the allowlist to let that person
+use the agent in the group.
+
 Groups are configured from **Settings → Messaging Channels → WhatsApp → Groups** rather
 than by hand. The picker lists the groups the linked account has joined, which the
 gateway can only report while the channel is connected, and each row carries that
@@ -240,7 +247,7 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
 |---|---|---|
 | `whatsapp.enabled` | `false` | Main switch for the channel. |
 | `whatsapp.dm_policy` | `"self"` | DM access policy (see above). |
-| `whatsapp.allowed_wa_ids` | `[]` | Extra numbers for `allowlist` (digits, country code, no `+`). |
+| `whatsapp.allowed_wa_ids` | `[]` | Extra numbers admitted in DMs under `allowlist` and in every configured group (digits, country code, no `+`). |
 | `whatsapp.groups` | `[]` | Per-group participation rules (see above). |
 | `whatsapp.db_path` | `""` | Read-only. The session store always lives at `<data home>/whatsapp/session.db`, because that path is what the sensitive-path protection matches. |
 | `whatsapp.soft_threshold_pct` | `80` | Nudge you to `/compact` or `/new` once context passes this usage, checked at the end of each turn. |
@@ -275,9 +282,9 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
   naming configured groups that are not groups this account is in. A JID copied by
   hand is the usual cause; the group picker writes the exact form the gate matches.
 - **An attachment in a group was not opened** - files are downloaded only for the
-  account owner and numbers in `whatsapp.allowed_wa_ids`. Group membership admits
-  someone to the conversation, not to your machine, so add the number to the
-  allowlist if you want their photos and documents read.
+  account owner and numbers in `whatsapp.allowed_wa_ids`, the same people whose
+  messages the agent answers in a group. Add the number to the allowlist if you
+  want that person's messages, photos and documents handled.
 
 ## Related docs
 

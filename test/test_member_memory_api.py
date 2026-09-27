@@ -1132,6 +1132,200 @@ async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
     assert "result-bob" not in response.text and "result-global" not in response.text
 
 
+def _spawn_rows():
+    def row(name, parent):
+        return SimpleNamespace(
+            id=name,
+            memory_store="",
+            task=name,
+            done=True,
+            parent_session_key=parent,
+            agent="kirocrew",
+            started=1,
+            result="result-" + name,
+            error="",
+            user_stopped=False,
+            outcome="success",
+            include_memory=True,
+            include_lessons=True,
+            include_project=True,
+        )
+
+    return [row("owned-run", "dashboard:someone"), row("cli-run", "")]
+
+
+@pytest.mark.asyncio
+async def test_run_controls_fail_closed_for_a_caller_with_no_session_identity(env):
+    """Run controls are ownership-scoped for EVERY internal caller. One that
+    presents no ``X-Session-Key`` owns no run a session started, so it is refused
+    with a reason that names the identity gap; it keeps reaching a run no session
+    started (the host operator's own CLI run), which is the only run it can own.
+    """
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = {r.id: r for r in _spawn_rows()}
+    env.state.subagents = SimpleNamespace(get=rows.get, all_agents=list(rows.values()))
+
+    req = request(env, body={"message": "steer"}, internal=True, session="")
+    req.match_info["agent_id"] = "owned-run"
+    refusal = await messaging._spawn_scope_refusal(req)
+    assert refusal is not None and refusal.status == 404
+    payload = json.loads(refusal.text)
+    assert payload["code"] == "task_scope_denied"
+    assert "no session identity" in payload["error"]
+    assert "kirocrew doctor" in payload["error"]
+
+    req = request(env, body={"message": "steer"}, internal=True, session="")
+    req.match_info["agent_id"] = "cli-run"
+    assert await messaging._spawn_scope_refusal(req) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_run_is_owned_by_nobody(env):
+    """No managed run, no persisted record, no native card: nothing vouches for who
+    started it, so an internal caller with no identity is refused rather than
+    matched against an empty parent. A harness-native child is owned by the
+    dashboard slot that tracks its card, and by nothing else."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = {r.id: r for r in _spawn_rows()}
+    env.state.subagents = SimpleNamespace(get=rows.get, all_agents=list(rows.values()))
+    env.state._native_cards = {"native:abc": {"slot": "owner-slot", "session_id": "s"}}
+    with mock.patch("kiro_crew.dashboard.handlers.messaging.read_state", return_value=None):
+        req = request(env, body={"message": "x"}, internal=True, session="")
+        req.match_info["agent_id"] = "never-seen"
+        refusal = await messaging._spawn_scope_refusal(req)
+        assert refusal is not None and refusal.status == 404
+
+        req = request(env, body={"message": "x"}, internal=True, session="")
+        req.match_info["agent_id"] = "native:abc"
+        refusal = await messaging._spawn_scope_refusal(req)
+        assert refusal is not None and refusal.status == 404
+
+        req = request(env, body={"message": "x"}, internal=True, session="dashboard:owner-slot")
+        req.match_info["agent_id"] = "native:abc"
+        assert await messaging._spawn_scope_refusal(req) is None
+
+
+@pytest.mark.asyncio
+async def test_a_persisted_run_is_owned_by_its_recorded_parent(env):
+    """A run that is not live is judged by its persisted record, whose
+    field is ``parent_session``: the recorded owner is admitted, an identity-less
+    caller is refused, a record without the field owns nobody, and a persisted
+    CLI run (empty parent) is still the one thing an identity-less caller reaches."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    env.state.subagents = SimpleNamespace(get=lambda _id: None, all_agents=[])
+    records = {
+        "owned-old": {"parent_session": "dashboard:someone"},
+        "cli-old": {"parent_session": ""},
+        "no-field": {"task": "x"},
+    }
+    with mock.patch(
+        "kiro_crew.dashboard.handlers.messaging.read_state",
+        side_effect=lambda rid: records.get(rid),
+    ):
+        for run_id, session, admitted in (
+            ("owned-old", "", False),
+            ("owned-old", "dashboard:someone", True),
+            ("cli-old", "", True),
+            ("no-field", "", False),
+        ):
+            req = request(env, body={"message": "x"}, internal=True, session=session)
+            req.match_info["agent_id"] = run_id
+            refusal = await messaging._spawn_scope_refusal(req)
+            assert (refusal is None) is admitted, (run_id, session)
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_own_kiro_cli_process_still_controls_its_runs(env, monkeypatch):
+    """The compatibility claim behind the fence: a session's own kiro-cli process
+    carries its key, so its run controls are unaffected. Exercised end to end on
+    the identity CHAIN rather than a hand-written header: the key the MCP process
+    would send is what ``mcp_core._resolve_session_key`` returns for that process
+    (here through its ``KIROCREW_SESSION_KEY`` source), and that value is the
+    ``X-Session-Key`` the fence compares against the run's parent. The same chain
+    with no source resolves to no identity and is refused."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = {r.id: r for r in _spawn_rows()}
+    env.state.subagents = SimpleNamespace(get=rows.get, all_agents=list(rows.values()))
+    monkeypatch.setattr(mcp_core, "current_caller", lambda: None)
+    monkeypatch.setattr(mcp_core, "_session_key_from_token", lambda: "")
+    monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:someone")
+    carried = mcp_core._resolve_session_key()
+    assert carried == "dashboard:someone"
+    req = request(env, body={"message": "steer"}, internal=True, session=carried)
+    req.match_info["agent_id"] = "owned-run"
+    assert await messaging._spawn_scope_refusal(req) is None
+
+    monkeypatch.delenv("KIROCREW_SESSION_KEY")
+    monkeypatch.setattr(mcp_core.os, "getppid", lambda: 1)
+    carried = mcp_core._resolve_session_key()
+    assert carried == ""
+    req = request(env, body={"message": "steer"}, internal=True, session=carried)
+    req.match_info["agent_id"] = "owned-run"
+    refusal = await messaging._spawn_scope_refusal(req)
+    assert refusal is not None and refusal.status == 404
+
+
+@pytest.mark.asyncio
+async def test_a_global_memory_session_still_only_controls_its_own_runs(env):
+    """Resolving to Global memory is not ownership: a verified session with no
+    private store takes the same ownership check as a private-memory one, so it
+    controls only the runs it started."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = {r.id: r for r in _spawn_rows()}
+    env.state.subagents = SimpleNamespace(get=rows.get, all_agents=list(rows.values()))
+    with mock.patch("kiro_crew.execution_context.read_session_execution", return_value=None):
+        req = request(env, body={"message": "steer"}, internal=True, session="dashboard:other")
+        req.match_info["agent_id"] = "owned-run"
+        refusal = await messaging._spawn_scope_refusal(req)
+        assert refusal is not None and refusal.status == 404
+        assert json.loads(refusal.text) == {"error": "not found", "code": "task_scope_denied"}
+
+        req = request(env, body={"message": "steer"}, internal=True, session="dashboard:someone")
+        req.match_info["agent_id"] = "owned-run"
+        assert await messaging._spawn_scope_refusal(req) is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_list_shows_an_identity_less_caller_only_unowned_runs(env):
+    """The list must not hand out the run ids, task text and parent keys that the
+    control routes would refuse to act on for the same caller."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = _spawn_rows()
+    env.state.subagents = SimpleNamespace(
+        all_agents=rows, _agents={r.id: r for r in rows}, _tasks={r.id: object() for r in rows}
+    )
+    response = await messaging.api_spawn_list(request(env, internal=True, session=""))
+    assert [r["id"] for r in json.loads(response.text)["agents"]] == ["cli-run"]
+    assert "dashboard:someone" not in response.text and "result-owned" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_owner_still_sees_and_controls_every_run(env):
+    """Cookie-authenticated owner surface: no ``internal_auth``, no ownership fence."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    rows = _spawn_rows()
+    env.state.subagents = SimpleNamespace(
+        get={r.id: r for r in rows}.get,
+        all_agents=rows,
+        _agents={r.id: r for r in rows},
+        _tasks={r.id: object() for r in rows},
+    )
+    response = await messaging.api_spawn_list(request(env, owner=True))
+    assert sorted(r["id"] for r in json.loads(response.text)["agents"]) == ["cli-run", "owned-run"]
+    req = request(env, body={"message": "steer"}, owner=True)
+    req.match_info["agent_id"] = "owned-run"
+    assert await messaging._spawn_scope_refusal(req) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "handler_name",

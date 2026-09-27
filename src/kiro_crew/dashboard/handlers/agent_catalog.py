@@ -11,7 +11,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state
 from kiro_crew.agent_discovery import AgentInfo, list_agents
-from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
+from kiro_crew.agent_files import AGENT_FILENAME, GUEST_AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # template choice, and the main managed agent is the default one. The other
 # owned specs (conductor, worker, research, ...) are ordinary choices; hiding
 # every owned file would drop them from a fresh install.
-_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME})
+_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME})
 
 
 def _is_background_only(agent: AgentInfo) -> bool:

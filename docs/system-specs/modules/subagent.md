@@ -872,6 +872,30 @@ Cancels all running subagents, stops the reaper loop, and awaits their cleanup. 
 Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `mode`: `"interrupt"` default / `"follow_up"`). `steer_run` injects into the RUNNING turn via the provider's `steer`, with a bounded startup-grace poll for a live run whose session has not registered yet (#1113). `follow_up_run` never interrupts: it queues the message on `SubagentInfo.pending_followups` and arms a one-per-run watcher (`_deliver_followups`, registered in the manager-owned `_followup_watchers` dict — NOT the global `_safe_fire` set — because a watcher can spawn a brand-new run and must therefore be reachable by `cancel_all()`, per the same containment contract as `_schedule_cancel_recovery`; `cancel_all` cancels watchers BEFORE the run tasks so none can dispatch into a shutting-down gateway, and the watcher re-checks `_shutting_down` before dispatch). The watcher waits for the run to complete (`info.done` AND its task popped from `_tasks`, so teardown is finished), then dispatches the whole queue as ONE `continue_conversation` on the run's own conversation (messages joined in arrival order — three corrections cost one continuation, not three). Companion `_followup_watcher_parents` and `_followup_watcher_infos` maps retain the parent and exact run record independently of `_agents`; pending-work queries count each live parent-owned watcher, and exact stage cancellation can still revoke an owner after completed-record eviction. Stage cancellation clears that owner's queued follow-ups and cancels its watcher before durable settlement, so no continuation can dispatch or re-arm. The continuation is a normal new run on the same parent session, so its result arrives as a separate completion event. OUTCOME-AWARE: a run the user explicitly STOPPED (`user_stopped`) suppresses dispatch (`followup_suppressed` audit) — resurrecting killed work is the opposite of "the correction can wait"; error/timeout terminals still dispatch (the continuation carries the conversation's context, so "fix what broke" is legitimate). An exact stage cancellation also suppresses the follow-up, but emits no synthetic completion because that owner's parent route has been revoked. Other undeliverable paths (user stop, watcher expiry, dispatch failure) announce a SYNTHETIC failure completion event through the normal `_on_done` path, because the spawn_steer reply promised the parent an event — `followup_expired`/`followup_failed`/`followup_suppressed` SEL audits alone would leave the parent blocked on an event that never comes. Deliberately a per-run poller, NOT a hook in `_run`'s 3-guard finalization: completion is reached from many terminal paths (normal/error/timeout/cancel-recovery/reaper) and a watcher observes the outcome without adding an obligation to any of them. Bounded everywhere: poll cadence 2s, hard deadline `default_timeout + 300s`, and residual `conversation_busy` after done gets a bounded retry. Typed refusals mirror steer: `not_found`, and `not_running` (use `spawn_continue` directly on a finished run).
 
 ### Properties
+
+**Run controls are scoped to the originating session, for every internal caller.**
+`spawn_steer`, `spawn_release`, `spawn_status`, `spawn_retry`, `spawn_delete` and
+`spawn_continue` run behind `_spawn_scope_refusal`, and `spawn_list` filters by the
+same predicate (`_run_belongs_to_caller`): the caller must be the run's
+`parent_session_key`, or the run itself. This holds whatever memory store the
+caller resolved to, and a caller with no `X-Session-Key` reaches only a run no
+session started (a CLI run, whose record carries an empty parent). A run with no
+managed state and no persisted record is owned by nobody and refused; a
+harness-native child (`native:*`) is owned by the dashboard slot tracking its card. KNOWN CONSEQUENCE in the pooled multiplexing shape
+without caller injection: a kiro-cli process that multiplexes sessions
+(`acp/runtime.py`) is session-unbound, and `mcp_core._post` sends no
+`X-Session-Key` there unless `mcp_gateway.stub_servers` caller injection is on, so
+from such a process `spawn_steer` against a run it cannot prove it owns is refused
+with 404 `task_scope_denied` and an error text naming the identity gap and the
+`kirocrew doctor` strict-identity diagnosis, and `spawn_list` shows it only
+parentless runs. That is the intended fail-closed posture: a run's task text, id
+and parent key are what a steer needs, so an identity-less caller is shown none of
+another session's. The default install is not that shape: `_resolve_session_key`
+reads the gateway-injected caller context, the MAC-signed per-session token, the
+`KIROCREW_SESSION_KEY` environment and the PID-file ancestor walk in that order, so
+a session's own kiro-cli process carries its key and its run controls are
+unaffected.
+
 - `running -> list[SubagentInfo]` — currently running agents
 - `count -> int` — number of running agents
 - `max_concurrent -> int` — the EFFECTIVE capacity limit (`min(user cap, adaptive cap)`)
