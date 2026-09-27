@@ -567,6 +567,20 @@ PI_ACP_VERIFIED_VERSION = "0.0.33"
 # Versions already named this process, so a gateway on a newer adapter says so
 # once, not on every session.
 _pi_adapter_versions_noted: set[str] = set()
+# The oldest ``pi`` the adapter can drive. pi-acp sends RPC commands that older
+# releases do not have, and it does not check the version itself. Driven against
+# a local model: pi-acp 0.0.34 fails ``session/new`` on pi 0.80.x ("Unknown
+# command: get_available_thinking_levels") and waits forever on 0.73.1, and
+# pi-acp 0.0.33 never ends a turn on pi 0.80.3 or older. Both drive 0.81.0,
+# which is the floor pi-acp 0.0.34 documents. Without this check the chat just
+# spins, because nothing below names the version as the cause.
+PI_MIN_VERSION = (0, 81, 0)
+# Every npm name pi has shipped under. The old one stopped at 0.73.1, so an
+# install made under it is always below the floor; it is named so that install
+# is recognised and refused rather than read as "version unknown".
+_PI_NPM_PACKAGE_NAMES = frozenset({PI_NPM_PKG, "@mariozechner/pi-coding-agent"})
+# How far up from the resolved executable to look for pi's package.json.
+_PI_MANIFEST_SEARCH_DEPTH = 4
 # goose's VERIFIED RANGE (the note beside ``ACP_BACKEND_GOOSE`` in
 # ``agent_sdk/backends.py``) is 1.50.x. Of the three wire facts it names, the
 # ``current_mode_update`` emission the mid-session tripwire rests on is the one that
@@ -1253,6 +1267,68 @@ def _resolve_pi_bin() -> tuple[str | None, str]:
         return _normalize_exe_casing(on_path) or on_path, search_path
 
     return None, search_path
+
+
+def _pi_installed_version(pi_bin: str) -> tuple[tuple[int, ...], str] | None:
+    """``(version, npm package name)`` of the pi install *pi_bin* runs, or ``None``.
+
+    Read from the npm package's own ``package.json`` rather than by running
+    ``pi --version``: a few small file reads instead of a second child
+    process on every spawn. On POSIX the npm bin link resolves into the package,
+    so the manifest is a few directories above it. On Windows the bin is a
+    ``pi.cmd`` shim: a global one sits in the npm prefix, with the package under
+    that directory's ``node_modules``, and a project-local one sits in
+    ``node_modules/.bin``, beside the package. Only a manifest carrying one of pi's own
+    package names counts. Anything else (a wrapper script, a standalone
+    build) answers ``None``, and the caller lets that through.
+
+    Blocking (reads files); callers run it off the loop.
+    """
+    try:
+        here = Path(os.path.realpath(pi_bin)).parent
+    except (OSError, ValueError):
+        return None
+    shim_roots = [here / "node_modules"]
+    if here.name == ".bin":
+        shim_roots.append(here.parent)
+    candidates = [
+        root / name / "package.json" for root in shim_roots for name in _PI_NPM_PACKAGE_NAMES
+    ]
+    for directory in [here, *here.parents][:_PI_MANIFEST_SEARCH_DEPTH]:
+        candidates.append(directory / "package.json")
+    for manifest in candidates:
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("name") not in _PI_NPM_PACKAGE_NAMES:
+            continue
+        match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version") or ""))
+        if not match:
+            return None
+        return tuple(int(part) for part in match.groups()), str(data["name"])
+    return None
+
+
+def _pi_version_issue(pi_bin: str) -> str:
+    """Why *pi_bin* is too old for the adapter, or ``""`` when it is not known to be.
+
+    Blocking (see :func:`_pi_installed_version`); callers run it off the loop.
+    """
+    installed = _pi_installed_version(pi_bin)
+    if installed is None or installed[0] >= PI_MIN_VERSION:
+        return ""
+    version, package = installed
+    found = ".".join(str(part) for part in version)
+    floor = ".".join(str(part) for part in PI_MIN_VERSION)
+    # The two names both install a ``pi`` bin, so npm refuses the new one while
+    # the old one is still there ("File exists"). Removing it comes first.
+    remove = f"'npm rm -g {package}', then " if package != PI_NPM_PKG else ""
+    return (
+        f"{PI_BIN} {found} at {pi_bin} is too old for the {PI_ACP_BIN} adapter, which "
+        f"needs {PI_BIN} {floor} or newer: on older releases a chat fails or never answers. "
+        f"Update it: run {remove}'npm i -g {PI_NPM_PKG}', then start a new chat."
+    )
 
 
 def pi_gate_extension_path() -> str:
@@ -8927,6 +9003,13 @@ class AcpClient:
                     f"install it with 'npm i -g {PI_NPM_PKG}', or set "
                     f"{_ENV_PI_ACP_PI_COMMAND} to the executable."
                 )
+            # Refused here, before any child starts, because a too-old pi is not
+            # refused by anything later: the gate read-back passes on it, and then
+            # the adapter either fails session/new with a bare "Unknown command"
+            # or waits forever, so the chat spins with no cause named.
+            pi_version_issue = await asyncio.to_thread(_pi_version_issue, pi_bin)
+            if pi_version_issue:
+                raise AcpError(pi_version_issue)
             argv = pi_acp_argv
             spawn_label = _adapter_spawn_label(
                 argv, PI_ACP_BIN, pkg_entry=_PI_ACP_PKG_ENTRY, override_env=_ENV_PI_ACP_BIN
