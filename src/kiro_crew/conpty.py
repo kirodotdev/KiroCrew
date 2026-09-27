@@ -13,8 +13,8 @@ or installed on macOS/Linux, so POSIX behavior is untouched.
 
 ``WindowsPty`` exposes exactly what the terminal handler needs from a PTY:
 ``read``/``write`` (blocking; the handler runs them in an executor), ``resize``,
-``isalive``, ``terminate``, and ``pid`` — with byte-oriented read/write so the
-handler's redaction/streaming code is backend-agnostic.
+``isalive``, ``exitstatus``, ``terminate``, and ``pid`` — with byte-oriented
+read/write so the handler's redaction/streaming code is backend-agnostic.
 """
 
 from __future__ import annotations
@@ -82,6 +82,29 @@ class WindowsPty:
             return bool(self._p.isalive())
         except Exception:
             return False
+
+    def exitstatus(self) -> int | None:
+        """Exit code of the child once it is gone, or ``None`` when unresolved.
+
+        pywinpty populates the code only after ``isalive()`` has answered
+        ``False`` and reaped the child, so a caller polls liveness first and
+        reads the status after. The read is guarded because an older binding
+        exposes no such property, and a value that is not an integer is
+        reported as unresolved rather than guessed at: an unknown status is
+        answerable, a made-up code is not.
+        """
+        try:
+            status = getattr(self._p, "exitstatus", None)
+        except Exception:
+            logger.debug("ConPTY exit status unavailable", exc_info=True)
+            return None
+        if status is None:
+            return None
+        try:
+            return int(status)
+        except (TypeError, ValueError):
+            logger.debug("ConPTY exit status was not an integer: %r", status)
+            return None
 
     def terminate(self, force: bool = True) -> None:
         try:
