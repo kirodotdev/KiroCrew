@@ -6705,7 +6705,13 @@ class VectorMemoryStore:
             self._check_recall_query(recall_query)
             lesson_rows = self._eligible_rows(self.get_lessons(), "directive")
         for row in lesson_rows:
-            decoded = json.loads(row["value_json"])
+            try:
+                decoded = json.loads(row["value_json"])
+            except (TypeError, ValueError, RecursionError):
+                # One unreadable row must not fail every context build; the key
+                # names the row to repair, the value is left out of the log.
+                logger.warning("Skipping lesson %r: stored value_json does not decode", row["key"])
+                continue
             text = _renderable_lesson_text(decoded, row["key"])
             if not text:
                 continue
