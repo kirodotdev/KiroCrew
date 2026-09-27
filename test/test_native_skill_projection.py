@@ -3318,3 +3318,50 @@ def test_a_read_only_agents_directory_produces_the_refusal_warning(
     assert "EACCES" in warnings[0].getMessage()
     assert "is not writable by this process" in warnings[0].getMessage()
     assert all(p.exists() for p in backlog)
+
+
+@pytest.mark.parametrize(
+    ("workspace", "global_value"),
+    [
+        ({}, None),
+        ({"chat.disableInheritingDefaultResources": True}, None),
+        ({}, True),
+        ({"chat.disableInheritingDefaultResources": False}, True),
+        ({"chat.disableInheritingDefaultResources": "true"}, None),
+    ],
+)
+def test_reader_agrees_with_the_projection_across_its_overlay(native_tree, workspace, global_value):
+    """Readers that mirror native loading must decode Crew's overlay as the projection wrote it.
+
+    After the projection runs, the workspace's native key reads ``true`` whatever
+    the user chose, so a reader of the raw key would see an opt-out everywhere.
+    """
+    home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    if workspace:
+        settings = project / ".kiro" / "settings" / "cli.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps(workspace), encoding="utf-8")
+    if global_value is not None:
+        settings = home / "settings" / "cli.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps({"chat.disableInheritingDefaultResources": global_value}), encoding="utf-8"
+        )
+    before = projection.inherits_default_resources(project)
+    prepared = projection.prepare_native_skill_projection(project)
+    projected = any("steering" in item for item in prepared.specs["custom"]["resources"])
+    assert before is projected
+    assert projection.inherits_default_resources(project) is projected
+
+
+def test_reader_follows_a_live_global_preference_under_the_overlay(native_tree):
+    home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    settings = home / "settings" / "cli.json"
+    settings.parent.mkdir()
+    settings.write_text('{"chat.disableInheritingDefaultResources":true}', encoding="utf-8")
+    projection.prepare_native_skill_projection(project)
+    assert projection.inherits_default_resources(project) is False
+    settings.write_text('{"chat.disableInheritingDefaultResources":false}', encoding="utf-8")
+    assert projection.inherits_default_resources(project) is True

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -581,6 +581,7 @@ def collect_folder_steering(
     project: str | None,
     home: Path | None = None,
     skip_delivered_roots: bool = True,
+    delivered_sources: Collection[str] = (),
 ) -> SteeringCollection:
     """``(source_path, body)`` for every always-inclusion ``*.md`` under *steering_dirs*.
 
@@ -599,14 +600,19 @@ def collect_folder_steering(
 
     *skip_delivered_roots* says whether documents under the project's and the
     operator's ``.kiro/steering`` trees are ALREADY reaching the model by the
-    provider's own steering path (kiro-cli loads them natively, the Claude Code
-    seam loads them explicitly, KAS reports ``native_steering``) and so must not
-    be re-sent here. A provider with no such path -- Codex, and the other
+    provider's own steering path (kiro-cli loads them natively while the
+    workspace inherits kiro-cli's default resources, the Claude Code seam loads
+    them explicitly, KAS reports ``native_steering``) and so must not be re-sent
+    here. A provider with no such path -- Codex, and the other
     harnesses that neither load ``.kiro/steering`` nor receive the explicit
     load -- passes ``False`` and receives them through the folder like any other
     document; skipping there would drop the rules with nothing delivered in
     their place. The default keeps the dedup for callers that know their
     provider delivers.
+
+    *delivered_sources* names canonical document paths the caller already
+    delivers. Matching candidates are skipped before they are read. The paths
+    are compared as strings and are never resolved or otherwise opened here.
 
     *home* exists for the tests and for a caller that knows the operator home
     without paying ``Path.home()``; it defaults to ``Path.home()``.
@@ -616,6 +622,7 @@ def collect_folder_steering(
     omissions = result.omissions
     if not steering_dirs:
         return result
+    delivered_source_keys = {os.path.normcase(source) for source in delivered_sources}
     if not pinned_fs.supports_pinned_tree_walk():
         # Refuse BEFORE resolving any root: the walker's own refusal fires only
         # after ``validate_file_path`` has canonicalized the name, and on a host
@@ -696,6 +703,8 @@ def collect_folder_steering(
                 logger.debug("folder steering document path too long: %d chars", len(key))
                 continue
             if key in seen:
+                continue
+            if os.path.normcase(key) in delivered_source_keys:
                 continue
             if any(_is_within(resolved, skip_root) for skip_root in skip_roots):
                 continue

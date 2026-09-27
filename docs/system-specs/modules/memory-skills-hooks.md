@@ -1310,7 +1310,24 @@ unbounded archival memory.
 
 Admitted project essentials are the active project's root `AGENTS.md` and
 `SOUL.md`, default/`always` documents under `.kiro/steering`, and Markdown file
-resources explicitly declared by the template. Native `manual`, `auto` and
+resources explicitly declared by the template. The global `~/.kiro/steering`
+always documents, the root `AGENTS.md` and undeclared `.kiro/steering`
+documents are kiro-cli default resources: when kiro-cli serves the session and
+`chat.disableInheritingDefaultResources` opts the workspace out, the snapshot
+omits them and keeps the prompt, the declared resources and `SOUL.md`, which is
+Crew's own file rather than a kiro-cli default. The verdict is computed once
+per normal turn, where the harness is known, and handed to the snapshot and the
+folder-steering dedup; no consumer reads the setting itself, and on any other
+harness the member keeps inheriting because a kiro-cli setting changes nothing
+there. A profile validation pass does not read the setting and instead measures
+the inheriting envelope, which is the largest envelope any harness can build.
+The preference comes from the skill projection's decision (see
+[ACP client](acp-client.md)), so Crew's overlay on that key never reads as an
+opt-out; settings that cannot be read keep inheritance. A non-member kiro-cli
+chat follows the same decision: in an opted-out workspace a folder that
+declares the project's or the global `.kiro/steering` root carries those
+always documents itself, at session start and after a compaction, instead of
+skipping them as already delivered. Native `manual`, `auto` and
 `fileMatch` steering retain their trigger semantics. A custom template's
 declared prompt may be inline or a file source. Missing optional root files
 are allowed; an unreadable declared source or malformed/shadowed template

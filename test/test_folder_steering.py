@@ -235,6 +235,57 @@ def test_realpath_dedup_across_two_roots(tmp_path):
     assert [path for path, _ in docs] == [str(doc.resolve())]
 
 
+def test_delivered_sources_skip_only_the_same_canonical_file(tmp_path, monkeypatch):
+    """Delivered inputs stay string-only while fold-colliding siblings survive."""
+    root = tmp_path / "standards"
+    delivered = _write(root / "a\nb.md", "always", body="Already delivered.")
+    sibling = _write(root / "a\ufffdb.md", "always", body="Folder-only sibling.")
+    outside = tmp_path / "outside" / "not-walked.md"
+    delivered_path = str(delivered.resolve())
+    sibling_path = str(sibling.resolve())
+    outside_path = str(outside.absolute())
+    read_paths: list[str] = []
+    resolved_delivered_inputs: list[str] = []
+    validated_delivered_inputs: list[str] = []
+    real_read = folder_steering.safe_read_file_bytes_nolink
+    real_realpath = os.path.realpath
+    real_validate = folder_steering.validate_file_path
+
+    def recording_read(path: str, *args, **kwargs):
+        read_paths.append(path)
+        return real_read(path, *args, **kwargs)
+
+    def recording_realpath(path, *args, **kwargs):
+        if str(path) == outside_path:
+            resolved_delivered_inputs.append(str(path))
+        return real_realpath(path, *args, **kwargs)
+
+    def recording_validate(path, *args, **kwargs):
+        if str(path) == outside_path:
+            validated_delivered_inputs.append(str(path))
+        return real_validate(path, *args, **kwargs)
+
+    monkeypatch.setattr(folder_steering, "safe_read_file_bytes_nolink", recording_read)
+    monkeypatch.setattr(os.path, "realpath", recording_realpath)
+    monkeypatch.setattr(folder_steering, "validate_file_path", recording_validate)
+
+    docs = collect_folder_steering(
+        [str(root)],
+        project=None,
+        home=_fake_home(tmp_path),
+        delivered_sources=(delivered_path, outside_path),
+    )
+
+    assert [path for path, _ in docs] == [sibling_path]
+    assert delivered_path not in read_paths
+    assert docs[0][1].strip() == "Folder-only sibling."
+    assert folder_steering._source_label(delivered_path) == folder_steering._source_label(
+        sibling_path
+    )
+    assert resolved_delivered_inputs == []
+    assert validated_delivered_inputs == []
+
+
 def test_project_and_home_kiro_steering_are_skipped(tmp_path):
     """On a provider with its own steering path, project and global steering are
     not resent (the default; the provider-aware switch is pinned in

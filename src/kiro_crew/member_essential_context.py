@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
@@ -327,6 +328,32 @@ def resolve_relative_prompt_path(
         return None
 
 
+def _admitted_project_root(project: str | None) -> Path | None:
+    """The member's project as the essential readers may open it, or ``None``."""
+    if not project:
+        return None
+    admitted = validate_file_path(project)
+    if admitted is None:
+        raise MemberEssentialContextError(f"Essential project {project}: cannot be read safely")
+    project_root = Path(admitted)
+    _refuse_managed_source(project_root)
+    return project_root
+
+
+def member_inherits_default_resources(project: str | None) -> bool:
+    """Whether kiro-cli hands a member in its admitted *project* the default resources.
+
+    Global and workspace steering plus ``AGENTS.md``. Settings that cannot be
+    read keep inheritance; the caller decides whether kiro-cli serves the
+    session at all, since a kiro-cli setting changes nothing on another harness.
+    Computed once per member turn by the caller that knows the provider and
+    handed to :func:`documents_for_member` and the folder-steering dedup, so a
+    document under a ``.kiro/steering`` root is delivered by exactly one of them
+    whichever way the workspace decides.
+    """
+    return acp_driver.inherits_default_resources(_admitted_project_root(project))
+
+
 def documents_for_member(
     template: str,
     project: str | None,
@@ -336,25 +363,25 @@ def documents_for_member(
     conditional_index: bool = False,
     context_settings: bool = False,
     trigger_text: str = "",
+    inherits_default_resources: bool = True,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
     Native project steering defaults to always; manual, auto and fileMatch
     documents are deliberately left to their native trigger. Generic product
     prompts keep their existing provider/session-start path.
+
+    *inherits_default_resources* is the caller's verdict on whether the session's
+    harness hands the member kiro-cli's default resources (global and workspace
+    steering, ``AGENTS.md``). It defaults to inheriting because only a session
+    kiro-cli serves can opt out, and only that caller knows which harness it has.
     """
     from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
 
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
-    project_root = None
-    if project:
-        admitted = validate_file_path(project)
-        if admitted is None:
-            raise MemberEssentialContextError(f"Essential project {project}: cannot be read safely")
-        project_root = Path(admitted)
-        _refuse_managed_source(project_root)
+    project_root = _admitted_project_root(project)
 
     def add(path: Path, root: Path, *, steering: bool = False) -> None:
         if Path(os.path.abspath(path)) in seen:
@@ -426,17 +453,25 @@ def documents_for_member(
         if len(documents) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential source {path}: too many documents")
 
-    if include_project and not native_only:
+    # kiro-cli appends its default resources (global and workspace steering,
+    # AGENTS.md) to a custom agent only while the workspace inherits them. A
+    # member whose workspace opts out loads just what its template declares, so
+    # the snapshot must not re-add the operator's global steering behind it.
+    inherits = include_project and not native_only and inherits_default_resources
+    if inherits:
         for path in _matches(Path.home(), ".kiro/steering/**/*.md"):
             add(path, Path.home(), steering=True)
 
     if project_root is not None and include_project and not native_only:
-        for name in ("AGENTS.md", "SOUL.md"):
+        # SOUL.md is Crew's own member file, not a kiro-cli default resource, so
+        # the opt-out leaves it in place.
+        for name in ("AGENTS.md", "SOUL.md") if inherits else ("SOUL.md",):
             path = project_root / name
             if path.exists() or path.is_symlink():
                 add(path, project_root)
-        for path in _matches(project_root, ".kiro/steering/**/*.md"):
-            add(path, project_root, steering=True)
+        if inherits:
+            for path in _matches(project_root, ".kiro/steering/**/*.md"):
+                add(path, project_root, steering=True)
 
     spec_path = resolve_template_path(template, project)
     if spec_path is None:
@@ -616,13 +651,21 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
     """Selected resources plus Kiro's implicit AGENTS/always-steering scan.
 
     SOUL is not an implicit native source. Conditional modes vary by engine and
-    version, so this responsibility includes only default/always steering.
+    version, so this responsibility includes only default/always steering. The
+    implicit scan applies only while the workspace inherits kiro-cli's default
+    resources, as it does natively; this model is kiro-cli's by construction, so
+    it takes that verdict itself, once.
     """
+    inherits = member_inherits_default_resources(project)
     declared = dict(documents_for_member(template, project, native_only=True))
-    for source, body in documents_for_member(template, project):
+    for source, body in documents_for_member(
+        template, project, inherits_default_resources=inherits
+    ):
         path = Path(source)
         if path.name == "AGENTS.md" or "steering" in path.parts:
             declared[source] = body
+    if not inherits:
+        return list(declared.items())
     for path in _matches(Path.home(), ".kiro/steering/**/*.md"):
         body = _read(path, Path.home())
         fields, _ = split_frontmatter(body, STEERING_LOADER)

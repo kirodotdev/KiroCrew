@@ -25,6 +25,7 @@ from kiro_crew import model_registry, resource_status
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, is_claude_code
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 from kiro_crew.board_tag_grammar import is_grantable_tag_id
@@ -54,6 +55,7 @@ from kiro_crew.member_essential_context import (
     _MAX_DOCUMENTS,
     ESSENTIAL_MAX_CHARS,
     MemberEssentialContextError,
+    member_inherits_default_resources,
     render_essentials,
 )
 from kiro_crew.members import (
@@ -2218,20 +2220,32 @@ def _load_steering_resources() -> str:
         return ""
 
 
-def _project_steering_delivered(provider_type: str, native_steering: bool) -> bool:
+def _project_steering_delivered(
+    provider_type: str, native_steering: bool, project: str | None
+) -> bool:
     """Whether the project/global ``.kiro/steering`` trees already reach the model.
 
     Three paths exist and this names all of them, so the folder-steering dedup
     skips those trees ONLY where one of them is in effect: kiro-cli (the ACP
     default label) loads an agent's ``resources`` natively when spawned with
-    ``--agent``; the Claude Code seam receives the explicit ``[Steering
-    resources]`` load in ``build_message`` (gated on ``is_cc``); KAS reports
-    ``native_steering`` on its session provider. Every other harness -- Codex,
-    OpenCode, Pi, Goose, DeepSeek -- has NO path for those trees today, so a
-    folder that declares one of them must deliver its documents itself rather
-    than skip them as "already delivered" with nothing arriving in their place.
+    ``--agent``, but only while *project* inherits kiro-cli's default resources
+    (a workspace that sets ``chat.disableInheritingDefaultResources`` gets
+    those trees from nobody, so the folder must carry them); the Claude Code
+    seam receives the explicit ``[Steering resources]`` load in
+    ``build_message`` (gated on ``is_cc``); KAS reports ``native_steering`` on
+    its session provider. Every other harness -- Codex, OpenCode, Pi, Goose,
+    DeepSeek -- has NO path for those trees today, so a folder that declares one
+    of them must deliver its documents itself rather than skip them as "already
+    delivered" with nothing arriving in their place. The opt-out is read only
+    on the kiro-cli disjunct: a kiro-cli setting changes nothing on another
+    harness. The driver is asked directly, with no admission check on
+    *project*: this path also serves non-member sessions and must not raise.
     """
-    return provider_type == PROVIDER_ACP or is_claude_code(provider_type) or bool(native_steering)
+    return (
+        (provider_type == PROVIDER_ACP and acp_driver.inherits_default_resources(project))
+        or is_claude_code(provider_type)
+        or bool(native_steering)
+    )
 
 
 def _render_folder_steering_section(
@@ -3729,6 +3743,7 @@ class ContextBuilder:
         trigger_text: str = "",
         steering_dirs: tuple[str, ...] = (),
         template_selected: bool = False,
+        provider_type: str = PROVIDER_ACP,
     ) -> str:
         """Refresh complete member essentials without opening learned memory.
 
@@ -3736,6 +3751,11 @@ class ContextBuilder:
         for the execution being built and is handed to the member-section builder
         unchanged: the envelope keeps the member's identity, rules, documents and
         anchors, and withholds only the desk protocol and briefing.
+
+        ``provider_type`` names the harness serving the session. Only kiro-cli
+        (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
+        so its verdict is read once here, where the harness is known, and handed
+        to every consumer; no consumer reads the setting itself.
         """
         from kiro_crew.member_essential_context import (
             MemberEssentialContextError,
@@ -3765,17 +3785,29 @@ class ContextBuilder:
         if profile_overrides is None:
             context_groups = _config_scoped_groups(context_groups)
         reads = not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_MEMORY)
+        include_project = not blocks_reads and _group_included(
+            context_groups, CONTEXT_GROUP_PROJECT
+        )
         identity = self._build_member_section(
             owner, strict=True, include_briefing=reads, template_selected=template_selected
         )
+        # A validation pass measures the largest envelope any harness can build,
+        # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal
+        # turn, the setting changes what a member loads only on a session
+        # kiro-cli serves: every other harness keeps inheriting. Read once, where
+        # the project group applies, and pass the verdict to the snapshot and the
+        # folder-steering dedup below so the two cannot disagree.
+        inherits_default_resources = True
+        if profile_overrides is None and include_project and provider_type == PROVIDER_ACP:
+            inherits_default_resources = member_inherits_default_resources(project)
         documents = documents_for_member(
             template,
             project,
             conditional_index=conditional_index,
             context_settings=True,
             trigger_text=trigger_text,
-            include_project=not blocks_reads
-            and _group_included(context_groups, CONTEXT_GROUP_PROJECT),
+            include_project=include_project,
+            inherits_default_resources=inherits_default_resources,
         )
         if execution_template and execution_template != template:
             sources = dict(documents)
@@ -3785,8 +3817,8 @@ class ContextBuilder:
                 conditional_index=conditional_index,
                 context_settings=True,
                 trigger_text=trigger_text,
-                include_project=not blocks_reads
-                and _group_included(context_groups, CONTEXT_GROUP_PROJECT),
+                include_project=include_project,
+                inherits_default_resources=inherits_default_resources,
             ):
                 if source in sources and sources[source] != body:
                     raise MemberEssentialContextError(
@@ -3809,14 +3841,29 @@ class ContextBuilder:
         # until the folder shrinks. The character budget depends on the memory
         # documents appended below, so the candidates are collected here (their
         # position recorded) and fitted just before the envelope renders.
+        #
+        # The project and global ``.kiro/steering`` trees are skipped as already
+        # delivered only while the snapshot above actually delivered them: a
+        # kiro-cli workspace that opts out of the default resources gets them
+        # from neither the snapshot nor the harness, so a folder that declares
+        # one of those roots must carry its documents itself. The template's
+        # declared resources can still carry some of those files, so under the
+        # opt-out a folder document whose canonical path the template already
+        # delivered is not collected again. Same verdict as the snapshot, read
+        # once above.
         folder_docs: SteeringCollection = SteeringCollection()
         folder_insert_at = len(documents)
-        if (
-            steering_dirs
-            and not blocks_reads
-            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
-        ):
-            folder_docs = collect_folder_steering(steering_dirs, project=project)
+        if steering_dirs and include_project:
+            folder_docs = collect_folder_steering(
+                steering_dirs,
+                project=project,
+                skip_delivered_roots=inherits_default_resources,
+                delivered_sources=(
+                    tuple(source for source, _ in documents)
+                    if not inherits_default_resources
+                    else ()
+                ),
+            )
         if reads:
             from kiro_crew.memory_stores import memory_store_dir_for
 
@@ -3983,6 +4030,7 @@ class ContextBuilder:
                 member_template=execution_context.template_id if execution_context else "",
                 steering_dirs=steering_dirs,
                 template_selected=_template_selected_on_member_store(execution_context),
+                provider_type=provider_type,
             )
 
         # Minimal V1 stays date/time + agent identity. Private V2 also carries
@@ -4964,6 +5012,7 @@ class ContextBuilder:
                 and not context_provider.native_steering,
                 steering_dirs=steering_dirs,
                 template_selected=_template_selected_on_member_store(execution_context),
+                provider_type=provider_type,
             )
         if _essentials and not is_new_session:
             parts.append(_essentials)
@@ -5151,6 +5200,7 @@ class ContextBuilder:
                     skip_delivered_roots=_project_steering_delivered(
                         provider_type,
                         context_provider is not None and context_provider.native_steering,
+                        project,
                     ),
                 )
                 if _folder_ctx:
@@ -5298,6 +5348,7 @@ class ContextBuilder:
                     skip_delivered_roots=_project_steering_delivered(
                         provider_type,
                         context_provider is not None and context_provider.native_steering,
+                        project,
                     ),
                 )
                 if _folder_ctx:

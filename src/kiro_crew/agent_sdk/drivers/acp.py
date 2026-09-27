@@ -606,6 +606,20 @@ def projected_session_mcp_servers(
     return session_mcp_servers(agent, work_dir=work_dir)
 
 
+def inherits_default_resources(work_dir: str | Path | None) -> bool:
+    """Whether a custom agent started in *work_dir* inherits kiro-cli's default resources.
+
+    Global and workspace steering plus ``AGENTS.md``. The answer is the skill
+    projection's, so Crew's own overlay on the native setting is not mistaken for
+    the user opting out.
+    """
+    from kiro_crew.acp.skill_projection import (
+        inherits_default_resources as projection_inherits_default_resources,
+    )
+
+    return projection_inherits_default_resources(work_dir)
+
+
 def skill_view_alias_census(agents_dir: "Path") -> dict[str, int]:
     """Count projected skill-view aliases as plain integers; reads, never writes.
 
