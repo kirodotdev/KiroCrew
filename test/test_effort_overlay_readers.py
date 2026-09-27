@@ -16,10 +16,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from effort_helpers import _read_cli_overlay
 
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.providers.acp import AcpProvider
-from kiro_crew.providers.acp_cli_overlay import _read_cli_overlay, _write_cli_overlay
+from kiro_crew.providers.acp_cli_overlay import _write_cli_overlay
 
 MODEL = "claude-opus-5.5"
 LEVELS = ["low", "medium", "high", "xhigh", "max"]
@@ -113,15 +114,19 @@ class TestKasLeavesTheSharedFileAlone:
         assert _read_cli_overlay(tmp_path) == {MODEL: "high"}
 
 
-class TestKiroCliStillMirrorsTheFileItReads:
-    def test_kiro_cli_reads_the_level_back(self, tmp_path):
-        # kiro-cli applies the file's level at spawn, so the map names that level.
+class TestKiroCliTakesOnlyItsOwnLevel:
+    def test_kiro_cli_does_not_read_another_chats_level_back(self, tmp_path):
+        # The file is shared by the work dir, so its level is no chat's own pick.
         _write_cli_overlay(tmp_path, MODEL, "max")
         provider = _provider(tmp_path, ACP_BACKEND_KIRO)
 
-        assert provider._effort_per_model == {MODEL: "max"}
-        assert provider._resolve_effort() == "max"
+        assert provider._effort_per_model == {}
+        assert provider._resolve_effort() is None
 
-    def test_kiro_cli_writes_its_own_level(self, tmp_path):
-        _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+    def test_kiro_cli_writes_its_own_level_before_its_spawn(self, tmp_path):
+        provider = _provider(tmp_path, ACP_BACKEND_KIRO, effort_per_model={MODEL: "low"})
+        # Construction does no file I/O; the projection before each spawn writes.
+        assert not _overlay(tmp_path).exists()
+
+        assert provider._apply_effort_overlay() is True
         assert _read_cli_overlay(tmp_path) == {MODEL: "low"}

@@ -257,7 +257,12 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     api_chat_slots_unrestored,
 )
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
+    _EFFORT_INTENT_NOT_SAVED,
+    _EFFORT_INTENT_ROLLBACK_NOT_SAVED,
+    _EFFORT_INTENT_UNSAVED_CODE,
+    _bump_session_effort_intent_slots,
     _configured_backend_for_slot,
+    _effort_intent_unsaved,
     _own_models_field,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
