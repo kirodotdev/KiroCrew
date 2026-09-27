@@ -4386,6 +4386,84 @@ def test_a_short_reserve_does_not_leave_the_read_bound_unspent() -> None:
     assert str(wd.LIVE_EVIDENCE_RESERVE) + " reads are reserved" not in cap_lines[0]
 
 
+def test_a_run_listed_live_for_days_is_a_ghost_neither_read_nor_holding_the_heal() -> None:
+    """The runs index keeps returning records GitHub itself does not hold as live:
+    measured here, sixteen queued runs created five weeks earlier with no job ever
+    created, answering a cancel with 409 "completed". Read, each spends one of the
+    fifty classify reads on every tick; unread, a queued run past the saturation line
+    is a run that COULD hold a slow start, so it would hold the heal back for ever.
+    So a ghost is dropped before the bound is drawn: not read, not unread-capable.
+
+    Negative control below: with the age line lifted, the same ghosts are read and the
+    freshest live run is displaced from the bound."""
+    policy = _policy()
+    ghosts = [
+        _run(i, minutes_ago=5 * 24 * 60 + i, status="queued", event="pull_request")
+        for i in range(1, 17)
+    ]
+    live = [
+        _run(100 + i, minutes_ago=30 + i, status="queued") for i in range(wd.LIVE_CLASSIFY_READS)
+    ]
+    runs = ghosts + live
+    logged: list[str] = []
+
+    bounded, unread = wd.live_runs_within_read_bound(runs, policy, logged.append)
+
+    bounded_ids = {run["id"] for run in bounded}
+    assert not bounded_ids & {g["id"] for g in ghosts}, "a ghost must not be read"
+    assert not set(unread) & {g["id"] for g in ghosts}, "a ghost must not hold the heal as unread"
+    assert bounded_ids == {
+        run["id"] for run in live
+    }, "every live run fits once the ghosts are gone"
+    ghost_lines = [line for line in logged if "dropped as ghosts" in line]
+    assert len(ghost_lines) == 1
+    assert "16 listed run(s) older than" in ghost_lines[0]
+
+    # A ghost two days old to the second is dropped; one a second younger is live.
+    at_line = _run(7, minutes_ago=2 * 24 * 60, status="queued")
+    under_line = _run(8, minutes_ago=2 * 24 * 60 - 1 / 60, status="queued")
+    kept = wd.drop_ghost_runs([at_line, under_line], policy, lambda _l: None)
+    assert [run["id"] for run in kept] == [8]
+
+
+def test_a_re_run_of_an_old_run_ages_from_its_attempt_not_its_creation() -> None:
+    """A re-run keeps the ``created_at`` of the run it re-runs and moves
+    ``run_started_at`` to the attempt. The watchdog's own heals are re-runs, and an
+    operator re-runs old runs too, so a stuck attempt on a five-day-old run is exactly
+    what the classify pass exists to see; aged by creation it would be dropped before
+    any verdict and lost silently. A ghost never started, so its two stamps agree.
+
+    Negative control: the same run with ``run_started_at`` back at creation is a ghost."""
+    policy = _policy()
+    rerun = _run(9, minutes_ago=5 * 24 * 60, status="queued", attempt=2)
+    rerun["run_started_at"] = _ts(30)
+    ghost = _run(10, minutes_ago=5 * 24 * 60, status="queued")
+    ghost["run_started_at"] = ghost["created_at"]
+    unstamped = _run(11, minutes_ago=5 * 24 * 60, status="queued")
+    unstamped.pop("run_started_at", None)
+    kept = wd.drop_ghost_runs([rerun, ghost, unstamped], policy, lambda _l: None)
+    assert [run["id"] for run in kept] == [9]
+
+
+def test_without_the_ghost_line_the_same_ghosts_displace_live_runs_from_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control for the test above: the line is what protects the bound."""
+    monkeypatch.setattr(wd, "GHOST_AFTER", timedelta(days=3650))
+    policy = _policy()
+    # Heal-eligible in shape, so that once they are not dropped they rank FIRST in the
+    # bound, exactly as the oldest ci.yml ghosts measured here did.
+    ghosts = [_run(i, minutes_ago=5 * 24 * 60 + i, status="queued") for i in range(1, 17)]
+    live = [
+        _run(100 + i, minutes_ago=30 + i, status="queued") for i in range(wd.LIVE_CLASSIFY_READS)
+    ]
+    bounded, unread = wd.live_runs_within_read_bound(ghosts + live, policy, lambda _l: None)
+    bounded_ids = {run["id"] for run in bounded}
+    assert bounded_ids & {g["id"] for g in ghosts}, "ghosts are read once the line is lifted"
+    assert (set(unread) | bounded_ids) & {g["id"] for g in ghosts}
+    assert {run["id"] for run in live} - bounded_ids, "and a live run is displaced"
+
+
 def test_the_reserve_log_names_the_fallback_when_no_run_can_carry_a_slow_start() -> None:
     """The log must not claim an age band it did not get.
 
@@ -4621,8 +4699,11 @@ def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
     Negative control: the reverted rule (`runs[:oldest]`, pure oldest-first) over
     the same candidates drops the healable run.
     """
+    # Under the ghost line on purpose: a run past GHOST_AFTER is dropped before the
+    # bound is drawn at all (its own test below), so the priority rule is exercised
+    # here on unhealable runs that ARE still live -- old, but under two days.
     zombies = [
-        _run(100 + i, minutes_ago=50_000 - i, status="queued", event="pull_request", branch="pr")
+        _run(100 + i, minutes_ago=2_800 - i, status="queued", event="pull_request", branch="pr")
         for i in range(4)
     ]
     healable = _run(7, minutes_ago=360, status="queued", event="push", workflow="fast-gate.yml")

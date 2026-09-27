@@ -399,6 +399,18 @@ LIVE_CLASSIFY_READS = 50
 # runs could -- young enough to speak about the fleet now, old enough for a slow
 # start to show.
 LIVE_EVIDENCE_RESERVE = 10
+# A listed live run older than this is a GHOST: a record the runs index still
+# returns as queued, in progress or pending but that GitHub itself does not hold
+# as live. GitHub cancels any job that has not started within 24 hours and caps a
+# CodeBuild build at 8, so a run in a live status two days on has no job that will
+# ever run and nothing a heal could act on; the ones measured here (created five
+# weeks earlier, no job ever created) answer a cancel with 409 "completed" and a
+# direct read with 404. They are dropped before the read bound is drawn, for two
+# reasons. Read, they spend the classify budget: 16 of the 50 reads on the tick
+# measured, every tick, re-reading the same jobless records. Unread, they would be
+# worse: a queued run past the saturation line counts as a run that COULD hold a
+# slow start, so an unread ghost would hold the heal back on every tick, for ever.
+GHOST_AFTER = timedelta(days=2)
 # How many in-window cancelled runs the recovery pass reads the jobs of per tick.
 # Every `main` push cancels the run it supersedes, so this repo holds hundreds of
 # cancelled runs inside one recovery window (300 measured in a 90-minute window),
@@ -1569,6 +1581,44 @@ def _evidence_reserve(runs: list[dict[str, Any]], policy: Policy) -> list[dict[s
     return source[-LIVE_EVIDENCE_RESERVE:]
 
 
+def drop_ghost_runs(
+    runs: list[dict[str, Any]], policy: Policy, log: Callable[[str], None] = print
+) -> list[dict[str, Any]]:
+    """The listed live runs minus the ghosts: records past ``GHOST_AFTER`` in a live status.
+
+    Applied before the read bound is drawn, so a ghost is neither read nor counted as
+    an unread run able to hold a slow start (see ``GHOST_AFTER`` for why both matter).
+    Dropping is by AGE alone, from the listing: the reads that could tell more -- jobs,
+    or the run itself -- are the cost being saved. The age is taken from the NEWER of
+    ``created_at`` and ``run_started_at``. A re-run keeps the ``created_at`` of the run
+    it re-runs and moves ``run_started_at`` to the attempt, so an attempt an operator
+    (or this watchdog) started on a run two days old is as young as that attempt; a
+    ghost never started, and its two stamps agree. One line names how many were
+    dropped, so a tick that acted on a shorter set than it listed says so.
+    """
+    live: list[dict[str, Any]] = []
+    ghosts = 0
+    oldest: datetime | None = None
+    for run in runs:
+        created = parse_timestamp(str(run["created_at"]))
+        started_raw = run.get("run_started_at")
+        started = parse_timestamp(str(started_raw)) if started_raw else created
+        newest = max(created, started)
+        if policy.now - newest >= GHOST_AFTER:
+            ghosts += 1
+            oldest = newest if oldest is None or newest < oldest else oldest
+            continue
+        live.append(run)
+    if ghosts:
+        log(
+            f"::notice::{ghosts} listed run(s) older than {_fmt_delta(GHOST_AFTER)} dropped as "
+            f"ghosts (oldest last started {oldest.isoformat() if oldest else '?'}): GitHub "
+            "cancels a job that has not started within a day, so a run still listed live "
+            "past that has nothing a heal could act on, and reading it would only spend the bound"
+        )
+    return live
+
+
 def live_runs_within_read_bound(
     runs: list[dict[str, Any]], policy: Policy, log: Callable[[str], None] = print
 ) -> tuple[list[dict[str, Any]], dict[int, datetime]]:
@@ -1610,6 +1660,7 @@ def live_runs_within_read_bound(
     carries the eligible shape, so shape alone would let this minute's pushes
     outrank an orphan stuck for hours. They are still read, just not ahead of it.
     """
+    runs = drop_ghost_runs(runs, policy, log)
     if len(runs) <= LIVE_CLASSIFY_READS:
         return runs, {}
     # Disjoint by construction, so a run cannot be read twice: the reserve is cut
