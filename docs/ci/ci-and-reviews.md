@@ -2334,7 +2334,7 @@ status plus one `readiness:` label**.
   `issue_comment` trigger**, so correcting the offending comment fires nothing by
   itself. `pr-readiness-sweep.yml` mode 5 covers that — it treats a disposition
   record whose `updated_at` is newer than the verdict as evidence the verdict is
-  stale, and re-fires the recompute within ~15 minutes. Deleting the record with
+  stale, and re-fires the recompute within one sweep tick (~5 minutes). Deleting the record with
   no replacement leaves nothing observable and waits for a push or a manual
   dispatch. The comparison is not race-free and is not claimed to be: the gate
   reads the comments early in the readiness job while the status is published at
@@ -2377,21 +2377,41 @@ status plus one `readiness:` label**.
 
 Two subtleties:
 
-- **It refreshes while a workflow is re-running, but not when one starts.** It triggers
-  on `workflow_run` `in_progress` and `completed`, not on `requested`. `in_progress` is a
-  merge guard, not a cosmetic: it is the only type that sees a monitored workflow go back
-  to running, because a re-run reuses the same run and increments its attempt instead of
-  creating a new one. Without it, a re-run of an already-green lane would leave readiness
-  publishing the pre-re-run `success` for the whole re-run -- and since that status is the
-  branch-protection handle for the entire fan-out, armed auto-merge could merge a revision
-  whose lane is failing at that moment. `requested` is the type that carries nothing: it
-  fires at run CREATION, when no lane can have a verdict yet and readiness has already
-  published `checking` from the `pull_request_target` path. Since every type fires once per
-  monitored workflow per revision, listing all three dispatched up to 36 readiness runs per
-  head update and made readiness ~67% of every workflow run this repository created; two
-  types put the ceiling at 24. The `pr+sha` concurrency group collapses the burst for
-  execution, but a collapsed run has already consumed its dispatch slot, so the group does
-  not bound that cost.
+- **It refreshes when a lane STARTS re-running; a lane's completion reaches it through
+  the sweep.** Readiness subscribes to `workflow_run: in_progress` only -- not `completed`,
+  not `requested`. A `workflow_run` dispatch is spent the moment GitHub delivers the event,
+  before the job runs a step, and every subscribed type fires once per monitored workflow
+  per revision plus once per re-run attempt. With `completed` listed that was 24 runs per
+  head update by construction and 30 measured, 3006 an hour against ~100 head updates,
+  ≥60% of every workflow run this repository created, for a job whose full evaluation
+  takes 9-16 seconds. The `pr+sha` concurrency group collapses the burst for execution,
+  but a collapsed run has already consumed its dispatch, so the group does not bound that
+  cost -- and neither does anything a step does. The only lever on dispatch is which
+  events are subscribed.
+
+  So completions are delivered by `pr-readiness-sweep.yml`, every 5 minutes (GitHub's
+  shortest schedule). It scans every open pull request over GraphQL -- a separate pool
+  from the REST budget the lanes share, a handful of requests for the whole open set --
+  and dispatches a recompute for exactly the heads on which a monitored check completed
+  after the current verdict was published: 37 heads in a measured 15-minute window,
+  against 282 completion events. A pending is examined once it is at least the publish
+  lag old (180 s), and a check counts as evidence when it completed after the verdict's
+  publication minus that same lag; binding the two to one value is what makes a rescue
+  self-terminating on the next tick whatever the cadence (`test_pr_readiness_sweep.py`
+  pins the pairing and the reasoning). The cost is latency in the safe direction only: a
+  verdict goes green up to one tick plus the lag later than the event made it, never
+  earlier.
+
+  `in_progress` stays because it is the one signal completions cannot carry: a monitored
+  workflow going BACK to running. A re-run reuses the same run and increments its attempt,
+  so `requested` never fires for it and the runs page shows the pre-re-run conclusion
+  until the attempt finishes. Without it, a re-run of an already-green lane would leave
+  readiness publishing the pre-re-run `success` for the whole re-run -- and since that
+  status is the branch-protection handle for the entire fan-out, armed auto-merge could
+  merge a revision whose lane is failing at that moment. A sweep cannot close that: its
+  evidence is completed checks, and a running lane has none yet. `requested` is the type
+  that carries nothing: it fires at run CREATION, when no lane can have a verdict yet and
+  readiness has already published `checking` from the `pull_request_target` path.
 - **A lane that is itself `workflow_run`-triggered cannot be monitored.** GitHub runs such
   a workflow from the default branch, so the `workflow_run` payload its completion hands
   readiness names the default branch as `head_branch` and the default branch's tip as
@@ -2406,25 +2426,47 @@ Two subtleties:
   default branch's tip) rather than per head update, they accumulated across every open
   pull request at once — 158 no-op readiness runs on a single default-branch SHA, 96% of
   readiness's run creation, ~5,100 wasted requests an hour against a 15,000/hour
-  installation pool. A fork verdict is refreshed instead by the lanes that do run on the
-  PR head (Fast Gate, CI, Build, Code Review) plus the 15-minute
-  `pr-readiness-sweep.yml` backstop, which re-fires by PR number. Two fences hold the rule
+  installation pool. A fork verdict is refreshed instead the way every verdict is:
+  `pr-readiness-sweep.yml` re-fires by PR number when a check on its head completes.
+  Two fences hold the rule
   — the trigger allowlist and the job gate's event check — and
   `test_ai_review_workflows.py` pins both.
-- **A run triggered by an `in_progress` event never publishes success.** That event MEANS
-  a monitored lane is running, and the runs page is the wrong thing to ask, because the
-  lag between the webhook and that page is exactly what would answer green; the step
-  already compensates for the same lag on `completed` by patching the triggering run's
-  row from the event, and the event answers this one outright. A lane that finished in
-  between leaves the pending briefly stale, which only ever blocks, and its own
-  completion recomputes.
+- **A run triggered by an `in_progress` event holds the verdict and stops.** That event
+  MEANS a monitored lane is running, so nothing the status says is known to be true. The
+  run makes one read -- of the workflow run the event names, never of the commit status --
+  to ask whether that is STILL true, because queue delay can execute a hold long after its
+  event. A lane that has since completed gets no hold: its completion is the sweep's
+  evidence, and a hold written now would stamp the status newer than that completion and
+  push it below the evidence floor with no later event left to lift it. A lane still
+  running gets `pending`, written unconditionally, and the run does nothing else -- three
+  requests in all, no evaluation. Reading the STATUS first would reopen the stale-success
+  window the publish step's POST comment records three guards failing to close; a pending
+  over a pending only moves the stamp, and a pending over a failure blocks the merge just
+  the same. An unreadable run holds anyway, stamped `[read-failed]`, so the sweep's
+  age-based retry recomputes it regardless of evidence. The lane's completion then reaches
+  the sweep as evidence newer than the hold, and the recompute it dispatches publishes the
+  real verdict with the labels to match. `test_pr_readiness_publish.py` runs the hold step
+  against the publish harness and pins all three arms.
 
-  A same-repo `success` is re-checked before it is published: the publish step reads the
-  runs page once more and downgrades to `pending` if a monitored lane has started since
-  (to `failure` if one has turned red), so a run in an isolated `pull_request_target`
-  group cannot land a stale success over a re-run. CodeQL is read there too -- it is a
-  `dynamic` run, invisible to a re-check filtered to `event=pull_request`, and its
-  security verdict is a separate exact-SHA check-run a re-scan re-opens.
+  A `success` is re-checked before it is published, on every head: the publish step reads
+  the runs page once more and downgrades to `pending` if a monitored lane has started since
+  (to `failure` if one has turned red), so a run in an isolated `pull_request_target` or
+  `workflow_dispatch` group cannot land a stale success over a re-run -- and this is the
+  write a re-run's hold cannot defend against on its own, since the hold lands in seconds
+  and the delayed publish lands after it. A fork head's runs list the fork as
+  `head_repository`, so the same filter answers for a fork's CI, Fast Gate, Build, Code
+  Review and content-scan re-runs. The seven Stage-2 fork review lanes run from the default
+  branch and never appear there; on a fork success they are read once more from the head
+  SHA's check-runs, bound as the verdict step binds them -- to this pull request AND to Fast
+  Gate's newest run + attempt, since a Fast Gate re-run leaves the previous attempt's seven
+  green rows on the SHA until the re-run's lanes post theirs -- and a lane with no current
+  row or a row still running holds the publish, while a row completed red (each fork lane
+  fails its check ONLY on a real BLOCK) publishes red. Both arms collapse a lane's runs the
+  way the verdict step does, a cancelled max-id run yielding to a later-started sibling, so
+  the re-check never reds a lane the evaluation scored green. CodeQL is read on same-repo heads only -- it
+  is a `dynamic` run, invisible to a re-check filtered to `event=pull_request`, and its
+  security verdict is a separate exact-SHA check-run a re-scan re-opens; a fork head cannot
+  run it.
 
   Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
   (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
@@ -2433,8 +2475,9 @@ Two subtleties:
   never-cancelled publisher's stale success, so every screened shape moved that write
   earlier and widened the window in which such a success is the last write on the sole
   required status. Commit statuses are last-write-wins with no conditional write, so no
-  read closes it. Cutting how many readiness runs are DISPATCHED carries no such
-  exposure and is where the remaining reduction belongs.
+  read closes it. That is why the remaining reduction was taken at DISPATCH -- dropping
+  the `completed` subscription -- which carries no such exposure: it moves no write
+  earlier, it only delivers the final one a few minutes later.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so

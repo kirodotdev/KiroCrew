@@ -536,7 +536,12 @@ def test_a_pending_with_no_checks_at_all_is_left_alone(runner: Runner) -> None:
 
 
 def test_fresh_pending_is_left_alone(runner: Runner) -> None:
-    """Inside STALE_MINUTES the fan-out may genuinely still be running."""
+    """A pending with no completed check is left alone whatever its age.
+
+    Two minutes old here, with nothing completed on the head: its lanes are
+    still owed, and the first completion is what brings it to the evidence
+    test. There is no age at which a check-less pending is nudged.
+    """
     from datetime import datetime, timedelta, timezone
 
     recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -545,7 +550,7 @@ def test_fresh_pending_is_left_alone(runner: Runner) -> None:
 
 # ── The evaluate-to-publish window ──────────────────────────────────────────
 
-PUBLISH_LAG_SECONDS = 300
+PUBLISH_LAG_SECONDS = 180
 
 
 def test_a_check_completed_inside_the_publish_lag_is_evidence(runner: Runner) -> None:
@@ -574,7 +579,7 @@ def test_a_check_one_second_inside_the_publish_lag_is_evidence(runner: Runner) -
             runner.sweep(
                 state="pending",
                 status_at="2026-08-07T19:16:13Z",
-                check_completed_at="2026-08-07T19:11:14Z",
+                check_completed_at="2026-08-07T19:13:14Z",
             )
         )
         == 1
@@ -593,7 +598,7 @@ def test_a_check_at_the_publish_lag_floor_is_not_evidence(runner: Runner) -> Non
         runner.sweep(
             state="pending",
             status_at="2026-08-07T19:16:13Z",
-            check_completed_at="2026-08-07T19:11:13Z",
+            check_completed_at="2026-08-07T19:13:13Z",
         )
         == []
     )
@@ -604,36 +609,84 @@ def test_a_republished_verdict_carries_the_same_check_below_the_floor(
 ) -> None:
     """Self-termination, as the sweep actually reaches it.
 
-    A rescue dispatches the aggregator, which republishes. The next sweep sees
-    the SAME newest check against a publication that is now at least
-    stale_seconds newer -- because nothing is re-examined before then -- and
-    stale_seconds is larger than the lag, so the check is below the floor and the
-    nudge does not repeat. This models the second pass: the check that earned the
-    first rescue, one stale window later.
+    A rescue dispatches the aggregator, which republishes at some P' at or after
+    the tick that dispatched it. The pending it replaced was examined only once
+    at least publish_lag_seconds old, so the check that earned the rescue sits
+    at least the lag before that tick -- and therefore at least the lag before
+    P'. The next sweep sees the SAME newest check below the NEW floor and does
+    not repeat the nudge. This models the second pass with the gap at its
+    tightest: a republish exactly one lag after the check.
     """
     assert (
         runner.sweep(
             state="pending",
-            status_at="2026-08-07T19:31:14Z",
+            status_at="2026-08-07T19:17:13Z",
             check_completed_at="2026-08-07T19:14:13Z",
         )
         == []
     )
 
 
-def test_the_publish_lag_stays_below_the_staleness_window() -> None:
-    """The ordering the termination argument rests on, asserted against the file.
+def test_a_young_pending_with_later_evidence_is_delivered_on_the_next_tick(
+    runner: Runner,
+) -> None:
+    """The ordinary delivery: the aggregator does not subscribe to `completed`.
 
-    If the lag ever grew past stale_seconds, a rescue's own republish would keep
-    the check inside the new window and mode 1 would nudge the same head every
-    sweep -- the loop this whole change removes, reintroduced by a constant.
+    A pending published four minutes ago, with a lane that completed since, is
+    the normal state of every head whose final lane just finished. Under the old
+    fifteen-minute age gate this waited for a "freeze" that is now the design;
+    the only age that applies is the publish lag, and four minutes clears it.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    completed = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    dispatched = runner.sweep(state="pending", status_at=published, check_completed_at=completed)
+    assert len(dispatched) == 1
+    assert "pr=2064" in dispatched[0]
+
+
+def test_a_pending_younger_than_the_lag_is_not_examined(runner: Runner) -> None:
+    """The near side of the pairing that makes mode 1 terminate.
+
+    A pending younger than the lag may have been written by a recompute still
+    inside its own evaluate-to-publish gap; a check it did not see is still
+    evidence on the next tick, and examining it now would nudge on a stamp the
+    dispatching recompute has not finished writing.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(seconds=PUBLISH_LAG_SECONDS - 30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    completed = (now - timedelta(seconds=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert runner.sweep(state="pending", status_at=published, check_completed_at=completed) == []
+
+
+def test_the_pending_minimum_age_is_the_publish_lag() -> None:
+    """The pairing the termination argument rests on, asserted against the file.
+
+    A recompute dispatched at tick S publishes at P' >= S. The pending it
+    replaced was at least min_age old at S, so the check that earned the nudge
+    completed before S - min_age. It sits below the new floor P' - lag iff
+    min_age >= lag. Binding the two to one value is what lets the cadence drop
+    without a longer age gate; a min_age below the lag would re-nudge the same
+    head every tick until the two drifted apart.
     """
     sweep = WORKFLOW.read_text(encoding="utf-8")
     assert "publish_lag_seconds=%d" % PUBLISH_LAG_SECONDS in sweep
+    assert 'pending_min_age_seconds="$publish_lag_seconds"' in sweep
+    assert '[ "$age" -lt "$pending_min_age_seconds" ]' in sweep
     assert "$(( updated_epoch - publish_lag_seconds ))" in sweep
-    stale = re.search(r'STALE_MINUTES:\s*"(\d+)"', sweep)
-    assert stale, "STALE_MINUTES is unreadable, so the termination bound cannot be checked"
-    assert PUBLISH_LAG_SECONDS < int(stale.group(1)) * 60
+
+
+def test_the_sweep_runs_at_the_shortest_schedule_github_offers() -> None:
+    """Delivery latency is the cadence: the aggregator subscribes to no completion."""
+    sweep = WORKFLOW.read_text(encoding="utf-8")
+    assert '- cron: "*/5 * * * *"' in sweep
+    readiness = (WORKFLOW.parent / "pr-readiness.yml").read_text(encoding="utf-8")
+    assert "types: [in_progress]" in readiness
+    assert "completed" not in re.search(r"types: \[([^\]]*)\]", readiness).group(1)
 
 
 # ── The read-failure pending: age is its only signal ────────────────────────
