@@ -848,7 +848,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Onboarding import",
-        "onboarding_import.py",
+        "onboarding_scan.py",
         "Imported foreign-agent history and config before it enters Kiro Crew.",
     ),
     (

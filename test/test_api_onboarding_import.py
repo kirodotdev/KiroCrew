@@ -7,6 +7,7 @@ import importlib
 import json
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import handlers
+from kiro_crew.onboarding_sources import gemini as gemini_source
 
 
 class _AuditLog:
@@ -23,6 +25,22 @@ class _AuditLog:
 
     def log_api_access(self, **event: Any) -> None:
         self.events.append(event)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_host_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``apply_import``'s MCP sidecar lock off the real ``~/.kiro/settings``.
+
+    ``_write_mcp`` takes the dashboard handler's lock, whose paths the handler
+    binds from ``Path.home()`` when it is imported. The host floor rebinds them
+    only when that module is already loaded, so without this the first MCP write
+    in a worker reaches the operator's real files. A test that patches these names
+    itself still wins, because its own patch runs after this one.
+    """
+    mcp_handlers = importlib.import_module("kiro_crew.dashboard.handlers.mcp")
+    global_mcp = tmp_path / "host-kiro-settings" / "mcp.json"
+    monkeypatch.setattr(mcp_handlers, "_GLOBAL_MCP_JSON", global_mcp)
+    monkeypatch.setattr(mcp_handlers, "_MCP_LOCK_PATH", global_mcp.with_suffix(".lock"))
 
 
 def _handler_module():
@@ -906,6 +924,9 @@ async def test_scan_never_writes(monkeypatch, tmp_path) -> None:
     def refuse_write(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("preview wrote to a destination")
 
+    # The ``_write_json`` patch reaches the ledger, the JSON restore copies and
+    # ``mcp.json``, all through the apply owner's single binding, which the facade
+    # forwards it to. Refusing ``apply_import`` is what keeps every other writer out.
     monkeypatch.setattr(backend, "_write_json", refuse_write)
     monkeypatch.setattr(backend, "apply_import", refuse_write)
 
@@ -1143,7 +1164,7 @@ def test_handler_category_tables_match_the_backend() -> None:
     # rows, where a missing label silently falls back to "General". Pin every
     # category the unsupported-dirs table can emit to a real label.
     assert set(module._CATEGORY_NAMES) >= {
-        category for _, category in backend._GEMINI_UNSUPPORTED_DIRS
+        category for _, category in gemini_source._GEMINI_UNSUPPORTED_DIRS
     }
 
 
