@@ -181,6 +181,98 @@ export function expandWindowDown(
   return { start: range.start, end: newEnd }
 }
 
+// ---- Window-state rules shared by the chat hook ----
+//
+// The hook keeps the mounted window in React state; these are the rules it
+// applies to that state, kept here beside the rest of the window math so each
+// has one spelling.
+
+// Rows must drift this many items BEYOND the computed window before a
+// SCROLL-path recompute will UNMOUNT them (mounting stays eager — no
+// hysteresis). This deadband breaks a feedback loop seen when a widget sits at
+// the window boundary: a 1px scrollTop nudge from native `overflow-anchor`
+// (which fires every time a row mounts/unmounts) shifts the computed window by
+// a single row, which unmounts/remounts the boundary widget (rebuilding its
+// Tailwind iframe — expensive), whose height change nudges scrollTop again …
+// 30+ times/s (diagnosed via scroll.event≈windowRange.change storms). Keeping
+// boundary rows mounted within the band stops the flip-flop while still
+// bounding the mounted set to roughly window + overscan + this margin.
+const WINDOW_UNMOUNT_HYSTERESIS = 4
+
+// Multiplier on `overscan` that defines the "near" band for a jump: a jump
+// landing within this many overscan windows of the current range takes the
+// union/glide path; farther jumps teleport (replace the window). Used by both
+// the far-check and the setWindowRange near-check, which must stay in sync.
+const NEAR_JUMP_OVERSCAN_MULT = 4
+
+/**
+ * The window a session opens with, before anything has been measured: the TAIL
+ * of the list for the chat contract (`'bottom'` -- slot entry pins there, so the
+ * last rows must already be mounted), the HEAD for a list or gallery (`'top'`).
+ */
+export function initialWindow(
+  itemCount: number,
+  overscan: number,
+  placement: 'top' | 'bottom',
+): WindowRange {
+  const tailSize = Math.min(itemCount, overscan + 1)
+  if (placement === 'top') return { start: 0, end: tailSize }
+  return { start: Math.max(0, itemCount - tailSize), end: itemCount }
+}
+
+/**
+ * The last `overscan + 1` rows: what an explicit bottom placement remounts
+ * before it pins, so the pin lands the live rows rather than the tail spacer.
+ */
+export function tailWindow(itemCount: number, overscan: number): WindowRange {
+  return { start: Math.max(0, itemCount - (overscan + 1)), end: itemCount }
+}
+
+/**
+ * Does a jump's window land within the near band of `range`? Near jumps union
+ * with the current window; far ones replace it. One predicate for both the
+ * caller-facing far/near answer and the state update that acts on it.
+ */
+export function jumpIsNear(jump: WindowRange, range: WindowRange, overscan: number): boolean {
+  return jump.start <= range.end + overscan * NEAR_JUMP_OVERSCAN_MULT && jump.end >= range.start - overscan * NEAR_JUMP_OVERSCAN_MULT
+}
+
+/**
+ * Merge a recomputed window into the current one.
+ *
+ * `expandOnly` (the ResizeObserver path) unions the two, so a height change can
+ * only MOUNT rows. Otherwise mounting stays eager while unmounting waits for
+ * WINDOW_UNMOUNT_HYSTERESIS rows of drift. Returns `prev` ITSELF when nothing
+ * moved, so a state update with it bails out.
+ */
+export function mergeWindowRange(prev: WindowRange, next: WindowRange, expandOnly: boolean): WindowRange {
+  let merged: WindowRange
+  if (expandOnly) {
+    merged = { start: Math.min(prev.start, next.start), end: Math.max(prev.end, next.end) }
+  } else {
+    // Mount eagerly (next extends the window → adopt it immediately), but
+    // only UNMOUNT once a row has drifted past WINDOW_UNMOUNT_HYSTERESIS
+    // beyond the current edge. This keeps a boundary widget mounted across
+    // the ±1-row jitter that overflow-anchor scroll nudges produce, which
+    // is what was thrashing widget iframes 30+/s (see constant).
+    const start =
+      next.start < prev.start
+        ? next.start
+        : next.start > prev.start + WINDOW_UNMOUNT_HYSTERESIS
+          ? next.start
+          : prev.start
+    const end =
+      next.end > prev.end
+        ? next.end
+        : next.end < prev.end - WINDOW_UNMOUNT_HYSTERESIS
+          ? next.end
+          : prev.end
+    merged = { start, end }
+  }
+  if (prev.start === merged.start && prev.end === merged.end) return prev
+  return merged
+}
+
 /**
  * Normalize a raw height reading the same way the free functions above do:
  * `getHeight(i) || 0` coerces NaN / undefined / 0 to 0, then Math.max clamps

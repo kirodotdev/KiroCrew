@@ -844,7 +844,7 @@ job picks it up, the lane is run by hand at two named moments:
 
 | Owner | When | Mode |
 |---|---|---|
-| The PR author | before requesting review on a change to the transcript follow/pin path (`website/src/hooks/virtualizer/useVirtualChat.ts`, `FollowController.ts`) or to any `*.webkit.spec.ts` | required |
+| The PR author | before requesting review on a change to the transcript follow/pin path (anything under `website/src/hooks/virtualizer/`: the `useVirtualChat.ts` facade and the owners it composes, `FollowController.ts` among them) or to any `*.webkit.spec.ts` | required |
 | The release verifier | before a release that bumps `@playwright/test`, since the image tag above must match the installed version | required |
 
 A pass is recorded in the PR body's Manual verification section with the

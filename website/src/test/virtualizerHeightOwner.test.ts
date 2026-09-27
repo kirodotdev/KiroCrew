@@ -24,11 +24,27 @@
 //      resize" and yank a scrolling reader.
 
 import { describe, it, expect } from 'vitest'
+import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { readSource as readSourceText } from './readSource'
 import { HeightIndex } from '../hooks/virtualizer/HeightIndex'
 
 const VIRTUALIZER_DIR = join(__dirname, '..', 'hooks', 'virtualizer')
+
+/** The height owner and its persistence -- the two modules allowed to hold heights. */
+const HEIGHT_TRUTH = ['HeightCache.ts', 'HeightIndex.ts']
+
+/**
+ * Every OTHER module in the virtualizer: the facade, its composed owners, and the
+ * pure helpers. Read from the directory rather than listed, so a new owner file
+ * is under these guards the moment it exists -- the single-height-owner rule
+ * cannot be bypassed by moving a read into a file nobody added to a list.
+ */
+function heightReaders(): string[] {
+  return readdirSync(VIRTUALIZER_DIR)
+    .filter((f) => /\.tsx?$/.test(f) && !HEIGHT_TRUTH.includes(f))
+    .sort()
+}
 
 /**
  * Read a virtualizer source file for a shape assertion.
@@ -48,47 +64,60 @@ function stripComments(src: string): string {
 }
 
 describe('height truth has one owner (structural)', () => {
-  it('useVirtualChat does not import HeightCache', () => {
-    const code = stripComments(readSource('useVirtualChat.ts'))
-    expect(code).not.toMatch(/from\s+'\.\/HeightCache'/)
-    expect(code).toMatch(/from\s+'\.\/HeightIndex'/)
+  it('the hook reaches heights only through HeightIndex', () => {
+    // The facade composes; the measurement owner is the one that constructs and
+    // reads the height owner.
+    expect(stripComments(readSource('useVirtualChat.ts'))).not.toMatch(/from\s+'\.\/HeightCache'/)
+    expect(stripComments(readSource('measurement.ts'))).toMatch(/from\s+'\.\/HeightIndex'/)
   })
 
-  it('useVirtualChat holds no cache reference and performs no direct cache read', () => {
-    const code = stripComments(readSource('useVirtualChat.ts'))
-    // The old direct-read handle. Its absence is the invariant.
-    expect(code).not.toMatch(/cacheRef/)
-    // The cache's read methods must not be called from the hook at all: peek and
-    // averageHeight belong to the owner's resolved-height path, and a bare get()
-    // is the promoting read the owner now expresses explicitly.
-    expect(code).not.toMatch(/\.peek\(/)
-    expect(code).not.toMatch(/\.averageHeight\(/)
+  it('no module outside the height owner holds a cache reference or performs a direct cache read', () => {
+    for (const file of heightReaders()) {
+      const code = stripComments(readSource(file))
+      // The old direct-read handle. Its absence is the invariant.
+      expect(code, file).not.toMatch(/cacheRef/)
+      // The cache's read methods must not be called outside the owner at all:
+      // peek and averageHeight belong to the owner's resolved-height path, and a
+      // bare get() is the promoting read the owner now expresses explicitly.
+      expect(code, file).not.toMatch(/\.peek\(/)
+      expect(code, file).not.toMatch(/\.averageHeight\(/)
+    }
   })
 
   it('within the virtualizer, only HeightIndex imports HeightCache', () => {
-    const importers = ['useVirtualChat.ts', 'WindowCalculator.ts', 'FollowController.ts']
+    const importers = heightReaders()
+    // The directory scan must actually see the composed owners, or this proves nothing.
+    expect(importers).toEqual(expect.arrayContaining([
+      'useVirtualChat.ts', 'measurement.ts', 'geometryScheduling.ts', 'shiftCompensation.ts',
+      'readingPosition.ts', 'followPolicy.ts', 'windowRange.ts', 'observers.ts',
+      'WindowCalculator.ts', 'FollowController.ts',
+    ]))
     for (const file of importers) {
-      expect(stripComments(readSource(file))).not.toMatch(/from\s+'\.\/HeightCache'/)
+      expect(stripComments(readSource(file)), file).not.toMatch(/from\s+'\.\/HeightCache'/)
     }
     expect(stripComments(readSource('HeightIndex.ts'))).toMatch(/from\s+'\.\/HeightCache'/)
   })
 
   it('the height owner is guarded on sessionId exactly once, off the owner itself', () => {
-    const code = stripComments(readSource('useVirtualChat.ts'))
     // Scoped to the HEIGHT guard on purpose. The hook legitimately holds other
     // sessionId comparisons for unrelated concerns (the scroll-state sentinel,
     // the slot-entry pin bookkeeping), so matching every `!== sessionId` would
     // make this ratchet fail for edits that have nothing to do with the
     // invariant -- and would let an unrelated guard being added read as a
     // height regression.
-    const heightGuards = code.match(/heightIndexRef\.current\?\.sessionId\s*!==\s*heightScope/g) ?? []
+    const heightGuards = heightReaders().flatMap((file) =>
+      stripComments(readSource(file)).match(/heightIndexRef\.current\?\.sessionId\s*!==\s*heightScope/g) ?? [])
     expect(heightGuards).toHaveLength(1)
+    expect(stripComments(readSource('measurement.ts'))).toMatch(/heightIndexRef\.current\?\.sessionId\s*!==\s*heightScope/)
     // Session identity has ONE record, on the owner. Any parallel ref beside it
     // is a second spelling that can drift from the owner it describes -- the
     // pattern this change exists to remove, in miniature.
-    expect(code).not.toMatch(/heightSessionRef/)
-    expect(code).not.toMatch(/offsetIndexSessionRef/)
-    expect(code).not.toMatch(/cacheSessionRef/)
+    for (const file of heightReaders()) {
+      const code = stripComments(readSource(file))
+      expect(code, file).not.toMatch(/heightSessionRef/)
+      expect(code, file).not.toMatch(/offsetIndexSessionRef/)
+      expect(code, file).not.toMatch(/cacheSessionRef/)
+    }
   })
 
   it('OffsetIndex stays a pure Fenwick primitive with no session or cache concern', () => {
@@ -98,22 +127,27 @@ describe('height truth has one owner (structural)', () => {
   })
 
   it('the hook holds no hand-bumped geometry version', () => {
-    const code = stripComments(readSource('useVirtualChat.ts'))
     // The counter this replaced lived in the hook as React state and had to be
     // bumped at every write site and listed in every memo dependency array. Its
     // absence is the invariant: invalidation is subscribed to, not maintained.
-    expect(code).not.toMatch(/heightVersion/)
-    expect(code).not.toMatch(/setHeightVersion/)
-    // And the subscription is what replaces it.
-    expect(code).toMatch(/useSyncExternalStore\(/)
+    for (const file of heightReaders()) {
+      const code = stripComments(readSource(file))
+      expect(code, file).not.toMatch(/heightVersion/)
+      expect(code, file).not.toMatch(/setHeightVersion/)
+    }
+    // And the subscription is what replaces it, in the height owner's wiring.
+    expect(stripComments(readSource('measurement.ts'))).toMatch(/useSyncExternalStore\(/)
   })
 
   it('the offset math is read, not memoized behind an invisible key', () => {
-    const code = stripComments(readSource('useVirtualChat.ts'))
     // Three memos used to carry an invalidation token their bodies never read,
     // each needing an exhaustive-deps exemption plus a "Do NOT remove it" note.
-    // Reading the values directly is what removed all three exemptions.
-    expect(code).not.toMatch(/useMemo\(\(\)\s*=>\s*offsetIndex\.totalHeight\(\)/)
+    // Reading the values directly is what removed all three exemptions. No
+    // module the offset index reaches may bring such a memo back.
+    for (const file of heightReaders()) {
+      expect(stripComments(readSource(file)), file).not.toMatch(/useMemo\(\(\)\s*=>\s*offsetIndex\.totalHeight\(\)/)
+    }
+    const code = stripComments(readSource('measurement.ts'))
     expect(code).toMatch(/const totalHeight = offsetIndex\.totalHeight\(\)/)
     expect(code).toMatch(/const offsetBefore = offsetIndex\.offsetOf\(/)
   })
@@ -135,7 +169,7 @@ describe('HeightIndex read surface (behavioural)', () => {
     // The guard reads heightScope = heightScopeKey ?? sessionId. This pins the
     // fallback so callers without width-dependent rows keep byte-identical
     // behavior.
-    const code = stripComments(readSource('useVirtualChat.ts'))
+    const code = stripComments(readSource('measurement.ts'))
     expect(code).toMatch(/const heightScope = heightScopeKey \?\? sessionId/)
   })
 

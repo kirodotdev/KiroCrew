@@ -218,6 +218,37 @@ arguing with the rule.
 | Binding a panel's gesture live to its offset | [narrow-viewport.md](narrow-viewport.md#a-panel-that-gains-a-gesture-must-be-bound-live-to-its-offset) |
 | Horizontal insets below the breakpoint, and `Card`'s measured budget | [narrow-viewport.md](narrow-viewport.md#horizontal-insets-below-the-breakpoint) |
 
+### The chat transcript scroller and who moves it
+
+The chat transcript is a page's scrolling region like any other, with one
+difference: it is windowed. Only the rows near the viewport are real DOM, and
+spacers stand in for the rest. The hook that does this,
+`website/src/hooks/virtualizer/useVirtualChat.ts`, keeps the reader's position
+through every change to that window, so a host wires it rather than working
+around it.
+
+A host provides the scroller (`scrollerRef`), one `measureRef(index)` element
+per mounted row, the two sentinels at the list ends, and the `offsetBefore` /
+`offsetAfter` spacers. Chrome it renders inside the scroller above the rows (a
+paging bar, a header band) needs nothing extra: the hook measures that leading
+offset itself and carries a bottom-parked reader through it. A host that steers
+toward a row that may not be mounted (the pinned-prompt glide) asks the hook
+through `mountIndex` and `estimateRowTop`. The page keeps `overflow-anchor: auto`
+on the scroller as the browser's own stabiliser. WebKit ships none, so the hook
+carries its own anchors as well.
+
+| What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
+|---|---|
+| Following the live turn, the jump-to-latest pill, scrolling to a row | `followPolicy.ts` (every write goes through its `writeScrollTop`) |
+| Holding a scrolled-up reader still when rows or heights change above them | `shiftCompensation.ts` |
+| Reopening a session where the reader left it, and re-placing after a hidden tab returns | `readingPosition.ts` |
+| Which rows are mounted as the reader scrolls, and the spacer heights around them | `windowRange.ts` over `measurement.ts` |
+| When a new row height is allowed to move the page | `geometryScheduling.ts` |
+| Listening to the scroller, its rows and its own box | `observers.ts` |
+
+The full owner map is in
+[history](../../docs/system-specs/modules/history.md#the-dashboard-transcript-window-frontend).
+
 ## Stat cards
 
 OPTIONAL summary metrics above the content. Add a row only when a number is not

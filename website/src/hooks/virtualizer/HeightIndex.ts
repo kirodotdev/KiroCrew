@@ -326,3 +326,109 @@ export class HeightIndex {
     this.cache.flush()
   }
 }
+
+/**
+ * Which measurements a list change must RETIRE or RENAME, planned in the render
+ * that made the change so the reprice lands in the commit whose shift is already
+ * compensated (see HeightIndex.retire / rename).
+ *
+ * Keyed on KEY DEPARTURE, not on the net count falling: the harm is a
+ * measurement outliving its row, and a commit that drops the thinking row
+ * while adding output nets to growth or to zero with the ghost's height still
+ * pricing the transcript. `survivingKeys` is the caller's set of display keys
+ * still present (it is built for the splice anchor anyway), so the detector
+ * costs one pass over the previous items and no extra allocation. Independent
+ * of follow state: a departed row's measurement is wrong for a pinned reader too.
+ *
+ * Head paging is the ONE departure that must not retire: the rows it drops
+ * are coming back when the reader scrolls up, so their measurements must keep
+ * pricing the region above. Recognising it starts from the CALLER, not from
+ * the data: nothing pages unless the consumer asked to be told when the
+ * reader reaches the top, so a consumer with no `onTopReached` has no
+ * page-out to exempt and every departure it makes is final. That is what
+ * separates the transcript (ChatPage, which wires it) from a filtered list
+ * (the artifacts gallery, which does not): narrowing a search box drops a
+ * leading run of cards and keeps later ones, which is indistinguishable from
+ * a page-out by the shape of the departure alone, and those cards are not
+ * coming back.
+ *
+ * Within a paging consumer, all three shape properties are still required,
+ * because any two of them are also true of a departure that MUST retire:
+ *
+ *   the count FELL          -- a prepend regroup also drops a prefix row while
+ *                              survivors remain, and it grows the count
+ *   the departures are a    -- a tail truncation or an interior removal leaves
+ *   contiguous PREFIX          a survivor ABOVE a departure
+ *   a survivor REMAINS      -- a full clear departs a prefix and nothing else,
+ *                              and its rows are not coming back
+ *
+ * Every other shape retires, and each is covered: interior removal (prefix
+ * test), equal-count swap and interior-replacement-plus-append (count test),
+ * tail truncation (prefix test), clear (survivor test), any departure at all
+ * in a non-paging consumer (the capability test).
+ *
+ * In a paging consumer a single row leaving the very head IS a one-row
+ * page-out by every one of these properties, so it is skipped, as it was
+ * before this branch existed.
+ *
+ * RENAMES, not departures: a landing regroup can absorb a page
+ * boundary into an existing turn, changing that row's DISPLAY key (the
+ * lead item moves) while the ROW itself survives. Its stable id -- the
+ * same currency the prepend anchor survives regroups by -- still names
+ * it. Retiring such a key sends a mounted giant row back to estimate
+ * pricing and the transcript breathes by the difference on EVERY
+ * landing (bottom rig: recurring multi-thousand-px doc-height flips).
+ * Migrate the measurement to the new key instead; retire only rows
+ * whose stable id truly left.
+ *
+ * `prevItems` are priced through the `prevGetKey` captured WITH them, the
+ * current items through this render's `getKey` -- an index-addressed getKey
+ * returns the new list's key at an old index.
+ */
+export function planHeightRetirement<T>(input: {
+  prevItems: readonly T[]
+  prevGetKey: (item: T, index: number) => string
+  items: readonly T[]
+  getKey: (item: T, index: number) => string
+  survivingKeys: ReadonlySet<string>
+  getStableId: ((item: T, index: number) => string) | undefined
+  /** The consumer asked to be told when the reader reaches the top. */
+  pagingConsumer: boolean
+  /** The row count fell in this change. */
+  countFell: boolean
+}): { renamed: [string, string][]; retired: string[] } {
+  const { prevItems, prevGetKey, items, getKey, survivingKeys } = input
+  const stableIdFn = input.getStableId
+  const newKeyByStableId = new Map<string, string>()
+  if (stableIdFn) {
+    for (let i = 0; i < items.length; i++) {
+      newKeyByStableId.set(stableIdFn(items[i], i), getKey(items[i], i))
+    }
+  }
+  const renamed: [string, string][] = []
+  const departed: string[] = []
+  let departedPrefixOnly = true
+  let survivorSeen = false
+  for (let i = 0; i < prevItems.length; i++) {
+    const it = prevItems[i]
+    if (!it) continue
+    const k = prevGetKey(it, i)
+    if (survivingKeys.has(k)) { survivorSeen = true; continue }
+    const newKey = stableIdFn ? newKeyByStableId.get(stableIdFn(it, i)) : undefined
+    if (newKey !== undefined) {
+      // Row survived under a new display key: still a survivor for the
+      // prefix-shape analysis (it did not leave the list).
+      survivorSeen = true
+      renamed.push([k, newKey])
+      continue
+    }
+    if (survivorSeen) departedPrefixOnly = false
+    departed.push(k)
+  }
+  const headPagedOut =
+    input.pagingConsumer &&
+    input.countFell &&
+    departedPrefixOnly &&
+    survivorSeen
+  return { renamed, retired: departed.length > 0 && !headPagedOut ? departed : [] }
+}

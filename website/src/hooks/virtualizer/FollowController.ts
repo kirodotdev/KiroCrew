@@ -46,6 +46,14 @@ export const DEFAULT_BOTTOM_THRESHOLD = 100
  */
 export const SELF_SCROLL_EPSILON = 2
 
+// After a genuine user scroll, suppress ResizeObserver-driven auto-pins for
+// this long. Streaming/widget growth that should "follow" happens while the
+// user is stationary at the bottom; a re-measuring widget that fires mid-fling
+// must NOT yank the user (which also unmounts the rows they were scrolling
+// through, leaving a blank flash). Explicit pins (slot entry, scrollToBottom,
+// append) bypass this — only the RO follow path is gated.
+export const SCROLL_SETTLE_MS = 150
+
 /**
  * "At the bottom" tolerance (px) for deciding whether an auto-pin still has
  * work to do. A flat 0.5 is UNDER one device pixel at fractional device-pixel
@@ -90,6 +98,27 @@ export function computeAtBottom(geom: ScrollGeom, threshold: number): boolean {
 }
 
 /**
+ * Is the scroller laid out at ZERO height -- a backgrounded mobile tab, a
+ * `display:none` pane, a not-yet-sized column?
+ *
+ * No reader can be moving in a box with no height, yet the geometry of one
+ * reads like a reader who is: `distanceFromBottom` is the whole transcript and
+ * `bottomTarget` is `scrollHeight` itself. Fed to evaluateAutoPin that either
+ * releases follow for a reader who is not on screen or writes a scrollTop the
+ * browser clamps the moment the box comes back -- and the clamp then reads as
+ * a user scroll. ONE predicate, asked by BOTH automatic-pin sites (the
+ * post-paint pinAuto and the pre-paint height-sync re-pin): a private copy at
+ * one site is how the idle rule came to cover one half and not the other.
+ *
+ * Deliberately geometry-only. `document.hidden` is NOT part of it: a desktop
+ * tab keeps its full layout while hidden, and its follower is pinned there
+ * exactly as before.
+ */
+export function scrollerCollapsed(el: { clientHeight: number }): boolean {
+  return el.clientHeight === 0
+}
+
+/**
  * Recognise a `scroll` event caused by our own programmatic write rather than
  * by the user. `lastWriteTop < 0` means "we have not written this session", so
  * any scroll is treated as the user's.
@@ -102,25 +131,6 @@ export function isSelfScroll(
   return lastWriteTop >= 0 && Math.abs(scrollTop - lastWriteTop) <= epsilon
 }
 
-/**
- * Is a height-sync anchor captured at `capturedScrollTop` still usable now that
- * the scroller reads `liveScrollTop`?
- *
- * A viewport-relative capture consumed after the viewport MOVED corrects the
- * reader's own scrolling rather than the repricing it was taken for (measured
- * as a 2706px teleport on the phone rig during a cold-cache walk). scrollTop is
- * the exact discriminator: a reprice ABOVE the viewport changes where rows sit,
- * never scrollTop. So unchanged ⇒ the whole delta belongs to the reprice and is
- * safe to correct HOWEVER LATE it lands; changed ⇒ something else moved the
- * viewport (a finger, iOS momentum — which keeps moving with no further hard
- * input, so an input-timestamp gate misses it — or Chromium's native anchoring,
- * which already absorbed the shift, making the correction a no-op anyway).
- *
- * Wall-clock age was the first approximation and failed on the wrong side at
- * the worst moment: a turn ending is the busiest the main thread gets, so the
- * consumer runs late, a STILL reader's anchor was dropped, and they paid the
- * entire reprice as one displacement.
- */
 /**
  * How far a reader must be moved to stay put when a row ABOVE them is repriced.
  *
@@ -225,6 +235,94 @@ export function geometryCommitDeferred(input: {
   return input.now - lastMotion <= input.settleMs
 }
 
+/**
+ * Whether an automatic pin must yield right now.
+ *
+ * The base rule is a fixed window from the last hardware input: a reader whose
+ * gesture is in flight outranks any correction. That window alone is too short
+ * for a height change the input CAUSED. Opening a disclosure with many lines
+ * (a tool's error output, "Worked through N steps") renders and re-measures in
+ * a cascade that outlives the window, so the tail of the cascade escaped the
+ * gate and pinned — the expanded content the user opened was dragged past the
+ * viewport top, felt as bounce, and only for the long ones.
+ *
+ * So suppression is extended by the CASCADE, not the clock: each resize that
+ * arrives while suppressed pushes the deadline out again. Streaming growth is
+ * unaffected because no hardware input precedes it, so nothing is ever armed.
+ */
+export function pinSuppressedNow(
+  now: number,
+  lastHardInputAt: number,
+  cascadeUntil: number,
+  settleMs: number,
+): boolean {
+  return now - lastHardInputAt < settleMs || now < cascadeUntil
+}
+
+/**
+ * Whether a prepend SHIFT COMPENSATION may write the scroll position.
+ *
+ * Those corrections keep the reader visually still when rows are inserted above
+ * them, by adding the inserted height to `scrollTop`. That is only meaningful
+ * when the reader's position is what it was before the insert -- so it must
+ * stand down for every OTHER owner of the position:
+ *
+ * The one owner it stands down for is `stick`: follow-the-tail is pinning to the
+ * bottom on its own schedule, so compensating would fight it.
+ *
+ * The second is `settleMeasuring`, and the wording is load-bearing. These
+ * compensations and the restore's settle do the SAME job -- hold a row where it
+ * was -- from different reference points, so while the settle is correcting they
+ * fight it: captured on a phone inside one decisecond as
+ *
+ *   abovefold 49760->49632 / settle 49632->49760 / abovefold 49760->52142 /
+ *   resize 52142->50321 / growth 50321->50021
+ *
+ * five writes, each undoing part of the last, netting +261px the reader sees as
+ * the position sliding after it had landed.
+ *
+ * But it must NOT read "a restore is in flight". Standing down for the whole
+ * restore window was tried and was worse: a settle that cannot see its anchor row
+ * (`SETTLE.x no-node`) corrects nothing while still holding its gate, so blanking
+ * these too left EVERY prepend in that window uncompensated -- which walked the
+ * reader up a page per landing, pulled the top sentinel into view, and reopened
+ * the older-history door. History loading itself, one page at a time.
+ *
+ * So the condition is whether the settle is actually doing the job, not whether it
+ * is nominally in charge. Exactly one mechanism corrects at a time, and when the
+ * settle goes blind these take over rather than everyone standing down.
+ *
+ * Extracted rather than left as three inline conditions because the rule is one
+ * decision and has to read like one.
+ */
+export function shiftCompensationAllowed(input: {
+  stick: boolean
+  /** Is the restore's settle loop ACTIVELY correcting -- gate up AND able to see
+   *  its anchor row? Not merely "a restore is in flight". */
+  settleMeasuring: boolean
+}): boolean {
+  return !input.stick && !input.settleMeasuring
+}
+
+/**
+ * Is a height-sync anchor captured at `capturedScrollTop` still usable now that
+ * the scroller reads `liveScrollTop`?
+ *
+ * A viewport-relative capture consumed after the viewport MOVED corrects the
+ * reader's own scrolling rather than the repricing it was taken for (measured
+ * as a 2706px teleport on the phone rig during a cold-cache walk). scrollTop is
+ * the exact discriminator: a reprice ABOVE the viewport changes where rows sit,
+ * never scrollTop. So unchanged ⇒ the whole delta belongs to the reprice and is
+ * safe to correct HOWEVER LATE it lands; changed ⇒ something else moved the
+ * viewport (a finger, iOS momentum — which keeps moving with no further hard
+ * input, so an input-timestamp gate misses it — or Chromium's native anchoring,
+ * which already absorbed the shift, making the correction a no-op anyway).
+ *
+ * Wall-clock age was the first approximation and failed on the wrong side at
+ * the worst moment: a turn ending is the busiest the main thread gets, so the
+ * consumer runs late, a STILL reader's anchor was dropped, and they paid the
+ * entire reprice as one displacement.
+ */
 export function heightAnchorStillUsable(
   capturedScrollTop: number,
   liveScrollTop: number,

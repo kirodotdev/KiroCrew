@@ -561,7 +561,7 @@ describe('a restore owns the position while it lands (source guard)', () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
     const src = fs.readFileSync(
-      path.resolve(__dirname, '../hooks/virtualizer/useVirtualChat.ts'),
+      path.resolve(__dirname, '../hooks/virtualizer/readingPosition.ts'),
       'utf8',
     )
 

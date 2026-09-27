@@ -128,6 +128,41 @@ fields. The no-limit route and callers requiring complete history remain on
 `read_messages_chained`. Display redaction remains at `_prepare_messages`; neither
 the sparse index nor page projection stores a redacted or alternate transcript.
 
+### The dashboard transcript window (frontend)
+
+The dashboard renders the rows these pages return through one windowing hook,
+`website/src/hooks/virtualizer/useVirtualChat.ts`. The chat page, every
+`VirtualTranscript` host and the artifacts gallery use it. It is a projection
+only. It mounts the rows around the viewport, prices the rest from measured
+heights (estimating rows not yet measured), and asks the host for the next older
+page when the reader climbs near the top. It never filters, reorders, hides or
+reclassifies a row. An incognito or temporary transcript is therefore windowed
+exactly like a persistent one; its rows stay visible and ordered (see
+[A restricted transcript is kept](#a-restricted-transcript-is-kept-what-is-derived-from-it-is-not)).
+
+The hook is a facade over composed owners, each holding one responsibility:
+
+| Owner (`website/src/hooks/virtualizer/`) | Owns |
+|---|---|
+| `useVirtualChat.ts` | option wiring, row identity (display key, stable id, alt id), and the hook-call order the owners depend on |
+| `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger. A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
+| `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm) |
+| `geometryScheduling.ts` | when a measurement becomes geometry: the debounced sync, its deferral while the reader moves, the streaming row's immediate path, the rail-collapse window |
+| `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts, appends and height syncs, and planning which row measurements a commit retires |
+| `readingPosition.ts` | the persisted reading position: entry latch, debounced save, leave flush, visibility re-placement, restore and settle |
+| `followPolicy.ts` | follow, pin and reader intent, plus `writeScrollTop`, the one path for the hook's programmatic scroll writes |
+| `observers.ts` | the scroller element, the mounted-row registry, the scroll listener and the resize observer |
+
+Beneath them sit the helpers they share. `FollowController.ts` (follow and
+position-owner decisions), `WindowCalculator.ts` (window math) and
+`anchorGeometry.ts` (reader-row geometry) are pure. `HeightIndex.ts` over
+`HeightCache.ts` holds height truth, persisted per height scope under
+`vc_heights_` (the transcript hosts scope it to the session plus a width
+bucket), and `ScrollAnchorCache.ts` persists reading anchors under
+`vc_anchor3_`. `MeasureFarm.tsx` is the off-screen measuring component and
+`inPlaceResize.ts` the in-place resize notes. Browser storage holds measurements
+and reading positions only, never message content.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).

@@ -254,7 +254,7 @@ describe('viewport GROWTH is left to the engine', () => {
   it('does not write when the scroller grows under a followed reader', () => {
     // The clamp already holds a flush reader flush; a write here would also fire
     // for a reader parked above the bottom, which is the deletion yank.
-    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'useVirtualChat.ts'), 'utf8')
+    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'measurement.ts'), 'utf8')
     const branch = src.slice(src.indexOf('if (entry.target === el) {'))
     const head = branch.slice(0, branch.indexOf('viewportResized = true'))
     // The skipped direction is GROWTH (`>`), not shrink: reversing this comparison
@@ -270,7 +270,7 @@ describe('a composer-caused shrink is not followed', () => {
     // scroller, and following that walks the transcript up a line every few
     // characters. Chrome mounting below the transcript is the SAME geometry with a
     // different cause and must still re-pin — so the branch consults the cause.
-    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'useVirtualChat.ts'), 'utf8')
+    const src = readFileSync(join(__dirname, '..', 'hooks', 'virtualizer', 'measurement.ts'), 'utf8')
     const branch = src.slice(src.indexOf('if (entry.target === el) {'))
     const head = branch.slice(0, branch.indexOf('viewportResized = true'))
     expect(head).toMatch(/if \(composerExplainsViewportChange\(\)\) continue/)

@@ -68,7 +68,9 @@ describe('shiftCompensationAllowed', () => {
  *  FollowController.test.ts reads its own source: an invariant with no runtime
  *  surface is still worth failing a build over. */
 describe('restoreAnchor drops the capture it supersedes', () => {
-  const src = readFileSync(join(process.cwd(), 'src/hooks/virtualizer/useVirtualChat.ts'), 'utf8')
+  // The restore lives with the reading position; the capture it drops is the
+  // shift compensation's, dropped through that owner's own verb.
+  const src = readFileSync(join(process.cwd(), 'src/hooks/virtualizer/readingPosition.ts'), 'utf8')
   const body = (() => {
     const at = src.indexOf('const restoreAnchor = useCallback')
     expect(at).toBeGreaterThan(-1)
@@ -76,6 +78,14 @@ describe('restoreAnchor drops the capture it supersedes', () => {
     const end = src.indexOf('const startedAt', at)
     expect(end).toBeGreaterThan(at)
     return src.slice(at, end)
+  })()
+  const shiftSrc = readFileSync(join(process.cwd(), 'src/hooks/virtualizer/shiftCompensation.ts'), 'utf8')
+  const dropBody = (() => {
+    const at = shiftSrc.indexOf('const dropShiftCapture = useCallback')
+    expect(at).toBeGreaterThan(-1)
+    const end = shiftSrc.indexOf('}, [])', at)
+    expect(end).toBeGreaterThan(at)
+    return shiftSrc.slice(at, end)
   })()
 
   for (const clear of [
@@ -85,14 +95,18 @@ describe('restoreAnchor drops the capture it supersedes', () => {
     'prependPreScrollTopRef.current = -1',
   ]) {
     it(`clears ${clear.split('.')[0]}`, () => {
-      expect(body).toContain(clear)
+      expect(dropBody).toContain(clear)
     })
   }
+
+  it('drops the capture in the restore itself', () => {
+    expect(body).toContain('dropShiftCapture()')
+  })
 
   it('clears before computing its own target, not after', () => {
     // Clearing after the write would leave the capture consumable by the very
     // next commit, which is the ordering the double-count came from.
-    expect(body.indexOf('shiftAnchorRef.current = null')).toBeLessThan(body.indexOf('writeScrollTop('))
+    expect(body.indexOf('dropShiftCapture()')).toBeLessThan(body.indexOf('writeScrollTop('))
   })
 })
 
@@ -109,11 +123,13 @@ describe('restoreAnchor drops the capture it supersedes', () => {
  *  same frame. Source-level for the reason the sibling guard above is: the race
  *  needs a rAF and real geometry, neither of which jsdom provides. */
 describe('scrollToBottom re-checks ownership when it applies', () => {
-  const src = readFileSync(join(process.cwd(), 'src/hooks/virtualizer/useVirtualChat.ts'), 'utf8')
+  // scrollToBottom is an explicit pin, so it lives with the follow policy.
+  const src = readFileSync(join(process.cwd(), 'src/hooks/virtualizer/followPolicy.ts'), 'utf8')
   const body = (() => {
     const at = src.indexOf('const scrollToBottom = useCallback')
     expect(at).toBeGreaterThan(-1)
-    const end = src.indexOf('// Ensure `index` is mounted', at)
+    // Up to the end of the useCallback (its deps line closes with `\n  )`).
+    const end = src.indexOf('\n  )', at)
     expect(end).toBeGreaterThan(at)
     return src.slice(at, end)
   })()
