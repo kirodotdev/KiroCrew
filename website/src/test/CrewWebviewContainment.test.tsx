@@ -488,20 +488,32 @@ describe("crew webview containment", () => {
     const newWhen = fmtRelative(republished);
     expect(newWhen).not.toBe(shownWhen);
 
+    /* Assert on the WHOLE interpolated sentence, never on the bare stamp. A
+     * stamp alone can sit inside the other one -- at a fixture age of 23 days
+     * the band's "23d ago" ends with the republish's own "3d ago" -- so a bare
+     * `toContain(newWhen)` passes on a wrong render and a bare
+     * `not.toContain(newWhen)` fails on a right one. The surrounding copy is
+     * what tells the two renders apart: "from 23d ago." and "from 3d ago."
+     * are substrings of each other in neither direction. */
+    const copy = (
+      JSON.parse(
+        readFileSync(resolve(__dirname, "../i18n/locales/en.json"), "utf8"),
+      ) as { pages: { membersPage: Record<string, string> } }
+    ).pages.membersPage;
+    const band = (ago: string) =>
+      copy.webview_refresh_error_aged.replace("{{ago}}", ago);
+    const chip = (ago: string) =>
+      copy.webview_published_ago_newer.replace("{{ago}}", ago);
+
     const text = banner.textContent || "";
-    expect(text).toContain(shownWhen);
-    expect(text).not.toContain(newWhen);
+    expect(text).toContain(band(shownWhen));
+    expect(text).not.toContain(band(newWhen));
 
     // And THIS is the state the bar's "new version" chip exists for: the record
     // on file is newer than the document on screen, so the chip must say so and
     // date the record, while the band above dates the document. A chip keyed on
     // the failure alone would also light up for a same-record re-mint (pinned to
     // the plain label above); keying on the instants is what tells them apart.
-    const republishedCopy = (
-      JSON.parse(
-        readFileSync(resolve(__dirname, "../i18n/locales/en.json"), "utf8"),
-      ) as { pages: { membersPage: Record<string, string> } }
-    ).pages.membersPage;
     const collapseBtn = document.querySelector(
       '[data-testid="crew-webview-collapse"]',
     ) as Element;
@@ -511,12 +523,10 @@ describe("crew webview containment", () => {
     expect(barChip).not.toBeNull();
     const chipText = barChip.textContent || "";
     expect(
-      chipText.startsWith(
-        republishedCopy.webview_published_ago_newer.split("{{")[0],
-      ),
+      chipText.startsWith(copy.webview_published_ago_newer.split("{{")[0]),
     ).toBe(true);
-    expect(chipText).toContain(newWhen);
-    expect(chipText).not.toContain(shownWhen);
+    expect(chipText).toContain(chip(newWhen));
+    expect(chipText).not.toContain(chip(shownWhen));
   });
 
   it("gives the empty state a way to act, and no dead control without one", async () => {
