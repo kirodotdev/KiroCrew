@@ -715,14 +715,14 @@ depth or the reader; the facts stay complete and technically exact.
   Name the thing and what it does, not the abstraction around it.
 - Add a picture only when it explains a changed shape faster than prose.
 
-Before publishing the body, read section 3 once. Rewrite any sentence that needs
-a second read, move each section's point first, and remove historical narration.
+Before publishing the body, reread section 3 and rewrite any sentence that needs
+a second read.
 
 #### Draw it — the Age 5 picture
 
-Draw ONE picture, at most, and none for a one-liner, a rename, a test-only change
-or a doc edit. When to draw, the form, the fixed palette, the caption and the
-placement are all in `references/body-picture.md` — read it before drawing.
+Draw ONE picture at most, and none for a one-liner, a rename, a test-only change
+or a doc edit. When to draw, the form, the palette, the caption and the placement
+are in `references/body-picture.md` — read it before drawing.
 
 ### Screenshots
 
@@ -787,9 +787,8 @@ If the PR deliberately closes nothing, say so at the start of a line —
 `no linked issue: <why>` — so a reader can tell an intentional omission from a
 forgotten trailer. **Advisory, not a gate:** readiness never blocks on it.
 
-`pr_status.py` handles the parsing edge cases itself (fenced blocks and indented
-examples are masked, closures are reconciled on repository *and* number); you do not
-need to reason about them — just read the `NOTICE:` lines it prints.
+`pr_status.py` masks fenced blocks and indented examples and reconciles closures
+on repository *and* number, so just read the `NOTICE:` lines it prints.
 
 ## Which mechanism drives the loop
 
