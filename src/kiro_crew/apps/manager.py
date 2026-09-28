@@ -885,10 +885,14 @@ def update_app(
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name
     if expected_name is not None and name != expected_name:
+        # Distinct from install's ``app_identity_changed``: that one is a manifest
+        # that changed under the lock, this one is a caller pointing an update at
+        # some other app's tree. ``kirocrew app update`` exits 4 on this code.
         return AppResult(
             ok=False,
             name=expected_name,
             error=f"source manifest name {name!r} does not match app {expected_name!r}",
+            error_code="app_source_name_mismatch",
         )
     dest = app_dir(name)
 

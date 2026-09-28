@@ -74,7 +74,16 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_761
+#:
+#: Raised again, from 27,761, for the ``app update`` self-protection floor: the
+#: predicate and the operand-appending-launcher rule in ``argv_floor`` (a spec
+#: element that demands some operand, and ``xargs``/``parallel`` counted as supplying
+#: it), its floor note and id in ``denied_rules``, the two dispatch/mint modules on
+#: the inline credential-mint surface in ``inline_payload`` (dotted spelling only,
+#: with the comment saying why), and one row each in the floor loop, the facade
+#: owner table and its ``TYPE_CHECKING`` block -- 67 lines, control logic and its
+#: stated reasons, not machinery.
+_PACKAGE_LINE_BUDGET = 27_828
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

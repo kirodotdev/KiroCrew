@@ -319,6 +319,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
+        "self-protection-app-update": "kirocrew {flags} app update my-app",
     }
     _FLAGS = ("-v", "-vv", "--verbose", "--no-jail", "-v --no-jail")
 
@@ -468,6 +469,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-file-delivery": ["file-delivery", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
+        "self-protection-app-update": ["app", "update", "my-app"],
     }
 
     @staticmethod
@@ -910,6 +912,11 @@ class TestProductNameAnywhereIsNotADenial:
             ("kirocrew -v update", "self-protection-update"),
             ("python -m kiro_crew gateway restart", "self-protection-gateway-restart"),
             ("kirocrew cloud destroy", "self-protection-cloud"),
+            # The App Store's Sync from a shell swaps a running app's code inside
+            # this gateway, so it is floored like restart/update.
+            ("kirocrew app update my-app", "self-protection-app-update"),
+            ("kirocrew -v app update my-app --source /tmp/src", "self-protection-app-update"),
+            ("python -m kiro_crew app update my-app", "self-protection-app-update"),
             # Shell dressing the deleted regex could see through only by
             # matching the name anywhere: the floor reads the argv instead.
             ("kirocrew -\\v restart", "self-protection-restart"),
@@ -936,7 +943,149 @@ class TestProductNameAnywhereIsNotADenial:
         """
         assert is_denied("kirocrew restart", denied_regexes=[]) is not None
         assert is_denied("kirocrew cloud destroy", denied_regexes=[]) is not None
+        assert is_denied("kirocrew app update my-app", denied_regexes=[]) is not None
         assert is_denied(f"{_PK} -f {_NAME}", denied_regexes=[]) is None
+
+    def test_app_update_floor_refuses_only_the_verb_that_swaps_running_code(self):
+        """``app update <name>`` is floored; its siblings, its usage form and mentions are not.
+
+        The spec demands the NAME operand because that is the dispatching shape: a
+        bare ``kirocrew app update`` is an argparse usage error and ``app update
+        --help`` prints usage, both before the handler runs, so neither needs a
+        flag-parsing exemption. An installed app's name is kebab-case, so it is
+        always a plain operand and always refused -- however it is quoted, and
+        whatever substitution or flag noise surrounds it -- while a flag-shaped
+        word after ``--`` or a process-substitution path names nothing the gateway
+        has, so the two nameless-by-grammar forms below dispatch a refusal, not a
+        swap, and are left alone rather than parsed for.
+        """
+        effective = self._effective()
+        for allowed in (
+            "kirocrew app list",
+            "kirocrew app info my-app",
+            "kirocrew app enable my-app",
+            "kirocrew app disable my-app",
+            "kirocrew app install /tmp/src",
+            "kirocrew app uninstall my-app",
+            "kirocrew app --help",
+            # No name operand: argparse prints usage (or a usage error) and exits.
+            "kirocrew app update",
+            "kirocrew app update --help",
+            "kirocrew app update -h",
+            "kirocrew app update --hel",
+            "kirocrew -v app update -h",
+            "python -m kiro_crew app update --help",
+            "kirocrew app update --help 2>/dev/null",
+            "kirocrew app update --help 2>&1 | head -20",
+            # Nameless by grammar: the word argparse takes as the name (``--help``, a
+            # ``/dev/fd/N`` path) can never be an installed app, so the gateway
+            # answers app_not_installed and nothing is stopped or swapped.
+            "kirocrew app update -- --help",
+            "kirocrew app update <(: --help )",
+            "kirocrew update-check",
+            "echo kirocrew app update my-app",
+            "grep -rn 'app update' src/kiro_crew/cli_commands.py",
+            "cat docs/app-update.md",
+            "ls ~/kirocrew-wt/app/update",
+        ):
+            assert is_denied(allowed, denied_regexes=effective) is None, allowed
+        for denied in (
+            "kirocrew app update my-app",
+            "kirocrew --no-jail app update my-app --source ~/src/my-app",
+            "kirocrew app update --source /tmp/x my-app",
+            "kirocrew app 'update' my-app",
+            'kirocrew app update "my-app"',
+            "kirocrew app update $'my-app'",
+            "bash -c 'kirocrew app update my-app'",
+            "cd ~/src && kirocrew app update my-app",
+            "kirocrew app update -- my-app",
+            # A help flag beside a real name is refused rather than parsed for: the
+            # name is what dispatches, and a scan that trusted the flag could be fed
+            # a substitution that prints nothing (``$(: --help )``) while the name
+            # stands. Fail closed on every such shape, and on a name the shell would
+            # supply (``$H``).
+            "kirocrew app update my-app --help",
+            "kirocrew app update my-app --help=1",
+            "kirocrew app update my-app -hx",
+            "kirocrew app update my-app --source=--help",
+            "kirocrew app update evil-app $(: --help )",
+            "kirocrew app update evil-app `: --help `",
+            'kirocrew app update evil-app "$(: --help)"',
+            "kirocrew app update evil-app ${H:---help}",
+            "kirocrew app update $H",
+            # Launched through xargs / parallel the name is APPENDED from stdin or a
+            # file at exec time, so the argv the shell hands over is the nameless
+            # form: the wildcard counts as supplied. (The piped form was already
+            # rebuilt with its words by the normalizer.)
+            "xargs kirocrew app update <<< my-app",
+            "xargs -a /tmp/names kirocrew app update",
+            "xargs kirocrew app update < /tmp/names",
+            "xargs -n1 -P4 kirocrew app update < names",
+            "/usr/bin/xargs kirocrew app update <<< my-app",
+            "sudo xargs kirocrew app update < names",
+            "xargs python -m kiro_crew app update <<< my-app",
+            "parallel -a names kirocrew app update",
+            "echo my-app | xargs kirocrew app update",
+        ):
+            reason = is_denied(denied, denied_regexes=effective)
+            assert reason, denied
+            # Floor-only id: the first line names it (no catalog pattern to map).
+            assert reason.split("\n")[0] == (
+                f"{security.DENY_REASON_PREFIX}self-protection-app-update"
+            ), denied
+        # The launcher pads only the wildcard the spec is missing: a sibling verb
+        # under xargs, or xargs on some other command before the usage form, is not
+        # ``app update <name>``.
+        for allowed in (
+            "xargs kirocrew app list < names",
+            "xargs kirocrew app info < names",
+            "xargs -a names kirocrew cloud",
+            "xargs grep -l update < files; kirocrew app update --help",
+            "echo xargs kirocrew app update",
+        ):
+            assert is_denied(allowed, denied_regexes=effective) is None, allowed
+
+    def test_app_update_is_not_reachable_by_importing_its_handler_inline(self):
+        """An inline program that imports the verb's handler or its client is a mint.
+
+        The subcommand floor reads the ``kirocrew`` / ``python -m kiro_crew`` argv; a
+        ``python -c`` payload has none, and ``_handle_app_update`` drives the same
+        owner-socket update through ``app_lifecycle_client.toggle_app``, which mints
+        the local dashboard token first. Both modules are therefore on the inline
+        mint surface: naming either is judged by the credential-mint floor, the way
+        ``kiro_crew.cli`` already is. Ordinary product imports stay allowed.
+        """
+        effective = self._effective()
+        for denied in (
+            'python -c "from kiro_crew.cli_commands import _handle_app_update; '
+            "import argparse; _handle_app_update(argparse.Namespace(name='evil', source='/e'))\"",
+            'python -c "from kiro_crew.app_lifecycle_client import toggle_app; '
+            "toggle_app('evil', 'update', payload={'source': '/e'})\"",
+            'python -c "import kiro_crew.cli_commands as c"',
+            "python -c \"from kiro_crew import app_lifecycle_client as c; c.toggle_app('x', 'update')\"",
+            "python3 - <<'PY'\nfrom kiro_crew import cli_commands\nPY",
+            "python3 -c \"import importlib; importlib.import_module('kiro_crew.cli_commands')\"",
+        ):
+            assert _denied_by(denied) == "credential-exfil-kirocrew-token", denied
+        for allowed in (
+            "python -c \"import kiro_crew.apps.manager as m; print(m.get_app('x'))\"",
+            'python -c "import kiro_crew.cli_helpers"',
+            "grep -n toggle_app src/kiro_crew/app_lifecycle_client.py",
+            "pytest test/test_app_update_cli.py -q",
+            "cat src/kiro_crew/cli_commands.py | head",
+            # The two modules are matched as IMPORTS (dotted), never as file paths:
+            # syntax-checking, sizing or patching the source file is ordinary inline
+            # work and names a path to read, not a module to run.
+            "python3 -c \"import ast; ast.parse(open('src/kiro_crew/cli_commands.py').read()); "
+            "print('ok')\"",
+            "python3 -c \"print(sum(1 for line in open('src/kiro_crew/app_lifecycle_client.py') "
+            'if line.strip()))"',
+            "python3 - <<'PY'\nfrom pathlib import Path\np = Path('src/kiro_crew/cli_commands.py')\n"
+            "p.write_text(p.read_text().replace('a', 'b'))\nPY",
+            # ... in the Windows path spelling too: the backslash separator names a file.
+            "python -c \"print(open(r'src\\kiro_crew\\cli_commands.py').read().count('def '))\"",
+        ):
+            assert is_denied(allowed, denied_regexes=effective) is None, allowed
 
     def test_every_gated_floor_id_has_a_live_row(self):
         """The gated loop skips a predicate whose id resolves to no pattern.

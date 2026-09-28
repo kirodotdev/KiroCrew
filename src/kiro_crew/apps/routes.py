@@ -67,7 +67,10 @@ from kiro_crew.apps.hooks_integration import (
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
 from kiro_crew.apps.manager import (
+    APP_MANIFEST_FILENAME,
+    AppResult,
     _credential_free_source_metadata,
+    _validate_source_path,
     app_enabled_state,
     app_lifecycle_lock,
     apps_dir,
@@ -85,7 +88,12 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
-from kiro_crew.apps.manifest import Dependencies, PlatformConfig, app_endpoint_allowed
+from kiro_crew.apps.manifest import (
+    AppManifest,
+    Dependencies,
+    PlatformConfig,
+    app_endpoint_allowed,
+)
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -881,19 +889,104 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
     )
 
 
+def _local_source_refusal(name: str, source: str) -> tuple[str, str] | None:
+    """The ``(code, detail)`` ``update_app`` is going to refuse a local *source* with.
+
+    Read-only preflight for the local branch of ``handle_update_app``. ``update_app``
+    refuses the same requests, but by the time it runs the handler has already
+    stopped the backend and deregistered the app, so ``kirocrew app update foo
+    --source <typo>`` -- a path that is not a directory, a directory without an
+    ``app.json``, a manifest that does not validate, or another app's tree -- took
+    ``foo`` down and rolled it back for a request that was never going to be
+    applied. Answering the same questions first lets the handler refuse before the
+    teardown; ``update_app`` keeps its own checks under the lock as the
+    authoritative ones, since this reads a path the caller controls.
+
+    The words are ``update_app``'s (``source is not a directory: ...`` and
+    ``_validate_source_path``'s ``missing app.json in ...`` / ``invalid app.json:
+    ...`` / ``missing required field: name``), with a ``code`` the CLI can switch
+    on: ``source_not_directory`` (the install preflight's), ``app_source_invalid``
+    for anything ``_validate_source_path`` reports, and ``app_source_name_mismatch``
+    -- the ``expected_name`` guard's, the CLI's exit 4 -- for a manifest naming
+    another app, and ``app_source_invalid`` again for a source that cannot even be
+    read or parsed (an unreadable ``app.json``, a home directory that will not
+    expand): those raise inside ``update_app`` after the teardown, past its rollback
+    branch, so refusing them here is what keeps the app up. ``None`` means only one
+    thing: the source validates and names this app.
+
+    The path is caller-supplied and this runs under the app's lifecycle lock, so
+    only a regular file is opened: a FIFO with no writer would block ``open()`` for
+    the life of the process -- holding the lock and one executor worker with it --
+    and a device such as ``/dev/zero`` has no end to read to. ``is_file`` is the
+    gate ``_validate_source_path`` applies before it parses anything, the same
+    gate as the install preflight.
+    """
+    try:
+        root = Path(source).expanduser().resolve()
+        if not root.is_dir():
+            return "source_not_directory", f"source is not a directory: {root}"
+        errors = _validate_source_path(root)
+        if errors:
+            return "app_source_invalid", "; ".join(errors)
+        manifest = AppManifest.from_json_file(root / APP_MANIFEST_FILENAME)
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError) as exc:
+        # OSError: an unreadable file (EACCES / EIO) or an unwalkable path;
+        # ValueError / TypeError / AttributeError: the parser's failure classes on a
+        # malformed manifest ``_validate_source_path`` did not catch; RuntimeError:
+        # a ``~`` with no home directory to expand. Every one of these raises again
+        # inside ``update_app`` -- AFTER the teardown, past the rollback branch -- so
+        # a source that cannot even be read is refused here, with the app untouched.
+        return "app_source_invalid", f"source {source!r} could not be read: {exc}"
+    if manifest.name and manifest.name != name:
+        return (
+            "app_source_name_mismatch",
+            f"source manifest name {manifest.name!r} does not match app {name!r}",
+        )
+    return None
+
+
+def _refuse_update_source(name: str, code: str, detail: str) -> web.Response:
+    """The 400 both update branches return for a source that cannot update *name*.
+
+    Same ``code``s as the checks inside ``update_app`` (``app_source_name_mismatch``
+    is the ``expected_name`` guard's, the CLI's exit 4) and the same audit line as
+    the post-teardown failure path, so a refusal that happens before the teardown
+    is just as visible in the access log.
+    """
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_update",
+        outcome="failed",
+        resources=name,
+        error=detail,
+    )
+    return web.json_response(
+        {"ok": False, "name": name, "error": detail, "code": code},
+        status=400,
+    )
+
+
 async def handle_update_app(request: web.Request) -> web.Response:
-    """POST /api/apps/{name}/update — update an installed app from its source path."""
+    """POST /api/apps/{name}/update — update an installed app from its source path.
+
+    The dashboard's Sync button and ``kirocrew app update`` both land here, so the
+    refusals carry a ``code`` the CLI maps to its exit codes; the prose is advisory.
+    """
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
-        return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+        return web.json_response(
+            {"error": f"app {name!r} not installed", "code": "app_not_installed"},
+            status=404,
+        )
 
     # Apps with lifecycle != "gateway" handle their own updates
     lifecycle = info.get("lifecycle", "gateway")
     if lifecycle != "gateway":
         return web.json_response(
             {
-                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"
+                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint",
+                "code": "app_lifecycle_not_gateway",
             },
             status=400,
         )
@@ -916,6 +1009,17 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # exactly as the local-source branch does.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
+        if registry_name != name:
+            # ``install_from_registry`` treats its argument as both the entry to
+            # clone and the app to install, so a registry source naming another
+            # app would swap THAT app's files under this app's lifecycle lock and
+            # then report this app unchanged. The local branch has the same guard
+            # below, and ``update_app(..., expected_name=name)`` behind it.
+            return _refuse_update_source(
+                name,
+                "app_source_name_mismatch",
+                f"registry source {source!r} names app {registry_name!r}, not {name!r}",
+            )
         async with app_lifecycle_lock(name):
             # Preflight BEFORE the stop so a retryable refusal leaves app state
             # untouched (app-kit-platform: refusal "without mutating app state").
@@ -923,6 +1027,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
             startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
             if startup_refusal is not None:
                 return startup_refusal
+
+            # Both ends of the version transition are read under the lock (see
+            # ``_with_version_transition``): the entry ``info`` snapshot may predate
+            # another update of the same app that this one queued behind.
+            previous_version = await _installed_version(name)
 
             # Stop the backend, then deregister old resources -- same order as
             # uninstall and the disable rollback. Stopping pops the tracking record,
@@ -954,10 +1063,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     subprocess_executor(), start_app_backend, name
                 )
                 reg_install["registration"] = reg_result.to_dict()
+            payload = await _with_version_transition(reg_install, name, previous_version)
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
-        return web.json_response(reg_install)
+        return web.json_response(payload)
 
     if not source:
         return web.json_response(
@@ -975,6 +1085,25 @@ async def handle_update_app(request: web.Request) -> web.Response:
         if startup_refusal is not None:
             return startup_refusal
 
+        # Refuse BEFORE the teardown what ``update_app`` is going to refuse anyway:
+        # a source that is not a directory, has no ``app.json``, does not validate,
+        # or names another app is answered here, while the backend is still up and
+        # the resources are still registered, instead of by ``update_app`` after
+        # both were torn down and then restored. Off-loop like every other read of
+        # a caller-supplied path in this handler: ``app.json`` may be a FIFO or sit
+        # on a slow mount, and a blocking read would stall the loop.
+        refusal = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _local_source_refusal, name, source
+        )
+        if refusal is not None:
+            return _refuse_update_source(name, *refusal)
+
+        # The version this update starts from, read under the lock rather than from
+        # the entry ``info`` snapshot: that snapshot may predate another update of
+        # the same app this request queued behind, and the transition would then
+        # name a version the swap never started from.
+        previous_version = await _installed_version(name)
+
         # Stop the backend, then deregister old resources — same order as uninstall and
         # the disable rollback. Stopping pops the tracking record, so the health watch
         # cannot re-register the OLD manifest's MCP servers after the scrub
@@ -985,11 +1114,23 @@ async def handle_update_app(request: web.Request) -> web.Response:
         await _deregister_app_off_loop(name)
 
         # Off-loop: blocking filesystem copy (see handle_install_app).
-        # expected_name makes update_app itself reject a source whose
-        # manifest names a different app than the one this lock guards.
-        up_result = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), lambda: update_app(source, expected_name=name)
-        )
+        # expected_name keeps update_app itself rejecting a source whose manifest
+        # names a different app than the one this lock guards -- the authoritative
+        # check, since the preflight above read a file the caller controls.
+        # An exception out of update_app (a manifest that became unreadable between
+        # the preflight and this read, a copy that failed in a way it did not
+        # catch) lands in the rollback branch below like any other failure: the
+        # backend is already stopped and the resources deregistered, and a bare
+        # 500 here would leave them that way.
+        try:
+            up_result = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), lambda: update_app(source, expected_name=name)
+            )
+        except Exception as exc:  # noqa: BLE001 -- the rollback must run for any failure
+            logger.exception("update_app raised for %s", name)
+            up_result = AppResult(
+                ok=False, name=name, error=f"update failed before it could report: {exc}"
+            )
         if not up_result.ok:
             await _restore_app_after_failed_update(name)
             sel().log_api_access(
@@ -1012,14 +1153,49 @@ async def handle_update_app(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
+        resp: dict[str, Any] = up_result.to_dict()
+        if up_reg:
+            resp["registration"] = up_reg.to_dict()
+        payload = await _with_version_transition(resp, name, previous_version)
 
     sel().log_api_access(
         caller="dashboard", operation="app_update", outcome="completed", resources=name
     )
-    resp: dict[str, Any] = up_result.to_dict()
-    if up_reg:
-        resp["registration"] = up_reg.to_dict()
-    return web.json_response(resp)
+    return web.json_response(payload)
+
+
+async def _installed_version(name: str) -> str:
+    """The installed record's ``version`` for *name*, read on the executor.
+
+    ``installed.json`` is a file read, so it runs off the loop like
+    ``_app_may_run_after_install``'s. Awaited under the app's lifecycle lock by
+    the update handler, so the value belongs to the swap in progress.
+    """
+    installed = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), get_app, name
+    )
+    version = (installed or {}).get("version", "")
+    return version if isinstance(version, str) else ""
+
+
+async def _with_version_transition(
+    resp: dict[str, Any], name: str, previous_version: str
+) -> dict[str, Any]:
+    """Add ``previousVersion`` / ``version`` to a successful update response.
+
+    ``update_app`` reports the transition only inside its prose ``message``
+    (``updated <name> v1 -> v2``); ``kirocrew app update`` prints the two values
+    as fields a script can read, and the installed record is the one place the
+    new version is authoritative after the swap. Both ends are read under the
+    lifecycle lock -- *previous_version* right after it was taken, the new one
+    here, before it is released -- because two updates of one app serialize on
+    that lock, and a transition assembled from reads on either side of it names
+    the version the OTHER update started from (``1.0.0 -> 2.0.0`` for a swap that
+    went ``2.0.0 -> 2.0.0``).
+    """
+    resp["previousVersion"] = previous_version if isinstance(previous_version, str) else ""
+    resp["version"] = await _installed_version(name)
+    return resp
 
 
 async def handle_register_external(request: web.Request) -> web.Response:

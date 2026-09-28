@@ -37,6 +37,10 @@ registry, or install a local directory from a path.
 - **Enable** is the activation gate. A disabled app contributes no pages, no agents,
   no skills, no crons and no backend process.
 - **Disable** reverses all of that. Its data directory is kept.
+- **Sync** (on an app installed from a local directory) re-copies it from that
+  directory and re-registers what the new version declares, keeping its data.
+  `kirocrew app update <name>` does the same thing from a terminal — see
+  [From the command line](#from-the-command-line).
 - **Uninstall** applies to apps you installed; a shipped app cannot be uninstalled,
   only disabled. Uninstalling keeps the app's data by default. Pass `--purge-data` on
   the CLI to delete that too — which is not reversible.
@@ -178,9 +182,32 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app update my-app             # what the Sync button does, from a terminal
+kirocrew app update my-app --source /path/to/my-app   # ...from a different checkout
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
+
+`update` needs the gateway running: it is the gateway that stops the app's
+backend, swaps the files with your data kept, and re-registers the new version's
+agents, skills and MCP servers, so with no gateway reachable the command exits 3
+and changes nothing. The request travels over the gateway's owner-only Unix
+socket and nothing else, so where there is no `AF_UNIX` transport — Windows, and
+sandboxed shells that cannot reach the socket — the command is unavailable and
+the **Sync** button in the dashboard's App Store is the way to update; the command
+says so rather than telling you to start a gateway it could never reach. It exits
+5 when the app is not installed (or manages its own updates), 4 when the source
+directory's `app.json` names a different app, and 1 when the source is not a
+directory or its `app.json` is missing, unreadable or does not validate — each refused before
+anything is stopped, so a wrong or mistyped `--source` leaves the running app
+untouched. Like `kirocrew restart` and `kirocrew update`, this is an operator's
+command: an agent's shell is refused from running it by the same self-protection
+floor those two sit on (`self-protection-app-update`, which has no opt-out). That
+floor judges the command line the shell is about to run — the `kirocrew` argv,
+however it is quoted, wrapped or fed through `xargs` — and, like every argv-tier
+floor, not every program that command may itself go on to spawn; it is a guard
+against a prompt-injected shell, not a sandbox. So run it from your own terminal or
+a deploy script — or use Sync.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`

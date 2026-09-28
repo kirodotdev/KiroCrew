@@ -28,13 +28,31 @@ _ACTION_TIMEOUT_SECS = 300
 
 
 class AppGatewayError(RuntimeError):
-    """A running gateway refused or could not complete an app lifecycle request."""
+    """A running gateway refused or could not complete an app lifecycle request.
 
-    def __init__(self, message: str) -> None:
+    ``code`` is the gateway's machine-readable failure identifier (the ``code``
+    member of its JSON error body), ``""`` when the answer carried none. The CLI
+    switches its exit code on ``code``, never on the prose, which is advisory and
+    may be reworded.
+    """
+
+    def __init__(self, message: str, *, code: str = "") -> None:
         # This exception is rendered by cli_commands on ONE prefixed line, so the
         # terminal boundary is here even when the message came from an HTTP error
         # or response payload, and a line break in it must not start a new line.
         super().__init__(safe_terminal_line(message))
+        self.code = code
+
+
+class AppGatewayUnreachable(AppGatewayError):
+    """A socket endpoint exists but no gateway answer came back through it.
+
+    Distinct from the ``None`` that ``toggle_app`` returns for a missing or refused
+    socket only in cause, not in outcome: in both cases no gateway received the
+    request, so nothing was applied. Raised only for the credential mint, which
+    precedes the action -- a transport failure DURING the action is not this, since
+    the gateway may have received and applied it.
+    """
 
 
 class AppGatewayTimeout(AppGatewayError):
@@ -56,15 +74,20 @@ def _read_json(response: object) -> object:
         raise AppGatewayError("gateway returned a malformed response") from exc
 
 
-def _gateway_error_detail(exc: urllib.error.HTTPError) -> str:
-    """Return the gateway's structured error text, falling back to its status."""
+def _gateway_error_detail(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    """Return the gateway's structured error ``(text, code)``, falling back to its status.
+
+    ``code`` is ``""`` when the body carries none, so a caller switching on it
+    treats an older gateway's prose-only answer as an unclassified refusal.
+    """
     try:
         body = json.loads(exc.read())
         if isinstance(body, dict) and isinstance(body.get("error"), str):
-            return body["error"]
+            code = body.get("code")
+            return body["error"], code if isinstance(code, str) else ""
     except Exception:
         pass
-    return f"{exc.code} {exc.reason}"
+    return f"{exc.code} {exc.reason}", ""
 
 
 def _socket_unavailable(exc: OSError) -> bool:
@@ -122,12 +145,13 @@ def toggle_app(
     except AppGatewayError:
         raise
     except urllib.error.HTTPError as exc:
-        raise AppGatewayError(_gateway_error_detail(exc)) from exc
+        text, code = _gateway_error_detail(exc)
+        raise AppGatewayError(text, code=code) from exc
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
         if isinstance(exc, OSError) and _socket_unavailable(exc):
             return None
         detail = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-        raise AppGatewayError(f"could not mint local dashboard credential: {detail}") from exc
+        raise AppGatewayUnreachable(f"could not mint local dashboard credential: {detail}") from exc
 
     credential = minted.get("token") if isinstance(minted, dict) else None
     if not isinstance(credential, str) or not credential:
@@ -155,7 +179,8 @@ def toggle_app(
     except AppGatewayError:
         raise
     except urllib.error.HTTPError as exc:
-        raise AppGatewayError(_gateway_error_detail(exc)) from exc
+        text, code = _gateway_error_detail(exc)
+        raise AppGatewayError(text, code=code) from exc
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
         if _deadline_expired(exc):
             raise AppGatewayTimeout(
@@ -172,10 +197,14 @@ def toggle_app(
         raise AppGatewayError("gateway returned an invalid app lifecycle response")
     if result.get("ok") is False:
         response_detail = result.get("error")
+        response_code = result.get("code")
         raise AppGatewayError(
-            str(response_detail)
-            if response_detail
-            else "gateway rejected the app lifecycle request"
+            (
+                str(response_detail)
+                if response_detail
+                else "gateway rejected the app lifecycle request"
+            ),
+            code=response_code if isinstance(response_code, str) else "",
         )
     return result
 
@@ -200,8 +229,14 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
                 if isinstance(error, str):
                     print(f"⚠️  {safe_terminal_line(error)}", file=sys.stderr)
 
-    if action != "enable":
+    if action not in ("enable", "update"):
         return
+
+    if action == "update":
+        previous = result.get("previousVersion")
+        current = result.get("version")
+        if isinstance(previous, str) and isinstance(current, str) and previous and current:
+            print(f"   Version: {safe_terminal_line(previous)} -> {safe_terminal_line(current)}")
 
     if isinstance(registration, dict):
         agents = registration.get("agents")
@@ -210,6 +245,19 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
             print(f"   Agents registered: {len(agents)}")
         if isinstance(skills, list):
             print(f"   Skills registered: {len(skills)}")
+        if action == "update":
+            mcp_servers = registration.get("mcp_servers")
+            crons = registration.get("crons")
+            if isinstance(mcp_servers, list):
+                print(f"   MCP servers registered: {len(mcp_servers)}")
+            if isinstance(crons, list):
+                print(f"   Crons registered: {len(crons)}")
+    elif action == "update":
+        # The gateway registers nothing for an app the update left disabled -- a
+        # widened ``permissions.sessionApproval`` grant awaiting re-consent -- and
+        # the ``message`` above already says so; this line keeps the counts a
+        # script parses from silently reading as "still registered".
+        print("   Resources not re-registered: the app is disabled")
     backend = result.get("backend")
     if isinstance(backend, dict) and isinstance(backend.get("port"), int):
         status = "healthy" if backend.get("healthy") else "starting"

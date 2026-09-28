@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import sys
 import time as _time
@@ -830,6 +831,118 @@ def _run_app_action_through_gateway(
     return True
 
 
+# Exit codes of ``kirocrew app update``: a deploy script switches on these, so
+# each names one outcome and none of them is shared with "some other failure" (1)
+# or with argparse's own usage error (2), which a bad flag exits with before the
+# handler ever runs.
+APP_UPDATE_EXIT_GATEWAY_UNREACHABLE = 3  # no running gateway answered; nothing was changed
+APP_UPDATE_EXIT_SOURCE_MISMATCH = 4  # the source's app.json names a different app
+APP_UPDATE_EXIT_NOT_UPDATABLE = 5  # not installed, or its lifecycle is not the gateway's
+
+# The gateway's machine-readable ``code`` values the exit codes are switched on.
+# ``code`` is the wire contract; the prose beside it is advisory and may change.
+_APP_UPDATE_EXIT_BY_CODE = {
+    "app_not_installed": APP_UPDATE_EXIT_NOT_UPDATABLE,
+    "app_lifecycle_not_gateway": APP_UPDATE_EXIT_NOT_UPDATABLE,
+    "app_source_name_mismatch": APP_UPDATE_EXIT_SOURCE_MISMATCH,
+}
+
+
+def _handle_app_update(args: argparse.Namespace) -> None:
+    """``kirocrew app update <name>``: the App Store's Sync, from a terminal.
+
+    Always through the running gateway, never the file-only path. ``update_app``
+    alone would replace the files on disk while the gateway kept serving the OLD
+    manifest's MCP servers, agents and backend -- the dashboard's Sync exists
+    precisely because the swap has to happen inside the process that owns them
+    (stop the backend, deregister, copy with ``data/`` preserved, re-register,
+    restart). So when no gateway answers this command refuses with exit 3 and says
+    why, instead of quietly doing the half that leaves the live state stale.
+
+    Without ``--source`` the gateway updates from the source it recorded at install
+    -- a directory, or ``registry:<name>`` for a registry install, which it
+    re-clones -- so the bare command already covers both kinds of app.
+    """
+    payload: dict[str, object] | None = None
+    source = getattr(args, "source", None)
+    if source is not None:
+        # An EMPTY --source is a refusal, not "use the recorded source": it is what
+        # ``--source "$BUILD_DIR"`` sends when the variable is unset, and silently
+        # updating from the recorded checkout there would drop the override the
+        # operator meant to apply while exiting 0 as if it had been applied.
+        if not source.strip():
+            print(
+                "❌ --source was given but is empty; omit it to update from the "
+                "recorded source, or pass the directory.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # The gateway resolves a relative path against ITS cwd, not the terminal's.
+        # ``resolve`` raises on a path it cannot walk (a symlink loop); the verb
+        # promises a defined exit, not a traceback.
+        try:
+            resolved = Path(source).expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            print(f"❌ --source {source!r} could not be resolved: {exc}", file=sys.stderr)
+            sys.exit(1)
+        payload = {"source": str(resolved)}
+
+    try:
+        result = app_lifecycle_client.toggle_app(args.name, "update", payload=payload)
+    except app_lifecycle_client.AppGatewayTimeout as exc:
+        # Unknown outcome, not a refusal: the gateway may still be applying it.
+        print(f"⏳ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except app_lifecycle_client.AppGatewayUnreachable as exc:
+        print(
+            f"❌ no running gateway answered, so {args.name} was not updated ({exc}). "
+            "Start the gateway and run this again -- or, if it is running and this "
+            "shell is sandboxed away from its socket, use Sync in the dashboard.",
+            file=sys.stderr,
+        )
+        sys.exit(APP_UPDATE_EXIT_GATEWAY_UNREACHABLE)
+    except app_lifecycle_client.AppGatewayError as exc:
+        # "refused" only for an answer that carries a code: a transport failure
+        # mid-action ("gateway stopped answering ...") and an older gateway's
+        # prose-only answer both arrive here codeless, and the first one's outcome
+        # is unknown, so the line must not read as a refusal.
+        verdict = "gateway refused" if exc.code else "update did not complete"
+        print(f"❌ {verdict}: {exc}", file=sys.stderr)
+        sys.exit(_APP_UPDATE_EXIT_BY_CODE.get(exc.code, 1))
+    if result is None:
+        print(
+            f"❌ no running gateway was reached, so {args.name} was not updated. An "
+            "update has to run inside the gateway -- it stops the app's backend, swaps "
+            "the files with data/ preserved and re-registers the new manifest's "
+            f"resources -- so there is no file-only fallback. {_app_update_unreached_remedy()}",
+            file=sys.stderr,
+        )
+        sys.exit(APP_UPDATE_EXIT_GATEWAY_UNREACHABLE)
+    app_lifecycle_client.print_result("update", args.name, result)
+
+
+def _app_update_unreached_remedy() -> str:
+    """What to do when no gateway was reached -- which depends on WHY it was not.
+
+    The request travels over the gateway's owner-only Unix socket and nothing else,
+    so on a platform without ``AF_UNIX`` (Windows) the verb cannot succeed however
+    the gateway is started; saying "start the gateway" there sends the user in a
+    circle. Elsewhere the usual cause is no gateway running, with a sandboxed shell
+    that cannot reach the socket as the runner-up. The dashboard's Sync is the
+    remedy in every case, so it is named in every message.
+    """
+    if not hasattr(socket, "AF_UNIX"):
+        return (
+            "This platform has no AF_UNIX sockets, and the update request can only "
+            "travel over the gateway's owner-only Unix socket, so this command is "
+            "unavailable here: use Sync in the dashboard."
+        )
+    return (
+        "Start the gateway and run this again -- or, if it is running and this shell "
+        "is sandboxed away from its socket, use Sync in the dashboard."
+    )
+
+
 def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     """Report a persisted lifecycle change without claiming it is live."""
     state = "enabled" if enabled else "disabled"
@@ -1143,7 +1256,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
 
 
 def _handle_app(args: argparse.Namespace) -> None:
-    """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
+    """Dispatch app subcommands: install, list, enable, disable, update, uninstall, info."""
     action = getattr(args, "app_action", None)
 
     if action == "mcp":
@@ -1231,6 +1344,9 @@ def _handle_app(args: argparse.Namespace) -> None:
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
+
+    elif action == "update":
+        _handle_app_update(args)
 
     elif action == "uninstall":
         # Ask a running gateway first, exactly as enable and disable do above.
@@ -1370,7 +1486,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"   kirocrew app install {app_dir}")
 
     else:
-        print("Usage: kirocrew app {install|list|enable|disable|uninstall|info|init}")
+        print("Usage: kirocrew app {install|list|enable|disable|update|uninstall|info|init}")
 
 
 def _memory_store_or_exit(raw: str) -> str:

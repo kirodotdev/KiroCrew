@@ -1435,6 +1435,7 @@ def is_denied(
         ("self-protection-file-delivery", _argv._is_self_file_delivery),
         ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
         ("self-protection-cloud", _argv._is_self_cloud_destructive),
+        ("self-protection-app-update", _argv._is_self_app_update),
     ):
         if predicate(lower):
             _emit_deny_event(tool_name, rule_id, lower)
@@ -2623,6 +2624,7 @@ _EXPORTS: dict[str, str] = {
     "_is_git_push_via_normalizer": "argv_floor",
     "_is_kill_by_name_program": "argv_floor",
     "_is_push_to_protected_branch": "argv_floor",
+    "_is_self_app_update": "argv_floor",
     "_is_self_cloud_destructive": "argv_floor",
     "_is_self_file_delivery": "argv_floor",
     "_is_self_gateway_restart": "argv_floor",
@@ -3206,6 +3208,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _is_git_push_via_normalizer,
         _is_kill_by_name_program,
         _is_push_to_protected_branch,
+        _is_self_app_update,
         _is_self_cloud_destructive,
         _is_self_file_delivery,
         _is_self_gateway_restart,

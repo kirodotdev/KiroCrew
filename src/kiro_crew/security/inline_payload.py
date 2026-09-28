@@ -41,10 +41,20 @@ _INLINE_DYNAMIC_EXEC_RE = re.compile(
 # Secret is not a path word: handlers/secrets.py is ordinary patch-script data.
 # A package path is spelled with ``.`` as a module, ``/`` as a POSIX path, or
 # ``\`` as a Windows path; the three separators are one class, not three rules.
+# ``cli_commands`` is the dispatch's handler half (an imported handler drives the
+# same verbs the console script does), and ``app_lifecycle_client`` mints the local
+# dashboard token every app lifecycle action rides on -- so an inline program that
+# IMPORTS either reaches the mint without the ``kirocrew`` argv the subcommand
+# floors read, and is judged here instead. Those two are matched in the dotted
+# module spelling only: neither is a script entry, so ``open('src/kiro_crew/
+# cli_commands.py')`` -- syntax-checking, sizing or patching the file -- names a
+# path to read, not a module to run, and stays a plain product-source read.
 _MINT_SURFACE_RE = re.compile(
     r"kiro_crew[./\\](?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    r"|kiro_crew\.(?:cli_commands|app_lifecycle_client)(?![a-z0-9_])"
     r"|kiro_crew[\w./\\]*token(?!iz)"
-    r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])"
+    r"(?:cli|cli_commands|cli_server|__main__|_bootstrap|app_lifecycle_client)(?![a-z0-9_])"
 )
 # A simple statement begins at the start of input, after ``;``, after a newline,
 # or after the ``:`` that closes a compound header (``if x:``, ``for``, ``try:``,

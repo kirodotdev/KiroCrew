@@ -2359,6 +2359,9 @@ class TestCopyAppTree:
         result = update_app(other, expected_name="test-app")
         assert not result.ok
         assert "does not match" in (result.error or "")
+        # The wire contract ``kirocrew app update`` maps to exit 4; the prose is advisory.
+        assert result.error_code == "app_source_name_mismatch"
+        assert result.to_dict()["code"] == "app_source_name_mismatch"
 
     def test_shutil_error_rolls_back_cleanly(self, tmp_path, app_home, monkeypatch):
         """shutil.Error (copytree aggregate, not an OSError) is caught and

@@ -555,7 +555,10 @@ installed one.
   schema, MCP tool interface).
 - `minKiroCrewVersion` is checked on install and update; too-old gateways get a
   clear error telling the user to update Kiro Crew first.
-- Users update from the store or via `POST /api/apps/{name}/update`. For a
+- Users update from the store or via `POST /api/apps/{name}/update` — from a
+  terminal, `kirocrew app update <name>`, which goes through the running gateway
+  and is the same operation as the store's Sync (operator-only: an agent's shell
+  is refused from running it, like `kirocrew restart`). For a
   registry-sourced app this re-clones, rebuilds, re-runs `onInstall`, and swaps
   resources only after the fresh install has succeeded, so a failed update leaves
   the working version registered.
@@ -592,7 +595,7 @@ useful to Kiro Crew users.
 | Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
 | Enable | `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
-| Update local copy | `POST /api/apps/{name}/update` |
+| Update local copy | `POST /api/apps/{name}/update`, or `kirocrew app update <name>` (the store's Sync; needs the gateway running and its Unix socket reachable — on Windows or from a sandboxed shell, use Sync) |
 | List a registry app | Official catalog: open an [App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml) issue (maintainer-curated). Bundled seed or a federated registry: add an entry to `app-registry.json`, open a pull request |
 | User install | Apps page, Discover, Install |
 | Ship an update | Bump `version`, push |

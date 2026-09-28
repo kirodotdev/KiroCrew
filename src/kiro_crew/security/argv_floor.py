@@ -1029,18 +1029,44 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
 def _operands_lead_with(operands: "list[str]", spec: "tuple[object, ...]") -> bool:
     """True if *operands* begins with the subcommand sequence *spec*.
 
-    Each element of *spec* is an exact word, or a ``frozenset`` of accepted words
-    (used for ``cloud <one of the destructive lifecycle subcommands>``).
+    Each element of *spec* is an exact word, a ``frozenset`` of accepted words
+    (used for ``cloud <one of the destructive lifecycle subcommands>``), or ``None``
+    for any operand at all (``app update <name>``: the verb dispatches only with a
+    name, so a spec that demands one leaves the nameless usage form alone).
     """
     if len(operands) < len(spec):
         return False
     for got, want in zip(operands, spec):
+        if want is None:
+            continue
         if isinstance(want, frozenset):
             if got not in want:
                 return False
         elif got != want:
             return False
     return True
+
+
+#: Launchers that APPEND operands from stdin or a file: ``xargs kirocrew app update
+#: <<< my-app`` runs ``kirocrew app update my-app`` with the name absent from the argv.
+_OPERAND_APPENDING_LAUNCHERS = frozenset({"xargs", "parallel"})
+
+
+def _operands_with_appended_wildcards(
+    operands: "list[str]", spec: "tuple[object, ...]", tokens: "list[str]", prog_idx: int
+) -> "list[str]":
+    """*operands*, padded for a missing all-wildcard tail of *spec* when the CLI at
+    *prog_idx* is run by an operand-appending launcher in the same simple command:
+    that operand arrives at exec time. A missing NAMED word is a different command."""
+    missing = len(spec) - len(operands)
+    if missing <= 0 or any(want is not None for want in spec[len(operands) :]):
+        return operands
+    j = prog_idx - 1
+    while j >= 0 and not _ends_argv(tokens[j]):
+        if _program_basename(tokens[j]) in _OPERAND_APPENDING_LAUNCHERS:
+            return [*operands, *([""] * missing)]
+        j -= 1
+    return operands
 
 
 class _SelfModuleScan(NamedTuple):
@@ -1161,7 +1187,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            operands = _self_cli_operands(tokens, prog_idx)
+            if _operands_lead_with(
+                _operands_with_appended_wildcards(operands, spec, tokens, prog_idx), spec
+            ):
                 return True
     return False
 
@@ -1189,6 +1218,21 @@ def _is_self_gateway_restart(text_lower: str) -> bool:
 def _is_self_cloud_destructive(text_lower: str) -> bool:
     """``kirocrew cloud <destructive>`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
+
+
+def _is_self_app_update(text_lower: str) -> bool:
+    """``kirocrew app update <name>`` behind any shell dressing of interposed flags.
+
+    The verb swaps a RUNNING app's code inside this gateway (the App Store's Sync),
+    so it is floored like ``restart``. The spec demands the NAME operand because that
+    is the dispatching shape: without one argparse refuses or prints usage before the
+    handler runs, so ``app update --help`` stays readable with no flag parsing here.
+    An installed app's name is kebab-case, so it is always a plain operand -- a
+    flag-shaped word after ``--`` names nothing the gateway has and swaps nothing.
+    Under ``xargs``/``parallel`` the name is appended at exec time, so there the
+    nameless argv counts as carrying it (:func:`_operands_with_appended_wildcards`).
+    """
+    return _matches_self_subcommand(text_lower, ("app", "update", None))
 
 
 _DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"

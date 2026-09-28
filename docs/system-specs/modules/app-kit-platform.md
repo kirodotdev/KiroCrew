@@ -215,6 +215,73 @@ Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
 | Update | re-clone or re-copy, re-register | 400 | 400 |
 | Uninstall | teardown then remove files | teardown then remove files | 400 (disable instead) |
 
+Update has two front doors and one handler. The dashboard's **Sync** button and
+`kirocrew app update <name> [--source PATH]` both land on
+`POST /api/apps/{name}/update` (`routes.handle_update_app`), the CLI through the
+owner-only socket the way `enable`/`disable`/`uninstall` reach the gateway
+(`app_lifecycle_client.toggle_app`). Unlike those three, the CLI verb is
+**operator-only**: it sits on the ungated argv self-protection floor beside
+`kirocrew restart` / `kirocrew update` (`self-protection-app-update`,
+`security/argv_floor.py::_is_self_app_update`), because an update is the one
+verb that replaces the code of an app the operator has ALREADY trusted and enabled
+and restarts its backend on the new code with no new consent moment (only a
+`permissions.sessionApproval` widening parks it disabled) -- a prompt-injected agent
+shell with the sandbox off could otherwise ride those existing grants to launch
+attacker-authored code under the gateway. An agent shell is refused before the
+process starts, and the update is the operator's to run from their own terminal, a
+deploy script, or the dashboard's Sync. The floor reads the argv the shell hands
+over, as the `restart` floor does: the name operand is what dispatches, so the spec
+demands one, and a launcher that appends it at exec time (`xargs kirocrew app
+update <<< name`, `xargs -a names …`, `parallel -a …`) counts as supplying it.
+It is an argv-tier guard against a prompt-injected shell, not a sandbox: like
+its siblings it does not follow what a program the shell starts may itself
+spawn. A fresh install, by contrast, is a new store
+entry whose execution the third-party policy denies until the operator grants that
+app trust, which is why the sibling verbs keep their posture here; whether they
+should follow is a maintainer decision. An inline program has no
+`kirocrew` argv for the floor to read, so `kiro_crew.cli_commands` and
+`kiro_crew.app_lifecycle_client` are on the inline credential-mint surface
+(`security/inline_payload.py::_MINT_SURFACE_RE`), the way `kiro_crew.cli` is. Nothing but the running gateway may do the
+swap: `manager.update_app` alone replaces the files while the process that owns
+the old manifest's MCP servers, agents and backend keeps serving them, so the
+CLI verb has **no file-only fallback** — with no gateway reachable it exits 3 and
+changes nothing, where `enable`/`disable` fall back to editing `installed.json`.
+The verb's only transport is that socket, so without `AF_UNIX` (Windows, and
+sandboxed shells that cannot reach the socket) it is unavailable outright: it
+exits 3 saying so and naming the dashboard's Sync, rather than "start the
+gateway", which on such a host could never make it succeed.
+The handler's refusals carry a `code` the CLI's exit codes are switched on
+(`app_not_installed` 404, `app_lifecycle_not_gateway` 400 — both exit 5 — and
+`app_source_name_mismatch` 400, exit 4; the prose beside each is advisory, and
+exit 2 is left to argparse's own usage error), and
+a success carries `previousVersion` / `version` beside the `registration`
+counts, read from the installed record rather than parsed back out of the
+`updated <name> v1 -> v2` message — both ends **under the lifecycle lock**, the
+previous one right after the lock is taken and the new one before it is
+released, because two updates of one app serialize on that lock and a pair
+assembled from reads on either side of it would name the version the other
+update started from. What `update_app` is going to refuse is refused **before
+the teardown**: inside the lifecycle lock but before the handler stops the
+backend or deregisters anything, it answers — off the loop, since the path is
+caller-supplied — a `--source` that is not a directory (`source_not_directory`),
+one whose `app.json` is missing, cannot be read (EACCES / EIO) or does not
+parse or validate (`app_source_invalid`, exit 1, the words `_validate_source_path`
+uses), and one whose manifest names another app (`app_source_name_mismatch`, exit
+4), so the running app is untouched, where `update_app`'s own checks — kept as the
+authoritative ones under the lock — would only have fired after the stop and
+deregister and forced a rollback. Should `update_app` still raise after the
+teardown (a manifest that became unreadable between the two reads, a copy failure
+it did not catch), the handler treats the exception as a failed result: the same
+rollback branch re-registers and restarts the app and the answer is a 400 naming
+the error, never a 500 with the app left down. `--source` is resolved to an
+absolute path in the CLI's own process, because the gateway would otherwise
+resolve a relative one against ITS cwd. There is deliberately no flag naming a
+registry entry: the handler treats a `registry:<name>` source as both the entry
+to clone and the app to install, so the only legitimate value is the app's own
+name — which the bare verb already sends, since that is the `source` a registry
+install records — and any other value would clone a second app under the first
+one's lifecycle lock.
+
 An unknown value in any of the three is repaired to that field's default with a
 warning rather than raising: `installed.json` is read on every boot, and a
 metadata typo must not make an app unloadable. A record written before the fields

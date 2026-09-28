@@ -1661,6 +1661,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
         "self-protection-file-delivery",
         "self-protection-gateway-restart",
         "self-protection-cloud",
+        "self-protection-app-update",
     }
 )
 
@@ -1725,6 +1726,14 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "Matched structurally on the command's argv: the product CLI is the argv's own "
         "program and its leading subcommand is a destructive cloud lifecycle operation. "
         "This floor has no catalog row and no opt-out."
+    ),
+    "self-protection-app-update": (
+        "Matched structurally on the command's argv: the product CLI is the argv's own "
+        "program and its leading subcommands are 'app update', which replaces an "
+        "installed app's code inside this gateway (the App Store's Sync). This floor has "
+        "no catalog row and no opt-out; the update is the operator's to run, from their "
+        "own terminal or the dashboard's Sync button. The nameless usage form, 'app update "
+        "--help', dispatches nothing and is not refused."
     ),
     "self-protection-dev-mode-out-of-root-confirm": (
         "Matched structurally on the command's argv, not by the pattern text above: "
