@@ -80,6 +80,10 @@ def _mock_dashboard_state() -> MagicMock:
     ds._slots = {}
     ds.last_notification_persist = None
     ds.notify = MagicMock()
+    # The orphan bell credits delivery from THIS call's own handle. Default to True
+    # (the inline-write path's own boolean: the durable write succeeded, so the bell
+    # is delivered without an awaited future).
+    ds.notify_awaiting_persist = MagicMock(return_value=True)
     ds.push_slots_update = MagicMock()
     ds.push_refresh = MagicMock()
     ds.broadcast_ws = MagicMock()
@@ -1506,13 +1510,13 @@ class TestOrphanNotifications:
         dm = _capture_subagent_kwargs(orch)["on_orphan_dm"]
         assert await dm("a1 orphaned by restart") is True
 
-        ds.notify.assert_called_once()
+        ds.notify_awaiting_persist.assert_called_once()
         orch.slack.post_message.assert_awaited_once_with("D1", "a1 orphaned by restart")
 
     @pytest.mark.asyncio
     async def test_dm_bell_failure_still_reports_slack_delivery(self):
         ds = _mock_dashboard_state()
-        ds.notify.side_effect = RuntimeError("bell broken")
+        ds.notify_awaiting_persist.side_effect = RuntimeError("bell broken")
         orch = self._orch(ds)
         orch.slack = MagicMock()
         orch.slack.open_dm = AsyncMock(return_value="D1")
@@ -1548,6 +1552,109 @@ class TestOrphanNotifications:
         dm = _capture_subagent_kwargs(orch)["on_orphan_dm"]
         assert await dm("a1 orphaned") is False
         orch.slack.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_stalled_persist_does_not_starve_the_slack_fallback(self, monkeypatch) -> None:
+        """GPT 5.6 F4 (gateway.py:9957): the orphan bell is credited delivered only once
+        its durable write lands, but awaiting that persist future UNBOUNDED lets a stalled
+        write (disk full/slow -- exactly when a ``system.resources`` orphan bell fires)
+        block the Slack DM fallback BELOW it, so the orphan is skipped after restart and
+        its notification is permanently lost. The persist await must be bounded; a timed-
+        out write is a not-yet-delivered bell, so the Slack attempt still runs and delivers.
+        """
+        # Bound the persist wait hard so the test does not actually sleep its real value.
+        monkeypatch.setattr(gw, "_ORPHAN_BELL_PERSIST_TIMEOUT", 0.05)
+        ds = _mock_dashboard_state()
+        # A persist future that NEVER resolves -- the stalled-write case. The bell now
+        # gets its own handle back from notify_awaiting_persist (race-free), not from the
+        # shared last_notification_persist field.
+        never = asyncio.get_event_loop().create_future()
+        ds.notify_awaiting_persist = MagicMock(return_value=never)
+        orch = self._orch(ds)
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D1")
+        orch.slack.post_message = AsyncMock()
+
+        dm = _capture_subagent_kwargs(orch)["on_orphan_dm"]
+        loop = asyncio.get_event_loop()
+        t0 = loop.time()
+        delivered = await dm("a1 orphaned by restart")
+        elapsed = loop.time() - t0
+
+        # The stalled persist was bounded, not awaited forever, and the Slack fallback ran.
+        assert elapsed < 5, "the stalled persist await blocked the Slack fallback"
+        orch.slack.post_message.assert_awaited_once_with("D1", "a1 orphaned by restart")
+        assert delivered is True
+        never.cancel()
+
+    @pytest.mark.asyncio
+    async def test_dm_credits_its_own_persist_handle_not_the_shared_field(self):
+        """GPT 5.6 F7 (gateway.py orphan bell): the bell must credit delivery from THIS
+        note's own durability handle (notify_awaiting_persist's return), NOT by re-reading
+        the shared last_notification_persist field. A concurrent off-loop delivery can
+        overwrite that field between the call and the read, so a failed orphan write would
+        be credited against another note's succeeded write and the orphan permanently
+        tombstoned. Here the orphan's OWN handle resolves False (write failed) while the
+        shared field is set to a succeeded (True) handle from a 'concurrent' delivery; the
+        bell must read False (undelivered) and fall through to the Slack attempt.
+        """
+        ds = _mock_dashboard_state()
+        own = asyncio.get_event_loop().create_future()
+        own.set_result(False)  # THIS orphan's write failed
+        ds.notify_awaiting_persist = MagicMock(return_value=own)
+        # The shared field carries a DIFFERENT (succeeded) handle, as if a concurrent
+        # off-loop delivery clobbered it. The bell must NOT read this.
+        other = asyncio.get_event_loop().create_future()
+        other.set_result(True)
+        ds.last_notification_persist = other
+        orch = self._orch(ds)
+        # No Slack either, so delivery hinges purely on the bell's own (failed) handle.
+        orch.slack = None
+
+        dm = _capture_subagent_kwargs(orch)["on_orphan_dm"]
+        delivered = await dm("a1 orphaned")
+
+        # Credited from its OWN failed handle -> undelivered, so the held orphan stays
+        # recoverable. Had it read the shared True handle, this would wrongly be True.
+        assert delivered is False, (
+            "the orphan bell credited delivery from the shared field instead of its own "
+            "handle -- a concurrent delivery's success would falsely discharge this orphan"
+        )
+        other.cancel() if not other.done() else None
+
+    @pytest.mark.asyncio
+    async def test_dm_persist_timeout_does_not_cancel_the_queued_write(self, monkeypatch) -> None:
+        """Opus 5.5 F12 (gateway.py orphan bell): the persist future is the
+        ``run_in_executor`` handle for this bell's disk write. A BARE
+        ``wait_for(persist, timeout)`` cancels that future on timeout, which cancels
+        the still-queued ``_persist_one`` job on the single-worker notif-io executor
+        (slow disk) -- so the already-broadcast bell is never written and vanishes on
+        restart. ``asyncio.shield`` must bound only the caller's wait while leaving the
+        queued write to land.
+        """
+        monkeypatch.setattr(gw, "_ORPHAN_BELL_PERSIST_TIMEOUT", 0.05)
+        ds = _mock_dashboard_state()
+        # A future that outlives the timeout. With a bare wait_for it would be CANCELLED;
+        # shielded, it must survive so the real executor write still completes.
+        slow = asyncio.get_event_loop().create_future()
+        ds.notify_awaiting_persist = MagicMock(return_value=slow)
+        orch = self._orch(ds)
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D1")
+        orch.slack.post_message = AsyncMock()
+
+        dm = _capture_subagent_kwargs(orch)["on_orphan_dm"]
+        await dm("a1 orphaned by restart")
+
+        # The timed-out persist handle was NOT cancelled -- the queued disk write still
+        # lands. A bare wait_for would have cancelled it here.
+        assert not slow.cancelled(), (
+            "the persist timeout cancelled the bell's own queued write; the shield must "
+            "bound only the wait, not kill the write -- else the bell is lost on restart"
+        )
+        # Resolve it as a late write would, then clean up.
+        if not slow.done():
+            slow.set_result(True)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1591,6 +1698,67 @@ class TestTaskNotify:
 
         await notify("Step 2 complete", "all good")
         assert ds.notify.call_args.kwargs["meta"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_note_names_the_originating_session(self):
+        """The note must carry the session that produced it, for governance.
+
+        ``task_id`` identifies a task and not a session, and ``taskrunner`` is
+        not an ``app:`` source, so without this key the note names no producer
+        at all and the notification bridge vets the host surface alone. A
+        session whose profile denies ``channels/slack`` is refused on that
+        transport elsewhere and then egresses to the same Slack DM through a
+        routed notification channel.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("Step 2 complete", "all good", "task-7", session_key="slack:T1:C1:1712793600")
+
+        assert ds.notify.call_args.kwargs["meta"] == {
+            "task_id": "task-7",
+            "session_key": "slack:T1:C1:1712793600",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_session_is_named_even_without_a_task_id(self):
+        # The two fields are independent: a run started from a conversation with
+        # no task id still has a producing session, and the old
+        # ``{"task_id": ...} if task_id else None`` shape dropped it whenever the
+        # id happened to be absent.
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("Step 2 complete", "all good", session_key="telegram:42")
+        assert ds.notify.call_args.kwargs["meta"] == {"session_key": "telegram:42"}
+
+    @pytest.mark.asyncio
+    async def test_the_emitted_key_is_one_the_bridge_reads_unchanged(self):
+        """Producer and consumer must agree on the key's FORM, not just its name.
+
+        ``_claimed_session`` QUALIFIES a bare fragment to ``dashboard:<slot>``
+        and passes an already-prefixed key through untouched, so a producer that
+        emitted a fragment would have some other surface's profile answer for
+        its note. This drives the real consumer with the real producer's output
+        rather than asserting the argument shape, because an argument-shape
+        assertion cannot see what the consumer does with the argument.
+        """
+        from kiro_crew.notifications.bridge import BridgeDispatcher
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("t", "b", "task-7", session_key="slack:T1:C1:1712793600")
+        meta = ds.notify.call_args.kwargs["meta"]
+
+        # ``meta`` merges flat onto the note, which is the shape the bridge reads.
+        assert BridgeDispatcher._claimed_session(meta) == "slack:T1:C1:1712793600"
 
     @pytest.mark.asyncio
     async def test_approval_title_also_dms_the_owner(self):
@@ -2661,3 +2829,113 @@ class TestMcpBrokerRefreshPrefetchAndPersistArms:
         await asyncio.wait_for(orch._stop_mcp_broker(), timeout=5)
         assert task.cancelled()
         assert orch._mcp_resolve_prefetch is None
+
+
+class TestShutdownDrainsTheNotificationBridge:
+    """A note whose Slack leg was scheduled must not be dropped by shutdown.
+
+    The bridge hands each leg to a task, so at the moment the gateway stops
+    there can be fanout in flight. Closing the transports first would abandon it
+    silently -- the note is on the dashboard either way, but the DM the owner
+    armed a route for never arrives. The drain therefore has to be awaited while
+    the transports are still open, which is what these tests pin.
+    """
+
+    def _orch(self, drain, closed):
+        orch = _make_orchestrator()
+        bridge = MagicMock()
+        bridge.drain = drain
+        ds = _mock_dashboard_state()
+        ds.notification_bridge = bridge
+        orch.dashboard_state = ds
+        socket_client = MagicMock()
+        socket_client.close = closed
+        orch._socket_client = socket_client
+        orch._stop_memory_startup = MagicMock()
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_the_bridge_is_drained_before_the_transport_closes(self):
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append(f"drain:{timeout}")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        await orch._shutdown()
+        # Both ran, and in this order. Asserting the ORDER rather than just the
+        # call is the whole point: a drain that runs after the close is the bug.
+        assert order == ["drain:2.0", "close"]
+
+    @pytest.mark.asyncio
+    async def test_the_producers_are_cancelled_before_the_drain(self):
+        """A drain cannot flush a note that has not been produced yet.
+
+        ``cancel_all()`` emits terminal announcements for the runs it stops, and
+        their bridge legs schedule when they are emitted. Gathered with the closes
+        instead, those announcements land after the drain has already returned and
+        then race the transport close. Asserting all three positions, because a
+        drain that sits before its own producer is as broken as one that sits after
+        the close.
+        """
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append("drain")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(
+            side_effect=lambda **_kw: order.append("cancel_all")
+        )
+        orch.subagent_mgr.close = MagicMock()
+        await orch._shutdown()
+        assert order == ["cancel_all", "drain", "close"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_producer_cancel_does_not_stop_the_shutdown(self):
+        # The drain is still worth attempting for whatever did get emitted, and a
+        # producer that will not stop cleanly must not keep the gateway alive.
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append("drain")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=RuntimeError("stuck run"))
+        orch.subagent_mgr.close = MagicMock()
+        await orch._shutdown()
+        assert order == ["drain", "close"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_drain_does_not_stop_the_shutdown(self):
+        # This drain exists to save a chat DM. A gateway that refused to stop
+        # because of it would trade a far worse failure for a better one.
+        closed = AsyncMock()
+        orch = self._orch(AsyncMock(side_effect=RuntimeError("loop gone")), closed)
+        await orch._shutdown()
+        closed.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_survives_a_state_with_no_bridge(self):
+        # A dashboard-less run has no bridge to drain, and reading the attribute
+        # off a state that does not carry it must not raise into shutdown.
+        closed = AsyncMock()
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        socket_client = MagicMock()
+        socket_client.close = closed
+        orch._socket_client = socket_client
+        orch._stop_memory_startup = MagicMock()
+        await orch._shutdown()
+        closed.assert_awaited()
